@@ -22,7 +22,7 @@ import (
 
 // AddressSpec defines the desired state of Address.
 type AddressSpec struct {
-	Subnet  string `json:"subnet"`
+	Subnet string `json:"subnet"`
 
 	// +optional
 	Address string `json:"address"`

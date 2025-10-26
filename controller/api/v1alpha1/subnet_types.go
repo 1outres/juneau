@@ -22,7 +22,7 @@ import (
 
 // SubnetSpec defines the desired state of Subnet.
 type SubnetSpec struct {
-	Vpc string `json:"vpc"`
+	Vpc  string `json:"vpc"`
 	CIDR string `json:"cidr"`
 }
 
