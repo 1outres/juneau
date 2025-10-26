@@ -18,3 +18,17 @@ resources:
 - metrics_auth_role.yaml
 - metrics_auth_role_binding.yaml
 - metrics_reader_role.yaml
+# For each CRD, "Admin", "Editor" and "Viewer" roles are scaffolded by
+# default, aiding admins in cluster management. Those roles are
+# not used by the {{ .ProjectName }} itself. You can comment the following lines
+# if you do not want those helpers be installed with your Project.
+- address_admin_role.yaml
+- address_editor_role.yaml
+- address_viewer_role.yaml
+- subnet_admin_role.yaml
+- subnet_editor_role.yaml
+- subnet_viewer_role.yaml
+- vpc_admin_role.yaml
+- vpc_editor_role.yaml
+- vpc_viewer_role.yaml
+

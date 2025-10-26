@@ -7,4 +7,29 @@ layout:
 - go.kubebuilder.io/v4
 projectName: controller
 repo: github.com/1outres/juneau
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: juneau.loutres.me
+  kind: Vpc
+  path: github.com/1outres/juneau/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: juneau.loutres.me
+  kind: Subnet
+  path: github.com/1outres/juneau/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: juneau.loutres.me
+  kind: Address
+  path: github.com/1outres/juneau/api/v1alpha1
+  version: v1alpha1
 version: "3"

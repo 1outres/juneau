@@ -1,0 +1,6 @@
+## Append samples of your project ##
+resources:
+- v1alpha1_vpc.yaml
+- v1alpha1_subnet.yaml
+- v1alpha1_address.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples
