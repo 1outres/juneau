@@ -1,12 +1,5 @@
 # Adds namespace to all resources.
-namespace: controller-system
-
-# Value of this field is prepended to the
-# names of all resources, e.g. a deployment named
-# "wordpress" becomes "alices-wordpress".
-# Note that it should also match with the prefix (text before '-') of the namespace
-# field above.
-namePrefix: controller-
+namespace: juneau
 
 # Labels to add to all resources and selectors.
 #labels:
@@ -32,7 +25,7 @@ resources:
 # Only CR(s) which requires webhooks and are applied on namespaces labeled with 'webhooks: enabled' will
 # be able to communicate with the Webhook Server.
 #- ../network-policy
-
+- defaultnetwork.yaml
 # Uncomment the patches line if you enable Metrics
 patches:
 # [METRICS] The following patch will enable the metrics endpoint using HTTPS and the port :8443.
