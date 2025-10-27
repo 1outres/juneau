@@ -134,6 +134,28 @@ func (r *AddressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		      return ctrl.Result{RequeueAfter: time.Hour}, nil
 				}
 			}
+		} else if subnet.Spec.AllocationStrategy == juneauv1alpha1.SubnetAllocationStrategyRandom {
+			count := 0
+			for ;; {
+				ip, err := netutil.RandomUsableIPv4InSubnet(subnet.Spec.CIDR)
+				if err != nil {
+					return ctrl.Result{}, fmt.Errorf("unable to get random usable IP in Subnet %s: %w", subnet.Name, err)
+				}
+
+				leaseName := netutil.LeaseNameFor(address.Spec.Subnet, ip.String())
+				var subnetLease juneauv1alpha1.SubnetLease
+				if err := r.Get(ctx, client.ObjectKey{Name: leaseName}, &subnetLease); err != nil {
+					if !errors.IsNotFound(err) {
+						return ctrl.Result{}, fmt.Errorf("unable to get SubnetLease %s: %w", leaseName, err)
+					}
+					allocatedAddress = ip.String()
+					break
+				}
+				count++
+				if count >= 10 {
+					return ctrl.Result{RequeueAfter: time.Minute}, nil
+				}
+			}
 		}
 	}
 

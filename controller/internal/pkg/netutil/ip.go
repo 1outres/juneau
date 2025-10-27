@@ -4,7 +4,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/big"
+	"math/rand"
 	"net"
+	"time"
 )
 
 // Overlaps checks if there are any overlapping subnets in the given list.
@@ -169,6 +171,45 @@ func NextUsableIPv4InSubnet(cidr string, current net.IP) (net.IP, bool, error) {
 	out := make(net.IP, 4)
 	binary.BigEndian.PutUint32(out, next)
 	return out, true, nil
+}
+
+// RandomUsableIPv4InSubnet returns a random usable IPv4 host address within the given CIDR.
+// It excludes the network and broadcast addresses. It returns an error for invalid inputs,
+// non-IPv4, subnets larger than /16 (prefix < 16), or subnets with no usable hosts.
+func RandomUsableIPv4InSubnet(cidr string) (net.IP, error) {
+	_, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid CIDR: %w", err)
+	}
+
+	ip4 := ipnet.IP.To4()
+	if ip4 == nil {
+		return nil, fmt.Errorf("ipv4 only is supported")
+	}
+
+	ones, bits := ipnet.Mask.Size()
+	if bits != 32 {
+		return nil, fmt.Errorf("ipv4 only is supported")
+	}
+	if ones < 16 {
+		return nil, fmt.Errorf("subnet larger than /16 is not allowed: /%d", ones)
+	}
+
+	size := uint32(1) << (32 - ones)
+	if size <= 2 {
+		return nil, fmt.Errorf("subnet has no usable hosts")
+	}
+
+	network := ipnet.IP.Mask(ipnet.Mask).To4()
+	firstUsable := beToUint32(network) + 1
+	lastUsable := beToUint32(network) + size - 2
+
+	rand.Seed(time.Now().UnixNano())
+	random := firstUsable + uint32(rand.Intn(int(lastUsable-firstUsable+1)))
+
+	out := make(net.IP, 4)
+	binary.BigEndian.PutUint32(out, random)
+	return out, nil
 }
 
 // beToUint32 converts a 4-byte net.IP to a uint32 in big-endian.
