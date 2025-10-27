@@ -16,6 +16,10 @@ resources:
   kind: Vpc
   path: github.com/1outres/juneau/api/v1alpha1
   version: v1alpha1
+  webhooks:
+    defaulting: true
+    validation: true
+    webhookVersion: v1
 - api:
     crdVersion: v1
     namespaced: true
@@ -24,6 +28,10 @@ resources:
   kind: Subnet
   path: github.com/1outres/juneau/api/v1alpha1
   version: v1alpha1
+  webhooks:
+    defaulting: true
+    validation: true
+    webhookVersion: v1
 - api:
     crdVersion: v1
     namespaced: true
@@ -32,4 +40,8 @@ resources:
   kind: Address
   path: github.com/1outres/juneau/api/v1alpha1
   version: v1alpha1
+  webhooks:
+    defaulting: true
+    validation: true
+    webhookVersion: v1
 version: "3"
