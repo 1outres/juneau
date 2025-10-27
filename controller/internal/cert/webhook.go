@@ -1,29 +1,16 @@
-/*
-Copyright 2025.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package cert
 
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	admissionv1 "k8s.io/api/admissionregistration/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/1outres/juneau/internal/webhookmanifests"
 )
 
 const (
@@ -38,112 +25,134 @@ type WebhookConfig struct {
 }
 
 // ApplyWebhookConfigurations creates or updates the webhook configurations
+// by loading them from the embedded manifests and injecting the node IP and CA bundle
 func ApplyWebhookConfigurations(ctx context.Context, k8sClient client.Client, config WebhookConfig) error {
-	if err := applyMutatingWebhookConfiguration(ctx, k8sClient, config); err != nil {
+	// Parse the embedded YAML into webhook configurations
+	mutatingConfig, validatingConfig, err := parseWebhookManifests()
+	if err != nil {
+		return fmt.Errorf("failed to parse webhook manifests: %w", err)
+	}
+
+	// Update clientConfig to use URL with node IP instead of service
+	if err := updateMutatingWebhookConfig(mutatingConfig, config); err != nil {
+		return fmt.Errorf("failed to update mutating webhook config: %w", err)
+	}
+
+	if err := updateValidatingWebhookConfig(validatingConfig, config); err != nil {
+		return fmt.Errorf("failed to update validating webhook config: %w", err)
+	}
+
+	// Apply the configurations
+	if err := applyMutatingWebhookConfiguration(ctx, k8sClient, mutatingConfig); err != nil {
 		return fmt.Errorf("failed to apply mutating webhook configuration: %w", err)
 	}
 
-	if err := applyValidatingWebhookConfiguration(ctx, k8sClient, config); err != nil {
+	if err := applyValidatingWebhookConfiguration(ctx, k8sClient, validatingConfig); err != nil {
 		return fmt.Errorf("failed to apply validating webhook configuration: %w", err)
 	}
 
 	return nil
 }
 
-func applyMutatingWebhookConfiguration(ctx context.Context, k8sClient client.Client, config WebhookConfig) error {
-	failurePolicy := admissionv1.Fail
-	sideEffects := admissionv1.SideEffectClassNone
+// parseWebhookManifests parses the embedded YAML into webhook configuration objects
+func parseWebhookManifests() (*admissionv1.MutatingWebhookConfiguration, *admissionv1.ValidatingWebhookConfiguration, error) {
+	var mutatingConfig *admissionv1.MutatingWebhookConfiguration
+	var validatingConfig *admissionv1.ValidatingWebhookConfiguration
 
-	webhookConfig := &admissionv1.MutatingWebhookConfiguration{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "juneau-mutating-webhook-configuration",
-		},
-		Webhooks: []admissionv1.MutatingWebhook{
-			{
-				Name: "maddress-v1alpha1.kb.io",
-				ClientConfig: admissionv1.WebhookClientConfig{
-					URL:      stringPtr(fmt.Sprintf("https://%s:%d/mutate-juneau-loutres-me-v1alpha1-address", config.NodeIP, webhookPort)),
-					CABundle: config.CABundle,
-				},
-				Rules: []admissionv1.RuleWithOperations{
-					{
-						Operations: []admissionv1.OperationType{
-							admissionv1.Create,
-							admissionv1.Update,
-						},
-						Rule: admissionv1.Rule{
-							APIGroups:   []string{"juneau.loutres.me"},
-							APIVersions: []string{"v1alpha1"},
-							Resources:   []string{"addresses"},
-						},
-					},
-				},
-				FailurePolicy:           &failurePolicy,
-				SideEffects:             &sideEffects,
-				AdmissionReviewVersions: []string{"v1"},
-			},
-			{
-				Name: "msubnet-v1alpha1.kb.io",
-				ClientConfig: admissionv1.WebhookClientConfig{
-					URL:      stringPtr(fmt.Sprintf("https://%s:%d/mutate-juneau-loutres-me-v1alpha1-subnet", config.NodeIP, webhookPort)),
-					CABundle: config.CABundle,
-				},
-				Rules: []admissionv1.RuleWithOperations{
-					{
-						Operations: []admissionv1.OperationType{
-							admissionv1.Create,
-							admissionv1.Update,
-						},
-						Rule: admissionv1.Rule{
-							APIGroups:   []string{"juneau.loutres.me"},
-							APIVersions: []string{"v1alpha1"},
-							Resources:   []string{"subnets"},
-						},
-					},
-				},
-				FailurePolicy:           &failurePolicy,
-				SideEffects:             &sideEffects,
-				AdmissionReviewVersions: []string{"v1"},
-			},
-			{
-				Name: "mvpc-v1alpha1.kb.io",
-				ClientConfig: admissionv1.WebhookClientConfig{
-					URL:      stringPtr(fmt.Sprintf("https://%s:%d/mutate-juneau-loutres-me-v1alpha1-vpc", config.NodeIP, webhookPort)),
-					CABundle: config.CABundle,
-				},
-				Rules: []admissionv1.RuleWithOperations{
-					{
-						Operations: []admissionv1.OperationType{
-							admissionv1.Create,
-							admissionv1.Update,
-						},
-						Rule: admissionv1.Rule{
-							APIGroups:   []string{"juneau.loutres.me"},
-							APIVersions: []string{"v1alpha1"},
-							Resources:   []string{"vpcs"},
-						},
-					},
-				},
-				FailurePolicy:           &failurePolicy,
-				SideEffects:             &sideEffects,
-				AdmissionReviewVersions: []string{"v1"},
-			},
-		},
+	// Split the YAML by document separator
+	documents := strings.Split(webhookmanifests.Manifests, "---")
+
+	for _, doc := range documents {
+		doc = strings.TrimSpace(doc)
+		if doc == "" {
+			continue
+		}
+
+		// Try to decode as MutatingWebhookConfiguration
+		var mwc admissionv1.MutatingWebhookConfiguration
+		if err := yaml.Unmarshal([]byte(doc), &mwc); err == nil && mwc.Kind == "MutatingWebhookConfiguration" {
+			mutatingConfig = &mwc
+			continue
+		}
+
+		// Try to decode as ValidatingWebhookConfiguration
+		var vwc admissionv1.ValidatingWebhookConfiguration
+		if err := yaml.Unmarshal([]byte(doc), &vwc); err == nil && vwc.Kind == "ValidatingWebhookConfiguration" {
+			validatingConfig = &vwc
+			continue
+		}
 	}
 
+	if mutatingConfig == nil {
+		return nil, nil, fmt.Errorf("mutating webhook configuration not found in manifests")
+	}
+
+	if validatingConfig == nil {
+		return nil, nil, fmt.Errorf("validating webhook configuration not found in manifests")
+	}
+
+	return mutatingConfig, validatingConfig, nil
+}
+
+// updateMutatingWebhookConfig updates the clientConfig to use node IP URL and CA bundle
+func updateMutatingWebhookConfig(config *admissionv1.MutatingWebhookConfiguration, webhookConfig WebhookConfig) error {
+	for i := range config.Webhooks {
+		webhook := &config.Webhooks[i]
+
+		// Get the path from the service config
+		if webhook.ClientConfig.Service == nil {
+			return fmt.Errorf("webhook %s has no service config", webhook.Name)
+		}
+
+		path := webhook.ClientConfig.Service.Path
+
+		// Replace service with URL
+		webhook.ClientConfig.Service = nil
+		url := fmt.Sprintf("https://%s:%d%s", webhookConfig.NodeIP, webhookPort, *path)
+		webhook.ClientConfig.URL = &url
+		webhook.ClientConfig.CABundle = webhookConfig.CABundle
+	}
+
+	return nil
+}
+
+// updateValidatingWebhookConfig updates the clientConfig to use node IP URL and CA bundle
+func updateValidatingWebhookConfig(config *admissionv1.ValidatingWebhookConfiguration, webhookConfig WebhookConfig) error {
+	for i := range config.Webhooks {
+		webhook := &config.Webhooks[i]
+
+		// Get the path from the service config
+		if webhook.ClientConfig.Service == nil {
+			return fmt.Errorf("webhook %s has no service config", webhook.Name)
+		}
+
+		path := webhook.ClientConfig.Service.Path
+
+		// Replace service with URL
+		webhook.ClientConfig.Service = nil
+		url := fmt.Sprintf("https://%s:%d%s", webhookConfig.NodeIP, webhookPort, *path)
+		webhook.ClientConfig.URL = &url
+		webhook.ClientConfig.CABundle = webhookConfig.CABundle
+	}
+
+	return nil
+}
+
+// applyMutatingWebhookConfiguration creates or updates the mutating webhook configuration
+func applyMutatingWebhookConfiguration(ctx context.Context, k8sClient client.Client, config *admissionv1.MutatingWebhookConfiguration) error {
 	// Try to get existing configuration
 	existing := &admissionv1.MutatingWebhookConfiguration{}
-	err := k8sClient.Get(ctx, types.NamespacedName{Name: webhookConfig.Name}, existing)
+	err := k8sClient.Get(ctx, types.NamespacedName{Name: config.Name}, existing)
 	if err != nil {
 		// Create new if doesn't exist
-		if err := k8sClient.Create(ctx, webhookConfig); err != nil {
+		if err := k8sClient.Create(ctx, config); err != nil {
 			return fmt.Errorf("failed to create mutating webhook configuration: %w", err)
 		}
 		return nil
 	}
 
 	// Update existing
-	existing.Webhooks = webhookConfig.Webhooks
+	existing.Webhooks = config.Webhooks
 	if err := k8sClient.Update(ctx, existing); err != nil {
 		return fmt.Errorf("failed to update mutating webhook configuration: %w", err)
 	}
@@ -151,108 +160,24 @@ func applyMutatingWebhookConfiguration(ctx context.Context, k8sClient client.Cli
 	return nil
 }
 
-func applyValidatingWebhookConfiguration(ctx context.Context, k8sClient client.Client, config WebhookConfig) error {
-	failurePolicy := admissionv1.Fail
-	sideEffects := admissionv1.SideEffectClassNone
-
-	webhookConfig := &admissionv1.ValidatingWebhookConfiguration{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "juneau-validating-webhook-configuration",
-		},
-		Webhooks: []admissionv1.ValidatingWebhook{
-			{
-				Name: "vaddress-v1alpha1.kb.io",
-				ClientConfig: admissionv1.WebhookClientConfig{
-					URL:      stringPtr(fmt.Sprintf("https://%s:%d/validate-juneau-loutres-me-v1alpha1-address", config.NodeIP, webhookPort)),
-					CABundle: config.CABundle,
-				},
-				Rules: []admissionv1.RuleWithOperations{
-					{
-						Operations: []admissionv1.OperationType{
-							admissionv1.Create,
-							admissionv1.Update,
-						},
-						Rule: admissionv1.Rule{
-							APIGroups:   []string{"juneau.loutres.me"},
-							APIVersions: []string{"v1alpha1"},
-							Resources:   []string{"addresses"},
-						},
-					},
-				},
-				FailurePolicy:           &failurePolicy,
-				SideEffects:             &sideEffects,
-				AdmissionReviewVersions: []string{"v1"},
-			},
-			{
-				Name: "vsubnet-v1alpha1.kb.io",
-				ClientConfig: admissionv1.WebhookClientConfig{
-					URL:      stringPtr(fmt.Sprintf("https://%s:%d/validate-juneau-loutres-me-v1alpha1-subnet", config.NodeIP, webhookPort)),
-					CABundle: config.CABundle,
-				},
-				Rules: []admissionv1.RuleWithOperations{
-					{
-						Operations: []admissionv1.OperationType{
-							admissionv1.Create,
-							admissionv1.Update,
-						},
-						Rule: admissionv1.Rule{
-							APIGroups:   []string{"juneau.loutres.me"},
-							APIVersions: []string{"v1alpha1"},
-							Resources:   []string{"subnets"},
-						},
-					},
-				},
-				FailurePolicy:           &failurePolicy,
-				SideEffects:             &sideEffects,
-				AdmissionReviewVersions: []string{"v1"},
-			},
-			{
-				Name: "vvpc-v1alpha1.kb.io",
-				ClientConfig: admissionv1.WebhookClientConfig{
-					URL:      stringPtr(fmt.Sprintf("https://%s:%d/validate-juneau-loutres-me-v1alpha1-vpc", config.NodeIP, webhookPort)),
-					CABundle: config.CABundle,
-				},
-				Rules: []admissionv1.RuleWithOperations{
-					{
-						Operations: []admissionv1.OperationType{
-							admissionv1.Create,
-							admissionv1.Update,
-						},
-						Rule: admissionv1.Rule{
-							APIGroups:   []string{"juneau.loutres.me"},
-							APIVersions: []string{"v1alpha1"},
-							Resources:   []string{"vpcs"},
-						},
-					},
-				},
-				FailurePolicy:           &failurePolicy,
-				SideEffects:             &sideEffects,
-				AdmissionReviewVersions: []string{"v1"},
-			},
-		},
-	}
-
+// applyValidatingWebhookConfiguration creates or updates the validating webhook configuration
+func applyValidatingWebhookConfiguration(ctx context.Context, k8sClient client.Client, config *admissionv1.ValidatingWebhookConfiguration) error {
 	// Try to get existing configuration
 	existing := &admissionv1.ValidatingWebhookConfiguration{}
-	err := k8sClient.Get(ctx, types.NamespacedName{Name: webhookConfig.Name}, existing)
+	err := k8sClient.Get(ctx, types.NamespacedName{Name: config.Name}, existing)
 	if err != nil {
 		// Create new if doesn't exist
-		if err := k8sClient.Create(ctx, webhookConfig); err != nil {
+		if err := k8sClient.Create(ctx, config); err != nil {
 			return fmt.Errorf("failed to create validating webhook configuration: %w", err)
 		}
 		return nil
 	}
 
 	// Update existing
-	existing.Webhooks = webhookConfig.Webhooks
+	existing.Webhooks = config.Webhooks
 	if err := k8sClient.Update(ctx, existing); err != nil {
 		return fmt.Errorf("failed to update validating webhook configuration: %w", err)
 	}
 
 	return nil
-}
-
-// stringPtr returns a pointer to the string value
-func stringPtr(s string) *string {
-	return &s
 }
