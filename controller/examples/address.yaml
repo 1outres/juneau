@@ -1,0 +1,7 @@
+apiVersion: juneau.loutres.me/v1alpha1
+kind: Address
+metadata:
+  name: address-sample
+spec:
+  subnet: default
+  mac: 8e:04:6f:7d:92:0e

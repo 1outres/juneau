@@ -111,3 +111,67 @@ func NthIPv4InSubnet(cidr string, n uint32) (net.IP, error) {
 
 	return result, nil
 }
+
+// NextUsableIPv4InSubnet returns the next usable IPv4 host address within the given CIDR after the provided IPv4 address.
+// It excludes the network and broadcast addresses. It returns (nil, false, nil) if the current address is at the last
+// usable host. It returns an error for invalid inputs, non-IPv4, subnets larger than /16 (prefix < 16),
+// addresses outside the subnet, or subnets with no usable hosts.
+func NextUsableIPv4InSubnet(cidr string, current net.IP) (net.IP, bool, error) {
+	_, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return nil, false, fmt.Errorf("invalid CIDR: %w", err)
+	}
+
+	ip4 := current.To4()
+	if ip4 == nil {
+		return nil, false, fmt.Errorf("ipv4 only is supported")
+	}
+
+	ones, bits := ipnet.Mask.Size()
+	if bits != 32 {
+		return nil, false, fmt.Errorf("ipv4 only is supported")
+	}
+	if ones < 16 {
+		return nil, false, fmt.Errorf("subnet larger than /16 is not allowed: /%d", ones)
+	}
+
+	network := ipnet.IP.Mask(ipnet.Mask).To4()
+	if network == nil {
+		return nil, false, fmt.Errorf("invalid network address")
+	}
+
+	if !ipnet.Contains(ip4) {
+		return nil, false, fmt.Errorf("ip is not inside the subnet")
+	}
+
+	size := uint32(1) << (32 - ones)
+	if size <= 2 {
+		return nil, false, fmt.Errorf("subnet has no usable hosts")
+	}
+
+	firstUsable := beToUint32(network) + 1
+	lastUsable := beToUint32(network) + size - 2
+	cur := beToUint32(ip4)
+
+	if cur < firstUsable {
+		out := make(net.IP, 4)
+		binary.BigEndian.PutUint32(out, firstUsable)
+		return out, true, nil
+	}
+	if cur >= beToUint32(network)+size-1 {
+		return nil, false, fmt.Errorf("ip is broadcast address")
+	}
+	if cur >= lastUsable {
+		return nil, false, nil
+	}
+
+	next := cur + 1
+	out := make(net.IP, 4)
+	binary.BigEndian.PutUint32(out, next)
+	return out, true, nil
+}
+
+// beToUint32 converts a 4-byte net.IP to a uint32 in big-endian.
+func beToUint32(ip net.IP) uint32 {
+	return binary.BigEndian.Uint32(ip.To4())
+}

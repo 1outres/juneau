@@ -1,0 +1,5 @@
+apiVersion: juneau.loutres.me/v1alpha1
+kind: Vpc
+metadata:
+  name: default
+spec:

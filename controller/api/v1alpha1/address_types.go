@@ -32,13 +32,13 @@ type AddressSpec struct {
 
 // AddressStatus defines the observed state of Address.
 type AddressStatus struct {
+	// TODO: Phase
 	Address   string `json:"address,omitempty"`
 	LeaseName string `json:"leaseName,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster
 
 // Address is the Schema for the addresses API.
 type Address struct {

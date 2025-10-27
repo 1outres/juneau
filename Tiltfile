@@ -12,7 +12,7 @@ CMD ["/manager"]
 '''
 
 # Generate manifests and go files
-local_resource('make manifests', 'make manifests', deps=["controller/api", "controller/internal", "controller/hooks"], ignore=['controller/*/*/zz_generated.deepcopy.go', 'controller/internal/webhookmanifests'], dir='controller/')
+local_resource('make manifests', 'make manifests', deps=["controller/api", "controller/internal", "controller/hooks"], ignore=['controller/*/*/zz_generated.deepcopy.go', 'controller/internal/pkg/webhookmanifests'], dir='controller/')
 local_resource('make generate', 'make generate', deps=["controller/api", "controller/hooks"], ignore=['controller/*/*/zz_generated.deepcopy.go'], dir='controller')
 
 # Deploy CRD

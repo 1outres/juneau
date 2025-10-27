@@ -12,7 +12,7 @@ spec:
     listKind: AddressList
     plural: addresses
     singular: address
-  scope: Cluster
+  scope: Namespaced
   versions:
   - name: v1alpha1
     schema:

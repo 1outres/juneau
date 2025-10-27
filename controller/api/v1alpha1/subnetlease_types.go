@@ -40,6 +40,7 @@ type SubnetLeaseStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Cluster
 
 // SubnetLease is the Schema for the subnetleases API.
 type SubnetLease struct {

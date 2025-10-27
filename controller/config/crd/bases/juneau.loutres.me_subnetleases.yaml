@@ -12,7 +12,7 @@ spec:
     listKind: SubnetLeaseList
     plural: subnetleases
     singular: subnetlease
-  scope: Namespaced
+  scope: Cluster
   versions:
   - name: v1alpha1
     schema:

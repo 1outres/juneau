@@ -1,0 +1,7 @@
+apiVersion: juneau.loutres.me/v1alpha1
+kind: Subnet
+metadata:
+  name: default
+spec:
+  vpc: vpc-sample
+  cidr: 10.16.0.0/16
