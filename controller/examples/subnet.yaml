@@ -3,5 +3,5 @@ kind: Subnet
 metadata:
   name: default
 spec:
-  vpc: vpc-sample
+  vpc: default
   cidr: 10.16.0.0/16
