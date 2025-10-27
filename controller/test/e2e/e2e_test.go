@@ -27,7 +27,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/1outres/juneau/test/utils"
+	"github.com/1outres/juneau/controller/test/utils"
 )
 
 // namespace where the project is deployed in

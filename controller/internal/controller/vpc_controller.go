@@ -24,7 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	juneauloutresmev1alpha1 "github.com/1outres/juneau/api/v1alpha1"
+	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
 // VpcReconciler reconciles a Vpc object

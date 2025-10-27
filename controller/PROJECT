@@ -6,7 +6,7 @@ domain: juneau.loutres.me
 layout:
 - go.kubebuilder.io/v4
 projectName: controller
-repo: github.com/1outres/juneau
+repo: github.com/1outres/juneau/controller
 resources:
 - api:
     crdVersion: v1
@@ -14,7 +14,7 @@ resources:
   controller: true
   domain: juneau.loutres.me
   kind: Vpc
-  path: github.com/1outres/juneau/api/v1alpha1
+  path: github.com/1outres/juneau/controller/api/v1alpha1
   version: v1alpha1
   webhooks:
     defaulting: true
@@ -26,7 +26,7 @@ resources:
   controller: true
   domain: juneau.loutres.me
   kind: Subnet
-  path: github.com/1outres/juneau/api/v1alpha1
+  path: github.com/1outres/juneau/controller/api/v1alpha1
   version: v1alpha1
   webhooks:
     defaulting: true
@@ -38,7 +38,7 @@ resources:
   controller: true
   domain: juneau.loutres.me
   kind: Address
-  path: github.com/1outres/juneau/api/v1alpha1
+  path: github.com/1outres/juneau/controller/api/v1alpha1
   version: v1alpha1
   webhooks:
     defaulting: true
@@ -50,6 +50,6 @@ resources:
   controller: true
   domain: juneau.loutres.me
   kind: SubnetLease
-  path: github.com/1outres/juneau/api/v1alpha1
+  path: github.com/1outres/juneau/controller/api/v1alpha1
   version: v1alpha1
 version: "3"

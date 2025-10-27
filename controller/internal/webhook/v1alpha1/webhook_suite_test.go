@@ -39,7 +39,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	juneauloutresmev1alpha1 "github.com/1outres/juneau/api/v1alpha1"
+	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 

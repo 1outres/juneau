@@ -27,7 +27,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	juneauloutresmev1alpha1 "github.com/1outres/juneau/api/v1alpha1"
+	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
 var _ = Describe("SubnetLease Controller", func() {

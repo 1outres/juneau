@@ -10,7 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/1outres/juneau/internal/webhookmanifests"
+	"github.com/1outres/juneau/controller/internal/pkg/webhookmanifests"
 )
 
 const (

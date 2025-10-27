@@ -28,8 +28,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	juneauv1alpha1 "github.com/1outres/juneau/api/v1alpha1"
-	"github.com/1outres/juneau/internal/pkg/netutil"
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	"github.com/1outres/juneau/controller/internal/pkg/netutil"
 )
 
 // SubnetReconciler reconciles a Subnet object

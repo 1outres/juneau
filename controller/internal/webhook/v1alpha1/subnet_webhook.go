@@ -31,8 +31,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	juneauv1alpha1 "github.com/1outres/juneau/api/v1alpha1"
-	"github.com/1outres/juneau/internal/pkg/netutil"
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	"github.com/1outres/juneau/controller/internal/pkg/netutil"
 )
 
 // nolint:unused

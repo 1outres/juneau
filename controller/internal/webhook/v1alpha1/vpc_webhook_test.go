@@ -20,7 +20,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	juneauloutresmev1alpha1 "github.com/1outres/juneau/api/v1alpha1"
+	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	// TODO (user): Add any additional imports if needed
 )
 

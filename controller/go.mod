@@ -1,4 +1,4 @@
-module github.com/1outres/juneau
+module github.com/1outres/juneau/controller
 
 go 1.23.0
 
