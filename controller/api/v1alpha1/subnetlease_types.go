@@ -20,36 +20,45 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// VpcSpec defines the desired state of Vpc.
-type VpcSpec struct {
+type OwnerRef struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	UID       string `json:"uid,omitempty"`
 }
 
-// VpcStatus defines the observed state of Vpc.
-type VpcStatus struct {
+// SubnetLeaseSpec defines the desired state of SubnetLease.
+type SubnetLeaseSpec struct {
+	Subnet string   `json:"subnet"`
+	IP     string   `json:"ip"`
+	MAC    string   `json:"mac"`
+	Owner  OwnerRef `json:"owner,omitempty"`
+}
+
+// SubnetLeaseStatus defines the observed state of SubnetLease.
+type SubnetLeaseStatus struct {
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster
 
-// Vpc is the Schema for the vpcs API.
-type Vpc struct {
+// SubnetLease is the Schema for the subnetleases API.
+type SubnetLease struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   VpcSpec   `json:"spec,omitempty"`
-	Status VpcStatus `json:"status,omitempty"`
+	Spec   SubnetLeaseSpec   `json:"spec,omitempty"`
+	Status SubnetLeaseStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// VpcList contains a list of Vpc.
-type VpcList struct {
+// SubnetLeaseList contains a list of SubnetLease.
+type SubnetLeaseList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []Vpc `json:"items"`
+	Items           []SubnetLease `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&Vpc{}, &VpcList{})
+	SchemeBuilder.Register(&SubnetLease{}, &SubnetLeaseList{})
 }

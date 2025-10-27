@@ -8,6 +8,7 @@ rules:
   - juneau.loutres.me
   resources:
   - addresses
+  - subnetleases
   - subnets
   - vpcs
   verbs:
@@ -22,6 +23,7 @@ rules:
   - juneau.loutres.me
   resources:
   - addresses/finalizers
+  - subnetleases/finalizers
   - subnets/finalizers
   - vpcs/finalizers
   verbs:
@@ -30,6 +32,7 @@ rules:
   - juneau.loutres.me
   resources:
   - addresses/status
+  - subnetleases/status
   - subnets/status
   - vpcs/status
   verbs:

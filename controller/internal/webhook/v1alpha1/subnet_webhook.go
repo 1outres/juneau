@@ -103,6 +103,8 @@ func (v *SubnetCustomValidator) ValidateCreate(ctx context.Context, obj runtime.
 		cidrFormatOk = true
 	}
 
+	// TODO: CIDRのサイズチェック
+
 	var vpcExists bool
 	var vpc juneauv1alpha1.Vpc
 	if err := v.Get(ctx, client.ObjectKey{Name: subnet.Spec.Vpc}, &vpc); err != nil {
@@ -116,20 +118,18 @@ func (v *SubnetCustomValidator) ValidateCreate(ctx context.Context, obj runtime.
 	}
 
 	if vpcExists && cidrFormatOk {
-		subnets := []string{subnet.Spec.CIDR}
-		for _, subnetName := range vpc.Status.Subnets {
-			var existingSubnet juneauv1alpha1.Subnet
-			if err := v.Get(ctx, client.ObjectKey{Name: subnetName}, &existingSubnet); err != nil {
-				if errors.IsNotFound(err) {
-					continue
-				} else {
-					return nil, err
-				}
-			}
-			subnets = append(subnets, existingSubnet.Spec.CIDR)
+		subnetCidrs := []string{subnet.Spec.CIDR}
+
+		var subnets juneauv1alpha1.SubnetList
+		if err := v.List(ctx, &subnets, client.MatchingFields{ "spec.vpc": subnet.Spec.Vpc }); err != nil {
+			return nil, err
 		}
 
-		if overlap, err := netutil.Overlaps(subnets); err != nil {
+		for _, subnet := range subnets.Items {
+			subnetCidrs = append(subnetCidrs, subnet.Spec.CIDR)
+		}
+
+		if overlap, err := netutil.Overlaps(subnetCidrs); err != nil {
 			return nil, err
 		} else if overlap {
 			errs = append(errs, field.Invalid(field.NewPath("spec").Child("cidr"), subnet.Spec.CIDR, "subnet CIDR overlaps with existing subnets in the Vpc"))

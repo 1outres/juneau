@@ -44,4 +44,12 @@ resources:
     defaulting: true
     validation: true
     webhookVersion: v1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: juneau.loutres.me
+  kind: SubnetLease
+  path: github.com/1outres/juneau/api/v1alpha1
+  version: v1alpha1
 version: "3"

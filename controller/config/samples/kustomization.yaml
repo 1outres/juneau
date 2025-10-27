@@ -3,4 +3,5 @@ resources:
 - v1alpha1_vpc.yaml
 - v1alpha1_subnet.yaml
 - v1alpha1_address.yaml
+- v1alpha1_subnetlease.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

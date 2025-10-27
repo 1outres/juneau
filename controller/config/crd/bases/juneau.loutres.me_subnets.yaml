@@ -39,6 +39,12 @@ spec:
           spec:
             description: SubnetSpec defines the desired state of Subnet.
             properties:
+              allocationStrategy:
+                default: FirstFit
+                enum:
+                - FirstFit
+                - Random
+                type: string
               cidr:
                 type: string
               vpc:
@@ -49,6 +55,17 @@ spec:
             type: object
           status:
             description: SubnetStatus defines the observed state of Subnet.
+            properties:
+              capacity:
+                format: int64
+                type: integer
+              gateway:
+                type: string
+              nextCursor:
+                type: string
+              used:
+                format: int64
+                type: integer
             type: object
         type: object
     served: true

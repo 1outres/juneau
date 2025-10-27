@@ -24,12 +24,16 @@ import (
 type AddressSpec struct {
 	Subnet string `json:"subnet"`
 
+	MAC string `json:"mac"`
+
 	// +optional
 	Address string `json:"address"`
 }
 
 // AddressStatus defines the observed state of Address.
 type AddressStatus struct {
+	Address   string `json:"address,omitempty"`
+	LeaseName string `json:"leaseName,omitempty"`
 }
 
 // +kubebuilder:object:root=true

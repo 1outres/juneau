@@ -4,20 +4,20 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.2
-  name: vpcs.juneau.loutres.me
+  name: subnetleases.juneau.loutres.me
 spec:
   group: juneau.loutres.me
   names:
-    kind: Vpc
-    listKind: VpcList
-    plural: vpcs
-    singular: vpc
-  scope: Cluster
+    kind: SubnetLease
+    listKind: SubnetLeaseList
+    plural: subnetleases
+    singular: subnetlease
+  scope: Namespaced
   versions:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Vpc is the Schema for the vpcs API.
+        description: SubnetLease is the Schema for the subnetleases API.
         properties:
           apiVersion:
             description: |-
@@ -37,10 +37,33 @@ spec:
           metadata:
             type: object
           spec:
-            description: VpcSpec defines the desired state of Vpc.
+            description: SubnetLeaseSpec defines the desired state of SubnetLease.
+            properties:
+              ip:
+                type: string
+              mac:
+                type: string
+              owner:
+                properties:
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                  uid:
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              subnet:
+                type: string
+            required:
+            - ip
+            - mac
+            - subnet
             type: object
           status:
-            description: VpcStatus defines the observed state of Vpc.
+            description: SubnetLeaseStatus defines the observed state of SubnetLease.
             type: object
         type: object
     served: true

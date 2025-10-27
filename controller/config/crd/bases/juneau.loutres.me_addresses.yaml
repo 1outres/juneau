@@ -41,13 +41,21 @@ spec:
             properties:
               address:
                 type: string
+              mac:
+                type: string
               subnet:
                 type: string
             required:
+            - mac
             - subnet
             type: object
           status:
             description: AddressStatus defines the observed state of Address.
+            properties:
+              address:
+                type: string
+              leaseName:
+                type: string
             type: object
         type: object
     served: true

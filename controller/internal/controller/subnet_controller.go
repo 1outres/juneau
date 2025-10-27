@@ -18,13 +18,16 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	juneauloutresmev1alpha1 "github.com/1outres/juneau/api/v1alpha1"
+	juneauv1alpha1 "github.com/1outres/juneau/api/v1alpha1"
+	"github.com/1outres/juneau/internal/pkg/netutil"
 )
 
 // SubnetReconciler reconciles a Subnet object
@@ -47,17 +50,75 @@ type SubnetReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.2/pkg/reconcile
 func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
-	// TODO(user): your logic here
+	var subnet juneauv1alpha1.Subnet
+	if err := r.Get(ctx, req.NamespacedName, &subnet); err != nil {
+		if errors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+			logger.Error(err, "unable to get Subnet", "name", req.NamespacedName)
+			return ctrl.Result{}, err
+	}
+
+	if !subnet.ObjectMeta.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
+	}
+
+	capacity, err := netutil.V4CapacityHosts(subnet.Spec.CIDR)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to calculate capacity for subnet %s: %w", subnet.Name, err)
+	}
+
+	gateway, err := netutil.NthIPv4InSubnet(subnet.Spec.CIDR, 1)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to calculate gateway for subnet %s: %w", subnet.Name, err)
+	}
+
+	defaultNextCursor, err := netutil.NthIPv4InSubnet(subnet.Spec.CIDR, 5)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to calculate default next cursor for subnet %s: %w", subnet.Name, err)
+	}
+
+	var addresses juneauv1alpha1.AddressList
+	if err := r.List(ctx, &addresses, client.MatchingFields{"spec.subnet": subnet.Name}); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to list addresses for subnet %s: %w", subnet.Name, err)
+	}
+
+	subnet.Status.Gateway = gateway.String()
+	subnet.Status.Capacity = capacity
+	subnet.Status.Used  = uint64(len(addresses.Items))
+
+	if subnet.Status.NextCursor == "" {
+		subnet.Status.NextCursor = defaultNextCursor.String()
+	}
+
+	if err := r.Status().Update(ctx, &subnet); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to update status for subnet %s: %w", subnet.Name, err)
+	}
 
 	return ctrl.Result{}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *SubnetReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&juneauv1alpha1.Subnet{},
+		"spec.vpc",
+		func(obj client.Object) []string {
+			subnet := obj.(*juneauv1alpha1.Subnet)
+			if subnet.Spec.Vpc == "" {
+				return nil
+			}
+			return []string{subnet.Spec.Vpc}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to set up field indexer for Subnet.spec.vpc: %w", err)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&juneauloutresmev1alpha1.Subnet{}).
+		For(&juneauv1alpha1.Subnet{}).
 		Named("subnet").
 		Complete(r)
 }

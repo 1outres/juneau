@@ -22,13 +22,32 @@ import (
 
 // SubnetSpec defines the desired state of Subnet.
 type SubnetSpec struct {
-	Vpc  string `json:"vpc"`
+	// +required
+	Vpc string `json:"vpc"`
+	// +required
 	CIDR string `json:"cidr"`
+
+	// +optional
+	// +kubebuilder:default=FirstFit
+	AllocationStrategy SubnetAllocationStrategy `json:"allocationStrategy"`
 }
 
 // SubnetStatus defines the observed state of Subnet.
 type SubnetStatus struct {
+	Gateway string `json:"gateway,omitempty"`
+
+	Capacity   uint64 `json:"capacity,omitempty"`
+	Used       uint64 `json:"used,omitempty"`
+	NextCursor string `json:"nextCursor,omitempty"`
 }
+
+// +kubebuilder:validation:Enum=FirstFit;Random
+type SubnetAllocationStrategy string
+
+const (
+	SubnetAllocationStrategyFirstFit SubnetAllocationStrategy = "FirstFit"
+	SubnetAllocationStrategyRandom   SubnetAllocationStrategy = "Random"
+)
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
