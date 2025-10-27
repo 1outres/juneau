@@ -54,6 +54,7 @@ spec:
                 required:
                 - name
                 - namespace
+                - uid
                 type: object
               subnet:
                 type: string

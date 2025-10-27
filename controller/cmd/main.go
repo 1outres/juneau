@@ -41,8 +41,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
-	"github.com/1outres/juneau/controller/internal/pkg/cert"
 	"github.com/1outres/juneau/controller/internal/controller"
+	"github.com/1outres/juneau/controller/internal/pkg/cert"
 	webhookjuneauloutresmev1alpha1 "github.com/1outres/juneau/controller/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
@@ -303,6 +303,13 @@ func main() {
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "SubnetLease")
 		os.Exit(1)
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err = webhookjuneauloutresmev1alpha1.SetupSubnetLeaseWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "SubnetLease")
+			os.Exit(1)
+		}
 	}
 	// +kubebuilder:scaffold:builder
 

@@ -23,7 +23,7 @@ import (
 type OwnerRef struct {
 	Namespace string `json:"namespace"`
 	Name      string `json:"name"`
-	UID       string `json:"uid,omitempty"`
+	UID       string `json:"uid"`
 }
 
 // SubnetLeaseSpec defines the desired state of SubnetLease.

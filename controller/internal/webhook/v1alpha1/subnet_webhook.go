@@ -103,7 +103,12 @@ func (v *SubnetCustomValidator) ValidateCreate(ctx context.Context, obj runtime.
 		cidrFormatOk = true
 	}
 
-	// TODO: CIDRのサイズチェック
+	if cidrFormatOk {
+		prefixLen, _ := cidr.Mask.Size()
+		if prefixLen < 16 || prefixLen > 28 {
+			errs = append(errs, field.Invalid(field.NewPath("spec").Child("cidr"), subnet.Spec.CIDR, "CIDR prefix length must be between 16 and 28"))
+		}
+	}
 
 	var vpcExists bool
 	var vpc juneauv1alpha1.Vpc
