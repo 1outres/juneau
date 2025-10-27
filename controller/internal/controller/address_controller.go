@@ -91,8 +91,8 @@ func (r *AddressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			}
 		} else {
 			// Address is requesting an address that is already leased to another Address.
-		  // TODO: Handle AlreadyInUse
-		  return ctrl.Result{RequeueAfter: time.Minute}, nil
+			// TODO: Handle AlreadyInUse
+			return ctrl.Result{RequeueAfter: time.Minute}, nil
 		}
 
 		allocatedAddress = address.Spec.Address
@@ -106,7 +106,7 @@ func (r *AddressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			firstCursor := subnet.Status.NextCursor
 			var cursor net.IP = net.ParseIP(firstCursor)
 
-			for ;; {
+			for {
 				leaseName := netutil.LeaseNameFor(address.Spec.Subnet, cursor.String())
 				var subnetLease juneauv1alpha1.SubnetLease
 				if err := r.Get(ctx, client.ObjectKey{Name: leaseName}, &subnetLease); err != nil {
@@ -131,12 +131,12 @@ func (r *AddressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				}
 				if cursor.String() == firstCursor {
 					// TODO: Handle SubnetExhausted
-		      return ctrl.Result{RequeueAfter: time.Hour}, nil
+					return ctrl.Result{RequeueAfter: time.Hour}, nil
 				}
 			}
 		} else if subnet.Spec.AllocationStrategy == juneauv1alpha1.SubnetAllocationStrategyRandom {
 			count := 0
-			for ;; {
+			for {
 				ip, err := netutil.RandomUsableIPv4InSubnet(subnet.Spec.CIDR)
 				if err != nil {
 					return ctrl.Result{}, fmt.Errorf("unable to get random usable IP in Subnet %s: %w", subnet.Name, err)
@@ -165,8 +165,8 @@ func (r *AddressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		},
 		Spec: juneauv1alpha1.SubnetLeaseSpec{
 			Subnet: address.Spec.Subnet,
-			IP: allocatedAddress,
-			MAC: address.Spec.MAC,
+			IP:     allocatedAddress,
+			MAC:    address.Spec.MAC,
 			Owner: juneauv1alpha1.OwnerRef{
 				Namespace: address.Namespace,
 				Name:      address.Name,
@@ -208,7 +208,7 @@ func (r *AddressReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}
 			return []string{address.Spec.Subnet}
 		},
-		); err != nil {
+	); err != nil {
 		return fmt.Errorf("failed to set up field indexer for Address.spec.subnet: %w", err)
 	}
 

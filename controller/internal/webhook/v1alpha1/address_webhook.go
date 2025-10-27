@@ -107,10 +107,10 @@ func (v *AddressCustomValidator) ValidateCreate(ctx context.Context, obj runtime
 		} else if subnet.Name != "" {
 			_, cidr, err := net.ParseCIDR(subnet.Spec.CIDR)
 			if err != nil {
-			return nil, fmt.Errorf("invalid CIDR format in Subnet spec: %v", err)
+				return nil, fmt.Errorf("invalid CIDR format in Subnet spec: %v", err)
 			}
 			if !cidr.Contains(ip) {
-			errs = append(errs, field.Invalid(field.NewPath("spec").Child("address"), address.Spec.Address, "IP address is not within the specified Subnet CIDR"))
+				errs = append(errs, field.Invalid(field.NewPath("spec").Child("address"), address.Spec.Address, "IP address is not within the specified Subnet CIDR"))
 			}
 		}
 	}
