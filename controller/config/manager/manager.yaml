@@ -30,6 +30,10 @@ spec:
         control-plane: controller-manager
         app.kubernetes.io/name: controller
     spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      tolerations:
+        - operator: "Exists"
       securityContext:
         runAsNonRoot: true
         seccompProfile:
