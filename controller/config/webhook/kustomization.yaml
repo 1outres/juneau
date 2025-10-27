@@ -1,6 +1,8 @@
-resources:
-- manifests.yaml
-- service.yaml
+# Note: Webhook configurations are created dynamically at runtime using node IP
+# Service is not needed because we use hostNetwork
+resources: []
+# - manifests.yaml
+# - service.yaml
 
 configurations:
 - kustomizeconfig.yaml
