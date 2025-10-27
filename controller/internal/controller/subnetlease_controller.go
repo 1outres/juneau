@@ -18,13 +18,15 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	juneauloutresmev1alpha1 "github.com/1outres/juneau/api/v1alpha1"
+	juneauv1alpha1 "github.com/1outres/juneau/api/v1alpha1"
 )
 
 // SubnetLeaseReconciler reconciles a SubnetLease object
@@ -39,25 +41,60 @@ type SubnetLeaseReconciler struct {
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the SubnetLease object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.2/pkg/reconcile
 func (r *SubnetLeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
-	// TODO(user): your logic here
+	var subnetLease juneauv1alpha1.SubnetLease
+	if err := r.Get(ctx, req.NamespacedName, &subnetLease); err != nil {
+		if errors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		logger.Error(err, "unable to get SubnetLease", "name", req.NamespacedName)
+		return ctrl.Result{}, err
+	}
+
+	if !subnetLease.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
+	}
+
+	var address juneauv1alpha1.Address
+	err := r.Get(ctx, client.ObjectKey{Namespace: subnetLease.Spec.Owner.Namespace, Name: subnetLease.Spec.Owner.Name}, &address)
+	if err != nil && !errors.IsNotFound(err) {
+		logger.Error(err, "unable to get Address for SubnetLease", "subnetLease", req.NamespacedName)
+		return ctrl.Result{}, err
+	}
+
+	if errors.IsNotFound(err) || string(address.UID) != subnetLease.Spec.Owner.UID {
+		logger.Info("Deleting stale SubnetLease as its owner Address does not exist", "subnetLease", req.NamespacedName)
+		if err := r.Delete(ctx, &subnetLease); err != nil {
+			logger.Error(err, "unable to delete stale SubnetLease", "subnetLease", req.NamespacedName)
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
 
 	return ctrl.Result{}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *SubnetLeaseReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&juneauv1alpha1.SubnetLease{},
+		"spec.subnet",
+		func(obj client.Object) []string {
+			subnetlease := obj.(*juneauv1alpha1.SubnetLease)
+			if subnetlease.Spec.Subnet == "" {
+				return nil
+			}
+			return []string{subnetlease.Spec.Subnet}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to set up field indexer for SubnetLease.spec.subnet: %w", err)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&juneauloutresmev1alpha1.SubnetLease{}).
+		For(&juneauv1alpha1.SubnetLease{}).
 		Named("subnetlease").
 		Complete(r)
 }

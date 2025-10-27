@@ -22,6 +22,11 @@ spec:
       control-plane: controller-manager
       app.kubernetes.io/name: controller
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   template:
     metadata:
       annotations:

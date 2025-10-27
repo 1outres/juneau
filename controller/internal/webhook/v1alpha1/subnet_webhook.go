@@ -121,7 +121,7 @@ func (v *SubnetCustomValidator) ValidateCreate(ctx context.Context, obj runtime.
 		subnetCidrs := []string{subnet.Spec.CIDR}
 
 		var subnets juneauv1alpha1.SubnetList
-		if err := v.List(ctx, &subnets, client.MatchingFields{ "spec.vpc": subnet.Spec.Vpc }); err != nil {
+		if err := v.List(ctx, &subnets, client.MatchingFields{"spec.vpc": subnet.Spec.Vpc}); err != nil {
 			return nil, err
 		}
 
