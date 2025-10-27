@@ -26,6 +26,7 @@ type VpcSpec struct {
 
 // VpcStatus defines the observed state of Vpc.
 type VpcStatus struct {
+	Subnets []string `json:"subnets,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -41,17 +41,11 @@ func SetupAddressWebhookWithManager(mgr ctrl.Manager) error {
 		Complete()
 }
 
-// TODO(user): EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-
 // +kubebuilder:webhook:path=/mutate-juneau-loutres-me-v1alpha1-address,mutating=true,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=addresses,verbs=create;update,versions=v1alpha1,name=maddress-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // AddressCustomDefaulter struct is responsible for setting default values on the custom resource of the
 // Kind Address when those are created or updated.
-//
-// NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
-// as it is used only for temporary operations and does not need to be deeply copied.
 type AddressCustomDefaulter struct {
-	// TODO(user): Add more fields as needed for defaulting
 }
 
 var _ webhook.CustomDefaulter = &AddressCustomDefaulter{}
@@ -70,18 +64,11 @@ func (d *AddressCustomDefaulter) Default(ctx context.Context, obj runtime.Object
 	return nil
 }
 
-// TODO(user): change verbs to "verbs=create;update;delete" if you want to enable deletion validation.
-// NOTE: The 'path' attribute must follow a specific pattern and should not be modified directly here.
-// Modifying the path for an invalid path can cause API server errors; failing to locate the webhook.
 // +kubebuilder:webhook:path=/validate-juneau-loutres-me-v1alpha1-address,mutating=false,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=addresses,verbs=create;update,versions=v1alpha1,name=vaddress-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // AddressCustomValidator struct is responsible for validating the Address resource
 // when it is created, updated, or deleted.
-//
-// NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
-// as this struct is used only for temporary operations and does not need to be deeply copied.
 type AddressCustomValidator struct {
-	// TODO(user): Add more fields as needed for validation
 }
 
 var _ webhook.CustomValidator = &AddressCustomValidator{}
@@ -94,8 +81,6 @@ func (v *AddressCustomValidator) ValidateCreate(ctx context.Context, obj runtime
 	}
 	addresslog.Info("Validation for Address upon creation", "name", address.GetName())
 
-	// TODO(user): fill in your validation logic upon object creation.
-
 	return nil, nil
 }
 
@@ -107,8 +92,6 @@ func (v *AddressCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 	}
 	addresslog.Info("Validation for Address upon update", "name", address.GetName())
 
-	// TODO(user): fill in your validation logic upon object update.
-
 	return nil, nil
 }
 
@@ -119,8 +102,6 @@ func (v *AddressCustomValidator) ValidateDelete(ctx context.Context, obj runtime
 		return nil, fmt.Errorf("expected a Address object but got %T", obj)
 	}
 	addresslog.Info("Validation for Address upon deletion", "name", address.GetName())
-
-	// TODO(user): fill in your validation logic upon object deletion.
 
 	return nil, nil
 }

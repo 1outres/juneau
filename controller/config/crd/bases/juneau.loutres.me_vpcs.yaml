@@ -41,6 +41,11 @@ spec:
             type: object
           status:
             description: VpcStatus defines the observed state of Vpc.
+            properties:
+              subnets:
+                items:
+                  type: string
+                type: array
             type: object
         type: object
     served: true

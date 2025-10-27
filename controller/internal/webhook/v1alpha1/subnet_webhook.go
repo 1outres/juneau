@@ -19,14 +19,20 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"net"
 
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	juneauloutresmev1alpha1 "github.com/1outres/juneau/api/v1alpha1"
+	juneauv1alpha1 "github.com/1outres/juneau/api/v1alpha1"
+	"github.com/1outres/juneau/internal/pkg/netutil"
 )
 
 // nolint:unused
@@ -35,92 +41,148 @@ var subnetlog = logf.Log.WithName("subnet-resource")
 
 // SetupSubnetWebhookWithManager registers the webhook for Subnet in the manager.
 func SetupSubnetWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(&juneauloutresmev1alpha1.Subnet{}).
-		WithValidator(&SubnetCustomValidator{}).
+	return ctrl.NewWebhookManagedBy(mgr).For(&juneauv1alpha1.Subnet{}).
+		WithValidator(&SubnetCustomValidator{Client: mgr.GetClient()}).
 		WithDefaulter(&SubnetCustomDefaulter{}).
 		Complete()
 }
-
-// TODO(user): EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 
 // +kubebuilder:webhook:path=/mutate-juneau-loutres-me-v1alpha1-subnet,mutating=true,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=subnets,verbs=create;update,versions=v1alpha1,name=msubnet-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // SubnetCustomDefaulter struct is responsible for setting default values on the custom resource of the
 // Kind Subnet when those are created or updated.
-//
-// NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
-// as it is used only for temporary operations and does not need to be deeply copied.
 type SubnetCustomDefaulter struct {
-	// TODO(user): Add more fields as needed for defaulting
 }
 
 var _ webhook.CustomDefaulter = &SubnetCustomDefaulter{}
 
 // Default implements webhook.CustomDefaulter so a webhook will be registered for the Kind Subnet.
 func (d *SubnetCustomDefaulter) Default(ctx context.Context, obj runtime.Object) error {
-	subnet, ok := obj.(*juneauloutresmev1alpha1.Subnet)
+	subnet, ok := obj.(*juneauv1alpha1.Subnet)
 
 	if !ok {
 		return fmt.Errorf("expected an Subnet object but got %T", obj)
 	}
 	subnetlog.Info("Defaulting for Subnet", "name", subnet.GetName())
 
-	// TODO(user): fill in your defaulting logic.
+	_, cidr, err := net.ParseCIDR(subnet.Spec.CIDR)
+	if err != nil {
+		return fmt.Errorf("invalid CIDR format in Subnet spec: %v", err)
+	}
+	subnet.Spec.CIDR = cidr.String()
 
 	return nil
 }
 
-// TODO(user): change verbs to "verbs=create;update;delete" if you want to enable deletion validation.
-// NOTE: The 'path' attribute must follow a specific pattern and should not be modified directly here.
-// Modifying the path for an invalid path can cause API server errors; failing to locate the webhook.
 // +kubebuilder:webhook:path=/validate-juneau-loutres-me-v1alpha1-subnet,mutating=false,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=subnets,verbs=create;update,versions=v1alpha1,name=vsubnet-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // SubnetCustomValidator struct is responsible for validating the Subnet resource
 // when it is created, updated, or deleted.
-//
-// NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
-// as this struct is used only for temporary operations and does not need to be deeply copied.
 type SubnetCustomValidator struct {
-	// TODO(user): Add more fields as needed for validation
+	client.Client
 }
 
 var _ webhook.CustomValidator = &SubnetCustomValidator{}
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type Subnet.
 func (v *SubnetCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	subnet, ok := obj.(*juneauloutresmev1alpha1.Subnet)
+	subnet, ok := obj.(*juneauv1alpha1.Subnet)
 	if !ok {
 		return nil, fmt.Errorf("expected a Subnet object but got %T", obj)
 	}
 	subnetlog.Info("Validation for Subnet upon creation", "name", subnet.GetName())
 
-	// TODO(user): fill in your validation logic upon object creation.
+	var errs field.ErrorList
+
+	var cidrFormatOk bool
+	_, cidr, err := net.ParseCIDR(subnet.Spec.CIDR)
+	if err != nil {
+		errs = append(errs, field.Invalid(field.NewPath("spec").Child("cidr"), subnet.Spec.CIDR, "invalid CIDR format"))
+	} else {
+		subnet.Spec.CIDR = cidr.String()
+		cidrFormatOk = true
+	}
+
+	var vpcExists bool
+	var vpc juneauv1alpha1.Vpc
+	if err := v.Get(ctx, client.ObjectKey{Name: subnet.Spec.Vpc}, &vpc); err != nil {
+		if errors.IsNotFound(err) {
+			errs = append(errs, field.Invalid(field.NewPath("spec").Child("vpc"), subnet.Spec.Vpc, "referenced Vpc does not exist"))
+		} else {
+			return nil, err
+		}
+	} else {
+		vpcExists = true
+	}
+
+	if vpcExists && cidrFormatOk {
+		subnets := []string{subnet.Spec.CIDR}
+		for _, subnetName := range vpc.Status.Subnets {
+			var existingSubnet juneauv1alpha1.Subnet
+			if err := v.Get(ctx, client.ObjectKey{Name: subnetName}, &existingSubnet); err != nil {
+				if errors.IsNotFound(err) {
+					continue
+				} else {
+					return nil, err
+				}
+			}
+			subnets = append(subnets, existingSubnet.Spec.CIDR)
+		}
+
+		if overlap, err := netutil.Overlaps(subnets); err != nil {
+			return nil, err
+		} else if overlap {
+			errs = append(errs, field.Invalid(field.NewPath("spec").Child("cidr"), subnet.Spec.CIDR, "subnet CIDR overlaps with existing subnets in the Vpc"))
+		}
+	}
+
+	if len(errs) > 0 {
+		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "Subnet"}, subnet.Name, errs)
+		subnetlog.Info("Validation failed for Subnet", "name", subnet.GetName(), "error", err)
+		return nil, err
+	}
 
 	return nil, nil
 }
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type Subnet.
 func (v *SubnetCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	subnet, ok := newObj.(*juneauloutresmev1alpha1.Subnet)
+	subnet, ok := newObj.(*juneauv1alpha1.Subnet)
 	if !ok {
 		return nil, fmt.Errorf("expected a Subnet object for the newObj but got %T", newObj)
 	}
+	oldSubnet, ok := oldObj.(*juneauv1alpha1.Subnet)
+	if !ok {
+		return nil, fmt.Errorf("expected a Subnet object for the oldObj but got %T", oldObj)
+	}
 	subnetlog.Info("Validation for Subnet upon update", "name", subnet.GetName())
 
-	// TODO(user): fill in your validation logic upon object update.
+	var errs field.ErrorList
+
+	if subnet.Spec.Vpc != oldSubnet.Spec.Vpc {
+		errs = append(errs, field.Invalid(field.NewPath("spec").Child("vpc"), subnet.Spec.Vpc, "changing the Vpc of a Subnet is not allowed"))
+	}
+
+	if subnet.Spec.CIDR != oldSubnet.Spec.CIDR {
+		errs = append(errs, field.Invalid(field.NewPath("spec").Child("cidr"), subnet.Spec.CIDR, "changing the CIDR of a Subnet is not allowed"))
+	}
+
+	if len(errs) > 0 {
+		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "Subnet"}, subnet.Name, errs)
+		subnetlog.Info("Validation failed for Subnet", "name", subnet.GetName(), "error", err)
+		return nil, err
+	}
 
 	return nil, nil
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type Subnet.
 func (v *SubnetCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	subnet, ok := obj.(*juneauloutresmev1alpha1.Subnet)
+	subnet, ok := obj.(*juneauv1alpha1.Subnet)
 	if !ok {
 		return nil, fmt.Errorf("expected a Subnet object but got %T", obj)
 	}
 	subnetlog.Info("Validation for Subnet upon deletion", "name", subnet.GetName())
-
-	// TODO(user): fill in your validation logic upon object deletion.
 
 	return nil, nil
 }
