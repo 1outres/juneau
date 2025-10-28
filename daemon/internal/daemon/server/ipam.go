@@ -30,6 +30,7 @@ func (s *IPAMServer) Allocate(ctx context.Context, req *juneaupb.AllocateRequest
 	if err != nil {
 		zap.S().Errorf("failed to get pod %s/%s: %v", req.Id.PodNamespace, req.Id.PodName, err)
 		return &juneaupb.AllocateResponse{
+			Success: false,
 			Error: &juneaupb.Error{
 				Message: "failed to get pod",
 			},
@@ -39,6 +40,7 @@ func (s *IPAMServer) Allocate(ctx context.Context, req *juneaupb.AllocateRequest
 	if req.Id.PodUid != "" && string(pod.UID) != req.Id.PodUid {
 		zap.S().Infof("pod UID mismatch: expected %s, got %s", req.Id.PodUid, pod.UID)
 		return &juneaupb.AllocateResponse{
+			Success: false,
 			Error: &juneaupb.Error{
 				Message: "pod UID mismatch",
 			},
@@ -54,8 +56,9 @@ func (s *IPAMServer) Allocate(ctx context.Context, req *juneaupb.AllocateRequest
 	if err != nil {
 		zap.S().Errorf("failed to get subnet %s: %v", subnetName, err)
 		return &juneaupb.AllocateResponse{
+			Success: false,
 			Error: &juneaupb.Error{
-			Message: "failed to get subnet",
+				Message: "failed to get subnet",
 			},
 		}, nil
 	}
@@ -66,7 +69,7 @@ func (s *IPAMServer) Allocate(ctx context.Context, req *juneaupb.AllocateRequest
 			Name:      req.Id.IfName + "." + pod.Name,
 		},
 		Spec: v1alpha1.AddressSpec{
-			MAC: req.MacAddress,
+			MAC:    req.MacAddress,
 			Subnet: subnet.Name,
 		},
 	}
@@ -79,6 +82,7 @@ func (s *IPAMServer) Allocate(ctx context.Context, req *juneaupb.AllocateRequest
 	if _, err := s.kubeclient.Juneauv1alpha1().Address(pod.Namespace).Create(ctx, address, metav1.CreateOptions{}); err != nil {
 		zap.S().Errorf("failed to create address %s/%s: %v", address.Namespace, address.Name, err)
 		return &juneaupb.AllocateResponse{
+			Success: false,
 			Error: &juneaupb.Error{
 				Message: "failed to create address",
 			},
@@ -119,6 +123,7 @@ func (s *IPAMServer) Allocate(ctx context.Context, req *juneaupb.AllocateRequest
 	if err != nil {
 		zap.S().Errorf("failed to add event handler: %v", err)
 		return &juneaupb.AllocateResponse{
+			Success: false,
 			Error: &juneaupb.Error{Message: "failed to add event handler"},
 		}, nil
 	}
@@ -136,6 +141,7 @@ func (s *IPAMServer) Allocate(ctx context.Context, req *juneaupb.AllocateRequest
 	case <-waitCtx.Done():
 		zap.S().Warnf("waiting address %s/%s status.address timed out", keyNS, keyName)
 		return &juneaupb.AllocateResponse{
+			Success: false,
 			Error: &juneaupb.Error{Message: "allocation timed out"},
 		}, nil
 	case ip := <-ipCh:
@@ -143,16 +149,18 @@ func (s *IPAMServer) Allocate(ctx context.Context, req *juneaupb.AllocateRequest
 		if err != nil {
 			zap.S().Errorf("failed to parse subnet CIDR %s: %v", subnet.Spec.CIDR, err)
 			return &juneaupb.AllocateResponse{
+			Success: false,
 				Error: &juneaupb.Error{Message: "failed to parse subnet CIDR"},
 			}, nil
 		}
 		ones, _ := ipnet.Mask.Size()
 
 		return &juneaupb.AllocateResponse{
+			Success: true,
 			IpAssignment: &juneaupb.IPAssignment{
 				Ipv4: &juneaupb.IPConfig{
 					AddressCidr: fmt.Sprintf("%s/%d", ip, ones),
-					Gateway: subnet.Status.Gateway,
+					Gateway:     subnet.Status.Gateway,
 				},
 			},
 		}, nil

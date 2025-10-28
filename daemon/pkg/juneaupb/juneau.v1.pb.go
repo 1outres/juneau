@@ -159,8 +159,9 @@ func (x *AllocateRequest) GetMacAddress() string {
 
 type AllocateResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Error         *Error                 `protobuf:"bytes,1,opt,name=error,proto3" json:"error,omitempty"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
 	IpAssignment  *IPAssignment          `protobuf:"bytes,2,opt,name=ip_assignment,json=ipAssignment,proto3" json:"ip_assignment,omitempty"`
+	Error         *Error                 `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -195,16 +196,23 @@ func (*AllocateResponse) Descriptor() ([]byte, []int) {
 	return file_proto_juneau_v1_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *AllocateResponse) GetError() *Error {
+func (x *AllocateResponse) GetSuccess() bool {
 	if x != nil {
-		return x.Error
+		return x.Success
 	}
-	return nil
+	return false
 }
 
 func (x *AllocateResponse) GetIpAssignment() *IPAssignment {
 	if x != nil {
 		return x.IpAssignment
+	}
+	return nil
+}
+
+func (x *AllocateResponse) GetError() *Error {
+	if x != nil {
+		return x.Error
 	}
 	return nil
 }
@@ -364,10 +372,11 @@ const file_proto_juneau_v1_proto_rawDesc = "" +
 	"\x0fAllocateRequest\x12$\n" +
 	"\x02id\x18\x01 \x01(\v2\x14.echo.v1.CNIIdentityR\x02id\x12\x1f\n" +
 	"\vmac_address\x18\x02 \x01(\tR\n" +
-	"macAddress\"t\n" +
-	"\x10AllocateResponse\x12$\n" +
-	"\x05error\x18\x01 \x01(\v2\x0e.echo.v1.ErrorR\x05error\x12:\n" +
-	"\rip_assignment\x18\x02 \x01(\v2\x15.echo.v1.IPAssignmentR\fipAssignment\"5\n" +
+	"macAddress\"\x8e\x01\n" +
+	"\x10AllocateResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12:\n" +
+	"\rip_assignment\x18\x02 \x01(\v2\x15.echo.v1.IPAssignmentR\fipAssignment\x12$\n" +
+	"\x05error\x18\x03 \x01(\v2\x0e.echo.v1.ErrorR\x05error\"5\n" +
 	"\fIPAssignment\x12%\n" +
 	"\x04ipv4\x18\x01 \x01(\v2\x11.echo.v1.IPConfigR\x04ipv4\"!\n" +
 	"\x05Error\x12\x18\n" +
@@ -401,8 +410,8 @@ var file_proto_juneau_v1_proto_goTypes = []any{
 }
 var file_proto_juneau_v1_proto_depIdxs = []int32{
 	0, // 0: echo.v1.AllocateRequest.id:type_name -> echo.v1.CNIIdentity
-	4, // 1: echo.v1.AllocateResponse.error:type_name -> echo.v1.Error
-	3, // 2: echo.v1.AllocateResponse.ip_assignment:type_name -> echo.v1.IPAssignment
+	3, // 1: echo.v1.AllocateResponse.ip_assignment:type_name -> echo.v1.IPAssignment
+	4, // 2: echo.v1.AllocateResponse.error:type_name -> echo.v1.Error
 	5, // 3: echo.v1.IPAssignment.ipv4:type_name -> echo.v1.IPConfig
 	1, // 4: echo.v1.IPAM.Allocate:input_type -> echo.v1.AllocateRequest
 	2, // 5: echo.v1.IPAM.Allocate:output_type -> echo.v1.AllocateResponse

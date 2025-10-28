@@ -30,11 +30,11 @@ func NewApp() *cli.Command {
 				Value: "/var/run/juneaud.sock",
 			},
 			&cli.StringFlag{
-				Name: "cni-bin-dir",
+				Name:  "cni-bin-dir",
 				Value: "/opt/cni/bin",
 			},
 			&cli.StringFlag{
-				Name: "cni-conf-dir",
+				Name:  "cni-conf-dir",
 				Value: "/etc/cni/net.d",
 			},
 		},
@@ -48,7 +48,7 @@ func NewApp() *cli.Command {
 			zap.ReplaceGlobals(logger)
 
 			targetBin := filepath.Join(cmd.String("cni-bin-dir"), "juneau-cni")
-	    targetConf := filepath.Join(cmd.String("cni-conf-dir"), "juneau.conf")
+			targetConf := filepath.Join(cmd.String("cni-conf-dir"), "juneau.conf")
 
 			if err := installFile("cni", targetBin, 0o755, true); err != nil {
 				zap.S().Fatalf("failed to install CNI binary: %v", err)
