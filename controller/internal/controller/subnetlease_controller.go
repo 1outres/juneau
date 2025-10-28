@@ -24,9 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
@@ -98,12 +96,5 @@ func (r *SubnetLeaseReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&juneauv1alpha1.SubnetLease{}).
 		Named("subnetlease").
-		Watches(
-			&juneauv1alpha1.Address{},
-			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, object client.Object) []reconcile.Request {
-				address := object.(*juneauv1alpha1.Address)
-				return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: address.Status.LeaseName}}}
-			}),
-		).
 		Complete(r)
 }

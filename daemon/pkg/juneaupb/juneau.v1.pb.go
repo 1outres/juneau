@@ -253,7 +253,7 @@ func (x *ReleaseRequest) GetId() *CNIIdentity {
 	return nil
 }
 
-type RelaseResponse struct {
+type ReleaseResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
 	Error         *Error                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
@@ -261,20 +261,20 @@ type RelaseResponse struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *RelaseResponse) Reset() {
-	*x = RelaseResponse{}
+func (x *ReleaseResponse) Reset() {
+	*x = ReleaseResponse{}
 	mi := &file_proto_juneau_v1_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *RelaseResponse) String() string {
+func (x *ReleaseResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*RelaseResponse) ProtoMessage() {}
+func (*ReleaseResponse) ProtoMessage() {}
 
-func (x *RelaseResponse) ProtoReflect() protoreflect.Message {
+func (x *ReleaseResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_proto_juneau_v1_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -286,19 +286,19 @@ func (x *RelaseResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use RelaseResponse.ProtoReflect.Descriptor instead.
-func (*RelaseResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use ReleaseResponse.ProtoReflect.Descriptor instead.
+func (*ReleaseResponse) Descriptor() ([]byte, []int) {
 	return file_proto_juneau_v1_proto_rawDescGZIP(), []int{4}
 }
 
-func (x *RelaseResponse) GetSuccess() bool {
+func (x *ReleaseResponse) GetSuccess() bool {
 	if x != nil {
 		return x.Success
 	}
 	return false
 }
 
-func (x *RelaseResponse) GetError() *Error {
+func (x *ReleaseResponse) GetError() *Error {
 	if x != nil {
 		return x.Error
 	}
@@ -465,8 +465,8 @@ const file_proto_juneau_v1_proto_rawDesc = "" +
 	"\rip_assignment\x18\x02 \x01(\v2\x15.echo.v1.IPAssignmentR\fipAssignment\x12$\n" +
 	"\x05error\x18\x03 \x01(\v2\x0e.echo.v1.ErrorR\x05error\"6\n" +
 	"\x0eReleaseRequest\x12$\n" +
-	"\x02id\x18\x01 \x01(\v2\x14.echo.v1.CNIIdentityR\x02id\"P\n" +
-	"\x0eRelaseResponse\x12\x18\n" +
+	"\x02id\x18\x01 \x01(\v2\x14.echo.v1.CNIIdentityR\x02id\"Q\n" +
+	"\x0fReleaseResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12$\n" +
 	"\x05error\x18\x02 \x01(\v2\x0e.echo.v1.ErrorR\x05error\"5\n" +
 	"\fIPAssignment\x12%\n" +
@@ -475,10 +475,10 @@ const file_proto_juneau_v1_proto_rawDesc = "" +
 	"\amessage\x18\x02 \x01(\tR\amessage\"G\n" +
 	"\bIPConfig\x12!\n" +
 	"\faddress_cidr\x18\x01 \x01(\tR\vaddressCidr\x12\x18\n" +
-	"\agateway\x18\x02 \x01(\tR\agateway2\x84\x01\n" +
+	"\agateway\x18\x02 \x01(\tR\agateway2\x85\x01\n" +
 	"\x04IPAM\x12?\n" +
-	"\bAllocate\x12\x18.echo.v1.AllocateRequest\x1a\x19.echo.v1.AllocateResponse\x12;\n" +
-	"\aRelease\x12\x17.echo.v1.ReleaseRequest\x1a\x17.echo.v1.RelaseResponseB\x17Z\x15pkg/juneaupb;juneaupbb\x06proto3"
+	"\bAllocate\x12\x18.echo.v1.AllocateRequest\x1a\x19.echo.v1.AllocateResponse\x12<\n" +
+	"\aRelease\x12\x17.echo.v1.ReleaseRequest\x1a\x18.echo.v1.ReleaseResponseB\x17Z\x15pkg/juneaupb;juneaupbb\x06proto3"
 
 var (
 	file_proto_juneau_v1_proto_rawDescOnce sync.Once
@@ -498,7 +498,7 @@ var file_proto_juneau_v1_proto_goTypes = []any{
 	(*AllocateRequest)(nil),  // 1: echo.v1.AllocateRequest
 	(*AllocateResponse)(nil), // 2: echo.v1.AllocateResponse
 	(*ReleaseRequest)(nil),   // 3: echo.v1.ReleaseRequest
-	(*RelaseResponse)(nil),   // 4: echo.v1.RelaseResponse
+	(*ReleaseResponse)(nil),  // 4: echo.v1.ReleaseResponse
 	(*IPAssignment)(nil),     // 5: echo.v1.IPAssignment
 	(*Error)(nil),            // 6: echo.v1.Error
 	(*IPConfig)(nil),         // 7: echo.v1.IPConfig
@@ -508,12 +508,12 @@ var file_proto_juneau_v1_proto_depIdxs = []int32{
 	5, // 1: echo.v1.AllocateResponse.ip_assignment:type_name -> echo.v1.IPAssignment
 	6, // 2: echo.v1.AllocateResponse.error:type_name -> echo.v1.Error
 	0, // 3: echo.v1.ReleaseRequest.id:type_name -> echo.v1.CNIIdentity
-	6, // 4: echo.v1.RelaseResponse.error:type_name -> echo.v1.Error
+	6, // 4: echo.v1.ReleaseResponse.error:type_name -> echo.v1.Error
 	7, // 5: echo.v1.IPAssignment.ipv4:type_name -> echo.v1.IPConfig
 	1, // 6: echo.v1.IPAM.Allocate:input_type -> echo.v1.AllocateRequest
 	3, // 7: echo.v1.IPAM.Release:input_type -> echo.v1.ReleaseRequest
 	2, // 8: echo.v1.IPAM.Allocate:output_type -> echo.v1.AllocateResponse
-	4, // 9: echo.v1.IPAM.Release:output_type -> echo.v1.RelaseResponse
+	4, // 9: echo.v1.IPAM.Release:output_type -> echo.v1.ReleaseResponse
 	8, // [8:10] is the sub-list for method output_type
 	6, // [6:8] is the sub-list for method input_type
 	6, // [6:6] is the sub-list for extension type_name

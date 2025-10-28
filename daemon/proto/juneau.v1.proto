@@ -6,7 +6,7 @@ option go_package = "pkg/juneaupb;juneaupb";
 
 service IPAM {
   rpc Allocate(AllocateRequest) returns (AllocateResponse);
-  rpc Release(ReleaseRequest) returns (RelaseResponse);
+  rpc Release(ReleaseRequest) returns (ReleaseResponse);
 }
 
 message CNIIdentity {
@@ -32,7 +32,7 @@ message ReleaseRequest {
   CNIIdentity id = 1;
 }
 
-message RelaseResponse {
+message ReleaseResponse {
   bool success = 1;
   Error error = 2;
 }

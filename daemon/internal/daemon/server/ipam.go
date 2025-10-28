@@ -26,6 +26,28 @@ func NewIPAMServer(kubeclient kubeclient.Client) *IPAMServer {
 	}
 }
 
+func (s *IPAMServer) Release(ctx context.Context, req *juneaupb.ReleaseRequest) (*juneaupb.ReleaseResponse, error) {
+	err := s.kubeclient.Juneauv1alpha1().Address(req.Id.PodNamespace).Delete(ctx, req.Id.IfName+"."+req.Id.PodName, metav1.DeleteOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return &juneaupb.ReleaseResponse{
+				Success: true,
+			}, nil
+		}
+		zap.S().Errorf("failed to delete address %s/%s: %v", req.Id.PodNamespace, req.Id.IfName+"."+req.Id.PodName, err)
+		return &juneaupb.ReleaseResponse{
+			Success: false,
+			Error: &juneaupb.Error{
+				Message: "failed to delete address",
+			},
+		}, nil
+	}
+
+	return &juneaupb.ReleaseResponse{
+		Success: true,
+	}, nil
+}
+
 func (s *IPAMServer) Allocate(ctx context.Context, req *juneaupb.AllocateRequest) (*juneaupb.AllocateResponse, error) {
 	pod, err := s.kubeclient.Corev1().Pod(req.Id.PodNamespace).Get(ctx, req.Id.PodName, metav1.GetOptions{})
 	if err != nil {
@@ -37,7 +59,6 @@ func (s *IPAMServer) Allocate(ctx context.Context, req *juneaupb.AllocateRequest
 			},
 		}, nil
 	}
-
 	if req.Id.PodUid != "" && string(pod.UID) != req.Id.PodUid {
 		zap.S().Infof("pod UID mismatch: expected %s, got %s", req.Id.PodUid, pod.UID)
 		return &juneaupb.AllocateResponse{

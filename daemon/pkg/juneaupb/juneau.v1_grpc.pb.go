@@ -28,7 +28,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type IPAMClient interface {
 	Allocate(ctx context.Context, in *AllocateRequest, opts ...grpc.CallOption) (*AllocateResponse, error)
-	Release(ctx context.Context, in *ReleaseRequest, opts ...grpc.CallOption) (*RelaseResponse, error)
+	Release(ctx context.Context, in *ReleaseRequest, opts ...grpc.CallOption) (*ReleaseResponse, error)
 }
 
 type iPAMClient struct {
@@ -49,9 +49,9 @@ func (c *iPAMClient) Allocate(ctx context.Context, in *AllocateRequest, opts ...
 	return out, nil
 }
 
-func (c *iPAMClient) Release(ctx context.Context, in *ReleaseRequest, opts ...grpc.CallOption) (*RelaseResponse, error) {
+func (c *iPAMClient) Release(ctx context.Context, in *ReleaseRequest, opts ...grpc.CallOption) (*ReleaseResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(RelaseResponse)
+	out := new(ReleaseResponse)
 	err := c.cc.Invoke(ctx, IPAM_Release_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -64,7 +64,7 @@ func (c *iPAMClient) Release(ctx context.Context, in *ReleaseRequest, opts ...gr
 // for forward compatibility.
 type IPAMServer interface {
 	Allocate(context.Context, *AllocateRequest) (*AllocateResponse, error)
-	Release(context.Context, *ReleaseRequest) (*RelaseResponse, error)
+	Release(context.Context, *ReleaseRequest) (*ReleaseResponse, error)
 	mustEmbedUnimplementedIPAMServer()
 }
 
@@ -78,7 +78,7 @@ type UnimplementedIPAMServer struct{}
 func (UnimplementedIPAMServer) Allocate(context.Context, *AllocateRequest) (*AllocateResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Allocate not implemented")
 }
-func (UnimplementedIPAMServer) Release(context.Context, *ReleaseRequest) (*RelaseResponse, error) {
+func (UnimplementedIPAMServer) Release(context.Context, *ReleaseRequest) (*ReleaseResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Release not implemented")
 }
 func (UnimplementedIPAMServer) mustEmbedUnimplementedIPAMServer() {}

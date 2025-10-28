@@ -262,6 +262,7 @@ func (c *Cni) CmdAdd(ctx context.Context) error {
 				routeCount--
 				continue
 			}
+			zap.L().Debug("examining route", zap.String("dst", r.Dst.String()), zap.String("gw", r.Gw.String()), zap.Int("linkIndex", r.LinkIndex))
 			if r.Dst != nil {
 				routeCount--
 				continue // not default

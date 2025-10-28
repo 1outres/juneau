@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
@@ -46,6 +47,7 @@ type AddressReconciler struct {
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 func (r *AddressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	finalizer := "address.juneau.loutres.me/finalizer"
 	logger := log.FromContext(ctx)
 
 	var address juneauv1alpha1.Address
@@ -58,7 +60,30 @@ func (r *AddressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	if !address.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(&address, finalizer) {
+			if address.Status.LeaseName != "" {
+				if err := r.Delete(ctx, &juneauv1alpha1.SubnetLease{
+					ObjectMeta: v1.ObjectMeta{
+						Name: address.Status.LeaseName,
+					},
+				}); err != nil && !errors.IsNotFound(err) {
+					return ctrl.Result{}, fmt.Errorf("unable to delete SubnetLease %s: %w", address.Status.LeaseName, err)
+				}
+			}
+
+			controllerutil.RemoveFinalizer(&address, finalizer)
+			if err := r.Update(ctx, &address); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 		return ctrl.Result{}, nil
+	}
+
+	if !controllerutil.ContainsFinalizer(&address, finalizer) {
+		controllerutil.AddFinalizer(&address, finalizer)
+		if err := r.Update(ctx, &address); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	if address.Status.LeaseName != "" {
