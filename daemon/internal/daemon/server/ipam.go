@@ -124,7 +124,7 @@ func (s *IPAMServer) Allocate(ctx context.Context, req *juneaupb.AllocateRequest
 		zap.S().Errorf("failed to add event handler: %v", err)
 		return &juneaupb.AllocateResponse{
 			Success: false,
-			Error: &juneaupb.Error{Message: "failed to add event handler"},
+			Error:   &juneaupb.Error{Message: "failed to add event handler"},
 		}, nil
 	}
 	defer func() {
@@ -142,15 +142,15 @@ func (s *IPAMServer) Allocate(ctx context.Context, req *juneaupb.AllocateRequest
 		zap.S().Warnf("waiting address %s/%s status.address timed out", keyNS, keyName)
 		return &juneaupb.AllocateResponse{
 			Success: false,
-			Error: &juneaupb.Error{Message: "allocation timed out"},
+			Error:   &juneaupb.Error{Message: "allocation timed out"},
 		}, nil
 	case ip := <-ipCh:
 		_, ipnet, err := net.ParseCIDR(subnet.Spec.CIDR)
 		if err != nil {
 			zap.S().Errorf("failed to parse subnet CIDR %s: %v", subnet.Spec.CIDR, err)
 			return &juneaupb.AllocateResponse{
-			Success: false,
-				Error: &juneaupb.Error{Message: "failed to parse subnet CIDR"},
+				Success: false,
+				Error:   &juneaupb.Error{Message: "failed to parse subnet CIDR"},
 			}, nil
 		}
 		ones, _ := ipnet.Mask.Size()
