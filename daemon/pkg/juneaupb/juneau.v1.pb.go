@@ -21,27 +21,32 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type PingRequest struct {
+type CNIIdentity struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Msg           string                 `protobuf:"bytes,1,opt,name=msg,proto3" json:"msg,omitempty"`
+	NodeName      string                 `protobuf:"bytes,1,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
+	PodNamespace  string                 `protobuf:"bytes,2,opt,name=pod_namespace,json=podNamespace,proto3" json:"pod_namespace,omitempty"`
+	PodName       string                 `protobuf:"bytes,3,opt,name=pod_name,json=podName,proto3" json:"pod_name,omitempty"`
+	ContainerId   string                 `protobuf:"bytes,4,opt,name=container_id,json=containerId,proto3" json:"container_id,omitempty"`
+	IfName        string                 `protobuf:"bytes,5,opt,name=if_name,json=ifName,proto3" json:"if_name,omitempty"`
+	PodUid        string                 `protobuf:"bytes,6,opt,name=pod_uid,json=podUid,proto3" json:"pod_uid,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *PingRequest) Reset() {
-	*x = PingRequest{}
+func (x *CNIIdentity) Reset() {
+	*x = CNIIdentity{}
 	mi := &file_proto_juneau_v1_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *PingRequest) String() string {
+func (x *CNIIdentity) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*PingRequest) ProtoMessage() {}
+func (*CNIIdentity) ProtoMessage() {}
 
-func (x *PingRequest) ProtoReflect() protoreflect.Message {
+func (x *CNIIdentity) ProtoReflect() protoreflect.Message {
 	mi := &file_proto_juneau_v1_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -53,39 +58,75 @@ func (x *PingRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use PingRequest.ProtoReflect.Descriptor instead.
-func (*PingRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use CNIIdentity.ProtoReflect.Descriptor instead.
+func (*CNIIdentity) Descriptor() ([]byte, []int) {
 	return file_proto_juneau_v1_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *PingRequest) GetMsg() string {
+func (x *CNIIdentity) GetNodeName() string {
 	if x != nil {
-		return x.Msg
+		return x.NodeName
 	}
 	return ""
 }
 
-type PingResponse struct {
+func (x *CNIIdentity) GetPodNamespace() string {
+	if x != nil {
+		return x.PodNamespace
+	}
+	return ""
+}
+
+func (x *CNIIdentity) GetPodName() string {
+	if x != nil {
+		return x.PodName
+	}
+	return ""
+}
+
+func (x *CNIIdentity) GetContainerId() string {
+	if x != nil {
+		return x.ContainerId
+	}
+	return ""
+}
+
+func (x *CNIIdentity) GetIfName() string {
+	if x != nil {
+		return x.IfName
+	}
+	return ""
+}
+
+func (x *CNIIdentity) GetPodUid() string {
+	if x != nil {
+		return x.PodUid
+	}
+	return ""
+}
+
+type AllocateRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Msg           string                 `protobuf:"bytes,1,opt,name=msg,proto3" json:"msg,omitempty"`
+	Id            *CNIIdentity           `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	MacAddress    string                 `protobuf:"bytes,2,opt,name=mac_address,json=macAddress,proto3" json:"mac_address,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *PingResponse) Reset() {
-	*x = PingResponse{}
+func (x *AllocateRequest) Reset() {
+	*x = AllocateRequest{}
 	mi := &file_proto_juneau_v1_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *PingResponse) String() string {
+func (x *AllocateRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*PingResponse) ProtoMessage() {}
+func (*AllocateRequest) ProtoMessage() {}
 
-func (x *PingResponse) ProtoReflect() protoreflect.Message {
+func (x *AllocateRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_proto_juneau_v1_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -97,14 +138,161 @@ func (x *PingResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use PingResponse.ProtoReflect.Descriptor instead.
-func (*PingResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use AllocateRequest.ProtoReflect.Descriptor instead.
+func (*AllocateRequest) Descriptor() ([]byte, []int) {
 	return file_proto_juneau_v1_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *PingResponse) GetMsg() string {
+func (x *AllocateRequest) GetId() *CNIIdentity {
 	if x != nil {
-		return x.Msg
+		return x.Id
+	}
+	return nil
+}
+
+func (x *AllocateRequest) GetMacAddress() string {
+	if x != nil {
+		return x.MacAddress
+	}
+	return ""
+}
+
+type AllocateResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	IpAssignment  *IPAssignment          `protobuf:"bytes,1,opt,name=ip_assignment,json=ipAssignment,proto3" json:"ip_assignment,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AllocateResponse) Reset() {
+	*x = AllocateResponse{}
+	mi := &file_proto_juneau_v1_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AllocateResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AllocateResponse) ProtoMessage() {}
+
+func (x *AllocateResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_juneau_v1_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AllocateResponse.ProtoReflect.Descriptor instead.
+func (*AllocateResponse) Descriptor() ([]byte, []int) {
+	return file_proto_juneau_v1_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *AllocateResponse) GetIpAssignment() *IPAssignment {
+	if x != nil {
+		return x.IpAssignment
+	}
+	return nil
+}
+
+type IPAssignment struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Ipv4          *IPConfig              `protobuf:"bytes,1,opt,name=ipv4,proto3" json:"ipv4,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IPAssignment) Reset() {
+	*x = IPAssignment{}
+	mi := &file_proto_juneau_v1_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IPAssignment) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IPAssignment) ProtoMessage() {}
+
+func (x *IPAssignment) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_juneau_v1_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IPAssignment.ProtoReflect.Descriptor instead.
+func (*IPAssignment) Descriptor() ([]byte, []int) {
+	return file_proto_juneau_v1_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *IPAssignment) GetIpv4() *IPConfig {
+	if x != nil {
+		return x.Ipv4
+	}
+	return nil
+}
+
+type IPConfig struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AddressCidr   string                 `protobuf:"bytes,1,opt,name=address_cidr,json=addressCidr,proto3" json:"address_cidr,omitempty"`
+	Gateway       string                 `protobuf:"bytes,2,opt,name=gateway,proto3" json:"gateway,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IPConfig) Reset() {
+	*x = IPConfig{}
+	mi := &file_proto_juneau_v1_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IPConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IPConfig) ProtoMessage() {}
+
+func (x *IPConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_juneau_v1_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IPConfig.ProtoReflect.Descriptor instead.
+func (*IPConfig) Descriptor() ([]byte, []int) {
+	return file_proto_juneau_v1_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *IPConfig) GetAddressCidr() string {
+	if x != nil {
+		return x.AddressCidr
+	}
+	return ""
+}
+
+func (x *IPConfig) GetGateway() string {
+	if x != nil {
+		return x.Gateway
 	}
 	return ""
 }
@@ -113,13 +301,27 @@ var File_proto_juneau_v1_proto protoreflect.FileDescriptor
 
 const file_proto_juneau_v1_proto_rawDesc = "" +
 	"\n" +
-	"\x15proto/juneau.v1.proto\x12\aecho.v1\"\x1f\n" +
-	"\vPingRequest\x12\x10\n" +
-	"\x03msg\x18\x01 \x01(\tR\x03msg\" \n" +
-	"\fPingResponse\x12\x10\n" +
-	"\x03msg\x18\x01 \x01(\tR\x03msg2;\n" +
-	"\x04IPAM\x123\n" +
-	"\x04Ping\x12\x14.echo.v1.PingRequest\x1a\x15.echo.v1.PingResponseB\x17Z\x15pkg/juneaupb;juneaupbb\x06proto3"
+	"\x15proto/juneau.v1.proto\x12\aecho.v1\"\xbf\x01\n" +
+	"\vCNIIdentity\x12\x1b\n" +
+	"\tnode_name\x18\x01 \x01(\tR\bnodeName\x12#\n" +
+	"\rpod_namespace\x18\x02 \x01(\tR\fpodNamespace\x12\x19\n" +
+	"\bpod_name\x18\x03 \x01(\tR\apodName\x12!\n" +
+	"\fcontainer_id\x18\x04 \x01(\tR\vcontainerId\x12\x17\n" +
+	"\aif_name\x18\x05 \x01(\tR\x06ifName\x12\x17\n" +
+	"\apod_uid\x18\x06 \x01(\tR\x06podUid\"X\n" +
+	"\x0fAllocateRequest\x12$\n" +
+	"\x02id\x18\x01 \x01(\v2\x14.echo.v1.CNIIdentityR\x02id\x12\x1f\n" +
+	"\vmac_address\x18\x02 \x01(\tR\n" +
+	"macAddress\"N\n" +
+	"\x10AllocateResponse\x12:\n" +
+	"\rip_assignment\x18\x01 \x01(\v2\x15.echo.v1.IPAssignmentR\fipAssignment\"5\n" +
+	"\fIPAssignment\x12%\n" +
+	"\x04ipv4\x18\x01 \x01(\v2\x11.echo.v1.IPConfigR\x04ipv4\"G\n" +
+	"\bIPConfig\x12!\n" +
+	"\faddress_cidr\x18\x01 \x01(\tR\vaddressCidr\x12\x18\n" +
+	"\agateway\x18\x02 \x01(\tR\agateway2G\n" +
+	"\x04IPAM\x12?\n" +
+	"\bAllocate\x12\x18.echo.v1.AllocateRequest\x1a\x19.echo.v1.AllocateResponseB\x17Z\x15pkg/juneaupb;juneaupbb\x06proto3"
 
 var (
 	file_proto_juneau_v1_proto_rawDescOnce sync.Once
@@ -133,19 +335,25 @@ func file_proto_juneau_v1_proto_rawDescGZIP() []byte {
 	return file_proto_juneau_v1_proto_rawDescData
 }
 
-var file_proto_juneau_v1_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_proto_juneau_v1_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_proto_juneau_v1_proto_goTypes = []any{
-	(*PingRequest)(nil),  // 0: echo.v1.PingRequest
-	(*PingResponse)(nil), // 1: echo.v1.PingResponse
+	(*CNIIdentity)(nil),      // 0: echo.v1.CNIIdentity
+	(*AllocateRequest)(nil),  // 1: echo.v1.AllocateRequest
+	(*AllocateResponse)(nil), // 2: echo.v1.AllocateResponse
+	(*IPAssignment)(nil),     // 3: echo.v1.IPAssignment
+	(*IPConfig)(nil),         // 4: echo.v1.IPConfig
 }
 var file_proto_juneau_v1_proto_depIdxs = []int32{
-	0, // 0: echo.v1.IPAM.Ping:input_type -> echo.v1.PingRequest
-	1, // 1: echo.v1.IPAM.Ping:output_type -> echo.v1.PingResponse
-	1, // [1:2] is the sub-list for method output_type
-	0, // [0:1] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	0, // 0: echo.v1.AllocateRequest.id:type_name -> echo.v1.CNIIdentity
+	3, // 1: echo.v1.AllocateResponse.ip_assignment:type_name -> echo.v1.IPAssignment
+	4, // 2: echo.v1.IPAssignment.ipv4:type_name -> echo.v1.IPConfig
+	1, // 3: echo.v1.IPAM.Allocate:input_type -> echo.v1.AllocateRequest
+	2, // 4: echo.v1.IPAM.Allocate:output_type -> echo.v1.AllocateResponse
+	4, // [4:5] is the sub-list for method output_type
+	3, // [3:4] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_proto_juneau_v1_proto_init() }
@@ -159,7 +367,7 @@ func file_proto_juneau_v1_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_juneau_v1_proto_rawDesc), len(file_proto_juneau_v1_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

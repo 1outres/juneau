@@ -19,14 +19,14 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	IPAM_Ping_FullMethodName = "/echo.v1.IPAM/Ping"
+	IPAM_Allocate_FullMethodName = "/echo.v1.IPAM/Allocate"
 )
 
 // IPAMClient is the client API for IPAM service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type IPAMClient interface {
-	Ping(ctx context.Context, in *PingRequest, opts ...grpc.CallOption) (*PingResponse, error)
+	Allocate(ctx context.Context, in *AllocateRequest, opts ...grpc.CallOption) (*AllocateResponse, error)
 }
 
 type iPAMClient struct {
@@ -37,10 +37,10 @@ func NewIPAMClient(cc grpc.ClientConnInterface) IPAMClient {
 	return &iPAMClient{cc}
 }
 
-func (c *iPAMClient) Ping(ctx context.Context, in *PingRequest, opts ...grpc.CallOption) (*PingResponse, error) {
+func (c *iPAMClient) Allocate(ctx context.Context, in *AllocateRequest, opts ...grpc.CallOption) (*AllocateResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(PingResponse)
-	err := c.cc.Invoke(ctx, IPAM_Ping_FullMethodName, in, out, cOpts...)
+	out := new(AllocateResponse)
+	err := c.cc.Invoke(ctx, IPAM_Allocate_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +51,7 @@ func (c *iPAMClient) Ping(ctx context.Context, in *PingRequest, opts ...grpc.Cal
 // All implementations must embed UnimplementedIPAMServer
 // for forward compatibility.
 type IPAMServer interface {
-	Ping(context.Context, *PingRequest) (*PingResponse, error)
+	Allocate(context.Context, *AllocateRequest) (*AllocateResponse, error)
 	mustEmbedUnimplementedIPAMServer()
 }
 
@@ -62,8 +62,8 @@ type IPAMServer interface {
 // pointer dereference when methods are called.
 type UnimplementedIPAMServer struct{}
 
-func (UnimplementedIPAMServer) Ping(context.Context, *PingRequest) (*PingResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Ping not implemented")
+func (UnimplementedIPAMServer) Allocate(context.Context, *AllocateRequest) (*AllocateResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Allocate not implemented")
 }
 func (UnimplementedIPAMServer) mustEmbedUnimplementedIPAMServer() {}
 func (UnimplementedIPAMServer) testEmbeddedByValue()              {}
@@ -86,20 +86,20 @@ func RegisterIPAMServer(s grpc.ServiceRegistrar, srv IPAMServer) {
 	s.RegisterService(&IPAM_ServiceDesc, srv)
 }
 
-func _IPAM_Ping_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(PingRequest)
+func _IPAM_Allocate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AllocateRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(IPAMServer).Ping(ctx, in)
+		return srv.(IPAMServer).Allocate(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: IPAM_Ping_FullMethodName,
+		FullMethod: IPAM_Allocate_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(IPAMServer).Ping(ctx, req.(*PingRequest))
+		return srv.(IPAMServer).Allocate(ctx, req.(*AllocateRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -112,8 +112,8 @@ var IPAM_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*IPAMServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "Ping",
-			Handler:    _IPAM_Ping_Handler,
+			MethodName: "Allocate",
+			Handler:    _IPAM_Allocate_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -5,15 +5,32 @@ package echo.v1;
 option go_package = "pkg/juneaupb;juneaupb";
 
 service IPAM {
-  rpc Ping (PingRequest) returns (PingResponse);
+  rpc Allocate(AllocateRequest) returns (AllocateResponse);
 }
 
-message PingRequest {
-  string msg = 1;
+message CNIIdentity {
+  string node_name     = 1;
+  string pod_namespace = 2;
+  string pod_name      = 3;
+  string container_id  = 4;
+  string if_name       = 5;
+  string pod_uid       = 6;
 }
 
-message PingResponse {
-  string msg = 1;
+message AllocateRequest {
+  CNIIdentity id = 1;
+  string mac_address = 2;
 }
 
+message AllocateResponse {
+  IPAssignment ip_assignment = 1;
+}
 
+message IPAssignment {
+  IPConfig ipv4 = 1;
+}
+
+message IPConfig {
+  string address_cidr  = 1;
+  string gateway       = 2;
+}

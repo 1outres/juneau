@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/1outres/juneau/daemon/internal/app/daemon"
+	"github.com/1outres/juneau/daemon/internal/daemon"
 )
 
 func main() {
