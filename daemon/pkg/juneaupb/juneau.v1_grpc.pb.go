@@ -20,6 +20,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	IPAM_Allocate_FullMethodName = "/echo.v1.IPAM/Allocate"
+	IPAM_Release_FullMethodName  = "/echo.v1.IPAM/Release"
 )
 
 // IPAMClient is the client API for IPAM service.
@@ -27,6 +28,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type IPAMClient interface {
 	Allocate(ctx context.Context, in *AllocateRequest, opts ...grpc.CallOption) (*AllocateResponse, error)
+	Release(ctx context.Context, in *ReleaseRequest, opts ...grpc.CallOption) (*RelaseResponse, error)
 }
 
 type iPAMClient struct {
@@ -47,11 +49,22 @@ func (c *iPAMClient) Allocate(ctx context.Context, in *AllocateRequest, opts ...
 	return out, nil
 }
 
+func (c *iPAMClient) Release(ctx context.Context, in *ReleaseRequest, opts ...grpc.CallOption) (*RelaseResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RelaseResponse)
+	err := c.cc.Invoke(ctx, IPAM_Release_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // IPAMServer is the server API for IPAM service.
 // All implementations must embed UnimplementedIPAMServer
 // for forward compatibility.
 type IPAMServer interface {
 	Allocate(context.Context, *AllocateRequest) (*AllocateResponse, error)
+	Release(context.Context, *ReleaseRequest) (*RelaseResponse, error)
 	mustEmbedUnimplementedIPAMServer()
 }
 
@@ -64,6 +77,9 @@ type UnimplementedIPAMServer struct{}
 
 func (UnimplementedIPAMServer) Allocate(context.Context, *AllocateRequest) (*AllocateResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Allocate not implemented")
+}
+func (UnimplementedIPAMServer) Release(context.Context, *ReleaseRequest) (*RelaseResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Release not implemented")
 }
 func (UnimplementedIPAMServer) mustEmbedUnimplementedIPAMServer() {}
 func (UnimplementedIPAMServer) testEmbeddedByValue()              {}
@@ -104,6 +120,24 @@ func _IPAM_Allocate_Handler(srv interface{}, ctx context.Context, dec func(inter
 	return interceptor(ctx, in, info, handler)
 }
 
+func _IPAM_Release_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReleaseRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(IPAMServer).Release(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: IPAM_Release_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(IPAMServer).Release(ctx, req.(*ReleaseRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // IPAM_ServiceDesc is the grpc.ServiceDesc for IPAM service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -114,6 +148,10 @@ var IPAM_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Allocate",
 			Handler:    _IPAM_Allocate_Handler,
+		},
+		{
+			MethodName: "Release",
+			Handler:    _IPAM_Release_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

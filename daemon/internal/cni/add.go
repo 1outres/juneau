@@ -34,6 +34,15 @@ func (c *Cni) CmdAdd(ctx context.Context) error {
 				Details: err.Error(),
 			}
 		}
+		vethHost, err = netlink.LinkByName(vethHostName)
+		if err != nil {
+			zap.L().Error("failed to lookup created veth", zap.Error(err))
+			return &types.Error{
+				Code:    types.ErrTryAgainLater,
+				Msg:     "Failed to lookup created veth",
+				Details: err.Error(),
+			}
+		}
 	} else if err != nil {
 		zap.L().Error("failed to lookup veth", zap.Error(err))
 		return &types.Error{
