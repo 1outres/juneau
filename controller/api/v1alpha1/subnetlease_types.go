@@ -38,6 +38,7 @@ type SubnetLeaseSpec struct {
 type SubnetLeaseStatus struct {
 }
 
+// +genclient
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster

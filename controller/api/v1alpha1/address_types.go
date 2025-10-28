@@ -37,6 +37,7 @@ type AddressStatus struct {
 	LeaseName string `json:"leaseName,omitempty"`
 }
 
+// +genclient
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 
