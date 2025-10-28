@@ -73,7 +73,7 @@ func EnsureBridge(bridgeName string, master *netlink.Vrf) (*netlink.Bridge, erro
 	return br, nil
 }
 
-func CreateVethPair(veth1, veth2 string) (*netlink.Veth, error) {
+func CreateVethPair(veth1, veth2 string) error {
 	veth := &netlink.Veth{
 		LinkAttrs: netlink.LinkAttrs{
 			Name: veth1,
@@ -82,10 +82,10 @@ func CreateVethPair(veth1, veth2 string) (*netlink.Veth, error) {
 	}
 
 	if err := netlink.LinkAdd(veth); err != nil {
-		return nil, fmt.Errorf("failed to create veth pair: %v", err)
+		return fmt.Errorf("failed to create veth pair: %v", err)
 	}
 
-	return veth, nil
+	return nil
 }
 
 func MoveToNetnsAndRename(linkName, newLinkName, nsPath string) error {

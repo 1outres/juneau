@@ -70,13 +70,19 @@ func NewClient(config *rest.Config) (Client, error) {
 
 	factory := informers.NewSharedInformerFactory(cs, 30*time.Second)
 
+	_ = factory.Core().V1().Pods().Lister()
+
 	juneaucs, err := versioned.NewForConfig(config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create clientset: %w", err)
 	}
 
-	// Create informer juneaufactory with 30 second resync period
 	juneaufactory := juneauexternalversions.NewSharedInformerFactory(juneaucs, 30*time.Second)
+
+	_ = juneaufactory.Api().V1alpha1().Vpcs().Lister()
+	_ = juneaufactory.Api().V1alpha1().Subnets().Lister()
+	_ = juneaufactory.Api().V1alpha1().SubnetLeases().Lister()
+	_ = juneaufactory.Api().V1alpha1().Addresses().Lister()
 
 	return &client{
 		clientset:       cs,

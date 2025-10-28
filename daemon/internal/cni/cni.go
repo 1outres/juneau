@@ -11,6 +11,7 @@ import (
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/containernetworking/cni/pkg/types"
 	types100 "github.com/containernetworking/cni/pkg/types/100"
+	"github.com/vishvananda/netlink"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
@@ -29,7 +30,6 @@ func Init() error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 
 	ws := zapcore.AddSync(f)
 	encoderCfg := zap.NewDevelopmentEncoderConfig()
@@ -93,7 +93,7 @@ func CmdAdd(args *skel.CmdArgs) error {
 	vethPeer := args.IfName + "+" + args.ContainerID[0:10]
 
 	// Create veth pair
-	veth, err := CreateVethPair(vethHost, vethPeer)
+	err := CreateVethPair(vethHost, vethPeer)
 	if err != nil {
 		zap.L().Info("Failed to create veth pair", zap.Error(err))
 		return &types.Error{
@@ -102,6 +102,17 @@ func CmdAdd(args *skel.CmdArgs) error {
 			Details: err.Error(),
 		}
 	}
+
+	vethPeerLink, err := netlink.LinkByName(vethPeer)
+	if err != nil {
+		zap.L().Info("Failed to get veth peer link", zap.Error(err))
+		return &types.Error{
+			Code:    types.ErrTryAgainLater,
+			Msg:     "Failed to get veth peer link",
+			Details: err.Error(),
+		}
+	}
+	zap.L().Info("Created veth pair", zap.String("host", vethHost), zap.String("peer", vethPeer), zap.String("mac", vethPeerLink.Attrs().HardwareAddr.String()))
 
 	allocateRes, err := ipamClient.Allocate(ctx, &juneaupb.AllocateRequest{
 		Id: &juneaupb.CNIIdentity{
@@ -112,7 +123,7 @@ func CmdAdd(args *skel.CmdArgs) error {
 			ContainerId:   args.ContainerID,
 			IfName:       args.IfName,
 		},
-		MacAddress: veth.PeerHardwareAddr.String(),
+		MacAddress: vethPeerLink.Attrs().HardwareAddr.String(),
 	})
 	if err != nil {
 		zap.L().Info("Failed to allocate IP", zap.Error(err))
@@ -131,6 +142,8 @@ func CmdAdd(args *skel.CmdArgs) error {
 		}
 	}
 
+	zap.L().Info("Allocated IP", zap.String("address", allocateRes.IpAssignment.Ipv4.AddressCidr), zap.String("gateway", allocateRes.IpAssignment.Ipv4.Gateway))
+
 	// Move one end to netns
 	if err := MoveToNetnsAndRename(vethPeer, args.IfName, args.Netns); err != nil {
 		zap.L().Info("Failed to move veth to netns", zap.Error(err))
@@ -141,7 +154,7 @@ func CmdAdd(args *skel.CmdArgs) error {
 		}
 	}
 
-	_, ipnet, _ := net.ParseCIDR(allocateRes.IpAssignment.Ipv4.AddressCidr)
+	ip, ipnet, _ := net.ParseCIDR(allocateRes.IpAssignment.Ipv4.AddressCidr)
 	gateway := net.ParseIP(allocateRes.IpAssignment.Ipv4.Gateway)
 
 	// Set ip address and default route
@@ -156,6 +169,8 @@ func CmdAdd(args *skel.CmdArgs) error {
 
 	_, defaultRoute, _ := net.ParseCIDR("0.0.0.0/0")
 
+	zap.L().Info("CNI ADD Result", zap.String("ip", ipnet.String()), zap.String("gateway", gateway.String()))
+
 	return types.PrintResult(&types100.Result{
 		CNIVersion: netConf.CNIVersion,
 		Interfaces: []*types100.Interface{
@@ -167,7 +182,10 @@ func CmdAdd(args *skel.CmdArgs) error {
 		IPs: []*types100.IPConfig{
 			{
 				Interface: ptr.To(0),
-				Address:   *ipnet,
+				Address:   net.IPNet{
+					IP: ip,
+					Mask: ipnet.Mask,
+				},
 				Gateway:   gateway,
 			},
 		},
@@ -181,6 +199,18 @@ func CmdAdd(args *skel.CmdArgs) error {
 }
 
 func CmdDel(args *skel.CmdArgs) error {
+	if err := Init(); err != nil {
+		return &types.Error{
+			Code: types.ErrInternal,
+			Msg: "Failed to init",
+			Details: err.Error(),
+		}
+	}
+	defer conn.Close()
+
+	ctx := context.Background()
+	zap.L().Info("CmdDel", zap.String("args", args.Args))
+
 	return nil
 }
 

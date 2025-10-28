@@ -49,7 +49,7 @@ CMD ["/daemon"]
 '''
 
 local_resource(
-    'Daemon Compile', 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/daemon cmd/juneaud/main.go', deps=['daemon/cmd/juneaud/main.go', 'daemon/internal', 'daemon/pkg'],
+    'Daemon Compile', 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/daemon cmd/juneaud/main.go', deps=['daemon/cmd/juneaud/main.go', 'daemon/internal/daemon', 'daemon/pkg'],
     ignore=[], dir='daemon/')
 
 docker_build_with_restart(
@@ -68,6 +68,6 @@ k8s_yaml(kustomize('./daemon/config/default'))
 # ========== CNI ===========
 
 local_resource(
-    'CNI Compile', 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o pkg/cni/cni cmd/juneau-cni/main.go', deps=['daemon/cmd/juneau-cni/main.go', 'daemon/internal', 'daemon/pkg'],
+    'CNI Compile', 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o pkg/cni/cni cmd/juneau-cni/main.go', deps=['daemon/cmd/juneau-cni/main.go', 'daemon/internal/cni', 'daemon/pkg'],
     ignore=['daemon/pkg/cni'], dir='daemon/')
 
