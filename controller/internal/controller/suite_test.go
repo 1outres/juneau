@@ -27,6 +27,8 @@ import (
 
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -80,9 +82,73 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(cfg).NotTo(BeNil())
 
-	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
+	// Create a manager to setup field indexers
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Scheme: scheme.Scheme,
+		Cache: cache.Options{
+			DefaultNamespaces: map[string]cache.Config{},
+		},
+	})
 	Expect(err).NotTo(HaveOccurred())
-	Expect(k8sClient).NotTo(BeNil())
+
+	// Index SubnetLease by spec.subnet
+	err = mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&juneauloutresmev1alpha1.SubnetLease{},
+		"spec.subnet",
+		func(obj client.Object) []string {
+			subnetlease := obj.(*juneauloutresmev1alpha1.SubnetLease)
+			if subnetlease.Spec.Subnet == "" {
+				return nil
+			}
+			return []string{subnetlease.Spec.Subnet}
+		},
+	)
+	Expect(err).NotTo(HaveOccurred())
+
+	// Index Subnet by spec.vpc
+	err = mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&juneauloutresmev1alpha1.Subnet{},
+		"spec.vpc",
+		func(obj client.Object) []string {
+			subnet := obj.(*juneauloutresmev1alpha1.Subnet)
+			if subnet.Spec.Vpc == "" {
+				return nil
+			}
+			return []string{subnet.Spec.Vpc}
+		},
+	)
+	Expect(err).NotTo(HaveOccurred())
+
+	// Index Address by spec.subnet
+	err = mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&juneauloutresmev1alpha1.Address{},
+		"spec.subnet",
+		func(obj client.Object) []string {
+			address := obj.(*juneauloutresmev1alpha1.Address)
+			if address.Spec.Subnet == "" {
+				return nil
+			}
+			return []string{address.Spec.Subnet}
+		},
+	)
+	Expect(err).NotTo(HaveOccurred())
+
+	// Use the manager's client instead
+	k8sClient = mgr.GetClient()
+
+	// Start the manager in the background
+	go func() {
+		defer GinkgoRecover()
+		err = mgr.Start(ctx)
+		Expect(err).ToNot(HaveOccurred(), "failed to run manager")
+	}()
+
+	// Wait for the cache to sync
+	synced := mgr.GetCache().WaitForCacheSync(ctx)
+	Expect(synced).To(BeTrue(), "failed to sync cache")
 })
 
 var _ = AfterSuite(func() {

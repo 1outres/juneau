@@ -21,7 +21,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -32,53 +31,134 @@ import (
 
 var _ = Describe("Address Controller", func() {
 	Context("When reconciling a resource", func() {
-		const resourceName = "test-resource"
+		const (
+			addressName = "test-address"
+			subnetName  = "test-subnet"
+			vpcName     = "test-vpc"
+		)
 
 		ctx := context.Background()
 
-		typeNamespacedName := types.NamespacedName{
-			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
-		}
-		address := &juneauloutresmev1alpha1.Address{}
-
 		BeforeEach(func() {
-			By("creating the custom resource for the Kind Address")
-			err := k8sClient.Get(ctx, typeNamespacedName, address)
-			if err != nil && errors.IsNotFound(err) {
-				resource := &juneauloutresmev1alpha1.Address{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      resourceName,
-						Namespace: "default",
-					},
-					// TODO(user): Specify other spec details if needed.
-				}
-				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+			By("creating prerequisite resources")
+			// Create VPC
+			vpc := &juneauloutresmev1alpha1.Vpc{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: vpcName,
+				},
 			}
+			Expect(k8sClient.Create(ctx, vpc)).To(Succeed())
+
+			// Create Subnet
+			subnet := &juneauloutresmev1alpha1.Subnet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: subnetName,
+				},
+				Spec: juneauloutresmev1alpha1.SubnetSpec{
+					Vpc:                vpcName,
+					CIDR:               "10.0.0.0/24",
+					AllocationStrategy: juneauloutresmev1alpha1.SubnetAllocationStrategyFirstFit,
+				},
+			}
+			Expect(k8sClient.Create(ctx, subnet)).To(Succeed())
+
+			// Reconcile the Subnet to populate its status
+			By("reconciling the Subnet to populate status")
+			Eventually(func() bool {
+				subnetReconciler := &SubnetReconciler{
+					Client: k8sClient,
+					Scheme: k8sClient.Scheme(),
+				}
+				_, err := subnetReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: subnetName},
+				})
+				if err != nil {
+					return false
+				}
+
+				// Check if status was populated
+				updatedSubnet := &juneauloutresmev1alpha1.Subnet{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: subnetName}, updatedSubnet); err != nil {
+					return false
+				}
+				return updatedSubnet.Status.Gateway != "" && updatedSubnet.Status.NextCursor != ""
+			}, "10s", "500ms").Should(BeTrue())
 		})
 
 		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &juneauloutresmev1alpha1.Address{}
-			err := k8sClient.Get(ctx, typeNamespacedName, resource)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Cleanup the specific resource instance Address")
-			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+			By("cleaning up test resources")
+			// Clean up Address
+			address := &juneauloutresmev1alpha1.Address{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: addressName, Namespace: "default"}, address); err == nil {
+				Expect(k8sClient.Delete(ctx, address)).To(Succeed())
+			}
+			// Clean up Subnet
+			subnet := &juneauloutresmev1alpha1.Subnet{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: subnetName}, subnet); err == nil {
+				Expect(k8sClient.Delete(ctx, subnet)).To(Succeed())
+			}
+			// Clean up VPC
+			vpc := &juneauloutresmev1alpha1.Vpc{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: vpcName}, vpc); err == nil {
+				Expect(k8sClient.Delete(ctx, vpc)).To(Succeed())
+			}
 		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
-			controllerReconciler := &AddressReconciler{
+
+		It("should allocate an IP address from the subnet", func() {
+			By("creating an Address resource")
+			address := &juneauloutresmev1alpha1.Address{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      addressName,
+					Namespace: "default",
+				},
+				Spec: juneauloutresmev1alpha1.AddressSpec{
+					Subnet: subnetName,
+				},
+			}
+			Expect(k8sClient.Create(ctx, address)).To(Succeed())
+
+			By("reconciling the Address")
+			reconciler := &AddressReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
-
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: addressName, Namespace: "default"},
 			})
 			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
+
+			By("verifying an IP address was allocated")
+			Eventually(func() bool {
+				// Re-reconcile to ensure status gets updated
+				reconciler := &AddressReconciler{
+					Client: k8sClient,
+					Scheme: k8sClient.Scheme(),
+				}
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: addressName, Namespace: "default"},
+				})
+				if err != nil {
+					return false
+				}
+
+				updatedAddress := &juneauloutresmev1alpha1.Address{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: addressName, Namespace: "default"}, updatedAddress); err != nil {
+					return false
+				}
+				return updatedAddress.Status.Address != "" && updatedAddress.Status.LeaseName != ""
+			}, "15s", "1s").Should(BeTrue())
+		})
+
+		It("should handle non-existent address gracefully", func() {
+			By("reconciling a non-existent address")
+			reconciler := &AddressReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: "non-existent", Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 })

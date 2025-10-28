@@ -6,7 +6,6 @@ import (
 	"math/big"
 	"math/rand"
 	"net"
-	"time"
 )
 
 // Overlaps checks if there are any overlapping subnets in the given list.
@@ -204,7 +203,6 @@ func RandomUsableIPv4InSubnet(cidr string) (net.IP, error) {
 	firstUsable := beToUint32(network) + 1
 	lastUsable := beToUint32(network) + size - 2
 
-	rand.Seed(time.Now().UnixNano())
 	random := firstUsable + uint32(rand.Intn(int(lastUsable-firstUsable+1)))
 
 	out := make(net.IP, 4)

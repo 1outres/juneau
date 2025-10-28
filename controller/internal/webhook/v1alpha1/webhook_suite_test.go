@@ -91,10 +91,6 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(cfg).NotTo(BeNil())
 
-	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
-	Expect(err).NotTo(HaveOccurred())
-	Expect(k8sClient).NotTo(BeNil())
-
 	// start webhook server using Manager.
 	webhookInstallOptions := &testEnv.WebhookInstallOptions
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
@@ -108,6 +104,54 @@ var _ = BeforeSuite(func() {
 		Metrics:        metricsserver.Options{BindAddress: "0"},
 	})
 	Expect(err).NotTo(HaveOccurred())
+
+	// Index SubnetLease by spec.subnet
+	err = mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&juneauloutresmev1alpha1.SubnetLease{},
+		"spec.subnet",
+		func(obj client.Object) []string {
+			subnetlease := obj.(*juneauloutresmev1alpha1.SubnetLease)
+			if subnetlease.Spec.Subnet == "" {
+				return nil
+			}
+			return []string{subnetlease.Spec.Subnet}
+		},
+	)
+	Expect(err).NotTo(HaveOccurred())
+
+	// Index Subnet by spec.vpc
+	err = mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&juneauloutresmev1alpha1.Subnet{},
+		"spec.vpc",
+		func(obj client.Object) []string {
+			subnet := obj.(*juneauloutresmev1alpha1.Subnet)
+			if subnet.Spec.Vpc == "" {
+				return nil
+			}
+			return []string{subnet.Spec.Vpc}
+		},
+	)
+	Expect(err).NotTo(HaveOccurred())
+
+	// Index Address by spec.subnet
+	err = mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&juneauloutresmev1alpha1.Address{},
+		"spec.subnet",
+		func(obj client.Object) []string {
+			address := obj.(*juneauloutresmev1alpha1.Address)
+			if address.Spec.Subnet == "" {
+				return nil
+			}
+			return []string{address.Spec.Subnet}
+		},
+	)
+	Expect(err).NotTo(HaveOccurred())
+
+	// Use the manager's client which has field indexers
+	k8sClient = mgr.GetClient()
 
 	err = SetupVpcWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
@@ -128,6 +172,10 @@ var _ = BeforeSuite(func() {
 		err = mgr.Start(ctx)
 		Expect(err).NotTo(HaveOccurred())
 	}()
+
+	// Wait for the cache to sync
+	synced := mgr.GetCache().WaitForCacheSync(ctx)
+	Expect(synced).To(BeTrue(), "failed to sync cache")
 
 	// wait for the webhook server to get ready.
 	dialer := &net.Dialer{Timeout: time.Second}
