@@ -234,7 +234,10 @@ func (c *Cni) CmdAdd(ctx context.Context) error {
 		}
 
 		if addrCount < 1 {
-			if err := netlink.AddrAdd(vethPeer, &netlink.Addr{IPNet: ipnet}); err != nil {
+			if err := netlink.AddrAdd(vethPeer, &netlink.Addr{IPNet: &net.IPNet{
+				IP: ip,
+				Mask: ipnet.Mask,
+			}}); err != nil {
 				return err
 			}
 		}
