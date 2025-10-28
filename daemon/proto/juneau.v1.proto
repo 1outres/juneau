@@ -23,11 +23,16 @@ message AllocateRequest {
 }
 
 message AllocateResponse {
-  IPAssignment ip_assignment = 1;
+  Error error = 1;
+  IPAssignment ip_assignment = 2;
 }
 
 message IPAssignment {
   IPConfig ipv4 = 1;
+}
+
+message Error {
+  string message = 2;
 }
 
 message IPConfig {

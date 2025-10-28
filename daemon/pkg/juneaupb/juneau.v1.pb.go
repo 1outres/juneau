@@ -159,7 +159,8 @@ func (x *AllocateRequest) GetMacAddress() string {
 
 type AllocateResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	IpAssignment  *IPAssignment          `protobuf:"bytes,1,opt,name=ip_assignment,json=ipAssignment,proto3" json:"ip_assignment,omitempty"`
+	Error         *Error                 `protobuf:"bytes,1,opt,name=error,proto3" json:"error,omitempty"`
+	IpAssignment  *IPAssignment          `protobuf:"bytes,2,opt,name=ip_assignment,json=ipAssignment,proto3" json:"ip_assignment,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -192,6 +193,13 @@ func (x *AllocateResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use AllocateResponse.ProtoReflect.Descriptor instead.
 func (*AllocateResponse) Descriptor() ([]byte, []int) {
 	return file_proto_juneau_v1_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *AllocateResponse) GetError() *Error {
+	if x != nil {
+		return x.Error
+	}
+	return nil
 }
 
 func (x *AllocateResponse) GetIpAssignment() *IPAssignment {
@@ -245,6 +253,50 @@ func (x *IPAssignment) GetIpv4() *IPConfig {
 	return nil
 }
 
+type Error struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Error) Reset() {
+	*x = Error{}
+	mi := &file_proto_juneau_v1_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Error) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Error) ProtoMessage() {}
+
+func (x *Error) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_juneau_v1_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Error.ProtoReflect.Descriptor instead.
+func (*Error) Descriptor() ([]byte, []int) {
+	return file_proto_juneau_v1_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *Error) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
 type IPConfig struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	AddressCidr   string                 `protobuf:"bytes,1,opt,name=address_cidr,json=addressCidr,proto3" json:"address_cidr,omitempty"`
@@ -255,7 +307,7 @@ type IPConfig struct {
 
 func (x *IPConfig) Reset() {
 	*x = IPConfig{}
-	mi := &file_proto_juneau_v1_proto_msgTypes[4]
+	mi := &file_proto_juneau_v1_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -267,7 +319,7 @@ func (x *IPConfig) String() string {
 func (*IPConfig) ProtoMessage() {}
 
 func (x *IPConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_juneau_v1_proto_msgTypes[4]
+	mi := &file_proto_juneau_v1_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -280,7 +332,7 @@ func (x *IPConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IPConfig.ProtoReflect.Descriptor instead.
 func (*IPConfig) Descriptor() ([]byte, []int) {
-	return file_proto_juneau_v1_proto_rawDescGZIP(), []int{4}
+	return file_proto_juneau_v1_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *IPConfig) GetAddressCidr() string {
@@ -312,11 +364,14 @@ const file_proto_juneau_v1_proto_rawDesc = "" +
 	"\x0fAllocateRequest\x12$\n" +
 	"\x02id\x18\x01 \x01(\v2\x14.echo.v1.CNIIdentityR\x02id\x12\x1f\n" +
 	"\vmac_address\x18\x02 \x01(\tR\n" +
-	"macAddress\"N\n" +
-	"\x10AllocateResponse\x12:\n" +
-	"\rip_assignment\x18\x01 \x01(\v2\x15.echo.v1.IPAssignmentR\fipAssignment\"5\n" +
+	"macAddress\"t\n" +
+	"\x10AllocateResponse\x12$\n" +
+	"\x05error\x18\x01 \x01(\v2\x0e.echo.v1.ErrorR\x05error\x12:\n" +
+	"\rip_assignment\x18\x02 \x01(\v2\x15.echo.v1.IPAssignmentR\fipAssignment\"5\n" +
 	"\fIPAssignment\x12%\n" +
-	"\x04ipv4\x18\x01 \x01(\v2\x11.echo.v1.IPConfigR\x04ipv4\"G\n" +
+	"\x04ipv4\x18\x01 \x01(\v2\x11.echo.v1.IPConfigR\x04ipv4\"!\n" +
+	"\x05Error\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"G\n" +
 	"\bIPConfig\x12!\n" +
 	"\faddress_cidr\x18\x01 \x01(\tR\vaddressCidr\x12\x18\n" +
 	"\agateway\x18\x02 \x01(\tR\agateway2G\n" +
@@ -335,25 +390,27 @@ func file_proto_juneau_v1_proto_rawDescGZIP() []byte {
 	return file_proto_juneau_v1_proto_rawDescData
 }
 
-var file_proto_juneau_v1_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_proto_juneau_v1_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_proto_juneau_v1_proto_goTypes = []any{
 	(*CNIIdentity)(nil),      // 0: echo.v1.CNIIdentity
 	(*AllocateRequest)(nil),  // 1: echo.v1.AllocateRequest
 	(*AllocateResponse)(nil), // 2: echo.v1.AllocateResponse
 	(*IPAssignment)(nil),     // 3: echo.v1.IPAssignment
-	(*IPConfig)(nil),         // 4: echo.v1.IPConfig
+	(*Error)(nil),            // 4: echo.v1.Error
+	(*IPConfig)(nil),         // 5: echo.v1.IPConfig
 }
 var file_proto_juneau_v1_proto_depIdxs = []int32{
 	0, // 0: echo.v1.AllocateRequest.id:type_name -> echo.v1.CNIIdentity
-	3, // 1: echo.v1.AllocateResponse.ip_assignment:type_name -> echo.v1.IPAssignment
-	4, // 2: echo.v1.IPAssignment.ipv4:type_name -> echo.v1.IPConfig
-	1, // 3: echo.v1.IPAM.Allocate:input_type -> echo.v1.AllocateRequest
-	2, // 4: echo.v1.IPAM.Allocate:output_type -> echo.v1.AllocateResponse
-	4, // [4:5] is the sub-list for method output_type
-	3, // [3:4] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	4, // 1: echo.v1.AllocateResponse.error:type_name -> echo.v1.Error
+	3, // 2: echo.v1.AllocateResponse.ip_assignment:type_name -> echo.v1.IPAssignment
+	5, // 3: echo.v1.IPAssignment.ipv4:type_name -> echo.v1.IPConfig
+	1, // 4: echo.v1.IPAM.Allocate:input_type -> echo.v1.AllocateRequest
+	2, // 5: echo.v1.IPAM.Allocate:output_type -> echo.v1.AllocateResponse
+	5, // [5:6] is the sub-list for method output_type
+	4, // [4:5] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_proto_juneau_v1_proto_init() }
@@ -367,7 +424,7 @@ func file_proto_juneau_v1_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_juneau_v1_proto_rawDesc), len(file_proto_juneau_v1_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

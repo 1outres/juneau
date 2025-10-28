@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: cni-daemon
+  namespace: kube-system
+  labels:
+    app: cni-daemon
+spec:
+  selector:
+    matchLabels:
+      app: cni-daemon
+  template:
+    metadata:
+      labels:
+        app: cni-daemon
+    spec:
+      hostNetwork: true
+      tolerations:
+        - operator: "Exists"
+      serviceAccountName: cni-daemon
+      containers:
+        - name: cni-daemon
+          image: daemon:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: cni-bin
+              mountPath: /opt/cni/bin
+            - name: cni-conf
+              mountPath: /etc/cni/net.d
+            - name: host-var-run
+              mountPath: /var/run
+      volumes:
+        - name: cni-bin
+          hostPath:
+            path: /opt/cni/bin
+        - name: cni-conf
+          hostPath:
+            path: /etc/cni/net.d
+        - name: host-var-run
+          hostPath:
+            path: /var/run
+---
