@@ -1,5 +1,7 @@
 package cni
 
-func (c *Cni) CmdDel() error {
+import "context"
+
+func (c *Cni) CmdDel(ctx context.Context) error {
 	return nil
 }

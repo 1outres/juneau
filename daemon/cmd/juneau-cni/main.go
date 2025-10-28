@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/1outres/juneau/daemon/internal/cni"
 	"github.com/1outres/juneau/daemon/pkg/juneaupb"
@@ -24,20 +26,20 @@ func main() {
 }
 
 func cmdAdd(args *skel.CmdArgs) error {
-	return executeCmd(args, func(cni *cni.Cni) error {
-		return cni.CmdAdd()
+	return executeCmd(args, func(cni *cni.Cni) CmdFunc {
+		return cni.CmdAdd
 	})
 }
 
 func cmdDel(args *skel.CmdArgs) error {
-	return executeCmd(args, func(cni *cni.Cni) error {
-		return cni.CmdDel()
+	return executeCmd(args, func(cni *cni.Cni) CmdFunc {
+		return cni.CmdDel
 	})
 }
 
 func cmdCheck(args *skel.CmdArgs) error {
-	return executeCmd(args, func(cni *cni.Cni) error {
-		return cni.CmdCheck()
+	return executeCmd(args, func(cni *cni.Cni) CmdFunc {
+		return cni.CmdCheck
 	})
 }
 
@@ -45,7 +47,9 @@ type NetConf struct {
 	types.NetConf
 }
 
-func executeCmd(args *skel.CmdArgs, cmd func(cni *cni.Cni) error) error {
+type CmdFunc func(context.Context) error
+
+func executeCmd(args *skel.CmdArgs, cmd func(cni *cni.Cni) CmdFunc) error {
 	logFile, err := os.OpenFile("/var/log/juneau-cni.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return &types.Error{
@@ -116,11 +120,16 @@ func executeCmd(args *skel.CmdArgs, cmd func(cni *cni.Cni) error) error {
 		ContainerID:  args.ContainerID,
 		Netns:        args.Netns,
 		IfName:       args.IfName,
+
+		CNIVersion: netConf.CNIVersion,
 	}
+
+	ctx, ctxCancel := context.WithTimeout(context.Background(), time.Minute)
+	defer ctxCancel()
 
 	zap.L().Info("CNI Initialized")
 
-	return cmd(cni)
+	return cmd(cni)(ctx)
 }
 
 func parseCNIArgs(argStr string) map[string]string {

@@ -11,6 +11,8 @@ type Cni struct {
 	ContainerID  string
 	Netns        string
 	IfName       string
+
+	CNIVersion string
 }
 
 func (c *Cni) vethHostName() string {

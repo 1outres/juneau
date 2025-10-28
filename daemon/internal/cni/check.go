@@ -1,5 +1,7 @@
 package cni
 
-func (c *Cni) CmdCheck() error {
+import "context"
+
+func (c *Cni) CmdCheck(ctx context.Context) error {
 	return nil
 }

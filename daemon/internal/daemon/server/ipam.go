@@ -10,6 +10,7 @@ import (
 	"github.com/1outres/juneau/daemon/internal/daemon/kubeclient"
 	"github.com/1outres/juneau/daemon/pkg/juneaupb"
 	"go.uber.org/zap"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/cache"
 )
@@ -79,7 +80,7 @@ func (s *IPAMServer) Allocate(ctx context.Context, req *juneaupb.AllocateRequest
 		address.Spec.Address = staticIp
 	}
 
-	if _, err := s.kubeclient.Juneauv1alpha1().Address(pod.Namespace).Create(ctx, address, metav1.CreateOptions{}); err != nil {
+	if _, err := s.kubeclient.Juneauv1alpha1().Address(pod.Namespace).Create(ctx, address, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
 		zap.S().Errorf("failed to create address %s/%s: %v", address.Namespace, address.Name, err)
 		return &juneaupb.AllocateResponse{
 			Success: false,
