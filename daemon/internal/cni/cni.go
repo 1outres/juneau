@@ -116,7 +116,6 @@ func CmdAdd(args *skel.CmdArgs) error {
 
 	allocateRes, err := ipamClient.Allocate(ctx, &juneaupb.AllocateRequest{
 		Id: &juneaupb.CNIIdentity{
-			NodeName:      cniArgs["K8S_NODE_NAME"],
 			PodNamespace:  cniArgs["K8S_POD_NAMESPACE"],
 			PodName:       cniArgs["K8S_POD_NAME"],
 			PodUid:        cniArgs["K8S_POD_UID"],
