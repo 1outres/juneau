@@ -29,11 +29,11 @@ type fakeSubnetLeases struct {
 	Fake *FakeApiV1alpha1
 }
 
-func newFakeSubnetLeases(fake *FakeApiV1alpha1, namespace string) apiv1alpha1.SubnetLeaseInterface {
+func newFakeSubnetLeases(fake *FakeApiV1alpha1) apiv1alpha1.SubnetLeaseInterface {
 	return &fakeSubnetLeases{
 		gentype.NewFakeClientWithList[*v1alpha1.SubnetLease, *v1alpha1.SubnetLeaseList](
 			fake.Fake,
-			namespace,
+			"",
 			v1alpha1.SchemeGroupVersion.WithResource("subnetleases"),
 			v1alpha1.SchemeGroupVersion.WithKind("SubnetLease"),
 			func() *v1alpha1.SubnetLease { return &v1alpha1.SubnetLease{} },

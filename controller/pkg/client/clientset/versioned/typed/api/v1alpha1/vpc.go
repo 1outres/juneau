@@ -31,7 +31,7 @@ import (
 // VpcsGetter has a method to return a VpcInterface.
 // A group's client should implement this interface.
 type VpcsGetter interface {
-	Vpcs(namespace string) VpcInterface
+	Vpcs() VpcInterface
 }
 
 // VpcInterface has methods to work with Vpc resources.
@@ -55,13 +55,13 @@ type vpcs struct {
 }
 
 // newVpcs returns a Vpcs
-func newVpcs(c *ApiV1alpha1Client, namespace string) *vpcs {
+func newVpcs(c *ApiV1alpha1Client) *vpcs {
 	return &vpcs{
 		gentype.NewClientWithList[*apiv1alpha1.Vpc, *apiv1alpha1.VpcList](
 			"vpcs",
 			c.RESTClient(),
 			scheme.ParameterCodec,
-			namespace,
+			"",
 			func() *apiv1alpha1.Vpc { return &apiv1alpha1.Vpc{} },
 			func() *apiv1alpha1.VpcList { return &apiv1alpha1.VpcList{} },
 		),

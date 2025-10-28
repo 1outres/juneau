@@ -31,7 +31,7 @@ import (
 // SubnetsGetter has a method to return a SubnetInterface.
 // A group's client should implement this interface.
 type SubnetsGetter interface {
-	Subnets(namespace string) SubnetInterface
+	Subnets() SubnetInterface
 }
 
 // SubnetInterface has methods to work with Subnet resources.
@@ -55,13 +55,13 @@ type subnets struct {
 }
 
 // newSubnets returns a Subnets
-func newSubnets(c *ApiV1alpha1Client, namespace string) *subnets {
+func newSubnets(c *ApiV1alpha1Client) *subnets {
 	return &subnets{
 		gentype.NewClientWithList[*apiv1alpha1.Subnet, *apiv1alpha1.SubnetList](
 			"subnets",
 			c.RESTClient(),
 			scheme.ParameterCodec,
-			namespace,
+			"",
 			func() *apiv1alpha1.Subnet { return &apiv1alpha1.Subnet{} },
 			func() *apiv1alpha1.SubnetList { return &apiv1alpha1.SubnetList{} },
 		),

@@ -42,16 +42,16 @@ func (c *ApiV1alpha1Client) Addresses(namespace string) AddressInterface {
 	return newAddresses(c, namespace)
 }
 
-func (c *ApiV1alpha1Client) Subnets(namespace string) SubnetInterface {
-	return newSubnets(c, namespace)
+func (c *ApiV1alpha1Client) Subnets() SubnetInterface {
+	return newSubnets(c)
 }
 
-func (c *ApiV1alpha1Client) SubnetLeases(namespace string) SubnetLeaseInterface {
-	return newSubnetLeases(c, namespace)
+func (c *ApiV1alpha1Client) SubnetLeases() SubnetLeaseInterface {
+	return newSubnetLeases(c)
 }
 
-func (c *ApiV1alpha1Client) Vpcs(namespace string) VpcInterface {
-	return newVpcs(c, namespace)
+func (c *ApiV1alpha1Client) Vpcs() VpcInterface {
+	return newVpcs(c)
 }
 
 // NewForConfig creates a new ApiV1alpha1Client for the given config.

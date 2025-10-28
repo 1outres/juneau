@@ -31,16 +31,16 @@ func (c *FakeApiV1alpha1) Addresses(namespace string) v1alpha1.AddressInterface 
 	return newFakeAddresses(c, namespace)
 }
 
-func (c *FakeApiV1alpha1) Subnets(namespace string) v1alpha1.SubnetInterface {
-	return newFakeSubnets(c, namespace)
+func (c *FakeApiV1alpha1) Subnets() v1alpha1.SubnetInterface {
+	return newFakeSubnets(c)
 }
 
-func (c *FakeApiV1alpha1) SubnetLeases(namespace string) v1alpha1.SubnetLeaseInterface {
-	return newFakeSubnetLeases(c, namespace)
+func (c *FakeApiV1alpha1) SubnetLeases() v1alpha1.SubnetLeaseInterface {
+	return newFakeSubnetLeases(c)
 }
 
-func (c *FakeApiV1alpha1) Vpcs(namespace string) v1alpha1.VpcInterface {
-	return newFakeVpcs(c, namespace)
+func (c *FakeApiV1alpha1) Vpcs() v1alpha1.VpcInterface {
+	return newFakeVpcs(c)
 }
 
 // RESTClient returns a RESTClient that is used to communicate

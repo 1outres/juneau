@@ -6,7 +6,7 @@ SCRIPT_ROOT=$(dirname "${BASH_SOURCE[0]}")/..
 
 echo $SCRIPT_ROOT
 
-kube::codegen::gen_client \
+kube::codegen::gen_client --with-watch \
   --output-dir "$SCRIPT_ROOT"/pkg/client \
   --output-pkg github.com/1outres/juneau/controller/pkg/client \
   --boilerplate "$SCRIPT_ROOT"/hack/boilerplate.go.txt \

@@ -31,7 +31,7 @@ import (
 // SubnetLeasesGetter has a method to return a SubnetLeaseInterface.
 // A group's client should implement this interface.
 type SubnetLeasesGetter interface {
-	SubnetLeases(namespace string) SubnetLeaseInterface
+	SubnetLeases() SubnetLeaseInterface
 }
 
 // SubnetLeaseInterface has methods to work with SubnetLease resources.
@@ -55,13 +55,13 @@ type subnetLeases struct {
 }
 
 // newSubnetLeases returns a SubnetLeases
-func newSubnetLeases(c *ApiV1alpha1Client, namespace string) *subnetLeases {
+func newSubnetLeases(c *ApiV1alpha1Client) *subnetLeases {
 	return &subnetLeases{
 		gentype.NewClientWithList[*apiv1alpha1.SubnetLease, *apiv1alpha1.SubnetLeaseList](
 			"subnetleases",
 			c.RESTClient(),
 			scheme.ParameterCodec,
-			namespace,
+			"",
 			func() *apiv1alpha1.SubnetLease { return &apiv1alpha1.SubnetLease{} },
 			func() *apiv1alpha1.SubnetLeaseList { return &apiv1alpha1.SubnetLeaseList{} },
 		),

@@ -29,11 +29,11 @@ type fakeVpcs struct {
 	Fake *FakeApiV1alpha1
 }
 
-func newFakeVpcs(fake *FakeApiV1alpha1, namespace string) apiv1alpha1.VpcInterface {
+func newFakeVpcs(fake *FakeApiV1alpha1) apiv1alpha1.VpcInterface {
 	return &fakeVpcs{
 		gentype.NewFakeClientWithList[*v1alpha1.Vpc, *v1alpha1.VpcList](
 			fake.Fake,
-			namespace,
+			"",
 			v1alpha1.SchemeGroupVersion.WithResource("vpcs"),
 			v1alpha1.SchemeGroupVersion.WithKind("Vpc"),
 			func() *v1alpha1.Vpc { return &v1alpha1.Vpc{} },
