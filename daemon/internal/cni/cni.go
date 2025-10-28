@@ -21,6 +21,7 @@ type NetConf struct {
 	types.NetConf
 }
 
+var conn *grpc.ClientConn
 var ipamClient juneaupb.IPAMClient
 
 func Init() error {
@@ -44,7 +45,7 @@ func Init() error {
 	logger := zap.New(core, zap.AddCaller())
 	zap.ReplaceGlobals(logger)
 
-	conn, err := grpc.Dial(
+	conn, err = grpc.Dial(
 		"unix:///var/run/juneaud.sock",
 		grpc.WithInsecure(),
 		grpc.WithBlock(),
@@ -54,14 +55,24 @@ func Init() error {
 		zap.L().Error("Failed to connect to juneaud", zap.Error(err))
 		return err
 	}
-	defer conn.Close()
 
 	ipamClient = juneaupb.NewIPAMClient(conn)
+
+	zap.S().Info("CNI initialized")
 
 	return nil
 }
 
 func CmdAdd(args *skel.CmdArgs) error {
+	if err := Init(); err != nil {
+		return &types.Error{
+			Code: types.ErrInternal,
+			Msg: "Failed to init",
+			Details: err.Error(),
+		}
+	}
+	defer conn.Close()
+
 	ctx := context.Background()
 	zap.L().Info("CmdAdd", zap.String("args", args.Args))
 

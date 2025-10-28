@@ -110,6 +110,12 @@ func (c *client) WaitForCacheSync(ctx context.Context) error {
 			return fmt.Errorf("failed to sync cache for %v", resourceType)
 		}
 	}
+	synced = c.factory.WaitForCacheSync(ctx.Done())
+	for resourceType, ok := range synced {
+		if !ok {
+			return fmt.Errorf("failed to sync cache for %v", resourceType)
+		}
+	}
 	return nil
 }
 
