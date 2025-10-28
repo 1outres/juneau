@@ -11,9 +11,9 @@ import (
 	"github.com/1outres/juneau/daemon/internal/daemon/server"
 	"github.com/1outres/juneau/daemon/pkg/juneaupb"
 	"github.com/urfave/cli/v3"
-	"k8s.io/client-go/rest"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"k8s.io/client-go/rest"
 )
 
 func NewApp() *cli.Command {

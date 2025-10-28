@@ -79,8 +79,8 @@ func NewClient(config *rest.Config) (Client, error) {
 	juneaufactory := juneauexternalversions.NewSharedInformerFactory(juneaucs, 30*time.Second)
 
 	return &client{
-		clientset: cs,
-		factory: factory,
+		clientset:       cs,
+		factory:         factory,
 		juneauclientset: juneaucs,
 		juneaufactory:   juneaufactory,
 	}, nil
@@ -204,4 +204,3 @@ func (c *CachedClient[T]) Delete(ctx context.Context, name string, opts metav1.D
 func (c *CachedClient[T]) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (*T, error) {
 	return c.clientset.Patch(ctx, name, pt, data, opts, subresources...)
 }
-

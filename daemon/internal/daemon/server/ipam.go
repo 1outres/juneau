@@ -2,12 +2,16 @@ package server
 
 import (
 	"context"
+	"fmt"
+	"net"
+	"time"
 
 	"github.com/1outres/juneau/controller/api/v1alpha1"
 	"github.com/1outres/juneau/daemon/internal/daemon/kubeclient"
 	"github.com/1outres/juneau/daemon/pkg/juneaupb"
 	"go.uber.org/zap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/cache"
 )
 
 type IPAMServer struct {
@@ -41,28 +45,38 @@ func (s *IPAMServer) Allocate(ctx context.Context, req *juneaupb.AllocateRequest
 		}, nil
 	}
 
+	subnetName, ok := pod.Annotations["juneau.loutres.me/subnet"]
+	if !ok {
+		subnetName = "default"
+	}
+
+	subnet, err := s.kubeclient.Juneauv1alpha1().Subnet().Get(ctx, subnetName, metav1.GetOptions{})
+	if err != nil {
+		zap.S().Errorf("failed to get subnet %s: %v", subnetName, err)
+		return &juneaupb.AllocateResponse{
+			Error: &juneaupb.Error{
+			Message: "failed to get subnet",
+			},
+		}, nil
+	}
 
 	address := &v1alpha1.Address{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: req.Id.IfName+"."+pod.Name,
+			Namespace: pod.Namespace,
+			Name:      req.Id.IfName + "." + pod.Name,
 		},
 		Spec: v1alpha1.AddressSpec{
 			MAC: req.MacAddress,
+			Subnet: subnet.Name,
 		},
 	}
-
-	subnet, ok := pod.Annotations["juneau.loutres.me/subnet"]
-	if !ok {
-		subnet = "default"
-	}
-	address.Spec.Subnet = subnet
 
 	staticIp, ok := pod.Annotations["juneau.loutres.me/static-ip"]
 	if ok {
 		address.Spec.Address = staticIp
 	}
 
-	if _, err := s.kubeclient.Juneauv1alpha1().Address(pod.Namespace).Create(ctx,address, metav1.CreateOptions{}); err != nil {
+	if _, err := s.kubeclient.Juneauv1alpha1().Address(pod.Namespace).Create(ctx, address, metav1.CreateOptions{}); err != nil {
 		zap.S().Errorf("failed to create address %s/%s: %v", address.Namespace, address.Name, err)
 		return &juneaupb.AllocateResponse{
 			Error: &juneaupb.Error{
@@ -71,8 +85,76 @@ func (s *IPAMServer) Allocate(ctx context.Context, req *juneaupb.AllocateRequest
 		}, nil
 	}
 
-	// address.Status.Addressが設定されるまで待つ(30秒でタイムアウト)
-	informerFactory := s.kubeclient.JuneauSharedInformerFactory()
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 
-	return nil, nil
+	addrInformer := s.kubeclient.JuneauSharedInformerFactory().Api().V1alpha1().Addresses().Informer()
+	addrLister := s.kubeclient.JuneauSharedInformerFactory().Api().V1alpha1().Addresses().Lister()
+
+	keyNS := pod.Namespace
+	keyName := address.Name
+
+	ipCh := make(chan string, 1)
+
+	notifyIfReady := func(obj any) {
+		a, ok := obj.(*v1alpha1.Address)
+		if !ok {
+			return
+		}
+		if a.Namespace != keyNS || a.Name != keyName {
+			return
+		}
+		if ip := a.Status.Address; ip != "" {
+			ipCh <- ip
+		}
+	}
+
+	reg, err := addrInformer.AddEventHandlerWithResyncPeriod(
+		cache.ResourceEventHandlerFuncs{
+			AddFunc:    notifyIfReady,
+			UpdateFunc: func(oldObj, newObj any) { notifyIfReady(newObj) },
+		},
+		0,
+	)
+	if err != nil {
+		zap.S().Errorf("failed to add event handler: %v", err)
+		return &juneaupb.AllocateResponse{
+			Error: &juneaupb.Error{Message: "failed to add event handler"},
+		}, nil
+	}
+	defer func() {
+		_ = addrInformer.RemoveEventHandler(reg)
+	}()
+
+	if got, err := addrLister.Addresses(keyNS).Get(keyName); err == nil {
+		if ip := got.Status.Address; ip != "" {
+			ipCh <- ip
+		}
+	}
+
+	select {
+	case <-waitCtx.Done():
+		zap.S().Warnf("waiting address %s/%s status.address timed out", keyNS, keyName)
+		return &juneaupb.AllocateResponse{
+			Error: &juneaupb.Error{Message: "allocation timed out"},
+		}, nil
+	case ip := <-ipCh:
+		_, ipnet, err := net.ParseCIDR(subnet.Spec.CIDR)
+		if err != nil {
+			zap.S().Errorf("failed to parse subnet CIDR %s: %v", subnet.Spec.CIDR, err)
+			return &juneaupb.AllocateResponse{
+				Error: &juneaupb.Error{Message: "failed to parse subnet CIDR"},
+			}, nil
+		}
+		ones, _ := ipnet.Mask.Size()
+
+		return &juneaupb.AllocateResponse{
+			IpAssignment: &juneaupb.IPAssignment{
+				Ipv4: &juneaupb.IPConfig{
+					AddressCidr: fmt.Sprintf("%s/%d", ip, ones),
+					Gateway: subnet.Status.Gateway,
+				},
+			},
+		}, nil
+	}
 }
