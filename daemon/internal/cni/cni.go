@@ -211,6 +211,8 @@ func CmdDel(args *skel.CmdArgs) error {
 	ctx := context.Background()
 	zap.L().Info("CmdDel", zap.String("args", args.Args))
 
+
+
 	return nil
 }
 

@@ -9,7 +9,6 @@ service IPAM {
 }
 
 message CNIIdentity {
-  string node_name     = 1;
   string pod_namespace = 2;
   string pod_name      = 3;
   string container_id  = 4;

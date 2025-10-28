@@ -23,7 +23,6 @@ const (
 
 type CNIIdentity struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	NodeName      string                 `protobuf:"bytes,1,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
 	PodNamespace  string                 `protobuf:"bytes,2,opt,name=pod_namespace,json=podNamespace,proto3" json:"pod_namespace,omitempty"`
 	PodName       string                 `protobuf:"bytes,3,opt,name=pod_name,json=podName,proto3" json:"pod_name,omitempty"`
 	ContainerId   string                 `protobuf:"bytes,4,opt,name=container_id,json=containerId,proto3" json:"container_id,omitempty"`
@@ -61,13 +60,6 @@ func (x *CNIIdentity) ProtoReflect() protoreflect.Message {
 // Deprecated: Use CNIIdentity.ProtoReflect.Descriptor instead.
 func (*CNIIdentity) Descriptor() ([]byte, []int) {
 	return file_proto_juneau_v1_proto_rawDescGZIP(), []int{0}
-}
-
-func (x *CNIIdentity) GetNodeName() string {
-	if x != nil {
-		return x.NodeName
-	}
-	return ""
 }
 
 func (x *CNIIdentity) GetPodNamespace() string {
@@ -361,9 +353,8 @@ var File_proto_juneau_v1_proto protoreflect.FileDescriptor
 
 const file_proto_juneau_v1_proto_rawDesc = "" +
 	"\n" +
-	"\x15proto/juneau.v1.proto\x12\aecho.v1\"\xbf\x01\n" +
-	"\vCNIIdentity\x12\x1b\n" +
-	"\tnode_name\x18\x01 \x01(\tR\bnodeName\x12#\n" +
+	"\x15proto/juneau.v1.proto\x12\aecho.v1\"\xa2\x01\n" +
+	"\vCNIIdentity\x12#\n" +
 	"\rpod_namespace\x18\x02 \x01(\tR\fpodNamespace\x12\x19\n" +
 	"\bpod_name\x18\x03 \x01(\tR\apodName\x12!\n" +
 	"\fcontainer_id\x18\x04 \x01(\tR\vcontainerId\x12\x17\n" +
