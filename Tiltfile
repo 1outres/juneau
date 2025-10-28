@@ -64,3 +64,10 @@ docker_build_with_restart(
 
 watch_file('./daemon/config/')
 k8s_yaml(kustomize('./daemon/config/default'))
+
+# ========== CNI ===========
+
+local_resource(
+    'CNI Compile', 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o pkg/cni/cni cmd/juneau-cni/main.go', deps=['daemon/cmd/juneau-cni/main.go', 'daemon/internal', 'daemon/pkg'],
+    ignore=['daemon/pkg/cni'], dir='daemon/')
+
