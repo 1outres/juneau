@@ -16,9 +16,9 @@ type Cni struct {
 }
 
 func (c *Cni) vethHostName() string {
-	return "veth+" + c.ContainerID[0:10]
+	return c.IfName + "+" + c.ContainerID[0:10]
 }
 
 func (c *Cni) vethPeerName() string {
-	return c.IfName + "+" + c.ContainerID[0:10]
+	return "tmp+" + c.IfName + "+" + c.ContainerID[0:6]
 }
