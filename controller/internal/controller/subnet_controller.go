@@ -24,7 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
 // SubnetReconciler reconciles a Subnet object
@@ -57,7 +57,7 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 // SetupWithManager sets up the controller with the Manager.
 func (r *SubnetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&juneauloutresmev1alpha1.Subnet{}).
+		For(&juneauv1alpha1.Subnet{}).
 		Named("subnet").
 		Complete(r)
 }

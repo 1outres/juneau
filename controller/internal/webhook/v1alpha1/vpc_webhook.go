@@ -26,7 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
 // nolint:unused
@@ -35,7 +35,7 @@ var vpclog = logf.Log.WithName("vpc-resource")
 
 // SetupVpcWebhookWithManager registers the webhook for Vpc in the manager.
 func SetupVpcWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(&juneauloutresmev1alpha1.Vpc{}).
+	return ctrl.NewWebhookManagedBy(mgr).For(&juneauv1alpha1.Vpc{}).
 		WithValidator(&VpcCustomValidator{}).
 		WithDefaulter(&VpcCustomDefaulter{}).
 		Complete()
@@ -58,7 +58,7 @@ var _ webhook.CustomDefaulter = &VpcCustomDefaulter{}
 
 // Default implements webhook.CustomDefaulter so a webhook will be registered for the Kind Vpc.
 func (d *VpcCustomDefaulter) Default(ctx context.Context, obj runtime.Object) error {
-	vpc, ok := obj.(*juneauloutresmev1alpha1.Vpc)
+	vpc, ok := obj.(*juneauv1alpha1.Vpc)
 
 	if !ok {
 		return fmt.Errorf("expected an Vpc object but got %T", obj)
@@ -88,7 +88,7 @@ var _ webhook.CustomValidator = &VpcCustomValidator{}
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type Vpc.
 func (v *VpcCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	vpc, ok := obj.(*juneauloutresmev1alpha1.Vpc)
+	vpc, ok := obj.(*juneauv1alpha1.Vpc)
 	if !ok {
 		return nil, fmt.Errorf("expected a Vpc object but got %T", obj)
 	}
@@ -101,7 +101,7 @@ func (v *VpcCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Obj
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type Vpc.
 func (v *VpcCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	vpc, ok := newObj.(*juneauloutresmev1alpha1.Vpc)
+	vpc, ok := newObj.(*juneauv1alpha1.Vpc)
 	if !ok {
 		return nil, fmt.Errorf("expected a Vpc object for the newObj but got %T", newObj)
 	}
@@ -114,7 +114,7 @@ func (v *VpcCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj 
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type Vpc.
 func (v *VpcCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	vpc, ok := obj.(*juneauloutresmev1alpha1.Vpc)
+	vpc, ok := obj.(*juneauv1alpha1.Vpc)
 	if !ok {
 		return nil, fmt.Errorf("expected a Vpc object but got %T", obj)
 	}

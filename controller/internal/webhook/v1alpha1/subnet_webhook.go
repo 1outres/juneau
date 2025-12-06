@@ -26,7 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
 // nolint:unused
@@ -35,7 +35,7 @@ var subnetlog = logf.Log.WithName("subnet-resource")
 
 // SetupSubnetWebhookWithManager registers the webhook for Subnet in the manager.
 func SetupSubnetWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(&juneauloutresmev1alpha1.Subnet{}).
+	return ctrl.NewWebhookManagedBy(mgr).For(&juneauv1alpha1.Subnet{}).
 		WithValidator(&SubnetCustomValidator{}).
 		WithDefaulter(&SubnetCustomDefaulter{}).
 		Complete()
@@ -58,7 +58,7 @@ var _ webhook.CustomDefaulter = &SubnetCustomDefaulter{}
 
 // Default implements webhook.CustomDefaulter so a webhook will be registered for the Kind Subnet.
 func (d *SubnetCustomDefaulter) Default(ctx context.Context, obj runtime.Object) error {
-	subnet, ok := obj.(*juneauloutresmev1alpha1.Subnet)
+	subnet, ok := obj.(*juneauv1alpha1.Subnet)
 
 	if !ok {
 		return fmt.Errorf("expected an Subnet object but got %T", obj)
@@ -88,7 +88,7 @@ var _ webhook.CustomValidator = &SubnetCustomValidator{}
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type Subnet.
 func (v *SubnetCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	subnet, ok := obj.(*juneauloutresmev1alpha1.Subnet)
+	subnet, ok := obj.(*juneauv1alpha1.Subnet)
 	if !ok {
 		return nil, fmt.Errorf("expected a Subnet object but got %T", obj)
 	}
@@ -101,7 +101,7 @@ func (v *SubnetCustomValidator) ValidateCreate(ctx context.Context, obj runtime.
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type Subnet.
 func (v *SubnetCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	subnet, ok := newObj.(*juneauloutresmev1alpha1.Subnet)
+	subnet, ok := newObj.(*juneauv1alpha1.Subnet)
 	if !ok {
 		return nil, fmt.Errorf("expected a Subnet object for the newObj but got %T", newObj)
 	}
@@ -114,7 +114,7 @@ func (v *SubnetCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newO
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type Subnet.
 func (v *SubnetCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	subnet, ok := obj.(*juneauloutresmev1alpha1.Subnet)
+	subnet, ok := obj.(*juneauv1alpha1.Subnet)
 	if !ok {
 		return nil, fmt.Errorf("expected a Subnet object but got %T", obj)
 	}

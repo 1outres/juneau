@@ -20,21 +20,21 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	// TODO (user): Add any additional imports if needed
 )
 
 var _ = Describe("Subnet Webhook", func() {
 	var (
-		obj       *juneauloutresmev1alpha1.Subnet
-		oldObj    *juneauloutresmev1alpha1.Subnet
+		obj       *juneauv1alpha1.Subnet
+		oldObj    *juneauv1alpha1.Subnet
 		validator SubnetCustomValidator
 		defaulter SubnetCustomDefaulter
 	)
 
 	BeforeEach(func() {
-		obj = &juneauloutresmev1alpha1.Subnet{}
-		oldObj = &juneauloutresmev1alpha1.Subnet{}
+		obj = &juneauv1alpha1.Subnet{}
+		oldObj = &juneauv1alpha1.Subnet{}
 		validator = SubnetCustomValidator{}
 		Expect(validator).NotTo(BeNil(), "Expected validator to be initialized")
 		defaulter = SubnetCustomDefaulter{}

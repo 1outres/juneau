@@ -27,7 +27,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
 var _ = Describe("Vpc Controller", func() {
@@ -40,13 +40,13 @@ var _ = Describe("Vpc Controller", func() {
 			Name:      resourceName,
 			Namespace: "default", // TODO(user):Modify as needed
 		}
-		vpc := &juneauloutresmev1alpha1.Vpc{}
+		vpc := &juneauv1alpha1.Vpc{}
 
 		BeforeEach(func() {
 			By("creating the custom resource for the Kind Vpc")
 			err := k8sClient.Get(ctx, typeNamespacedName, vpc)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &juneauloutresmev1alpha1.Vpc{
+				resource := &juneauv1alpha1.Vpc{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
@@ -59,7 +59,7 @@ var _ = Describe("Vpc Controller", func() {
 
 		AfterEach(func() {
 			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &juneauloutresmev1alpha1.Vpc{}
+			resource := &juneauv1alpha1.Vpc{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 

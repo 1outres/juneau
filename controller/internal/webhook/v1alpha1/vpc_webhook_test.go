@@ -20,21 +20,21 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	// TODO (user): Add any additional imports if needed
 )
 
 var _ = Describe("Vpc Webhook", func() {
 	var (
-		obj       *juneauloutresmev1alpha1.Vpc
-		oldObj    *juneauloutresmev1alpha1.Vpc
+		obj       *juneauv1alpha1.Vpc
+		oldObj    *juneauv1alpha1.Vpc
 		validator VpcCustomValidator
 		defaulter VpcCustomDefaulter
 	)
 
 	BeforeEach(func() {
-		obj = &juneauloutresmev1alpha1.Vpc{}
-		oldObj = &juneauloutresmev1alpha1.Vpc{}
+		obj = &juneauv1alpha1.Vpc{}
+		oldObj = &juneauv1alpha1.Vpc{}
 		validator = VpcCustomValidator{}
 		Expect(validator).NotTo(BeNil(), "Expected validator to be initialized")
 		defaulter = VpcCustomDefaulter{}
