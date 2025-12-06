@@ -22,10 +22,13 @@ import (
 
 // SubnetSpec defines the desired state of Subnet.
 type SubnetSpec struct {
+	Vpc  string `json:"vpc"`
+	CIDR string `json:"cidr"`
 }
 
 // SubnetStatus defines the observed state of Subnet.
 type SubnetStatus struct {
+	VNI uint32 `json:"vni,omitempty"`
 }
 
 // +kubebuilder:object:root=true

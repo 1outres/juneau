@@ -20,7 +20,10 @@ import (
 	"context"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -78,6 +81,19 @@ func (v *VpcCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Obj
 		return nil, fmt.Errorf("expected a Vpc object but got %T", obj)
 	}
 	vpclog.Info("Validation for Vpc upon creation", "name", vpc.GetName())
+
+	var errs field.ErrorList
+
+	// TODO: Temporary limitation. Remove in future.
+	if vpc.Name != "default" {
+		errs = append(errs, field.Invalid(field.NewPath("metadata").Child("name"), vpc.Name, "only 'default' is allowed as Vpc name for now"))
+	}
+
+	if len(errs) > 0 {
+		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "Vpc"}, vpc.Name, errs)
+		subnetlog.Info("Validation failed for Vpc", "name", vpc.GetName(), "error", err)
+		return nil, err
+	}
 
 	return nil, nil
 }

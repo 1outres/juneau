@@ -19,9 +19,14 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"net"
 
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -59,6 +64,11 @@ func (d *SubnetCustomDefaulter) Default(ctx context.Context, obj runtime.Object)
 	}
 	subnetlog.Info("Defaulting for Subnet", "name", subnet.GetName())
 
+	_, cidr, err := net.ParseCIDR(subnet.Spec.CIDR)
+	if err == nil {
+		subnet.Spec.CIDR = cidr.String()
+	}
+
 	return nil
 }
 
@@ -67,6 +77,7 @@ func (d *SubnetCustomDefaulter) Default(ctx context.Context, obj runtime.Object)
 // SubnetCustomValidator struct is responsible for validating the Subnet resource
 // when it is created, updated, or deleted.
 type SubnetCustomValidator struct {
+	client.Client
 }
 
 var _ webhook.CustomValidator = &SubnetCustomValidator{}
@@ -79,6 +90,33 @@ func (v *SubnetCustomValidator) ValidateCreate(ctx context.Context, obj runtime.
 	}
 	subnetlog.Info("Validation for Subnet upon creation", "name", subnet.GetName())
 
+	var errs field.ErrorList
+
+	// TODO: Temporary limitation. Remove in future.
+	if subnet.Name != "default" {
+		errs = append(errs, field.Invalid(field.NewPath("metadata").Child("name"), subnet.Name, "only 'default' is allowed as Subnet name for now"))
+	}
+
+	var vpc juneauv1alpha1.Vpc
+	if err := v.Get(ctx, client.ObjectKey{Name: subnet.Spec.Vpc}, &vpc); err != nil {
+		if errors.IsNotFound(err) {
+			errs = append(errs, field.Invalid(field.NewPath("spec").Child("vpc"), subnet.Spec.Vpc, "referenced Vpc does not exist"))
+		} else {
+			return nil, err
+		}
+	}
+
+	_, _, err := net.ParseCIDR(subnet.Spec.CIDR)
+	if err != nil {
+		errs = append(errs, field.Invalid(field.NewPath("spec").Child("cidr"), subnet.Spec.CIDR, "invalid CIDR format"))
+	}
+
+	if len(errs) > 0 {
+		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "Subnet"}, subnet.Name, errs)
+		subnetlog.Info("Validation failed for Subnet", "name", subnet.GetName(), "error", err)
+		return nil, err
+	}
+
 	return nil, nil
 }
 
@@ -88,7 +126,27 @@ func (v *SubnetCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newO
 	if !ok {
 		return nil, fmt.Errorf("expected a Subnet object for the newObj but got %T", newObj)
 	}
+	oldSubnet, ok := oldObj.(*juneauv1alpha1.Subnet)
+	if !ok {
+		return nil, fmt.Errorf("expected a Subnet object for the oldObj but got %T", oldObj)
+	}
 	subnetlog.Info("Validation for Subnet upon update", "name", subnet.GetName())
+
+	var errs field.ErrorList
+
+	if subnet.Spec.Vpc != oldSubnet.Spec.Vpc {
+		errs = append(errs, field.Invalid(field.NewPath("spec").Child("vpc"), subnet.Spec.Vpc, "changing the Vpc of a Subnet is not allowed"))
+	}
+
+	if subnet.Spec.CIDR != oldSubnet.Spec.CIDR {
+		errs = append(errs, field.Invalid(field.NewPath("spec").Child("cidr"), subnet.Spec.CIDR, "changing the CIDR of a Subnet is not allowed"))
+	}
+
+	if len(errs) > 0 {
+		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "Subnet"}, subnet.Name, errs)
+		subnetlog.Info("Validation failed for Subnet", "name", subnet.GetName(), "error", err)
+		return nil, err
+	}
 
 	return nil, nil
 }
