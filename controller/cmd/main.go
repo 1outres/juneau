@@ -17,12 +17,15 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 
 	webhookmanifests "github.com/1outres/juneau/controller/config/webhook"
+	"github.com/1outres/juneau/controller/internal/bootstrap"
 	"github.com/1outres/juneau/controller/internal/webhookapply"
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -35,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -70,6 +74,7 @@ func main() {
 	var enableLeaderElection bool
 	var probeAddr string
 	var secureMetrics bool
+	var defaultSubnetCIDR string
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
 	var webhookCASecret string
@@ -82,6 +87,7 @@ func main() {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.BoolVar(&secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
+	flag.StringVar(&defaultSubnetCIDR, "default-subnet-cidr", "10.16.0.0/16", "CIDR block for the default subnet created at startup.")
 	flag.StringVar(&webhookCASecret, "webhook-ca-secret-name", "webhook-certs", "Secret name that holds webhook CA/certs")
 	flag.StringVar(&podNamespace, "pod-namespace", os.Getenv("POD_NAMESPACE"), "Namespace where webhook secrets live (defaults to POD_NAMESPACE)")
 	flag.StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
@@ -225,6 +231,16 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Subnet")
+		os.Exit(1)
+	}
+	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		if !mgr.GetCache().WaitForCacheSync(ctx) {
+			return fmt.Errorf("cache sync failed")
+		}
+
+		return bootstrap.EnsureDefaults(ctx, mgr.GetClient(), setupLog.WithName("bootstrap"), defaultSubnetCIDR)
+	})); err != nil {
+		setupLog.Error(err, "unable to add default resource bootstrapper")
 		os.Exit(1)
 	}
 	// nolint:goconst
