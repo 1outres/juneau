@@ -6,6 +6,5 @@ resources:
   - clusterrolebinding.yaml
   - role.yaml
   - rolebinding.yaml
-  - secret.yaml
   - job.yaml
   - cronjob.yaml

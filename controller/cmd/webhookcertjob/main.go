@@ -1,5 +1,6 @@
-// webhookcertjob issues/renews the webhook TLS certificate via the CSR API and writes it into a Secret.
-// It is intended to run as a Job/CronJob with hostNetwork enabled; SANs are populated with all node IPs and localhost.
+// webhookcertjob generates or reuses a dedicated CA, signs a webhook-serving certificate with it,
+// and writes the server cert/key (and CA cert) into a Secret for the webhook Pod to mount.
+// It is intended to run as a Job/CronJob with hostNetwork; SANs are populated with all node IPs and localhost.
 package main
 
 import (
@@ -13,16 +14,15 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/big"
 	"net"
 	"os"
 	"time"
 
-	certificatesv1 "k8s.io/api/certificates/v1"
 	corev1 "k8s.io/api/core/v1"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
-	typedcertv1 "k8s.io/client-go/kubernetes/typed/certificates/v1"
 	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	_ "k8s.io/client-go/plugin/pkg/client/auth" // auth providers
 	"k8s.io/client-go/rest"
@@ -30,27 +30,28 @@ import (
 
 const (
 	secretTypeTLS       = "kubernetes.io/tls"
-	defaultSignerName   = "kubernetes.io/legacy-unknown"
-	defaultCSRWait      = 2 * time.Minute
-	defaultPollInterval = 2 * time.Second
+	defaultServerDays   = 90
+	defaultCAValidYears = 10
 )
 
 func main() {
 	var (
-		secretName    string
-		namespace     string
-		commonName    string
-		csrName       string
-		thresholdDays int
-		signerName    string
+		serverSecret string
+		caSecret     string
+		namespace    string
+		commonName   string
+		renewBefore  int
+		serverDays   int
+		caYears      int
 	)
 
-	flag.StringVar(&secretName, "secret-name", "juneau-webhook-certs", "Name of the TLS Secret to create/update")
-	flag.StringVar(&namespace, "namespace", os.Getenv("POD_NAMESPACE"), "Namespace of the Secret (default from POD_NAMESPACE env)")
-	flag.StringVar(&commonName, "common-name", "webhook-server", "CommonName for the certificate subject")
-	flag.StringVar(&csrName, "csr-name", "", "Name of the CSR object (auto-generated if empty)")
-	flag.IntVar(&thresholdDays, "renew-before-days", 30, "If existing certificate expires in fewer days, renew it")
-	flag.StringVar(&signerName, "signer-name", defaultSignerName, "SignerName used for the CSR")
+	flag.StringVar(&serverSecret, "secret-name", "webhook-certs", "Name of the TLS Secret to create/update for the webhook server")
+	flag.StringVar(&caSecret, "ca-secret-name", "webhook-ca", "Name of the Secret that stores the CA cert/key (created if absent)")
+	flag.StringVar(&namespace, "namespace", os.Getenv("POD_NAMESPACE"), "Namespace for the Secrets (default from POD_NAMESPACE env)")
+	flag.StringVar(&commonName, "common-name", "webhook-server", "CommonName for the server certificate")
+	flag.IntVar(&renewBefore, "renew-before-days", 30, "If server certificate expires sooner than this, issue a new one")
+	flag.IntVar(&serverDays, "server-valid-days", defaultServerDays, "Validity (days) for the server certificate")
+	flag.IntVar(&caYears, "ca-valid-years", defaultCAValidYears, "Validity (years) for the CA certificate")
 	flag.Parse()
 
 	if namespace == "" {
@@ -71,87 +72,225 @@ func main() {
 
 	secretClient := clientset.CoreV1().Secrets(namespace)
 
-	// Skip issuance if the existing cert is still valid beyond the threshold.
-	if shouldSkip, err := existingCertValid(ctx, secretClient, secretName, thresholdDays); err == nil && shouldSkip {
-		log.Printf("existing certificate in secret %s/%s is still valid, skipping issuance", namespace, secretName)
-		return
-	} else if err != nil && !errors.Is(err, errCertMissing) {
-		log.Fatalf("failed to check existing certificate: %v", err)
+	caCert, caKey, caPEM, err := ensureCA(ctx, secretClient, caSecret, caYears)
+	if err != nil {
+		log.Fatalf("failed to ensure CA: %v", err)
 	}
 
 	nodeIPs, err := getNodeIPs(ctx, clientset)
 	if err != nil {
 		log.Fatalf("failed to list node IPs: %v", err)
 	}
-
-	// Always include localhost to allow loopback termination.
 	nodeIPs = appendUniqueIP(nodeIPs, net.ParseIP("127.0.0.1"))
 	if ip := net.ParseIP("::1"); ip != nil {
 		nodeIPs = appendUniqueIP(nodeIPs, ip)
 	}
 
-	privateKey, csrDER, err := buildCSR(commonName, nodeIPs)
-	if err != nil {
-		log.Fatalf("failed to build CSR: %v", err)
+	if err := ensureServerCert(ctx, secretClient, serverSecret, commonName, nodeIPs, renewBefore, serverDays, caCert, caKey, caPEM); err != nil {
+		log.Fatalf("failed to ensure server certificate: %v", err)
 	}
 
-	if csrName == "" {
-		csrName = fmt.Sprintf("webhook-cert-%d", time.Now().UnixNano())
-	}
-
-	csrClient := clientset.CertificatesV1().CertificateSigningRequests()
-
-	if err := createOrReplaceCSR(ctx, csrClient, csrName, signerName, csrDER); err != nil {
-		log.Fatalf("failed to create CSR: %v", err)
-	}
-
-	if err := approveCSR(ctx, csrClient, csrName); err != nil {
-		log.Fatalf("failed to approve CSR: %v", err)
-	}
-
-	certPEM, err := waitForCertificate(ctx, csrClient, csrName)
-	if err != nil {
-		log.Fatalf("failed to get issued certificate: %v", err)
-	}
-
-	tlsKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})
-
-	if err := upsertTLSSecret(ctx, secretClient, secretName, tlsKeyPEM, certPEM); err != nil {
-		log.Fatalf("failed to upsert secret: %v", err)
-	}
-
-	log.Printf("certificate issued and stored in secret %s/%s", namespace, secretName)
+	log.Printf("server certificate ensured in secret %s/%s", namespace, serverSecret)
 }
 
-var errCertMissing = errors.New("certificate missing")
-
-func existingCertValid(ctx context.Context, secretClient typedcorev1.SecretInterface, secretName string, thresholdDays int) (bool, error) {
-	secret, err := secretClient.Get(ctx, secretName, metav1.GetOptions{})
-	if err != nil {
-		return false, err
+func ensureCA(ctx context.Context, secrets typedcorev1.SecretInterface, caSecret string, validYears int) (*x509.Certificate, *rsa.PrivateKey, []byte, error) {
+	secret, err := secrets.Get(ctx, caSecret, metav1.GetOptions{})
+	if err == nil {
+		cert, key, caPEM, parseErr := parseCertAndKey(secret)
+		if parseErr != nil {
+			log.Printf("failed to parse existing CA secret, regenerating: %v", parseErr)
+		} else if time.Until(cert.NotAfter) > 30*24*time.Hour {
+			return cert, key, caPEM, nil
+		}
 	}
 
+	// Generate new CA
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("generate CA key: %w", err)
+	}
+
+	now := time.Now().UTC()
+	caTmpl := &x509.Certificate{
+		SerialNumber:          randomSerial(),
+		Subject:               pkix.Name{CommonName: "webhook-ca"},
+		NotBefore:             now.Add(-1 * time.Hour),
+		NotAfter:              now.Add(time.Duration(validYears) * 365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		MaxPathLen:            0,
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("create CA cert: %w", err)
+	}
+
+	cert, err := x509.ParseCertificate(certDER)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("parse CA cert: %w", err)
+	}
+
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+
+	newSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: caSecret,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":    "webhook-cert-job",
+				"app.kubernetes.io/part-of": "juneau",
+			},
+		},
+		Type: secretTypeTLS,
+		Data: map[string][]byte{
+			corev1.TLSCertKey:       caPEM,
+			corev1.TLSPrivateKeyKey: keyPEM,
+		},
+	}
+
+  _, err = secrets.Update(ctx, newSecret, metav1.UpdateOptions{})
+	if kerrors.IsNotFound(err) {
+		_, err = secrets.Create(ctx, newSecret, metav1.CreateOptions{})
+	}
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("store CA secret: %w", err)
+	}
+
+	return cert, key, caPEM, nil
+}
+
+func ensureServerCert(
+	ctx context.Context,
+	secrets typedcorev1.SecretInterface,
+	secretName, commonName string,
+	ips []net.IP,
+	renewBeforeDays int,
+	validDays int,
+	caCert *x509.Certificate,
+	caKey *rsa.PrivateKey,
+	caPEM []byte,
+) error {
+	existing, err := secrets.Get(ctx, secretName, metav1.GetOptions{})
+	if err == nil {
+		cert, _, _, parseErr := parseCertAndKey(existing)
+		if parseErr == nil {
+			pool := x509.NewCertPool()
+			pool.AddCert(caCert)
+			if time.Until(cert.NotAfter) > time.Duration(renewBeforeDays)*24*time.Hour {
+				_, verr := cert.Verify(x509.VerifyOptions{
+					Roots:     pool,
+					KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+				})
+				if verr == nil {
+					log.Printf("existing server cert still valid, skipping issuance")
+					return nil
+				}
+				log.Printf("existing server cert failed CA verification: %v", verr)
+			}
+		} else {
+			log.Printf("failed to parse existing server cert, will re-issue: %v", parseErr)
+		}
+	}
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return fmt.Errorf("generate server key: %w", err)
+	}
+
+	now := time.Now().UTC()
+	tmpl := &x509.Certificate{
+		SerialNumber: randomSerial(),
+		Subject: pkix.Name{
+			CommonName: commonName,
+		},
+		NotBefore:             now.Add(-1 * time.Hour),
+		NotAfter:              now.Add(time.Duration(validDays) * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses:           ips,
+		BasicConstraintsValid: true,
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, caCert, &key.PublicKey, caKey)
+	if err != nil {
+		return fmt.Errorf("create server cert: %w", err)
+	}
+
+	serverPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+
+	newSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: secretName,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":    "webhook-cert-job",
+				"app.kubernetes.io/part-of": "juneau",
+			},
+		},
+		Type: secretTypeTLS,
+		Data: map[string][]byte{
+			corev1.TLSCertKey:       serverPEM,
+			corev1.TLSPrivateKeyKey: keyPEM,
+			"ca.crt":                caPEM,
+		},
+	}
+
+  _, err = secrets.Update(ctx, newSecret, metav1.UpdateOptions{})
+	if kerrors.IsNotFound(err) {
+		_, err = secrets.Create(ctx, newSecret, metav1.CreateOptions{})
+	}
+	if err != nil {
+		return fmt.Errorf("store server secret: %w", err)
+	}
+
+	return nil
+}
+
+func parseCertAndKey(secret *corev1.Secret) (*x509.Certificate, *rsa.PrivateKey, []byte, error) {
 	certPEM := secret.Data[corev1.TLSCertKey]
-	if len(certPEM) == 0 {
-		return false, errCertMissing
+	keyPEM := secret.Data[corev1.TLSPrivateKeyKey]
+	if len(certPEM) == 0 || len(keyPEM) == 0 {
+		return nil, nil, nil, errors.New("cert or key missing")
 	}
 
 	block, _ := pem.Decode(certPEM)
 	if block == nil {
-		return false, fmt.Errorf("failed to decode existing certificate PEM")
+		return nil, nil, nil, errors.New("failed to decode cert PEM")
 	}
-
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		return false, fmt.Errorf("failed to parse existing certificate: %w", err)
+		return nil, nil, nil, fmt.Errorf("parse cert: %w", err)
 	}
 
-	renewBefore := time.Duration(thresholdDays) * 24 * time.Hour
-	if time.Until(cert.NotAfter) > renewBefore {
-		return true, nil
+	key, err := parseRSAPrivateKey(keyPEM)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 
-	return false, nil
+	return cert, key, certPEM, nil
+}
+
+func parseRSAPrivateKey(pemBytes []byte) (*rsa.PrivateKey, error) {
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return nil, errors.New("failed to decode key PEM")
+	}
+
+	if block.Type == "RSA PRIVATE KEY" {
+		return x509.ParsePKCS1PrivateKey(block.Bytes)
+	}
+
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse key: %w", err)
+	}
+	rsaKey, ok := key.(*rsa.PrivateKey)
+	if !ok {
+		return nil, errors.New("key is not RSA")
+	}
+	return rsaKey, nil
 }
 
 func getNodeIPs(ctx context.Context, clientset *kubernetes.Clientset) ([]net.IP, error) {
@@ -183,7 +322,6 @@ func getNodeIPs(ctx context.Context, clientset *kubernetes.Clientset) ([]net.IP,
 	if len(ips) == 0 {
 		return nil, fmt.Errorf("no node IPs found")
 	}
-
 	return ips, nil
 }
 
@@ -199,120 +337,11 @@ func appendUniqueIP(list []net.IP, ip net.IP) []net.IP {
 	return append(list, ip)
 }
 
-func buildCSR(commonName string, ips []net.IP) (*rsa.PrivateKey, []byte, error) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+func randomSerial() *big.Int {
+	max := new(big.Int).Lsh(big.NewInt(1), 128)
+	serial, err := rand.Int(rand.Reader, max)
 	if err != nil {
-		return nil, nil, fmt.Errorf("generate key: %w", err)
+		return big.NewInt(time.Now().UnixNano())
 	}
-
-	req := &x509.CertificateRequest{
-		Subject: pkix.Name{
-			CommonName: commonName,
-		},
-		IPAddresses: ips,
-	}
-
-	csrDER, err := x509.CreateCertificateRequest(rand.Reader, req, key)
-	if err != nil {
-		return nil, nil, fmt.Errorf("create CSR: %w", err)
-	}
-
-	return key, csrDER, nil
-}
-
-func createOrReplaceCSR(ctx context.Context, csrClient typedcertv1.CertificateSigningRequestInterface, name, signerName string, csrDER []byte) error {
-	// Clean up any previous CSR with the same name.
-	_ = csrClient.Delete(ctx, name, metav1.DeleteOptions{})
-
-	pemCSR := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
-
-	csr := &certificatesv1.CertificateSigningRequest{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-			Labels: map[string]string{
-				"app.kubernetes.io/name":       "webhook-cert-job",
-				"app.kubernetes.io/component":  "certificate",
-				"app.kubernetes.io/part-of":    "juneau",
-				"certjob.loutres.me/generated": "true",
-			},
-		},
-		Spec: certificatesv1.CertificateSigningRequestSpec{
-			Request:    pemCSR,
-			SignerName: signerName,
-			Usages: []certificatesv1.KeyUsage{
-				certificatesv1.UsageDigitalSignature,
-				certificatesv1.UsageKeyEncipherment,
-				certificatesv1.UsageServerAuth,
-			},
-		},
-	}
-
-	_, err := csrClient.Create(ctx, csr, metav1.CreateOptions{})
-	return err
-}
-
-func approveCSR(ctx context.Context, csrClient typedcertv1.CertificateSigningRequestInterface, name string) error {
-	now := metav1.Now()
-	approval := &certificatesv1.CertificateSigningRequest{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-		},
-		Status: certificatesv1.CertificateSigningRequestStatus{
-			Conditions: []certificatesv1.CertificateSigningRequestCondition{
-				{
-					Type:           certificatesv1.CertificateApproved,
-					Status:         corev1.ConditionTrue,
-					Reason:         "CertJobApproved",
-					Message:        "Approved by webhook cert job",
-					LastUpdateTime: now,
-				},
-			},
-		},
-	}
-
-	_, err := csrClient.UpdateApproval(ctx, name, approval, metav1.UpdateOptions{})
-	return err
-}
-
-func waitForCertificate(ctx context.Context, csrClient typedcertv1.CertificateSigningRequestInterface, name string) ([]byte, error) {
-	var cert []byte
-	err := wait.PollUntilContextTimeout(ctx, defaultPollInterval, defaultCSRWait, true, func(ctx context.Context) (bool, error) {
-		csr, err := csrClient.Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			return false, err
-		}
-		if len(csr.Status.Certificate) == 0 {
-			return false, nil
-		}
-		cert = csr.Status.Certificate
-		return true, nil
-	})
-	return cert, err
-}
-
-func upsertTLSSecret(ctx context.Context, secretClient typedcorev1.SecretInterface, secretName string, keyPEM, certPEM []byte) error {
-	secret, err := secretClient.Get(ctx, secretName, metav1.GetOptions{})
-	if err == nil {
-		secret.Type = secretTypeTLS
-		if secret.Data == nil {
-			secret.Data = map[string][]byte{}
-		}
-		secret.Data[corev1.TLSCertKey] = certPEM
-		secret.Data[corev1.TLSPrivateKeyKey] = keyPEM
-		_, err = secretClient.Update(ctx, secret, metav1.UpdateOptions{})
-		return err
-	}
-
-	newSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: secretName,
-		},
-		Type: secretTypeTLS,
-		Data: map[string][]byte{
-			corev1.TLSCertKey:       certPEM,
-			corev1.TLSPrivateKeyKey: keyPEM,
-		},
-	}
-	_, err = secretClient.Create(ctx, newSecret, metav1.CreateOptions{})
-	return err
+	return serial
 }

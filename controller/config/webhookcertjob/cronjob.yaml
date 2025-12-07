@@ -32,10 +32,13 @@ spec:
               command:
                 - /webhookcertjob
               args:
-                - --secret-name=juneau-webhook-certs
+                - --secret-name=webhook-certs
+                - --ca-secret-name=webhook-ca
                 - --namespace=$(POD_NAMESPACE)
                 - --common-name=webhook-server
                 - --renew-before-days=30
+                - --server-valid-days=90
+                - --ca-valid-years=10
               env:
                 - name: POD_NAMESPACE
                   valueFrom:
