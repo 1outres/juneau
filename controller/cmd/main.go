@@ -57,7 +57,6 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
-
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=mutatingwebhookconfigurations,verbs=get;list;watch;create;update;patch
@@ -269,10 +268,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	ctx := ctrl.SetupSignalHandler()
+
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
 		// Apply webhook configurations pointing to this node IP using the embedded manifests.
 		nodeName := os.Getenv("NODE_NAME")
-		ctx := ctrl.SetupSignalHandler()
 		if err := webhookapply.Apply(ctx, ctrl.GetConfigOrDie(), nodeName, podNamespace, webhookCASecret, "juneau-", webhookmanifests.Manifests); err != nil {
 			setupLog.Error(err, "failed to apply webhook configurations")
 			os.Exit(1)
@@ -280,7 +280,7 @@ func main() {
 	}
 
 	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}

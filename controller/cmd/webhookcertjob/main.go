@@ -150,7 +150,7 @@ func ensureCA(ctx context.Context, secrets typedcorev1.SecretInterface, caSecret
 		},
 	}
 
-  _, err = secrets.Update(ctx, newSecret, metav1.UpdateOptions{})
+	_, err = secrets.Update(ctx, newSecret, metav1.UpdateOptions{})
 	if kerrors.IsNotFound(err) {
 		_, err = secrets.Create(ctx, newSecret, metav1.CreateOptions{})
 	}
@@ -237,7 +237,7 @@ func ensureServerCert(
 		},
 	}
 
-  _, err = secrets.Update(ctx, newSecret, metav1.UpdateOptions{})
+	_, err = secrets.Update(ctx, newSecret, metav1.UpdateOptions{})
 	if kerrors.IsNotFound(err) {
 		_, err = secrets.Create(ctx, newSecret, metav1.CreateOptions{})
 	}
