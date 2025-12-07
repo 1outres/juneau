@@ -67,6 +67,7 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
+    - DELETE
     resources:
     - subnets
   sideEffects: None
@@ -87,6 +88,7 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
+    - DELETE
     resources:
     - vpcs
   sideEffects: None

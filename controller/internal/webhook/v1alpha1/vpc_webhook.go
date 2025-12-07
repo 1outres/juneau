@@ -65,7 +65,7 @@ func (d *VpcCustomDefaulter) Default(ctx context.Context, obj runtime.Object) er
 	return nil
 }
 
-// +kubebuilder:webhook:path=/validate-juneau-loutres-me-v1alpha1-vpc,mutating=false,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=vpcs,verbs=create;update,versions=v1alpha1,name=vvpc-v1alpha1.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-juneau-loutres-me-v1alpha1-vpc,mutating=false,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=vpcs,verbs=create;update;delete,versions=v1alpha1,name=vvpc-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // VpcCustomValidator struct is responsible for validating the Vpc resource
 // when it is created, updated, or deleted.
@@ -116,6 +116,10 @@ func (v *VpcCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Obj
 		return nil, fmt.Errorf("expected a Vpc object but got %T", obj)
 	}
 	vpclog.Info("Validation for Vpc upon deletion", "name", vpc.GetName())
+
+	if vpc.Name == "default" {
+		return nil, fmt.Errorf("the default Vpc cannot be deleted")
+	}
 
 	return nil, nil
 }

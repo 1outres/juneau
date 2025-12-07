@@ -28,11 +28,15 @@ type SubnetSpec struct {
 
 // SubnetStatus defines the observed state of Subnet.
 type SubnetStatus struct {
+	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
+	Conditions         []metav1.Condition `json:"conditions,omitempty"`
+
 	VNI uint32 `json:"vni,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Cluster
 
 // Subnet is the Schema for the subnets API.
 type Subnet struct {
@@ -42,6 +46,11 @@ type Subnet struct {
 	Spec   SubnetSpec   `json:"spec,omitempty"`
 	Status SubnetStatus `json:"status,omitempty"`
 }
+
+const (
+	SubnetStatusReady    string = "Ready"
+	SubnetStatusDegraded string = "Degraded"
+)
 
 // +kubebuilder:object:root=true
 

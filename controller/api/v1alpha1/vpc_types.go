@@ -26,10 +26,13 @@ type VpcSpec struct {
 
 // VpcStatus defines the observed state of Vpc.
 type VpcStatus struct {
+	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
+	Conditions         []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Cluster
 
 // Vpc is the Schema for the vpcs API.
 type Vpc struct {
@@ -39,6 +42,10 @@ type Vpc struct {
 	Spec   VpcSpec   `json:"spec,omitempty"`
 	Status VpcStatus `json:"status,omitempty"`
 }
+
+const (
+	VpcStatusReady string = "Ready"
+)
 
 // +kubebuilder:object:root=true
 

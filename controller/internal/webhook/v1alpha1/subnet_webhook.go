@@ -41,7 +41,7 @@ var subnetlog = logf.Log.WithName("subnet-resource")
 // SetupSubnetWebhookWithManager registers the webhook for Subnet in the manager.
 func SetupSubnetWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&juneauv1alpha1.Subnet{}).
-		WithValidator(&SubnetCustomValidator{}).
+		WithValidator(&SubnetCustomValidator{Client: mgr.GetClient()}).
 		WithDefaulter(&SubnetCustomDefaulter{}).
 		Complete()
 }
@@ -72,7 +72,7 @@ func (d *SubnetCustomDefaulter) Default(ctx context.Context, obj runtime.Object)
 	return nil
 }
 
-// +kubebuilder:webhook:path=/validate-juneau-loutres-me-v1alpha1-subnet,mutating=false,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=subnets,verbs=create;update,versions=v1alpha1,name=vsubnet-v1alpha1.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-juneau-loutres-me-v1alpha1-subnet,mutating=false,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=subnets,verbs=create;update;delete,versions=v1alpha1,name=vsubnet-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // SubnetCustomValidator struct is responsible for validating the Subnet resource
 // when it is created, updated, or deleted.
@@ -104,6 +104,9 @@ func (v *SubnetCustomValidator) ValidateCreate(ctx context.Context, obj runtime.
 		} else {
 			return nil, err
 		}
+	}
+	if subnet.Name == "default" && subnet.Spec.Vpc != "default" {
+		errs = append(errs, field.Invalid(field.NewPath("spec").Child("vpc"), subnet.Spec.Vpc, "the default Subnet must reference the default Vpc"))
 	}
 
 	_, _, err := net.ParseCIDR(subnet.Spec.CIDR)
@@ -158,6 +161,10 @@ func (v *SubnetCustomValidator) ValidateDelete(ctx context.Context, obj runtime.
 		return nil, fmt.Errorf("expected a Subnet object but got %T", obj)
 	}
 	subnetlog.Info("Validation for Subnet upon deletion", "name", subnet.GetName())
+
+	if subnet.Name == "default" {
+		return nil, fmt.Errorf("the default Subnet cannot be deleted")
+	}
 
 	return nil, nil
 }

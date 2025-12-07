@@ -19,6 +19,9 @@ package controller
 import (
 	"context"
 
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -40,9 +43,31 @@ type VpcReconciler struct {
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 func (r *VpcReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
-	// TODO: your logic here
+	var resource juneauv1alpha1.Vpc
+	if err := r.Get(ctx, req.NamespacedName, &resource); err != nil {
+		if errors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		logger.Error(err, "unable to get Vpc", "name", req.NamespacedName)
+		return ctrl.Result{}, err
+	}
+
+	if !resource.ObjectMeta.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
+	}
+
+	resource.Status.ObservedGeneration = resource.Generation
+	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+		Type:    juneauv1alpha1.VpcStatusReady,
+		Status:  metav1.ConditionTrue,
+		Reason:  "ReconcileSucceeded",
+		Message: "",
+	})
+	if err := r.Status().Update(ctx, &resource); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	return ctrl.Result{}, nil
 }
