@@ -47,6 +47,7 @@ import (
 	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	"github.com/1outres/juneau/controller/internal/controller"
+	webhookjuneauloutresmev1alpha1 "github.com/1outres/juneau/controller/internal/webhook/v1alpha1"
 	webhookjuneauv1alpha1 "github.com/1outres/juneau/controller/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
@@ -273,6 +274,20 @@ func main() {
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "IPLease")
 		os.Exit(1)
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err = webhookjuneauloutresmev1alpha1.SetupIPLeaseWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "IPLease")
+			os.Exit(1)
+		}
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err = webhookjuneauloutresmev1alpha1.SetupNetworkInterfaceWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "NetworkInterface")
+			os.Exit(1)
+		}
 	}
 	// +kubebuilder:scaffold:builder
 

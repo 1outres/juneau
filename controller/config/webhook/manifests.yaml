@@ -10,6 +10,46 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /mutate-juneau-loutres-me-v1alpha1-iplease
+  failurePolicy: Fail
+  name: miplease-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - ipleases
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-juneau-loutres-me-v1alpha1-networkinterface
+  failurePolicy: Fail
+  name: mnetworkinterface-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - networkinterfaces
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /mutate-juneau-loutres-me-v1alpha1-subnet
   failurePolicy: Fail
   name: msubnet-v1alpha1.kb.io
@@ -50,6 +90,46 @@ kind: ValidatingWebhookConfiguration
 metadata:
   name: validating-webhook-configuration
 webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-juneau-loutres-me-v1alpha1-iplease
+  failurePolicy: Fail
+  name: viplease-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - ipleases
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-juneau-loutres-me-v1alpha1-networkinterface
+  failurePolicy: Fail
+  name: vnetworkinterface-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - networkinterfaces
+  sideEffects: None
 - admissionReviewVersions:
   - v1
   clientConfig:

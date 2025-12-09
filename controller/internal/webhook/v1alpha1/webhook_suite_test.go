@@ -115,6 +115,12 @@ var _ = BeforeSuite(func() {
 	err = SetupVpcWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
+	err = SetupIPLeaseWebhookWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+
+	err = SetupNetworkInterfaceWebhookWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+
 	// +kubebuilder:scaffold:webhook
 
 	go func() {
