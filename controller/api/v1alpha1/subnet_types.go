@@ -54,7 +54,7 @@ type Subnet struct {
 }
 
 const (
-	SubnetStatusReady    string = "Ready"
+	SubnetStatusReady string = "Ready"
 )
 
 // +kubebuilder:object:root=true

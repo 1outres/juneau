@@ -24,32 +24,32 @@ import (
 type NetworkInterfaceSpec struct {
 	PodRef NetworkInterfacePodReference `json:"podRef"`
 
-	NodeName string     `json:"nodeName"`
+	NodeName string `json:"nodeName"`
 
-	Vpc string          `json:"vpc"`
-	Subnet string       `json:"subnet"`
-	Address string      `json:"address"`
+	Vpc     string `json:"vpc"`
+	Subnet  string `json:"subnet"`
+	Address string `json:"address"`
 }
 
 // NetworkInterfaceStatus defines the observed state of NetworkInterface.
 type NetworkInterfaceStatus struct {
-	Conditions         []metav1.Condition `json:"conditions,omitempty"`
-	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
-	Phase NetworkInterfacePhase `json:"phase,omitempty"`
+	Conditions         []metav1.Condition    `json:"conditions,omitempty"`
+	ObservedGeneration int64                 `json:"observedGeneration,omitempty"`
+	Phase              NetworkInterfacePhase `json:"phase,omitempty"`
 
-	Address string `json:"address,omitempty"`
-	Routes []NetworkRoute `json:"routes,omitempty"`
+	Address string         `json:"address,omitempty"`
+	Routes  []NetworkRoute `json:"routes,omitempty"`
 }
 
 type NetworkInterfacePodReference struct {
-	UID string      `json:"podUID"`
-	Name 		string `json:"name"`
-	Interface 	string `json:"interface"`
+	UID       string `json:"podUID"`
+	Name      string `json:"name"`
+	Interface string `json:"interface"`
 }
 
 type NetworkRoute struct {
 	Dst string `json:"dst"`
-	GW	string `json:"gw"`
+	GW  string `json:"gw"`
 }
 
 // +kubebuilder:object:root=true
@@ -74,12 +74,12 @@ type NetworkInterfacePhase string
 
 const (
 	NetworkInterfaceStatusAllocated string = "Allocated"
-	NetworkInterfaceStatusReady string = "Ready"
+	NetworkInterfaceStatusReady     string = "Ready"
 
 	NetworkInterfacePhasePending NetworkInterfacePhase = "Pending"
-	NetworkInterfaceAllocated NetworkInterfacePhase = "Allocated"
-	NetworkInterfaceReady NetworkInterfacePhase = "Ready"
-	NetworkInterfaceFailed NetworkInterfacePhase = "Failed"
+	NetworkInterfaceAllocated    NetworkInterfacePhase = "Allocated"
+	NetworkInterfaceReady        NetworkInterfacePhase = "Ready"
+	NetworkInterfaceFailed       NetworkInterfacePhase = "Failed"
 )
 
 // +kubebuilder:object:root=true

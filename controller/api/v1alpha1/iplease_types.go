@@ -24,11 +24,11 @@ import (
 type IPLeaseSpec struct {
 	PodRef IPLeasePodReference `json:"podRef"`
 
-	Vpc string          `json:"vpc"`
-	Subnet string       `json:"subnet"`
-	Address string      `json:"address"`
+	Vpc     string `json:"vpc"`
+	Subnet  string `json:"subnet"`
+	Address string `json:"address"`
 
-  TTLSeconds *int32 `json:"ttlSeconds,omitempty"`
+	TTLSeconds             *int32       `json:"ttlSeconds,omitempty"`
 	OwnerDeletionTimeStamp *metav1.Time `json:"ownerDeletionTimestamp,omitempty"`
 }
 
@@ -36,16 +36,16 @@ type IPLeaseSpec struct {
 type IPLeaseStatus struct {
 	Conditions         []metav1.Condition `json:"conditions,omitempty"`
 	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
-	Phase IPLeasePhase `json:"phase,omitempty"`
+	Phase              IPLeasePhase       `json:"phase,omitempty"`
 
-  PodDisplayName string `json:"podDisplayName,omitempty"`
+	PodDisplayName string `json:"podDisplayName,omitempty"`
 
 	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
 }
 
 type IPLeasePodReference struct {
 	Namespace string `json:"namespace"`
-	Name 		string `json:"name"`
+	Name      string `json:"name"`
 	Interface string `json:"interface"`
 }
 
@@ -68,13 +68,13 @@ type IPLease struct {
 type IPLeasePhase string
 
 const (
-	IPLeaseStatusBound string = "Bound"
-	IPLeaseStatusExpired string = "Expired"
+	IPLeaseStatusBound        string = "Bound"
+	IPLeaseStatusExpired      string = "Expired"
 	IPLeaseStatusExpiringSoon string = "ExpiringSoon"
 
-	IPLeasePhaseActive	 IPLeasePhase = "Active"
+	IPLeasePhaseActive   IPLeasePhase = "Active"
 	IPLeasePhaseReleased IPLeasePhase = "Released"
-	IPLeasePhaseExpired	 IPLeasePhase = "Expired"
+	IPLeasePhaseExpired  IPLeasePhase = "Expired"
 	IPLeasePhaseDeleting IPLeasePhase = "Deleting"
 )
 
