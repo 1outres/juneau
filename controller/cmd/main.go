@@ -27,6 +27,7 @@ import (
 	webhookmanifests "github.com/1outres/juneau/controller/config/webhook"
 	"github.com/1outres/juneau/controller/internal/bootstrap"
 	"github.com/1outres/juneau/controller/internal/webhookapply"
+
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -43,6 +44,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	"github.com/1outres/juneau/controller/internal/controller"
 	webhookjuneauv1alpha1 "github.com/1outres/juneau/controller/internal/webhook/v1alpha1"
@@ -58,6 +60,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(juneauv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(juneauloutresmev1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -256,6 +259,20 @@ func main() {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Vpc")
 			os.Exit(1)
 		}
+	}
+	if err = (&controller.NetworkInterfaceReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "NetworkInterface")
+		os.Exit(1)
+	}
+	if err = (&controller.IPLeaseReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "IPLease")
+		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
 

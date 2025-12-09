@@ -28,6 +28,8 @@ rules:
 - apiGroups:
   - juneau.loutres.me
   resources:
+  - ipleases
+  - networkinterfaces
   - subnets
   - vpcs
   verbs:
@@ -41,6 +43,8 @@ rules:
 - apiGroups:
   - juneau.loutres.me
   resources:
+  - ipleases/finalizers
+  - networkinterfaces/finalizers
   - subnets/finalizers
   - vpcs/finalizers
   verbs:
@@ -48,6 +52,8 @@ rules:
 - apiGroups:
   - juneau.loutres.me
   resources:
+  - ipleases/status
+  - networkinterfaces/status
   - subnets/status
   - vpcs/status
   verbs:

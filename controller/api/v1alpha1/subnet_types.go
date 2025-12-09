@@ -32,11 +32,17 @@ type SubnetStatus struct {
 	Conditions         []metav1.Condition `json:"conditions,omitempty"`
 
 	VNI uint32 `json:"vni,omitempty"`
+
+	Gateway    string `json:"gateway,omitempty"`
+	GatewayMAC string `json:"gatewayMAC,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
+// +kubebuilder:printcolumn:name="Vpc",type="string",JSONPath=".spec.vpc"
+// +kubebuilder:printcolumn:name="Cidr",type="string",JSONPath=".spec.cidr"
+// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type==\"Ready\")].status"
 
 // Subnet is the Schema for the subnets API.
 type Subnet struct {
@@ -49,7 +55,6 @@ type Subnet struct {
 
 const (
 	SubnetStatusReady    string = "Ready"
-	SubnetStatusDegraded string = "Degraded"
 )
 
 // +kubebuilder:object:root=true

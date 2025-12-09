@@ -4,24 +4,41 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.2
-  name: vpcs.juneau.loutres.me
+  name: networkinterfaces.juneau.loutres.me
 spec:
   group: juneau.loutres.me
   names:
-    kind: Vpc
-    listKind: VpcList
-    plural: vpcs
-    singular: vpc
-  scope: Cluster
+    kind: NetworkInterface
+    listKind: NetworkInterfaceList
+    plural: networkinterfaces
+    shortNames:
+    - interface
+    - iface
+    - nwinterface
+    - nwiface
+    singular: networkinterface
+  scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .status.conditions[?(@.type=="Ready")].status
-      name: Ready
+    - jsonPath: .spec.nodeName
+      name: Node
+      type: string
+    - jsonPath: .spec.vpc
+      name: Vpc
+      type: string
+    - jsonPath: .spec.subnet
+      name: Subnet
+      type: string
+    - jsonPath: .status.address
+      name: Address
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
       type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Vpc is the Schema for the vpcs API.
+        description: NetworkInterface is the Schema for the networkinterfaces API.
         properties:
           apiVersion:
             description: |-
@@ -41,11 +58,41 @@ spec:
           metadata:
             type: object
           spec:
-            description: VpcSpec defines the desired state of Vpc.
+            description: NetworkInterfaceSpec defines the desired state of NetworkInterface.
+            properties:
+              address:
+                type: string
+              nodeName:
+                type: string
+              podRef:
+                properties:
+                  interface:
+                    type: string
+                  name:
+                    type: string
+                  podUID:
+                    type: string
+                required:
+                - interface
+                - name
+                - podUID
+                type: object
+              subnet:
+                type: string
+              vpc:
+                type: string
+            required:
+            - address
+            - nodeName
+            - podRef
+            - subnet
+            - vpc
             type: object
           status:
-            description: VpcStatus defines the observed state of Vpc.
+            description: NetworkInterfaceStatus defines the observed state of NetworkInterface.
             properties:
+              address:
+                type: string
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current
@@ -105,6 +152,20 @@ spec:
               observedGeneration:
                 format: int64
                 type: integer
+              phase:
+                type: string
+              routes:
+                items:
+                  properties:
+                    dst:
+                      type: string
+                    gw:
+                      type: string
+                  required:
+                  - dst
+                  - gw
+                  type: object
+                type: array
             type: object
         type: object
     served: true

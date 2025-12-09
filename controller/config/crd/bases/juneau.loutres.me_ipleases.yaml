@@ -4,24 +4,29 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.2
-  name: vpcs.juneau.loutres.me
+  name: ipleases.juneau.loutres.me
 spec:
   group: juneau.loutres.me
   names:
-    kind: Vpc
-    listKind: VpcList
-    plural: vpcs
-    singular: vpc
-  scope: Cluster
+    kind: IPLease
+    listKind: IPLeaseList
+    plural: ipleases
+    shortNames:
+    - lease
+    singular: iplease
+  scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .status.conditions[?(@.type=="Ready")].status
-      name: Ready
+    - jsonPath: .status.podDisplayName
+      name: Pod
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
       type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Vpc is the Schema for the vpcs API.
+        description: IPLease is the Schema for the ipleases API.
         properties:
           apiVersion:
             description: |-
@@ -41,10 +46,41 @@ spec:
           metadata:
             type: object
           spec:
-            description: VpcSpec defines the desired state of Vpc.
+            description: IPLeaseSpec defines the desired state of IPLease.
+            properties:
+              address:
+                type: string
+              ownerDeletionTimestamp:
+                format: date-time
+                type: string
+              podRef:
+                properties:
+                  interface:
+                    type: string
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                required:
+                - interface
+                - name
+                - namespace
+                type: object
+              subnet:
+                type: string
+              ttlSeconds:
+                format: int32
+                type: integer
+              vpc:
+                type: string
+            required:
+            - address
+            - podRef
+            - subnet
+            - vpc
             type: object
           status:
-            description: VpcStatus defines the observed state of Vpc.
+            description: IPLeaseStatus defines the observed state of IPLease.
             properties:
               conditions:
                 items:
@@ -102,9 +138,16 @@ spec:
                   - type
                   type: object
                 type: array
+              expiresAt:
+                format: date-time
+                type: string
               observedGeneration:
                 format: int64
                 type: integer
+              phase:
+                type: string
+              podDisplayName:
+                type: string
             type: object
         type: object
     served: true

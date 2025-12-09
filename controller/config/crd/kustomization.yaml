@@ -4,6 +4,8 @@
 resources:
 - bases/juneau.loutres.me_vpcs.yaml
 - bases/juneau.loutres.me_subnets.yaml
+- bases/juneau.loutres.me_networkinterfaces.yaml
+- bases/juneau.loutres.me_ipleases.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

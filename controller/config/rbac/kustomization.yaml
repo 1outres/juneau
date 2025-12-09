@@ -22,6 +22,12 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the {{ .ProjectName }} itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
+- iplease_admin_role.yaml
+- iplease_editor_role.yaml
+- iplease_viewer_role.yaml
+- networkinterface_admin_role.yaml
+- networkinterface_editor_role.yaml
+- networkinterface_viewer_role.yaml
 - subnet_admin_role.yaml
 - subnet_editor_role.yaml
 - subnet_viewer_role.yaml

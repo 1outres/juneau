@@ -14,7 +14,17 @@ spec:
     singular: subnet
   scope: Cluster
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.vpc
+      name: Vpc
+      type: string
+    - jsonPath: .spec.cidr
+      name: Cidr
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: Subnet is the Schema for the subnets API.
@@ -106,6 +116,10 @@ spec:
                   - type
                   type: object
                 type: array
+              gateway:
+                type: string
+              gatewayMAC:
+                type: string
               observedGeneration:
                 format: int64
                 type: integer
