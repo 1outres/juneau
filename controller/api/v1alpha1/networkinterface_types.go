@@ -37,6 +37,7 @@ type NetworkInterfaceStatus struct {
 	ObservedGeneration int64                 `json:"observedGeneration,omitempty"`
 	Phase              NetworkInterfacePhase `json:"phase,omitempty"`
 
+	IPLease string         `json:"ipLease,omitempty"`
 	Address string         `json:"address,omitempty"`
 	Routes  []NetworkRoute `json:"routes,omitempty"`
 }
@@ -76,10 +77,10 @@ const (
 	NetworkInterfaceStatusAllocated string = "Allocated"
 	NetworkInterfaceStatusReady     string = "Ready"
 
-	NetworkInterfacePhasePending NetworkInterfacePhase = "Pending"
-	NetworkInterfaceAllocated    NetworkInterfacePhase = "Allocated"
-	NetworkInterfaceReady        NetworkInterfacePhase = "Ready"
-	NetworkInterfaceFailed       NetworkInterfacePhase = "Failed"
+	NetworkInterfacePhasePending   NetworkInterfacePhase = "Pending"
+	NetworkInterfacePhaseAllocated NetworkInterfacePhase = "Allocated"
+	NetworkInterfacePhaseReady     NetworkInterfacePhase = "Ready"
+	NetworkInterfacePhaseFailed    NetworkInterfacePhase = "Failed"
 )
 
 // +kubebuilder:object:root=true

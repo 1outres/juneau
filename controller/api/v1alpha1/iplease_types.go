@@ -28,8 +28,8 @@ type IPLeaseSpec struct {
 	Subnet  string `json:"subnet"`
 	Address string `json:"address"`
 
-	TTLSeconds             *int32       `json:"ttlSeconds,omitempty"`
-	OwnerDeletionTimeStamp *metav1.Time `json:"ownerDeletionTimestamp,omitempty"`
+	TTLSeconds             *int32      `json:"ttlSeconds,omitempty"`
+	OwnerDeletionTimeStamp metav1.Time `json:"ownerDeletionTimestamp,omitempty"`
 }
 
 // IPLeaseStatus defines the observed state of IPLease.
@@ -40,7 +40,7 @@ type IPLeaseStatus struct {
 
 	PodDisplayName string `json:"podDisplayName,omitempty"`
 
-	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
+	ExpiresAt metav1.Time `json:"expiresAt,omitempty"`
 }
 
 type IPLeasePodReference struct {
@@ -68,9 +68,8 @@ type IPLease struct {
 type IPLeasePhase string
 
 const (
-	IPLeaseStatusBound        string = "Bound"
-	IPLeaseStatusExpired      string = "Expired"
-	IPLeaseStatusExpiringSoon string = "ExpiringSoon"
+	IPLeaseStatusBound   string = "Bound"
+	IPLeaseStatusExpired string = "Expired"
 
 	IPLeasePhaseActive   IPLeasePhase = "Active"
 	IPLeasePhaseReleased IPLeasePhase = "Released"

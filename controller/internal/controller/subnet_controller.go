@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"net"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -65,12 +66,6 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			Type:    juneauv1alpha1.SubnetStatusReady,
 			Status:  metav1.ConditionFalse,
 			Reason:  "ReconcileFailed",
-			Message: "",
-		})
-		meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-			Type:    juneauv1alpha1.SubnetStatusDegraded,
-			Status:  metav1.ConditionTrue,
-			Reason:  "ReconcileFailed",
 			Message: "VPC not found",
 		})
 		if err := r.Status().Update(ctx, &resource); err != nil {
@@ -88,12 +83,6 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			Reason:  "NotImplemented",
 			Message: "",
 		})
-		meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-			Type:    juneauv1alpha1.SubnetStatusDegraded,
-			Status:  metav1.ConditionFalse,
-			Reason:  "",
-			Message: "",
-		})
 		if err := r.Status().Update(ctx, &resource); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -108,12 +97,35 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		Reason:  "ReconcileSucceeded",
 		Message: "",
 	})
-	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-		Type:    juneauv1alpha1.SubnetStatusDegraded,
-		Status:  metav1.ConditionFalse,
-		Reason:  "ReconcileSucceeded",
-		Message: "",
-	})
+
+	_, cidr, err := net.ParseCIDR(resource.Spec.CIDR)
+	if err != nil {
+		resource.Status.ObservedGeneration = resource.Generation
+		meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+			Type:    juneauv1alpha1.SubnetStatusReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  "ReconcileFailed",
+			Message: "CIDR parse error",
+		})
+		if err := r.Status().Update(ctx, &resource); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
+	ip := cidr.IP.Mask(cidr.Mask).To4()
+	for i := len(ip) - 1; i >= 0; i-- {
+		ip[i]++
+		if ip[i] != 0 {
+			break
+		}
+	}
+	resource.Status.Gateway = ip.String()
+
+	if resource.Name != "default" {
+		// TODO: generate a MAC address
+	}
+
 	if err := r.Status().Update(ctx, &resource); err != nil {
 		return ctrl.Result{}, err
 	}

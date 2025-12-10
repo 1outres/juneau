@@ -18,13 +18,17 @@ package controller
 
 import (
 	"context"
+	"time"
 
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
 // IPLeaseReconciler reconciles a IPLease object
@@ -39,17 +43,104 @@ type IPLeaseReconciler struct {
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the IPLease object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.2/pkg/reconcile
 func (r *IPLeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
-	// TODO(user): your logic here
+	var resource juneauv1alpha1.IPLease
+	if err := r.Get(ctx, req.NamespacedName, &resource); err != nil {
+		if errors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		logger.Error(err, "unable to get IPLease", "name", req.NamespacedName)
+		return ctrl.Result{}, err
+	}
+
+	if !resource.ObjectMeta.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
+	}
+
+	if !resource.Status.ExpiresAt.IsZero() && time.Now().After(resource.Status.ExpiresAt.Time) {
+		if err := r.Delete(ctx, &resource); err != nil {
+			return ctrl.Result{}, err
+		}
+		logger.Info("deleted expired IPLease", "name", req.NamespacedName)
+		return ctrl.Result{}, nil
+	}
+
+	resource.Status.PodDisplayName = resource.Spec.PodRef.Interface + "." + resource.Spec.PodRef.Name + "." + resource.Spec.PodRef.Namespace
+
+	if resource.Spec.OwnerDeletionTimeStamp.IsZero() {
+		resource.Status.ObservedGeneration = resource.Generation
+		resource.Status.ExpiresAt = metav1.Time{}
+		resource.Status.Phase = juneauv1alpha1.IPLeasePhaseActive
+
+		meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+			Type:    juneauv1alpha1.IPLeaseStatusBound,
+			Status:  metav1.ConditionTrue,
+			Reason:  "Bound",
+			Message: "",
+		})
+		meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+			Type:    juneauv1alpha1.IPLeaseStatusExpired,
+			Status:  metav1.ConditionFalse,
+			Reason:  "IPLeaseActive",
+			Message: "",
+		})
+
+		if err := r.Status().Update(ctx, &resource); err != nil {
+			logger.Error(err, "unable to update IPLease status", "name", req.NamespacedName)
+			return ctrl.Result{}, err
+		}
+	} else {
+		ttl := time.Hour
+		if resource.Spec.TTLSeconds != nil {
+			ttl = time.Duration(*resource.Spec.TTLSeconds) * time.Second
+		}
+
+		resource.Status.ObservedGeneration = resource.Generation
+		resource.Status.ExpiresAt = metav1.NewTime(resource.Spec.OwnerDeletionTimeStamp.Add(ttl))
+
+		meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+			Type:    juneauv1alpha1.IPLeaseStatusBound,
+			Status:  metav1.ConditionFalse,
+			Reason:  "Released",
+			Message: "",
+		})
+
+		if time.Now().After(resource.Spec.OwnerDeletionTimeStamp.Add(ttl)) {
+			meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+				Type:    juneauv1alpha1.IPLeaseStatusExpired,
+				Status:  metav1.ConditionTrue,
+				Reason:  "Expired",
+				Message: "",
+			})
+			resource.Status.Phase = juneauv1alpha1.IPLeasePhaseExpired
+			if err := r.Status().Update(ctx, &resource); err != nil {
+				logger.Error(err, "unable to update IPLease status", "name", req.NamespacedName)
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{Requeue: true}, nil
+		} else {
+			meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+				Type:    juneauv1alpha1.IPLeaseStatusExpired,
+				Status:  metav1.ConditionFalse,
+				Reason:  "NotExpired",
+				Message: "Will be expired at " + resource.Status.ExpiresAt.String(),
+			})
+			resource.Status.Phase = juneauv1alpha1.IPLeasePhaseReleased
+			if err := r.Status().Update(ctx, &resource); err != nil {
+				logger.Error(err, "unable to update IPLease status", "name", req.NamespacedName)
+				return ctrl.Result{}, err
+			}
+
+			if time.Now().Add(time.Hour).After(resource.Spec.OwnerDeletionTimeStamp.Add(ttl)) {
+				remaining := resource.Spec.OwnerDeletionTimeStamp.Add(ttl).Sub(time.Now())
+
+				return ctrl.Result{RequeueAfter: remaining + time.Second}, nil
+			}
+			return ctrl.Result{RequeueAfter: time.Hour}, nil
+		}
+	}
 
 	return ctrl.Result{}, nil
 }
@@ -57,7 +148,7 @@ func (r *IPLeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 // SetupWithManager sets up the controller with the Manager.
 func (r *IPLeaseReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&juneauloutresmev1alpha1.IPLease{}).
+		For(&juneauv1alpha1.IPLease{}).
 		Named("iplease").
 		Complete(r)
 }
