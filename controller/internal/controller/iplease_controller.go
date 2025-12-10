@@ -32,6 +32,20 @@ import (
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
+const (
+	ipLeaseReasonBound      = "Bound"
+	ipLeaseReasonActive     = "IPLeaseActive"
+	ipLeaseReasonReleased   = "Released"
+	ipLeaseReasonExpired    = "Expired"
+	ipLeaseReasonNotExpired = "NotExpired"
+	ipLeaseAllocationFailed = "AllocationFailed"
+	ipLeaseConditionBound   = juneauv1alpha1.IPLeaseStatusBound
+	ipLeaseConditionExpired = juneauv1alpha1.IPLeaseStatusExpired
+	defaultLeaseTTL         = time.Hour
+	requeueCheckWindow      = time.Hour
+	requeueSafetyBuffer     = time.Second
+)
+
 // IPLeaseReconciler reconciles a IPLease object
 type IPLeaseReconciler struct {
 	client.Client
@@ -46,6 +60,7 @@ type IPLeaseReconciler struct {
 // move the current state of the cluster closer to the desired state.
 func (r *IPLeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
+	now := time.Now()
 
 	var resource juneauv1alpha1.IPLease
 	if err := r.Get(ctx, req.NamespacedName, &resource); err != nil {
@@ -60,7 +75,7 @@ func (r *IPLeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	if !resource.Status.ExpiresAt.IsZero() && time.Now().After(resource.Status.ExpiresAt.Time) {
+	if !resource.Status.ExpiresAt.IsZero() && now.After(resource.Status.ExpiresAt.Time) {
 		if err := r.Delete(ctx, &resource); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -71,76 +86,73 @@ func (r *IPLeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	resource.Status.PodDisplayName = resource.Spec.PodRef.Interface + "." + resource.Spec.PodRef.Name + "." + resource.Spec.PodRef.Namespace
 
 	if resource.Spec.OwnerDeletionTimeStamp.IsZero() {
-		resource.Status.ObservedGeneration = resource.Generation
-		resource.Status.ExpiresAt = metav1.Time{}
-		resource.Status.Phase = juneauv1alpha1.IPLeasePhaseActive
-
-		meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-			Type:    juneauv1alpha1.IPLeaseStatusBound,
-			Status:  metav1.ConditionTrue,
-			Reason:  "Bound",
-			Message: "",
-		})
-		meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-			Type:    juneauv1alpha1.IPLeaseStatusExpired,
-			Status:  metav1.ConditionFalse,
-			Reason:  "IPLeaseActive",
-			Message: "",
-		})
-
-		if err := r.Status().Update(ctx, &resource); err != nil {
+		if err := r.updateStatus(ctx, &resource, juneauv1alpha1.IPLeasePhaseActive, metav1.Time{},
+			metav1.Condition{
+				Type:   ipLeaseConditionBound,
+				Status: metav1.ConditionTrue,
+				Reason: ipLeaseReasonBound,
+			},
+			metav1.Condition{
+				Type:    ipLeaseConditionExpired,
+				Status:  metav1.ConditionFalse,
+				Reason:  ipLeaseReasonActive,
+				Message: "",
+			},
+		); err != nil {
 			logger.Error(err, "unable to update IPLease status", "name", req.NamespacedName)
 			return ctrl.Result{}, err
 		}
 	} else {
-		ttl := time.Hour
+		ttl := defaultLeaseTTL
 		if resource.Spec.TTLSeconds != nil {
 			ttl = time.Duration(*resource.Spec.TTLSeconds) * time.Second
 		}
 
-		resource.Status.ObservedGeneration = resource.Generation
-		resource.Status.ExpiresAt = metav1.NewTime(resource.Spec.OwnerDeletionTimeStamp.Add(ttl))
+		expirationTime := resource.Spec.OwnerDeletionTimeStamp.Add(ttl)
+		expiresAt := metav1.NewTime(expirationTime)
 
-		meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-			Type:    juneauv1alpha1.IPLeaseStatusBound,
-			Status:  metav1.ConditionFalse,
-			Reason:  "Released",
-			Message: "",
-		})
-
-		if time.Now().After(resource.Spec.OwnerDeletionTimeStamp.Add(ttl)) {
-			meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-				Type:    juneauv1alpha1.IPLeaseStatusExpired,
-				Status:  metav1.ConditionTrue,
-				Reason:  "Expired",
-				Message: "",
-			})
-			resource.Status.Phase = juneauv1alpha1.IPLeasePhaseExpired
-			if err := r.Status().Update(ctx, &resource); err != nil {
+		if now.After(expirationTime) {
+			if err := r.updateStatus(ctx, &resource, juneauv1alpha1.IPLeasePhaseExpired, expiresAt,
+				metav1.Condition{
+					Type:   ipLeaseConditionBound,
+					Status: metav1.ConditionFalse,
+					Reason: ipLeaseReasonReleased,
+				},
+				metav1.Condition{
+					Type:   ipLeaseConditionExpired,
+					Status: metav1.ConditionTrue,
+					Reason: ipLeaseReasonExpired,
+				},
+			); err != nil {
 				logger.Error(err, "unable to update IPLease status", "name", req.NamespacedName)
 				return ctrl.Result{}, err
 			}
+
 			return ctrl.Result{Requeue: true}, nil
-		} else {
-			meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-				Type:    juneauv1alpha1.IPLeaseStatusExpired,
-				Status:  metav1.ConditionFalse,
-				Reason:  "NotExpired",
-				Message: "Will be expired at " + resource.Status.ExpiresAt.String(),
-			})
-			resource.Status.Phase = juneauv1alpha1.IPLeasePhaseReleased
-			if err := r.Status().Update(ctx, &resource); err != nil {
-				logger.Error(err, "unable to update IPLease status", "name", req.NamespacedName)
-				return ctrl.Result{}, err
-			}
-
-			if time.Now().Add(time.Hour).After(resource.Spec.OwnerDeletionTimeStamp.Add(ttl)) {
-				remaining := resource.Spec.OwnerDeletionTimeStamp.Add(ttl).Sub(time.Now())
-
-				return ctrl.Result{RequeueAfter: remaining + time.Second}, nil
-			}
-			return ctrl.Result{RequeueAfter: time.Hour}, nil
 		}
+
+		if err := r.updateStatus(ctx, &resource, juneauv1alpha1.IPLeasePhaseReleased, expiresAt,
+			metav1.Condition{
+				Type:   ipLeaseConditionBound,
+				Status: metav1.ConditionFalse,
+				Reason: ipLeaseReasonReleased,
+			},
+			metav1.Condition{
+				Type:    ipLeaseConditionExpired,
+				Status:  metav1.ConditionFalse,
+				Reason:  ipLeaseReasonNotExpired,
+				Message: "Will be expired at " + expiresAt.String(),
+			},
+		); err != nil {
+			logger.Error(err, "unable to update IPLease status", "name", req.NamespacedName)
+			return ctrl.Result{}, err
+		}
+
+		if now.Add(requeueCheckWindow).After(expirationTime) {
+			remaining := expirationTime.Sub(now)
+			return ctrl.Result{RequeueAfter: remaining + requeueSafetyBuffer}, nil
+		}
+		return ctrl.Result{RequeueAfter: requeueCheckWindow}, nil
 	}
 
 	return ctrl.Result{}, nil
@@ -227,4 +239,20 @@ func (r *IPLeaseReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&juneauv1alpha1.IPLease{}).
 		Named("iplease").
 		Complete(r)
+}
+
+func (r *IPLeaseReconciler) updateStatus(
+	ctx context.Context,
+	resource *juneauv1alpha1.IPLease,
+	phase juneauv1alpha1.IPLeasePhase,
+	expiresAt metav1.Time,
+	boundCondition metav1.Condition,
+	expiredCondition metav1.Condition,
+) error {
+	resource.Status.ObservedGeneration = resource.Generation
+	resource.Status.ExpiresAt = expiresAt
+	resource.Status.Phase = phase
+	meta.SetStatusCondition(&resource.Status.Conditions, boundCondition)
+	meta.SetStatusCondition(&resource.Status.Conditions, expiredCondition)
+	return r.Status().Update(ctx, resource)
 }

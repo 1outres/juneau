@@ -30,6 +30,10 @@ import (
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
+const (
+	vpcReasonReconcileSucceeded = "ReconcileSucceeded"
+)
+
 // VpcReconciler reconciles a Vpc object
 type VpcReconciler struct {
 	client.Client
@@ -58,14 +62,7 @@ func (r *VpcReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, nil
 	}
 
-	resource.Status.ObservedGeneration = resource.Generation
-	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-		Type:    juneauv1alpha1.VpcStatusReady,
-		Status:  metav1.ConditionTrue,
-		Reason:  "ReconcileSucceeded",
-		Message: "",
-	})
-	if err := r.Status().Update(ctx, &resource); err != nil {
+	if err := r.updateReadyCondition(ctx, &resource, metav1.ConditionTrue, vpcReasonReconcileSucceeded, ""); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -78,4 +75,15 @@ func (r *VpcReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&juneauv1alpha1.Vpc{}).
 		Named("vpc").
 		Complete(r)
+}
+
+func (r *VpcReconciler) updateReadyCondition(ctx context.Context, vpc *juneauv1alpha1.Vpc, status metav1.ConditionStatus, reason, message string) error {
+	vpc.Status.ObservedGeneration = vpc.Generation
+	meta.SetStatusCondition(&vpc.Status.Conditions, metav1.Condition{
+		Type:    juneauv1alpha1.VpcStatusReady,
+		Status:  status,
+		Reason:  reason,
+		Message: message,
+	})
+	return r.Status().Update(ctx, vpc)
 }

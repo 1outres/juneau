@@ -31,6 +31,12 @@ import (
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
+const (
+	subnetReasonReconcileFailed  = "ReconcileFailed"
+	subnetReasonNotImplemented   = "NotImplemented"
+	subnetReasonReconcileSuccess = "ReconcileSucceeded"
+)
+
 // SubnetReconciler reconciles a Subnet object
 type SubnetReconciler struct {
 	client.Client
@@ -61,14 +67,7 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	var vpc juneauv1alpha1.Vpc
 	if err := r.Get(ctx, client.ObjectKey{Name: resource.Spec.Vpc}, &vpc); err != nil {
-		resource.Status.ObservedGeneration = resource.Generation
-		meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-			Type:    juneauv1alpha1.SubnetStatusReady,
-			Status:  metav1.ConditionFalse,
-			Reason:  "ReconcileFailed",
-			Message: "VPC not found",
-		})
-		if err := r.Status().Update(ctx, &resource); err != nil {
+		if err := r.updateReadyCondition(ctx, &resource, metav1.ConditionFalse, subnetReasonReconcileFailed, "VPC not found"); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{Requeue: true}, nil
@@ -76,57 +75,28 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	var vni uint32 = 1
 	if resource.Name != "default" {
-		resource.Status.ObservedGeneration = resource.Generation
-		meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-			Type:    juneauv1alpha1.SubnetStatusReady,
-			Status:  metav1.ConditionFalse,
-			Reason:  "NotImplemented",
-			Message: "",
-		})
-		if err := r.Status().Update(ctx, &resource); err != nil {
+		if err := r.updateReadyCondition(ctx, &resource, metav1.ConditionFalse, subnetReasonNotImplemented, ""); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
+	_, cidr, err := net.ParseCIDR(resource.Spec.CIDR)
+	if err != nil {
+		if err := r.updateReadyCondition(ctx, &resource, metav1.ConditionFalse, subnetReasonReconcileFailed, "CIDR parse error"); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
 	}
 
 	resource.Status.VNI = vni
-	resource.Status.ObservedGeneration = resource.Generation
-	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-		Type:    juneauv1alpha1.SubnetStatusReady,
-		Status:  metav1.ConditionTrue,
-		Reason:  "ReconcileSucceeded",
-		Message: "",
-	})
-
-	_, cidr, err := net.ParseCIDR(resource.Spec.CIDR)
-	if err != nil {
-		resource.Status.ObservedGeneration = resource.Generation
-		meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-			Type:    juneauv1alpha1.SubnetStatusReady,
-			Status:  metav1.ConditionFalse,
-			Reason:  "ReconcileFailed",
-			Message: "CIDR parse error",
-		})
-		if err := r.Status().Update(ctx, &resource); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
-	}
-
-	ip := cidr.IP.Mask(cidr.Mask).To4()
-	for i := len(ip) - 1; i >= 0; i-- {
-		ip[i]++
-		if ip[i] != 0 {
-			break
-		}
-	}
-	resource.Status.Gateway = ip.String()
+	resource.Status.Gateway = nextGateway(cidr)
 
 	if resource.Name != "default" {
 		// TODO: generate a MAC address
 	}
 
-	if err := r.Status().Update(ctx, &resource); err != nil {
+	if err := r.updateReadyCondition(ctx, &resource, metav1.ConditionTrue, subnetReasonReconcileSuccess, ""); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -139,4 +109,26 @@ func (r *SubnetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&juneauv1alpha1.Subnet{}).
 		Named("subnet").
 		Complete(r)
+}
+
+func (r *SubnetReconciler) updateReadyCondition(ctx context.Context, subnet *juneauv1alpha1.Subnet, status metav1.ConditionStatus, reason, message string) error {
+	subnet.Status.ObservedGeneration = subnet.Generation
+	meta.SetStatusCondition(&subnet.Status.Conditions, metav1.Condition{
+		Type:    juneauv1alpha1.SubnetStatusReady,
+		Status:  status,
+		Reason:  reason,
+		Message: message,
+	})
+	return r.Status().Update(ctx, subnet)
+}
+
+func nextGateway(cidr *net.IPNet) string {
+	ip := cidr.IP.Mask(cidr.Mask).To4()
+	for i := len(ip) - 1; i >= 0; i-- {
+		ip[i]++
+		if ip[i] != 0 {
+			break
+		}
+	}
+	return ip.String()
 }
