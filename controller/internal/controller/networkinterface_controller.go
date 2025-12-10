@@ -172,6 +172,103 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, nil
 	}
 
+	if resource.Spec.Address != "" {
+		requestedIP := net.ParseIP(resource.Spec.Address)
+		if requestedIP == nil || !cidr.Contains(requestedIP) {
+			resource.Status.ObservedGeneration = resource.Generation
+			resource.Status.Phase = juneauv1alpha1.NetworkInterfacePhasePending
+			meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+				Type:    juneauv1alpha1.NetworkInterfaceStatusReady,
+				Status:  metav1.ConditionFalse,
+				Reason:  "AllocationFailed",
+				Message: "Failed to allocate IP",
+			})
+			meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+				Type:    juneauv1alpha1.NetworkInterfaceStatusAllocated,
+				Status:  metav1.ConditionFalse,
+				Reason:  "InvalidRequestedIP",
+				Message: "Requested IP is not a valid IPv4 address in subnet",
+			})
+			if err := r.Status().Update(ctx, &resource); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
+
+		var requestedLeases juneauv1alpha1.IPLeaseList
+		if err := r.List(ctx, &requestedLeases, client.MatchingFields{
+			"spec.subnet":  resource.Spec.Subnet,
+			"spec.address": requestedIP.String(),
+		}); err != nil {
+			logger.Error(err, "unable to list IPLeases for requested IP", "address", requestedIP.String())
+			return ctrl.Result{}, err
+		}
+
+		if len(requestedLeases.Items) > 0 {
+			resource.Status.ObservedGeneration = resource.Generation
+			resource.Status.Phase = juneauv1alpha1.NetworkInterfacePhasePending
+			meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+				Type:    juneauv1alpha1.NetworkInterfaceStatusReady,
+				Status:  metav1.ConditionFalse,
+				Reason:  "AllocationFailed",
+				Message: "Failed to allocate IP",
+			})
+			meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+				Type:    juneauv1alpha1.NetworkInterfaceStatusAllocated,
+				Status:  metav1.ConditionFalse,
+				Reason:  "RequestedIPInUse",
+				Message: "Requested IP already allocated: " + requestedIP.String(),
+			})
+			if err := r.Status().Update(ctx, &resource); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
+
+		ipLease := juneauv1alpha1.IPLease{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: resource.Spec.Subnet + "-" + strings.ReplaceAll(requestedIP.String(), ".", "-"),
+			},
+			Spec: juneauv1alpha1.IPLeaseSpec{
+				PodRef: juneauv1alpha1.IPLeasePodReference{
+					Namespace: resource.Namespace,
+					Name:      resource.Spec.PodRef.Name,
+					Interface: resource.Spec.PodRef.Interface,
+				},
+
+				Vpc:     subnet.Spec.Vpc,
+				Subnet:  resource.Spec.Subnet,
+				Address: requestedIP.String(),
+			},
+		}
+		if err := r.Create(ctx, &ipLease); err != nil {
+			logger.Error(err, "unable to create IPLease for NetworkInterface", "name", req.NamespacedName)
+			return ctrl.Result{}, err
+		}
+
+		resource.Status.ObservedGeneration = resource.Generation
+		resource.Status.IPLease = ipLease.Name
+		resource.Status.Phase = juneauv1alpha1.NetworkInterfacePhaseAllocated
+		meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+			Type:    juneauv1alpha1.NetworkInterfaceStatusReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  "WaitingForInterface",
+			Message: "Waiting for interface",
+		})
+		meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+			Type:    juneauv1alpha1.NetworkInterfaceStatusAllocated,
+			Status:  metav1.ConditionTrue,
+			Reason:  "AllocationSucceeded",
+			Message: "IP allocated successfully: " + ipLease.Spec.Address,
+		})
+		// TODO: set address and routes in status
+		if err := r.Status().Update(ctx, &resource); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		return ctrl.Result{}, nil
+	}
+
 	ip := cidr.IP.Mask(cidr.Mask).To4()
 
 	broadcast := func(n *net.IPNet) net.IP {
