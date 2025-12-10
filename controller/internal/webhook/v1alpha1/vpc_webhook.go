@@ -91,7 +91,7 @@ func (v *VpcCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Obj
 
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "Vpc"}, vpc.Name, errs)
-		subnetlog.Info("Validation failed for Vpc", "name", vpc.GetName(), "error", err)
+		vpclog.Info("Validation failed for Vpc", "name", vpc.GetName(), "error", err)
 		return nil, err
 	}
 

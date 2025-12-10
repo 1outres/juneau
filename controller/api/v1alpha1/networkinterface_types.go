@@ -28,7 +28,7 @@ type NetworkInterfaceSpec struct {
 
 	Vpc     string `json:"vpc"`
 	Subnet  string `json:"subnet"`
-	Address string `json:"address"`
+	Address string `json:"address,omitempty"`
 }
 
 // NetworkInterfaceStatus defines the observed state of NetworkInterface.

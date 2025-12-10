@@ -82,7 +82,6 @@ spec:
               vpc:
                 type: string
             required:
-            - address
             - nodeName
             - podRef
             - subnet

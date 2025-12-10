@@ -147,6 +147,7 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		if err := r.Status().Update(ctx, &resource); err != nil {
 			return ctrl.Result{}, err
 		}
+		return ctrl.Result{}, nil
 	}
 
 	_, cidr, err := net.ParseCIDR(subnet.Spec.CIDR)
