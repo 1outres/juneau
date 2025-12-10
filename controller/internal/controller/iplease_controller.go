@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -147,6 +148,81 @@ func (r *IPLeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *IPLeaseReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&juneauv1alpha1.IPLease{},
+		"spec.subnet",
+		func(obj client.Object) []string {
+			lease := obj.(*juneauv1alpha1.IPLease)
+			if lease.Spec.Subnet == "" {
+				return nil
+			}
+			return []string{lease.Spec.Subnet}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to set up field indexer for IPLease.spec.subnet: %w", err)
+	}
+
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&juneauv1alpha1.IPLease{},
+		"spec.podRef.namespace",
+		func(obj client.Object) []string {
+			lease := obj.(*juneauv1alpha1.IPLease)
+			if lease.Spec.PodRef.Namespace == "" {
+				return nil
+			}
+			return []string{lease.Spec.PodRef.Namespace}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to set up field indexer for IPLease.spec.podRef.namespace: %w", err)
+	}
+
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&juneauv1alpha1.IPLease{},
+		"spec.podRef.name",
+		func(obj client.Object) []string {
+			lease := obj.(*juneauv1alpha1.IPLease)
+			if lease.Spec.PodRef.Name == "" {
+				return nil
+			}
+			return []string{lease.Spec.PodRef.Name}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to set up field indexer for IPLease.spec.podRef.name: %w", err)
+	}
+
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&juneauv1alpha1.IPLease{},
+		"spec.podRef.interface",
+		func(obj client.Object) []string {
+			lease := obj.(*juneauv1alpha1.IPLease)
+			if lease.Spec.PodRef.Interface == "" {
+				return nil
+			}
+			return []string{lease.Spec.PodRef.Interface}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to set up field indexer for IPLease.spec.podRef.interface: %w", err)
+	}
+
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&juneauv1alpha1.IPLease{},
+		"spec.address",
+		func(obj client.Object) []string {
+			lease := obj.(*juneauv1alpha1.IPLease)
+			if lease.Spec.Address == "" {
+				return nil
+			}
+			return []string{lease.Spec.Address}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to set up field indexer for IPLease.spec.address: %w", err)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&juneauv1alpha1.IPLease{}).
 		Named("iplease").
