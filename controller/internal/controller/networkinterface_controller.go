@@ -87,7 +87,7 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	if done, err := r.reuseExistingLease(ctx, logger, &resource); done || err != nil {
+	if done, err := r.reuseExistingLease(ctx, logger, &resource, subnet.Status.Gateway); done || err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -164,7 +164,7 @@ func (r *NetworkInterfaceReconciler) fetchSubnet(ctx context.Context, resource *
 	return &subnet, nil
 }
 
-func (r *NetworkInterfaceReconciler) reuseExistingLease(ctx context.Context, logger logr.Logger, resource *juneauv1alpha1.NetworkInterface) (bool, error) {
+func (r *NetworkInterfaceReconciler) reuseExistingLease(ctx context.Context, logger logr.Logger, resource *juneauv1alpha1.NetworkInterface, gateway string) (bool, error) {
 	var ipLeases juneauv1alpha1.IPLeaseList
 	if err := r.List(ctx, &ipLeases, client.MatchingFields{
 		"spec.subnet":           resource.Spec.Subnet,
@@ -189,6 +189,8 @@ func (r *NetworkInterfaceReconciler) reuseExistingLease(ctx context.Context, log
 	resource.Status.ObservedGeneration = resource.Generation
 	resource.Status.Phase = juneauv1alpha1.NetworkInterfacePhaseAllocated
 	resource.Status.IPLease = ipLease.Name
+	resource.Status.Address = ipLease.Spec.Address
+	resource.Status.Routes = buildDefaultRoutes(gateway)
 	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
 		Type:    juneauv1alpha1.NetworkInterfaceStatusReady,
 		Status:  metav1.ConditionFalse,
@@ -254,7 +256,7 @@ func (r *NetworkInterfaceReconciler) allocateRequestedIP(
 		return true, err
 	}
 
-	if err := r.updateAllocatedStatus(ctx, resource, ipLease.Name, ipLease.Spec.Address); err != nil {
+	if err := r.updateAllocatedStatus(ctx, resource, ipLease.Name, ipLease.Spec.Address, subnet.Status.Gateway); err != nil {
 		return true, err
 	}
 
@@ -306,7 +308,7 @@ func (r *NetworkInterfaceReconciler) allocateNextAvailableIP(
 			return ctrl.Result{}, err
 		}
 
-		if err := r.updateAllocatedStatus(ctx, resource, ipLease.Name, ipLease.Spec.Address); err != nil {
+		if err := r.updateAllocatedStatus(ctx, resource, ipLease.Name, ipLease.Spec.Address, subnet.Status.Gateway); err != nil {
 			return ctrl.Result{}, err
 		}
 		// TODO: set address and routes in status
@@ -333,10 +335,12 @@ func (r *NetworkInterfaceReconciler) buildIPLease(resource *juneauv1alpha1.Netwo
 	}
 }
 
-func (r *NetworkInterfaceReconciler) updateAllocatedStatus(ctx context.Context, resource *juneauv1alpha1.NetworkInterface, ipLeaseName, address string) error {
+func (r *NetworkInterfaceReconciler) updateAllocatedStatus(ctx context.Context, resource *juneauv1alpha1.NetworkInterface, ipLeaseName, address, gateway string) error {
 	resource.Status.ObservedGeneration = resource.Generation
 	resource.Status.IPLease = ipLeaseName
 	resource.Status.Phase = juneauv1alpha1.NetworkInterfacePhaseAllocated
+	resource.Status.Address = address
+	resource.Status.Routes = buildDefaultRoutes(gateway)
 	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
 		Type:    juneauv1alpha1.NetworkInterfaceStatusReady,
 		Status:  metav1.ConditionFalse,
@@ -349,8 +353,19 @@ func (r *NetworkInterfaceReconciler) updateAllocatedStatus(ctx context.Context, 
 		Reason:  conditionReasonAllocationSucceeded,
 		Message: "IP allocated successfully: " + address,
 	})
-	// TODO: set address and routes in status
 	return r.Status().Update(ctx, resource)
+}
+
+func buildDefaultRoutes(gateway string) []juneauv1alpha1.NetworkRoute {
+	if gateway == "" {
+		return nil
+	}
+	return []juneauv1alpha1.NetworkRoute{
+		{
+			Dst: "0.0.0.0/0",
+			GW:  gateway,
+		},
+	}
 }
 
 func (r *NetworkInterfaceReconciler) updateStatus(
