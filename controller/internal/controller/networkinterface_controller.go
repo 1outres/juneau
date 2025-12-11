@@ -256,7 +256,7 @@ func (r *NetworkInterfaceReconciler) allocateRequestedIP(
 		return true, err
 	}
 
-	if err := r.updateAllocatedStatus(ctx, resource, ipLease.Name, ipLease.Spec.Address, subnet.Status.Gateway); err != nil {
+	if err := r.updateAllocatedStatus(ctx, resource, ipLease.Name, &net.IPNet{IP: requestedIP, Mask: cidr.Mask}, subnet.Status.Gateway); err != nil {
 		return true, err
 	}
 
@@ -308,7 +308,7 @@ func (r *NetworkInterfaceReconciler) allocateNextAvailableIP(
 			return ctrl.Result{}, err
 		}
 
-		if err := r.updateAllocatedStatus(ctx, resource, ipLease.Name, ipLease.Spec.Address, subnet.Status.Gateway); err != nil {
+		if err := r.updateAllocatedStatus(ctx, resource, ipLease.Name, &net.IPNet{IP: ip, Mask: cidr.Mask}, subnet.Status.Gateway); err != nil {
 			return ctrl.Result{}, err
 		}
 		// TODO: set address and routes in status
@@ -335,11 +335,11 @@ func (r *NetworkInterfaceReconciler) buildIPLease(resource *juneauv1alpha1.Netwo
 	}
 }
 
-func (r *NetworkInterfaceReconciler) updateAllocatedStatus(ctx context.Context, resource *juneauv1alpha1.NetworkInterface, ipLeaseName, address, gateway string) error {
+func (r *NetworkInterfaceReconciler) updateAllocatedStatus(ctx context.Context, resource *juneauv1alpha1.NetworkInterface, ipLeaseName string, address *net.IPNet, gateway string) error {
 	resource.Status.ObservedGeneration = resource.Generation
 	resource.Status.IPLease = ipLeaseName
 	resource.Status.Phase = juneauv1alpha1.NetworkInterfacePhaseAllocated
-	resource.Status.Address = address
+	resource.Status.Address = address.String()
 	resource.Status.Routes = buildDefaultRoutes(gateway)
 	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
 		Type:    juneauv1alpha1.NetworkInterfaceStatusReady,
@@ -351,7 +351,7 @@ func (r *NetworkInterfaceReconciler) updateAllocatedStatus(ctx context.Context, 
 		Type:    juneauv1alpha1.NetworkInterfaceStatusAllocated,
 		Status:  metav1.ConditionTrue,
 		Reason:  conditionReasonAllocationSucceeded,
-		Message: "IP allocated successfully: " + address,
+		Message: "IP allocated successfully: " + address.String(),
 	})
 	return r.Status().Update(ctx, resource)
 }
