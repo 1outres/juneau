@@ -28,7 +28,7 @@ type IPLeaseSpec struct {
 	Subnet  string `json:"subnet"`
 	Address string `json:"address"`
 
-	TTLSeconds             *int32      `json:"ttlSeconds,omitempty"`
+	TTLSeconds             *int32       `json:"ttlSeconds,omitempty"`
 	OwnerDeletionTimeStamp *metav1.Time `json:"ownerDeletionTimestamp,omitempty"`
 }
 

@@ -64,6 +64,27 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	annotations := pod.GetAnnotations()
+	if pod.Spec.HostNetwork {
+		return ctrl.Result{}, nil
+	}
+	if _, isMirror := annotations["kubernetes.io/config.mirror"]; isMirror {
+		return ctrl.Result{}, nil
+	}
+
+	ifName := "eth0"
+
+	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+		niName := pod.Name + "-" + ifName
+		var nwiface juneauv1alpha1.NetworkInterface
+		if err := r.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: niName}, &nwiface); err != nil {
+			if errors.IsNotFound(err) {
+				return ctrl.Result{}, nil
+			}
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, r.Delete(ctx, &nwiface)
+	}
+
 	subnetName := annotations[podAnnSubnet]
 	if subnetName == "" {
 		subnetName = "default"
@@ -73,8 +94,6 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		// ノード未確定なので少し待つ
 		return ctrl.Result{RequeueAfter: requeueDelay}, nil
 	}
-
-	ifName := "eth0"
 
 	var subnet juneauv1alpha1.Subnet
 	if err := r.Get(ctx, client.ObjectKey{Name: subnetName}, &subnet); err != nil {
