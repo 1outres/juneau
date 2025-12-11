@@ -79,13 +79,10 @@ spec:
                 type: object
               subnet:
                 type: string
-              vpc:
-                type: string
             required:
             - nodeName
             - podRef
             - subnet
-            - vpc
             type: object
           status:
             description: NetworkInterfaceStatus defines the observed state of NetworkInterface.

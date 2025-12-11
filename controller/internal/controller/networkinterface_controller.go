@@ -124,7 +124,7 @@ func (r *NetworkInterfaceReconciler) handleDeletion(ctx context.Context, resourc
 	if controllerutil.ContainsFinalizer(resource, finalizer) {
 		var ipLease juneauv1alpha1.IPLease
 		if err := r.Get(ctx, client.ObjectKey{Name: resource.Status.IPLease}, &ipLease); err == nil {
-			ipLease.Spec.OwnerDeletionTimeStamp = metav1.Time{Time: time.Now()}
+			ipLease.Spec.OwnerDeletionTimeStamp = &metav1.Time{Time: time.Now()}
 			if err := r.Update(ctx, &ipLease); err != nil {
 				return true, err
 			}
@@ -181,7 +181,7 @@ func (r *NetworkInterfaceReconciler) reuseExistingLease(ctx context.Context, log
 	}
 
 	ipLease := ipLeases.Items[0]
-	ipLease.Spec.OwnerDeletionTimeStamp = metav1.Time{}
+	ipLease.Spec.OwnerDeletionTimeStamp = nil
 	if err := r.Update(ctx, &ipLease); err != nil {
 		return true, err
 	}

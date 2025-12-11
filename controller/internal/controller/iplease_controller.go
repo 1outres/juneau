@@ -86,7 +86,7 @@ func (r *IPLeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	resource.Status.PodDisplayName = resource.Spec.PodRef.Interface + "." + resource.Spec.PodRef.Name + "." + resource.Spec.PodRef.Namespace
 
 	if resource.Spec.OwnerDeletionTimeStamp.IsZero() {
-		if err := r.updateStatus(ctx, &resource, juneauv1alpha1.IPLeasePhaseActive, metav1.Time{},
+		if err := r.updateStatus(ctx, &resource, juneauv1alpha1.IPLeasePhaseActive, nil,
 			metav1.Condition{
 				Type:   ipLeaseConditionBound,
 				Status: metav1.ConditionTrue,
@@ -112,7 +112,7 @@ func (r *IPLeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		expiresAt := metav1.NewTime(expirationTime)
 
 		if now.After(expirationTime) {
-			if err := r.updateStatus(ctx, &resource, juneauv1alpha1.IPLeasePhaseExpired, expiresAt,
+			if err := r.updateStatus(ctx, &resource, juneauv1alpha1.IPLeasePhaseExpired, &expiresAt,
 				metav1.Condition{
 					Type:   ipLeaseConditionBound,
 					Status: metav1.ConditionFalse,
@@ -131,7 +131,7 @@ func (r *IPLeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			return ctrl.Result{Requeue: true}, nil
 		}
 
-		if err := r.updateStatus(ctx, &resource, juneauv1alpha1.IPLeasePhaseReleased, expiresAt,
+		if err := r.updateStatus(ctx, &resource, juneauv1alpha1.IPLeasePhaseReleased, &expiresAt,
 			metav1.Condition{
 				Type:   ipLeaseConditionBound,
 				Status: metav1.ConditionFalse,
@@ -245,7 +245,7 @@ func (r *IPLeaseReconciler) updateStatus(
 	ctx context.Context,
 	resource *juneauv1alpha1.IPLease,
 	phase juneauv1alpha1.IPLeasePhase,
-	expiresAt metav1.Time,
+	expiresAt *metav1.Time,
 	boundCondition metav1.Condition,
 	expiredCondition metav1.Condition,
 ) error {

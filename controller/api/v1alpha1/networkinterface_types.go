@@ -26,7 +26,6 @@ type NetworkInterfaceSpec struct {
 
 	NodeName string `json:"nodeName"`
 
-	Vpc     string `json:"vpc"`
 	Subnet  string `json:"subnet"`
 	Address string `json:"address,omitempty"`
 }

@@ -29,7 +29,7 @@ type IPLeaseSpec struct {
 	Address string `json:"address"`
 
 	TTLSeconds             *int32      `json:"ttlSeconds,omitempty"`
-	OwnerDeletionTimeStamp metav1.Time `json:"ownerDeletionTimestamp,omitempty"`
+	OwnerDeletionTimeStamp *metav1.Time `json:"ownerDeletionTimestamp,omitempty"`
 }
 
 // IPLeaseStatus defines the observed state of IPLease.
@@ -40,7 +40,7 @@ type IPLeaseStatus struct {
 
 	PodDisplayName string `json:"podDisplayName,omitempty"`
 
-	ExpiresAt metav1.Time `json:"expiresAt,omitempty"`
+	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
 }
 
 type IPLeasePodReference struct {
@@ -51,8 +51,7 @@ type IPLeasePodReference struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster
-// +kubebuilder:resource:shortName={"lease"}
+// +kubebuilder:resource:scope=Cluster,shortName={"lease"}
 // +kubebuilder:printcolumn:name="Pod",type="string",JSONPath=".status.podDisplayName"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 

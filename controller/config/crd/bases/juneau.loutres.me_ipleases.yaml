@@ -14,7 +14,7 @@ spec:
     shortNames:
     - lease
     singular: iplease
-  scope: Namespaced
+  scope: Cluster
   versions:
   - additionalPrinterColumns:
     - jsonPath: .status.podDisplayName
