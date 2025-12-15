@@ -53,6 +53,7 @@ type IPLeasePodReference struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster,shortName={"lease"}
 // +kubebuilder:printcolumn:name="Pod",type="string",JSONPath=".status.podDisplayName"
+// +kubebuilder:printcolumn:name="Expires At",type="string",JSONPath=".status.expiresAt"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 
 // IPLease is the Schema for the ipleases API.

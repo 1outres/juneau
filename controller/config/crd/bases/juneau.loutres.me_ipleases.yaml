@@ -20,6 +20,9 @@ spec:
     - jsonPath: .status.podDisplayName
       name: Pod
       type: string
+    - jsonPath: .status.expiresAt
+      name: Expires At
+      type: string
     - jsonPath: .status.phase
       name: Phase
       type: string

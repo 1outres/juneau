@@ -56,7 +56,6 @@ type NetworkRoute struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName={"interface","iface","nwinterface","nwiface"}
 // +kubebuilder:printcolumn:name="Node",type="string",JSONPath=".spec.nodeName"
-// +kubebuilder:printcolumn:name="Vpc",type="string",JSONPath=".spec.vpc"
 // +kubebuilder:printcolumn:name="Subnet",type="string",JSONPath=".spec.subnet"
 // +kubebuilder:printcolumn:name="Address",type="string",JSONPath=".status.address"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"

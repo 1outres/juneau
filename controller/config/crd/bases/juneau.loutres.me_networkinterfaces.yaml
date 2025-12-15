@@ -23,9 +23,6 @@ spec:
     - jsonPath: .spec.nodeName
       name: Node
       type: string
-    - jsonPath: .spec.vpc
-      name: Vpc
-      type: string
     - jsonPath: .spec.subnet
       name: Subnet
       type: string

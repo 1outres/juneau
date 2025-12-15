@@ -87,10 +87,6 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	if done, err := r.reuseExistingLease(ctx, logger, &resource, subnet.Status.Gateway); done || err != nil {
-		return ctrl.Result{}, err
-	}
-
 	_, cidr, err := net.ParseCIDR(subnet.Spec.CIDR)
 	if err != nil {
 		if err := r.updateStatus(ctx, &resource, juneauv1alpha1.NetworkInterfacePhasePending,
@@ -99,6 +95,10 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
+	}
+
+	if done, err := r.reuseExistingLease(ctx, logger, &resource, subnet, cidr); done || err != nil {
+		return ctrl.Result{}, err
 	}
 
 	if done, err := r.allocateRequestedIP(ctx, logger, &resource, subnet, cidr); done || err != nil {
@@ -164,7 +164,7 @@ func (r *NetworkInterfaceReconciler) fetchSubnet(ctx context.Context, resource *
 	return &subnet, nil
 }
 
-func (r *NetworkInterfaceReconciler) reuseExistingLease(ctx context.Context, logger logr.Logger, resource *juneauv1alpha1.NetworkInterface, gateway string) (bool, error) {
+func (r *NetworkInterfaceReconciler) reuseExistingLease(ctx context.Context, logger logr.Logger, resource *juneauv1alpha1.NetworkInterface, subnet *juneauv1alpha1.Subnet, cidr *net.IPNet) (bool, error) {
 	var ipLeases juneauv1alpha1.IPLeaseList
 	if err := r.List(ctx, &ipLeases, client.MatchingFields{
 		"spec.subnet":           resource.Spec.Subnet,
@@ -181,30 +181,14 @@ func (r *NetworkInterfaceReconciler) reuseExistingLease(ctx context.Context, log
 	}
 
 	ipLease := ipLeases.Items[0]
-	ipLease.Spec.OwnerDeletionTimeStamp = nil
-	if err := r.Update(ctx, &ipLease); err != nil {
-		return true, err
+	if ipLease.Spec.OwnerDeletionTimeStamp != nil {
+	  ipLease.Spec.OwnerDeletionTimeStamp = nil
+	  if err := r.Update(ctx, &ipLease); err != nil {
+	  	return true, err
+	  }
 	}
 
-	resource.Status.ObservedGeneration = resource.Generation
-	resource.Status.Phase = juneauv1alpha1.NetworkInterfacePhaseAllocated
-	resource.Status.IPLease = ipLease.Name
-	resource.Status.Address = ipLease.Spec.Address
-	resource.Status.Routes = buildDefaultRoutes(gateway)
-	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-		Type:    juneauv1alpha1.NetworkInterfaceStatusReady,
-		Status:  metav1.ConditionFalse,
-		Reason:  conditionReasonWaitingForIface,
-		Message: "Waiting for interface",
-	})
-	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-		Type:    juneauv1alpha1.NetworkInterfaceStatusAllocated,
-		Status:  metav1.ConditionTrue,
-		Reason:  conditionReasonAllocationSucceeded,
-		Message: "IP already allocated to this interface: " + ipLease.Spec.Address,
-	})
-	// TODO: set address and routes in status
-	if err := r.Status().Update(ctx, resource); err != nil {
+	if err := r.updateAllocatedStatus(ctx, resource, ipLease.Name, &net.IPNet{IP: net.ParseIP(ipLease.Spec.Address), Mask: cidr.Mask}, subnet.Status.Gateway); err != nil {
 		return true, err
 	}
 
@@ -311,7 +295,6 @@ func (r *NetworkInterfaceReconciler) allocateNextAvailableIP(
 		if err := r.updateAllocatedStatus(ctx, resource, ipLease.Name, &net.IPNet{IP: ip, Mask: cidr.Mask}, subnet.Status.Gateway); err != nil {
 			return ctrl.Result{}, err
 		}
-		// TODO: set address and routes in status
 		return ctrl.Result{}, nil
 	}
 }
