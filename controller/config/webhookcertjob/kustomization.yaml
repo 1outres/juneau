@@ -1,0 +1,10 @@
+namespace: system
+
+resources:
+  - serviceaccount.yaml
+  - clusterrole.yaml
+  - clusterrolebinding.yaml
+  - role.yaml
+  - rolebinding.yaml
+  - job.yaml
+  - cronjob.yaml

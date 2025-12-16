@@ -1,0 +1,12 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: webhook-cert-issuer
+  namespace: system
+  labels:
+    app.kubernetes.io/name: webhook-cert-job
+    app.kubernetes.io/part-of: juneau
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]

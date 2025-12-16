@@ -1,0 +1,9 @@
+apiVersion: juneau.loutres.me/v1alpha1
+kind: NetworkInterface
+metadata:
+  labels:
+    app.kubernetes.io/name: controller
+    app.kubernetes.io/managed-by: kustomize
+  name: networkinterface-sample
+spec:
+  # TODO(user): Add fields here
