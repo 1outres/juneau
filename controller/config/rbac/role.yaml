@@ -1,0 +1,63 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  - pods
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - admissionregistration.k8s.io
+  resources:
+  - mutatingwebhookconfigurations
+  - validatingwebhookconfigurations
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - juneau.loutres.me
+  resources:
+  - ipleases
+  - networkinterfaces
+  - subnets
+  - vpcs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - juneau.loutres.me
+  resources:
+  - ipleases/finalizers
+  - networkinterfaces/finalizers
+  - subnets/finalizers
+  - vpcs/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - juneau.loutres.me
+  resources:
+  - ipleases/status
+  - networkinterfaces/status
+  - subnets/status
+  - vpcs/status
+  verbs:
+  - get
+  - patch
+  - update

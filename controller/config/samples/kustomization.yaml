@@ -1,0 +1,7 @@
+## Append samples of your project ##
+resources:
+- v1alpha1_vpc.yaml
+- v1alpha1_subnet.yaml
+- v1alpha1_networkinterface.yaml
+- v1alpha1_iplease.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples
