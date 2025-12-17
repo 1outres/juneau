@@ -15,6 +15,7 @@ import (
 	"github.com/containernetworking/cni/pkg/version"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/resolver"
 	"google.golang.org/grpc/status"
 )
 
@@ -153,6 +154,7 @@ func connect(sock string) (*grpc.ClientConn, error) {
 	dialer := func(ctx context.Context, addr string) (net.Conn, error) {
 		return net.Dial("unix", addr)
 	}
+	resolver.SetDefaultScheme("passthrough")
 
 	conn, err := grpc.NewClient(
 		sock,
