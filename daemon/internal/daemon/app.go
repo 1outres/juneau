@@ -5,10 +5,16 @@ import (
 	"os/signal"
 	"syscall"
 
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	"github.com/1outres/juneau/daemon/internal/daemon/bootstrap"
 	"github.com/1outres/juneau/daemon/internal/daemon/grpc"
 	"github.com/urfave/cli/v3"
 	"go.uber.org/zap"
+	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/config"
 )
 
 func NewApp() *cli.Command {
@@ -46,6 +52,80 @@ func NewApp() *cli.Command {
 			}()
 			zap.ReplaceGlobals(logger)
 
+			kubecfg, err := config.GetConfig()
+			if err != nil {
+				zap.S().Fatalf("failed to get kubeconfig: %v", err)
+			}
+
+			scheme := runtime.NewScheme()
+			utilruntime.Must(juneauv1alpha1.AddToScheme(scheme))
+
+			cache, err := cache.New(kubecfg, cache.Options{
+				Scheme: scheme,
+				ByObject: map[client.Object]cache.ByObject{
+					&juneauv1alpha1.NetworkInterface{}: {},
+				},
+			})
+			if err != nil {
+				zap.S().Fatalf("failed to create cache: %v", err)
+			}
+
+			cl, err := client.New(kubecfg, client.Options{
+				Scheme: scheme,
+				Cache: &client.CacheOptions{
+					Reader: cache,
+				},
+			})
+
+			if err := cache.IndexField(
+				ctx,
+				&juneauv1alpha1.NetworkInterface{},
+				"spec.podRef.interface",
+				func(obj client.Object) []string {
+					pod := obj.(*juneauv1alpha1.NetworkInterface)
+					if pod.Spec.PodRef.Interface == "" {
+						return nil
+					}
+					return []string{pod.Spec.PodRef.Interface}
+				},
+			); err != nil {
+				zap.S().Fatalf("failed to index NetworkInterface by spec.podRef.interface: %v", err)
+			}
+			if err := cache.IndexField(
+				ctx,
+				&juneauv1alpha1.NetworkInterface{},
+				"spec.podRef.name",
+				func(obj client.Object) []string {
+					pod := obj.(*juneauv1alpha1.NetworkInterface)
+					if pod.Spec.PodRef.Name == "" {
+						return nil
+					}
+					return []string{pod.Spec.PodRef.Name}
+				},
+			); err != nil {
+				zap.S().Fatalf("failed to index NetworkInterface by spec.podRef.name: %v", err)
+			}
+			if err := cache.IndexField(
+				ctx,
+				&juneauv1alpha1.NetworkInterface{},
+				"spec.podRef.uid",
+				func(obj client.Object) []string {
+					pod := obj.(*juneauv1alpha1.NetworkInterface)
+					if pod.Spec.PodRef.UID == "" {
+						return nil
+					}
+					return []string{pod.Spec.PodRef.UID}
+				},
+			); err != nil {
+				zap.S().Fatalf("failed to index NetworkInterface by spec.podRef.name: %v", err)
+			}
+
+			go func() {
+				if err := cache.Start(ctx); err != nil {
+					zap.S().Fatalf("failed to start cache: %v", err)
+				}
+			}()
+
 			if err := bootstrap.InstallCNIBinary(cniBinDir); err != nil {
 				zap.S().Fatalf("failed to install CNI binary: %v", err)
 			}
@@ -60,12 +140,16 @@ func NewApp() *cli.Command {
 				zap.S().Fatalf("failed to copy loopback CNI binary: %v", err)
 			}
 
-			grpcServer := grpc.NewServer()
+			if ok := cache.WaitForCacheSync(ctx); !ok {
+				zap.S().Fatalf("failed to sync cache")
+			}
+
+			grpcServer := grpc.NewServer(cl)
 			if err := grpcServer.Start(udsPath); err != nil {
 				zap.S().Fatalf("failed to start gRPC server: %v", err)
 			}
 
-			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 			<-ctx.Done()
 			zap.S().Infof("shutting down...")

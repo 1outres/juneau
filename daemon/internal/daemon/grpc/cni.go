@@ -1,32 +1,69 @@
 package grpc
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"net"
 	"reflect"
 
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/utils/ptr"
+
 	"github.com/1outres/juneau/daemon/pkg/cnipb"
+	"github.com/containernetworking/cni/pkg/types"
+	types040 "github.com/containernetworking/cni/pkg/types/040"
 	"github.com/containernetworking/plugins/pkg/ns"
 	"github.com/vishvananda/netlink"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
 	PodNameKey      = "K8S_POD_NAME"
 	PodNamespaceKey = "K8S_POD_NAMESPACE"
+	PodUIDKey       = "K8S_POD_UID"
 )
 
 type CNIServer struct {
 	cnipb.UnimplementedCNIServer
+
+	client client.Client
 }
 
 func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (*cnipb.CNIResponse, error) {
 	podNamespace := req.Args[PodNamespaceKey]
 	podName := req.Args[PodNameKey]
+	podUID := req.Args[PodUIDKey]
 
 	zap.S().Infof("CNI ADD request for pod %s/%s ifname=%s", podNamespace, podName, req.Ifname)
+	zap.S().Debugf("CNI ADD request args: %v", req.Args)
+
+	var nwifaceList juneauv1alpha1.NetworkInterfaceList
+	if err := c.client.List(ctx, &nwifaceList, client.InNamespace(podNamespace), client.MatchingFields{
+		"spec.podRef.uid":       podUID,
+		"spec.podRef.name":      podName,
+		"spec.podRef.interface": req.Ifname,
+	}); err != nil {
+		zap.L().Error("failed to list NetworkInterface resources", zap.Error(err))
+		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to list NetworkInterface resources", err.Error())
+	}
+
+	if len(nwifaceList.Items) == 0 {
+		zap.L().Error("no NetworkInterface resource found for pod/interface")
+		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "No NetworkInterface resource found for pod/interface", "")
+	}
+
+	nwiface := &nwifaceList.Items[0]
+
+	if meta.IsStatusConditionFalse(nwiface.Status.Conditions, juneauv1alpha1.NetworkInterfaceStatusAllocated) {
+		zap.L().Error("NetworkInterface resource is not yet allocated")
+		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "NetworkInterface resource is not yet allocated", "")
+	}
 
 	vethHostName := c.vethHostName(req.Ifname, req.ContainerId)
 	vethPeerName := c.vethPeerName(req.Ifname, req.ContainerId)
@@ -105,7 +142,102 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (*cnipb.CNIR
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to setup veth in netns", err.Error())
 	}
 
-	return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Unimplemented", "")
+	ip, ipnet, err := net.ParseCIDR(nwiface.Status.Address)
+	if err != nil {
+		zap.L().Error("failed to parse assigned IP address", zap.Error(err))
+		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to parse assigned IP address", err.Error())
+	}
+
+	type Route struct {
+		dst *net.IPNet
+		gw  net.IP
+	}
+	routes := make([]Route, 0, len(nwiface.Status.Routes))
+
+	for _, route := range nwiface.Status.Routes {
+		_, dst, err := net.ParseCIDR(route.Dst)
+		if err != nil {
+			zap.L().Error("failed to parse route destination CIDR", zap.Error(err))
+			return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to parse route destination CIDR", err.Error())
+		}
+		gw := net.ParseIP(route.GW)
+		if gw == nil {
+			zap.L().Error("failed to parse route gateway IP", zap.Error(err))
+			return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to parse route gateway IP", err.Error())
+		}
+
+		routes = append(routes, Route{dst: dst, gw: gw})
+	}
+
+	if err = netns.Do(func(_ ns.NetNS) error {
+		link, err := netlink.LinkByName(req.Ifname)
+		if err != nil {
+			return fmt.Errorf("failed to find interface %s in netns: %w", req.Ifname, err)
+		}
+
+		if err := netlink.AddrAdd(link, &netlink.Addr{
+			IPNet: &net.IPNet{
+				IP:   ip,
+				Mask: ipnet.Mask,
+			},
+		}); err != nil {
+			return fmt.Errorf("failed to assign IP address to interface %s in netns: %w", req.Ifname, err)
+		}
+		zap.S().Debugf("Assigned IP %s to interface %s in netns", nwiface.Status.Address, req.Ifname)
+
+		for _, route := range routes {
+			if err := netlink.RouteAdd(&netlink.Route{
+				LinkIndex: link.Attrs().Index,
+				Gw:        route.gw,
+				Dst:       route.dst,
+			}); err != nil {
+				return fmt.Errorf("failed to add route to interface %s in netns: %w", req.Ifname, err)
+			}
+		}
+
+		return nil
+	}); err != nil {
+		zap.L().Error("failed to configure interface in netns", zap.Error(err))
+		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to configure interface in netns", err.Error())
+	}
+
+	res := &types040.Result{
+		CNIVersion: "0.4.0",
+		Interfaces: []*types040.Interface{
+			{
+				Name:    req.Ifname,
+				Sandbox: req.Netns,
+			},
+		},
+		IPs: []*types040.IPConfig{
+			{
+				Version:   "4",
+				Interface: ptr.To(0),
+				Address: net.IPNet{
+					IP:   ip,
+					Mask: ipnet.Mask,
+				},
+			},
+		},
+		Routes: []*types.Route{},
+	}
+
+	for _, route := range routes {
+		res.Routes = append(res.Routes, &types.Route{
+			Dst: *route.dst,
+			GW:  route.gw,
+		})
+	}
+
+	var buf bytes.Buffer
+	if err := res.PrintTo(&buf); err != nil {
+		zap.L().Error("failed to serialize CNI result", zap.Error(err))
+		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to serialize CNI result", err.Error())
+	}
+
+	return &cnipb.CNIResponse{
+		ResultJson: buf.Bytes(),
+	}, nil
 }
 
 func (c *CNIServer) Check(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.Empty, error) {
@@ -140,8 +272,10 @@ func (c *CNIServer) Del(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.Em
 	return &emptypb.Empty{}, nil
 }
 
-func newCNIServer() *CNIServer {
-	return &CNIServer{}
+func newCNIServer(client client.Client) *CNIServer {
+	return &CNIServer{
+		client: client,
+	}
 }
 
 func makeError(code cnipb.ErrorCode, msg string, details string) error {

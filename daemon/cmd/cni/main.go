@@ -11,7 +11,7 @@ import (
 	"github.com/1outres/juneau/daemon/pkg/cnipb"
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/containernetworking/cni/pkg/types"
-	current "github.com/containernetworking/cni/pkg/types/100"
+	"github.com/containernetworking/cni/pkg/types/create"
 	"github.com/containernetworking/cni/pkg/version"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -63,7 +63,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return types.NewError(types.ErrInternal, "daemon returned empty response", "")
 	}
 
-	result, err := current.NewResult(resp.GetResultJson())
+	result, err := create.CreateFromBytes(resp.GetResultJson())
 	if err != nil {
 		return types.NewError(types.ErrDecodingFailure, "failed to decode daemon result", err.Error())
 	}

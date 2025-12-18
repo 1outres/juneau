@@ -10,6 +10,7 @@ import (
 	"github.com/1outres/juneau/daemon/pkg/cnipb"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type Server struct {
@@ -40,10 +41,10 @@ func (s *Server) Start(udsPath string) error {
 	return nil
 }
 
-func NewServer() *Server {
+func NewServer(client client.Client) *Server {
 	s := &Server{
 		grpcServer: grpc.NewServer(),
-		cni:        newCNIServer(),
+		cni:        newCNIServer(client),
 	}
 	cnipb.RegisterCNIServer(s.grpcServer, s.cni)
 
