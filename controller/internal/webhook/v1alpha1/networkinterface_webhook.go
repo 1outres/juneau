@@ -26,7 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
 // nolint:unused
@@ -35,7 +35,7 @@ var networkinterfacelog = logf.Log.WithName("networkinterface-resource")
 
 // SetupNetworkInterfaceWebhookWithManager registers the webhook for NetworkInterface in the manager.
 func SetupNetworkInterfaceWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(&juneauloutresmev1alpha1.NetworkInterface{}).
+	return ctrl.NewWebhookManagedBy(mgr).For(&juneauv1alpha1.NetworkInterface{}).
 		WithValidator(&NetworkInterfaceCustomValidator{}).
 		WithDefaulter(&NetworkInterfaceCustomDefaulter{}).
 		Complete()
@@ -52,7 +52,7 @@ var _ webhook.CustomDefaulter = &NetworkInterfaceCustomDefaulter{}
 
 // Default implements webhook.CustomDefaulter so a webhook will be registered for the Kind NetworkInterface.
 func (d *NetworkInterfaceCustomDefaulter) Default(ctx context.Context, obj runtime.Object) error {
-	networkinterface, ok := obj.(*juneauloutresmev1alpha1.NetworkInterface)
+	networkinterface, ok := obj.(*juneauv1alpha1.NetworkInterface)
 
 	if !ok {
 		return fmt.Errorf("expected an NetworkInterface object but got %T", obj)
@@ -73,7 +73,7 @@ var _ webhook.CustomValidator = &NetworkInterfaceCustomValidator{}
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type NetworkInterface.
 func (v *NetworkInterfaceCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	networkinterface, ok := obj.(*juneauloutresmev1alpha1.NetworkInterface)
+	networkinterface, ok := obj.(*juneauv1alpha1.NetworkInterface)
 	if !ok {
 		return nil, fmt.Errorf("expected a NetworkInterface object but got %T", obj)
 	}
@@ -84,7 +84,7 @@ func (v *NetworkInterfaceCustomValidator) ValidateCreate(ctx context.Context, ob
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type NetworkInterface.
 func (v *NetworkInterfaceCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	networkinterface, ok := newObj.(*juneauloutresmev1alpha1.NetworkInterface)
+	networkinterface, ok := newObj.(*juneauv1alpha1.NetworkInterface)
 	if !ok {
 		return nil, fmt.Errorf("expected a NetworkInterface object for the newObj but got %T", newObj)
 	}
@@ -95,7 +95,7 @@ func (v *NetworkInterfaceCustomValidator) ValidateUpdate(ctx context.Context, ol
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type NetworkInterface.
 func (v *NetworkInterfaceCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	networkinterface, ok := obj.(*juneauloutresmev1alpha1.NetworkInterface)
+	networkinterface, ok := obj.(*juneauv1alpha1.NetworkInterface)
 	if !ok {
 		return nil, fmt.Errorf("expected a NetworkInterface object but got %T", obj)
 	}

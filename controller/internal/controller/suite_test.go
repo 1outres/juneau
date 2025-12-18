@@ -32,7 +32,6 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
@@ -63,7 +62,7 @@ var _ = BeforeSuite(func() {
 	err = juneauv1alpha1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = juneauloutresmev1alpha1.AddToScheme(scheme.Scheme)
+	err = juneauv1alpha1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:scheme

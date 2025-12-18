@@ -44,10 +44,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	"github.com/1outres/juneau/controller/internal/controller"
-	webhookjuneauloutresmev1alpha1 "github.com/1outres/juneau/controller/internal/webhook/v1alpha1"
 	webhookjuneauv1alpha1 "github.com/1outres/juneau/controller/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
@@ -61,7 +59,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(juneauv1alpha1.AddToScheme(scheme))
-	utilruntime.Must(juneauloutresmev1alpha1.AddToScheme(scheme))
+	utilruntime.Must(juneauv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -277,14 +275,14 @@ func main() {
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookjuneauloutresmev1alpha1.SetupIPLeaseWebhookWithManager(mgr); err != nil {
+		if err = webhookjuneauv1alpha1.SetupIPLeaseWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "IPLease")
 			os.Exit(1)
 		}
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookjuneauloutresmev1alpha1.SetupNetworkInterfaceWebhookWithManager(mgr); err != nil {
+		if err = webhookjuneauv1alpha1.SetupNetworkInterfaceWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "NetworkInterface")
 			os.Exit(1)
 		}
