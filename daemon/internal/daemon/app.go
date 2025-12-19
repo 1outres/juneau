@@ -144,6 +144,10 @@ func NewApp() *cli.Command {
 				zap.S().Fatalf("failed to sync cache")
 			}
 
+			if err := bootstrap.SetupDefaultGatewayIface(ctx, cl); err != nil {
+				zap.S().Fatalf("failed to setup default gateway iface: %v", err)
+			}
+
 			grpcServer := grpc.NewServer(cl)
 			if err := grpcServer.Start(udsPath); err != nil {
 				zap.S().Fatalf("failed to start gRPC server: %v", err)

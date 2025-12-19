@@ -13,6 +13,7 @@ require (
 )
 
 require (
+	github.com/cilium/ebpf v0.20.0 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
 	golang.org/x/net v0.46.1-0.20251013234738-63d1a5100f82 // indirect
