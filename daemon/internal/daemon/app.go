@@ -203,12 +203,12 @@ func NewApp() *cli.Command {
 				zap.S().Fatalf("failed to sync cache")
 			}
 
-			defaultGwMac, err := bootstrap.SetupDefaultGatewayIface(ctx, cl)
+			hostIfaceInfo, err := bootstrap.SetupDefaultGatewayIface(ctx, cl)
 			if err != nil {
 				zap.S().Fatalf("failed to setup default gateway iface: %v", err)
 			}
 
-			bpfManager := bpf.NewManager(cl, nwepInfromer, nodeName, defaultGwMac)
+			bpfManager := bpf.NewManager(cl, nwepInfromer, nodeName, hostIfaceInfo.Ifindex, hostIfaceInfo.MAC)
 			if err := bpfManager.Start(ctx); err != nil {
 				zap.S().Fatalf("failed to initialize BPF manager: %v", err)
 			}

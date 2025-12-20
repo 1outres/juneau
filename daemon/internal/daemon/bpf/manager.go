@@ -28,6 +28,7 @@ type Manager struct {
 	nwepHandler  toolscache.ResourceEventHandlerRegistration
 
 	nodeName          string
+	hostIfindex       int
 	defaultGatewayMac net.HardwareAddr
 
 	podEgressObjs  *PodEgressObjects
@@ -123,10 +124,11 @@ func (m *Manager) UpsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 			Ifindex: uint32(nwep.Spec.Ifindex),
 		},
 		&PodEgressIfindexSubnetVal{
-			SubnetId: subnet.Status.VNI,
-			GwMac:    gwmac,
-			GwAddr:   gwaddr,
-			Mask:     mask,
+			SubnetId:    subnet.Status.VNI,
+			GwMac:       gwmac,
+			GwAddr:      gwaddr,
+			Mask:        mask,
+			HostIfindex: uint32(m.hostIfindex),
 		},
 		ebpf.UpdateAny); err != nil {
 		zap.S().Errorf("failed to update IfindexSubnet map: %v", err)
@@ -172,11 +174,12 @@ func (m *Manager) DeleteNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 	return nil
 }
 
-func NewManager(cl client.Client, nwepInformer cache.Informer, nodeName string, defaultGatewayMac net.HardwareAddr) *Manager {
+func NewManager(cl client.Client, nwepInformer cache.Informer, nodeName string, hostIfindex int, defaultGatewayMac net.HardwareAddr) *Manager {
 	return &Manager{
 		client:            cl,
 		nwepInformer:      nwepInformer,
 		nodeName:          nodeName,
+		hostIfindex:       hostIfindex,
 		defaultGatewayMac: defaultGatewayMac,
 		podEgressObjs:     &PodEgressObjects{},
 		podEgressLinks:    make(map[int]link.Link),

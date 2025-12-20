@@ -13,7 +13,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-func SetupDefaultGatewayIface(ctx context.Context, cl client.Client) (net.HardwareAddr, error) {
+type HostIfaceInfo struct {
+	MAC     net.HardwareAddr
+	Ifindex int
+}
+
+func SetupDefaultGatewayIface(ctx context.Context, cl client.Client) (*HostIfaceInfo, error) {
 	var subnet juneauv1alpha1.Subnet
 	if err := cl.Get(ctx, client.ObjectKey{Name: "default"}, &subnet); err != nil {
 		zap.L().Error("failed to get default Subnet", zap.Error(err))
@@ -77,6 +82,11 @@ func SetupDefaultGatewayIface(ctx context.Context, cl client.Client) (net.Hardwa
 		return nil, fmt.Errorf("invalid gateway IP: %q", subnet.Status.Gateway)
 	}
 
+	hostIfaceInfo := &HostIfaceInfo{
+		MAC:     vethPeer.Attrs().HardwareAddr,
+		Ifindex: vethHost.Attrs().Index,
+	}
+
 	want := &net.IPNet{IP: ip, Mask: ipnet.Mask}
 
 	addrs, err := netlink.AddrList(vethPeer, netlink.FAMILY_ALL)
@@ -92,7 +102,7 @@ func SetupDefaultGatewayIface(ctx context.Context, cl client.Client) (net.Hardwa
 		}
 		hasAnyAddr = true
 		if a.IPNet.IP.Equal(want.IP) && bytes.Equal(a.IPNet.Mask, want.Mask) {
-			return vethPeer.Attrs().HardwareAddr, nil
+			return hostIfaceInfo, nil
 		}
 	}
 
@@ -105,5 +115,5 @@ func SetupDefaultGatewayIface(ctx context.Context, cl client.Client) (net.Hardwa
 		}
 	}
 
-	return vethPeer.Attrs().HardwareAddr, nil
+	return hostIfaceInfo, nil
 }
