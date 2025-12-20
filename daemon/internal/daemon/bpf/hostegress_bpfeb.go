@@ -24,6 +24,19 @@ type HostEgressArpTableVal struct {
 	Mac [6]uint8
 }
 
+type HostEgressFdbKey struct {
+	_        structs.HostLayout
+	SubnetId uint32
+	Mac      [6]uint8
+	_        [2]byte
+}
+
+type HostEgressFdbVal struct {
+	_       structs.HostLayout
+	Ifindex uint32
+	VtepIp  uint32
+}
+
 // LoadHostEgress returns the embedded CollectionSpec for HostEgress.
 func LoadHostEgress() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_HostEgressBytes)
@@ -73,7 +86,9 @@ type HostEgressProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type HostEgressMapSpecs struct {
-	ArpTable *ebpf.MapSpec `ebpf:"arp_table"`
+	ArpTable     *ebpf.MapSpec `ebpf:"arp_table"`
+	Fdb          *ebpf.MapSpec `ebpf:"fdb"`
+	VxlanIfindex *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
 }
 
 // HostEgressVariableSpecs contains global variables before they are loaded into the kernel.
@@ -102,12 +117,16 @@ func (o *HostEgressObjects) Close() error {
 //
 // It can be passed to LoadHostEgressObjects or ebpf.CollectionSpec.LoadAndAssign.
 type HostEgressMaps struct {
-	ArpTable *ebpf.Map `ebpf:"arp_table"`
+	ArpTable     *ebpf.Map `ebpf:"arp_table"`
+	Fdb          *ebpf.Map `ebpf:"fdb"`
+	VxlanIfindex *ebpf.Map `ebpf:"vxlan_ifindex"`
 }
 
 func (m *HostEgressMaps) Close() error {
 	return _HostEgressClose(
 		m.ArpTable,
+		m.Fdb,
+		m.VxlanIfindex,
 	)
 }
 
