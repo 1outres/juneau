@@ -226,6 +226,10 @@ func NewApp() *cli.Command {
 				zap.S().Fatalf("failed to setup vxlan iface: %v", err)
 			}
 
+			if err := bootstrap.ConfigureSysctl(); err != nil {
+				zap.S().Fatalf("failed to configure sysctl: %v", err)
+			}
+
 			bpfManager := bpf.NewManager(cl, nwepInfromer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, hostIfaceInfo.MAC)
 			if err := bpfManager.Start(ctx); err != nil {
 				zap.S().Fatalf("failed to initialize BPF manager: %v", err)

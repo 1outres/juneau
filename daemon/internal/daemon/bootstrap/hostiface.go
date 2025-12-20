@@ -188,23 +188,19 @@ func SetupDefaultGatewayIface(ctx context.Context, cl client.Client) (*HostIface
 		return nil, err
 	}
 
-	hasAnyAddr := false
 	for _, a := range addrs {
 		if a.IPNet == nil {
 			continue
 		}
-		hasAnyAddr = true
 		if a.IPNet.IP.Equal(want.IP) && bytes.Equal(a.IPNet.Mask, want.Mask) {
 			return hostIfaceInfo, nil
 		}
 	}
 
-	if !hasAnyAddr {
-		if err := netlink.AddrAdd(vethPeer, &netlink.Addr{IPNet: want}); err != nil {
-			if !os.IsExist(err) {
-				zap.L().Error("failed to add IP address to cni_host", zap.Error(err))
-				return nil, err
-			}
+	if err := netlink.AddrAdd(vethPeer, &netlink.Addr{IPNet: want}); err != nil {
+		if !os.IsExist(err) {
+			zap.L().Error("failed to add IP address to cni_host", zap.Error(err))
+			return nil, err
 		}
 	}
 

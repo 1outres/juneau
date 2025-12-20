@@ -3,10 +3,12 @@ package bpf
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"go.uber.org/zap"
@@ -88,6 +90,7 @@ func (m *Manager) Start(ctx context.Context) error {
 		return err
 	}
 	m.hostEgressLink = l
+	zap.S().Infof("attached TC program to host interface (ifindex: %d)", m.hostIfindex)
 
 	h, err := addEventHandler(ctx, m.nwepInformer, m.UpsertNetworkEndpoint, m.DeleteNetworkEndpoint)
 	if err != nil {
@@ -251,8 +254,13 @@ func (m *Manager) UpsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 		Attach:    ebpf.AttachTCXIngress,
 	})
 	if err != nil {
+		if errors.Is(err, os.ErrExist) || errors.Is(err, syscall.EEXIST) {
+			return nil
+		}
 		zap.S().Errorf("failed to attach TC program: %v", err)
 		return err
+	} else {
+		zap.S().Infof("attached TC program to pod interface (ifindex: %d)", nwep.Spec.Ifindex)
 	}
 
 	m.mu.Lock()
