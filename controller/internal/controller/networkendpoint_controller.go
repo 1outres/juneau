@@ -18,7 +18,10 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -36,17 +39,92 @@ type NetworkEndpointReconciler struct {
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=networkendpoints,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=networkendpoints/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=networkendpoints/finalizers,verbs=update
+// +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 func (r *NetworkEndpointReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	logger := log.FromContext(ctx)
+
+	var resource juneauloutresmev1alpha1.NetworkEndpoint
+	if err := r.Get(ctx, req.NamespacedName, &resource); err != nil {
+		if errors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		logger.Error(err, "unable to get NetworkEndpoint", "name", req.NamespacedName)
+		return ctrl.Result{}, err
+	}
+
+	if !resource.ObjectMeta.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
+	}
+
+	var node corev1.Node
+	if err := r.Get(ctx, client.ObjectKey{Name: resource.Spec.NodeName}, &node); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	var address string
+	for _, addr := range node.Status.Addresses {
+		if addr.Type == corev1.NodeInternalIP {
+			address = addr.Address
+		}
+	}
+
+	resource.Status.NodeIP = address
+
+	if err := r.Status().Update(ctx, &resource); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	return ctrl.Result{}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *NetworkEndpointReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&juneauloutresmev1alpha1.NetworkEndpoint{},
+		"spec.podRef.name",
+		func(obj client.Object) []string {
+			nwep := obj.(*juneauloutresmev1alpha1.NetworkEndpoint)
+			if nwep.Spec.PodRef.Name == "" {
+				return nil
+			}
+			return []string{nwep.Spec.PodRef.Name}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to set up field indexer for NetworkEndpoint.spec.podRef.name: %w", err)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&juneauloutresmev1alpha1.NetworkEndpoint{},
+		"spec.podRef.interface",
+		func(obj client.Object) []string {
+			nwep := obj.(*juneauloutresmev1alpha1.NetworkEndpoint)
+			if nwep.Spec.PodRef.Interface == "" {
+				return nil
+			}
+			return []string{nwep.Spec.PodRef.Interface}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to set up field indexer for NetworkEndpoint.spec.podRef.interface: %w", err)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&juneauloutresmev1alpha1.NetworkEndpoint{},
+		"spec.podRef.uid",
+		func(obj client.Object) []string {
+			nwep := obj.(*juneauloutresmev1alpha1.NetworkEndpoint)
+			if nwep.Spec.PodRef.UID == "" {
+				return nil
+			}
+			return []string{nwep.Spec.PodRef.UID}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to set up field indexer for NetworkEndpoint.spec.podRef.uid: %w", err)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&juneauloutresmev1alpha1.NetworkEndpoint{}).
 		Named("networkendpoint").

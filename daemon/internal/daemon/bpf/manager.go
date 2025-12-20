@@ -28,6 +28,7 @@ type Manager struct {
 	nwepHandler  toolscache.ResourceEventHandlerRegistration
 
 	nodeName          string
+	vxlanIfindex      int
 	hostIfindex       int
 	defaultGatewayMac net.HardwareAddr
 
@@ -58,12 +59,22 @@ func (m *Manager) Start(ctx context.Context) error {
 		return err
 	}
 
+	if err := m.podEgressObjs.HostIfindex.Update(uint32(0), uint32(m.hostIfindex), ebpf.UpdateAny); err != nil {
+		zap.S().Errorf("failed to update HostIfindex map: %v", err)
+		return err
+	}
+
 	if err := LoadHostEgressObjects(m.hostEgressObjs, &ebpf.CollectionOptions{
 		Maps: ebpf.MapOptions{
 			PinPath: pinPath,
 		},
 	}); err != nil {
 		zap.S().Errorf("failed to load host egress objects: %v", err)
+		return err
+	}
+
+	if err := m.hostEgressObjs.VxlanIfindex.Update(uint32(0), uint32(m.vxlanIfindex), ebpf.UpdateAny); err != nil {
+		zap.S().Errorf("failed to update VxlanIfindex map: %v", err)
 		return err
 	}
 
@@ -143,6 +154,40 @@ func (m *Manager) UpsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 		return err
 	}
 
+	if nwep.Spec.NodeName == m.nodeName {
+		if err := m.hostEgressObjs.Fdb.Update(
+			&HostEgressFdbKey{
+				SubnetId: subnet.Status.VNI,
+				Mac:      mac,
+			},
+			&HostEgressFdbVal{
+				Ifindex: uint32(nwep.Spec.Ifindex),
+			},
+			ebpf.UpdateAny); err != nil {
+		}
+	} else if nwep.Status.NodeIP != "" {
+		netNodeAddr := net.ParseIP(nwep.Status.NodeIP)
+		if netNodeAddr == nil {
+			return fmt.Errorf("failed to parse node IP: %s", nwep.Status.NodeIP)
+		}
+
+		nodeAddr, err := IPv4ToUint32(netNodeAddr)
+		if err != nil {
+			return err
+		}
+
+		if err := m.hostEgressObjs.Fdb.Update(
+			&HostEgressFdbKey{
+				SubnetId: subnet.Status.VNI,
+				Mac:      mac,
+			},
+			&HostEgressFdbVal{
+				VtepIp: nodeAddr,
+			},
+			ebpf.UpdateAny); err != nil {
+		}
+	}
+
 	// Host only
 
 	if nwep.Spec.NodeName != m.nodeName {
@@ -190,11 +235,10 @@ func (m *Manager) UpsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 			Ifindex: uint32(nwep.Spec.Ifindex),
 		},
 		&PodEgressIfindexSubnetVal{
-			SubnetId:    subnet.Status.VNI,
-			GwMac:       gwmac,
-			GwAddr:      gwaddr,
-			Mask:        mask,
-			HostIfindex: uint32(m.hostIfindex),
+			SubnetId: subnet.Status.VNI,
+			GwMac:    gwmac,
+			GwAddr:   gwaddr,
+			Mask:     mask,
 		},
 		ebpf.UpdateAny); err != nil {
 		zap.S().Errorf("failed to update IfindexSubnet map: %v", err)
@@ -244,6 +288,24 @@ func (m *Manager) DeleteNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 		return err
 	}
 
+	netmac, err := net.ParseMAC(nwep.Spec.MACAddress)
+	if err != nil {
+		return err
+	}
+
+	mac, err := HardwareAddrToUint8Array(netmac)
+	if err != nil {
+		return err
+	}
+
+	if err := m.hostEgressObjs.Fdb.Delete(&HostEgressFdbKey{
+		SubnetId: subnet.Status.VNI,
+		Mac:      mac,
+	}); err != nil {
+		zap.S().Errorf("failed to delete from Fdb map: %v", err)
+		return err
+	}
+
 	// Host only
 
 	if nwep.Spec.NodeName != m.nodeName {
@@ -265,11 +327,12 @@ func (m *Manager) DeleteNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 	return nil
 }
 
-func NewManager(cl client.Client, nwepInformer cache.Informer, nodeName string, hostIfindex int, defaultGatewayMac net.HardwareAddr) *Manager {
+func NewManager(cl client.Client, nwepInformer cache.Informer, nodeName string, vxlanIfindex int, hostIfindex int, defaultGatewayMac net.HardwareAddr) *Manager {
 	return &Manager{
 		client:            cl,
 		nwepInformer:      nwepInformer,
 		nodeName:          nodeName,
+		vxlanIfindex:      vxlanIfindex,
 		hostIfindex:       hostIfindex,
 		defaultGatewayMac: defaultGatewayMac,
 		podEgressObjs:     &PodEgressObjects{},

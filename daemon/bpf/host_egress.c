@@ -154,8 +154,6 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
     return TC_ACT_SHOT;
 
   return bpf_redirect(*vx_if, 0);
-
-  return TC_ACT_SHOT;
 }
 
 SEC("tc")

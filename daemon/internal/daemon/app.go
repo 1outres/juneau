@@ -11,6 +11,7 @@ import (
 	"github.com/1outres/juneau/daemon/internal/daemon/grpc"
 	"github.com/urfave/cli/v3"
 	"go.uber.org/zap"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -45,6 +46,9 @@ func NewApp() *cli.Command {
 					cli.EnvVar("NODE_NAME"),
 				}},
 			},
+			&cli.StringFlag{
+				Name: "vxlan-parent-iface",
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			udsPath := cmd.String("uds-path")
@@ -52,6 +56,7 @@ func NewApp() *cli.Command {
 			cniBinDir := cmd.String("cni-bin-dir")
 			cniConfDir := cmd.String("cni-conf-dir")
 			nodeName := cmd.String("node-name")
+			vxlanParentIface := cmd.String("vxlan-parent-iface")
 
 			var zapcfg zap.Config
 			zapcfg = zap.NewDevelopmentConfig()
@@ -68,6 +73,7 @@ func NewApp() *cli.Command {
 
 			scheme := runtime.NewScheme()
 			utilruntime.Must(juneauv1alpha1.AddToScheme(scheme))
+			utilruntime.Must(corev1.AddToScheme(scheme))
 
 			cache, err := cache.New(kubecfg, cache.Options{
 				Scheme: scheme,
@@ -208,7 +214,19 @@ func NewApp() *cli.Command {
 				zap.S().Fatalf("failed to setup default gateway iface: %v", err)
 			}
 
-			bpfManager := bpf.NewManager(cl, nwepInfromer, nodeName, hostIfaceInfo.Ifindex, hostIfaceInfo.MAC)
+			if vxlanParentIface == "" {
+				vxlanParentIface, err = bootstrap.SearchMainIface(ctx, cl, nodeName)
+				if err != nil {
+					zap.S().Fatalf("failed to find main iface: %v", err)
+				}
+			}
+
+			vxlanIfindex, err := bootstrap.SetupVxlanIface(vxlanParentIface)
+			if err != nil {
+				zap.S().Fatalf("failed to setup vxlan iface: %v", err)
+			}
+
+			bpfManager := bpf.NewManager(cl, nwepInfromer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, hostIfaceInfo.MAC)
 			if err := bpfManager.Start(ctx); err != nil {
 				zap.S().Fatalf("failed to initialize BPF manager: %v", err)
 			}

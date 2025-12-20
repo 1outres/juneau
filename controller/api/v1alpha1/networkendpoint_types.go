@@ -36,6 +36,7 @@ type NetworkEndpointSpec struct {
 
 // NetworkEndpointStatus defines the observed state of NetworkEndpoint.
 type NetworkEndpointStatus struct {
+	NodeIP string `json:"nodeIP,omitempty"`
 }
 
 type NetworkEndpointPodReference struct {

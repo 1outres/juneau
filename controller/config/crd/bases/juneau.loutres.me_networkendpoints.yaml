@@ -71,6 +71,9 @@ spec:
             type: object
           status:
             description: NetworkEndpointStatus defines the observed state of NetworkEndpoint.
+            properties:
+              nodeIP:
+                type: string
             type: object
         type: object
     served: true
