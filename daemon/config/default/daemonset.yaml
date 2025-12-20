@@ -45,6 +45,11 @@ spec:
             - name: k3s-data
               mountPath: /var/lib/rancher/k3s/data
               readOnly: true
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
       volumes:
         - name: cni-bin
           hostPath:

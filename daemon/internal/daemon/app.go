@@ -7,6 +7,7 @@ import (
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	"github.com/1outres/juneau/daemon/internal/daemon/bootstrap"
+	"github.com/1outres/juneau/daemon/internal/daemon/bpf"
 	"github.com/1outres/juneau/daemon/internal/daemon/grpc"
 	"github.com/urfave/cli/v3"
 	"go.uber.org/zap"
@@ -64,10 +65,16 @@ func NewApp() *cli.Command {
 				Scheme: scheme,
 				ByObject: map[client.Object]cache.ByObject{
 					&juneauv1alpha1.NetworkInterface{}: {},
+					&juneauv1alpha1.Subnet{}:           {},
 				},
 			})
 			if err != nil {
 				zap.S().Fatalf("failed to create cache: %v", err)
+			}
+
+			subnetInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.Subnet{})
+			if err != nil {
+				zap.S().Fatalf("failed to get Subnet informer: %v", err)
 			}
 
 			cl, err := client.New(kubecfg, client.Options{
@@ -144,8 +151,14 @@ func NewApp() *cli.Command {
 				zap.S().Fatalf("failed to sync cache")
 			}
 
-			if err := bootstrap.SetupDefaultGatewayIface(ctx, cl); err != nil {
+			defaultGwMac, err := bootstrap.SetupDefaultGatewayIface(ctx, cl)
+			if err != nil {
 				zap.S().Fatalf("failed to setup default gateway iface: %v", err)
+			}
+
+			bpfManager := bpf.NewManager(cl, subnetInformer, "", defaultGwMac)
+			if err := bpfManager.Init(ctx); err != nil {
+				zap.S().Fatalf("failed to initialize BPF manager: %v", err)
 			}
 
 			grpcServer := grpc.NewServer(cl)

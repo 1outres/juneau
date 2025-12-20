@@ -13,11 +13,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-func SetupDefaultGatewayIface(ctx context.Context, cl client.Client) error {
+func SetupDefaultGatewayIface(ctx context.Context, cl client.Client) (net.HardwareAddr, error) {
 	var subnet juneauv1alpha1.Subnet
 	if err := cl.Get(ctx, client.ObjectKey{Name: "default"}, &subnet); err != nil {
 		zap.L().Error("failed to get default Subnet", zap.Error(err))
-		return err
+		return nil, err
 	}
 
 	const (
@@ -37,44 +37,44 @@ func SetupDefaultGatewayIface(ctx context.Context, cl client.Client) error {
 			if err := netlink.LinkAdd(veth); err != nil {
 				if !os.IsExist(err) {
 					zap.L().Error("failed to create veth pair", zap.Error(err))
-					return err
+					return nil, err
 				}
 			}
 
 			vethHost, err = netlink.LinkByName(hostName)
 			if err != nil {
 				zap.L().Error("failed to lookup created veth", zap.Error(err))
-				return err
+				return nil, err
 			}
 		} else {
 			zap.L().Error("failed to lookup veth", zap.Error(err))
-			return err
+			return nil, err
 		}
 	}
 
 	vethPeer, err := netlink.LinkByName(peerName)
 	if err != nil {
 		zap.L().Error("failed to lookup veth peer", zap.Error(err))
-		return err
+		return nil, err
 	}
 
 	if err := netlink.LinkSetUp(vethHost); err != nil {
 		zap.L().Error("failed to bring up cni_net on host", zap.Error(err))
-		return err
+		return nil, err
 	}
 	if err := netlink.LinkSetUp(vethPeer); err != nil {
 		zap.L().Error("failed to bring up cni_host on host", zap.Error(err))
-		return err
+		return nil, err
 	}
 
 	_, ipnet, err := net.ParseCIDR(subnet.Spec.CIDR)
 	if err != nil {
 		zap.L().Error("failed to parse subnet CIDR", zap.Error(err))
-		return err
+		return nil, err
 	}
 	ip := net.ParseIP(subnet.Status.Gateway)
 	if ip == nil {
-		return fmt.Errorf("invalid gateway IP: %q", subnet.Status.Gateway)
+		return nil, fmt.Errorf("invalid gateway IP: %q", subnet.Status.Gateway)
 	}
 
 	want := &net.IPNet{IP: ip, Mask: ipnet.Mask}
@@ -82,7 +82,7 @@ func SetupDefaultGatewayIface(ctx context.Context, cl client.Client) error {
 	addrs, err := netlink.AddrList(vethPeer, netlink.FAMILY_ALL)
 	if err != nil {
 		zap.L().Error("failed to list addresses on cni_host", zap.Error(err))
-		return err
+		return nil, err
 	}
 
 	hasAnyAddr := false
@@ -92,7 +92,7 @@ func SetupDefaultGatewayIface(ctx context.Context, cl client.Client) error {
 		}
 		hasAnyAddr = true
 		if a.IPNet.IP.Equal(want.IP) && bytes.Equal(a.IPNet.Mask, want.Mask) {
-			return nil
+			return vethPeer.Attrs().HardwareAddr, nil
 		}
 	}
 
@@ -100,10 +100,10 @@ func SetupDefaultGatewayIface(ctx context.Context, cl client.Client) error {
 		if err := netlink.AddrAdd(vethPeer, &netlink.Addr{IPNet: want}); err != nil {
 			if !os.IsExist(err) {
 				zap.L().Error("failed to add IP address to cni_host", zap.Error(err))
-				return err
+				return nil, err
 			}
 		}
 	}
 
-	return nil
+	return vethPeer.Attrs().HardwareAddr, nil
 }
