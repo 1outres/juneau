@@ -34,10 +34,12 @@ type Manager struct {
 	hostIfindex  int
 	hostMac      net.HardwareAddr
 
-	podEgressObjs  *PodEgressObjects
-	podEgressLinks map[int]link.Link
-	hostEgressObjs *HostEgressObjects
-	hostEgressLink link.Link
+	podEgressObjs    *PodEgressObjects
+	podEgressLinks   map[int]link.Link
+	hostEgressObjs   *HostEgressObjects
+	hostEgressLink   link.Link
+	vxlanIngressObjs *VxlanIngressObjects
+	vxlanIngressLink link.Link
 }
 
 func (m *Manager) Start(ctx context.Context) error {
@@ -88,7 +90,7 @@ func (m *Manager) Start(ctx context.Context) error {
 		return err
 	}
 
-	l, err := link.AttachTCX(link.TCXOptions{
+	hostEgressLink, err := link.AttachTCX(link.TCXOptions{
 		Program:   m.hostEgressObjs.TcHostEgress,
 		Interface: m.hostIfindex,
 		Attach:    ebpf.AttachTCXIngress,
@@ -97,8 +99,29 @@ func (m *Manager) Start(ctx context.Context) error {
 		zap.S().Errorf("failed to attach TC program to host interface: %v", err)
 		return err
 	}
-	m.hostEgressLink = l
+	m.hostEgressLink = hostEgressLink
 	zap.S().Infof("attached TC program to host interface (ifindex: %d)", m.hostIfindex)
+
+	if err := LoadVxlanIngressObjects(m.vxlanIngressObjs, &ebpf.CollectionOptions{
+		Maps: ebpf.MapOptions{
+			PinPath: pinPath,
+		},
+	}); err != nil {
+		zap.S().Errorf("failed to load vxlan ingress objects: %v", err)
+		return err
+	}
+
+	vxlanIngressLink, err := link.AttachTCX(link.TCXOptions{
+		Program:   m.vxlanIngressObjs.TcVxlanIngressEntry,
+		Interface: m.vxlanIfindex,
+		Attach:    ebpf.AttachTCXIngress,
+	})
+	if err != nil {
+		zap.S().Errorf("failed to attach TC program to vxlan interface: %v", err)
+		return err
+	}
+	m.vxlanIngressLink = vxlanIngressLink
+	zap.S().Infof("attached TC program to vxlan interface (ifindex: %d)", m.vxlanIfindex)
 
 	h, err := addEventHandler(ctx, m.nwepInformer, m.UpsertNetworkEndpoint, m.DeleteNetworkEndpoint)
 	if err != nil {
@@ -120,6 +143,9 @@ func (m *Manager) Stop() error {
 
 	m.hostEgressLink.Close()
 	m.hostEgressObjs.Close()
+
+	m.vxlanIngressLink.Close()
+	m.vxlanIngressObjs.Close()
 
 	return nil
 }
@@ -345,15 +371,16 @@ func (m *Manager) DeleteNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 
 func NewManager(cl client.Client, nwepInformer cache.Informer, nodeName string, vxlanIfindex int, hostIfindex int, defaultGatewayMac net.HardwareAddr) *Manager {
 	return &Manager{
-		client:         cl,
-		nwepInformer:   nwepInformer,
-		nodeName:       nodeName,
-		vxlanIfindex:   vxlanIfindex,
-		hostIfindex:    hostIfindex,
-		hostMac:        defaultGatewayMac,
-		podEgressObjs:  &PodEgressObjects{},
-		podEgressLinks: make(map[int]link.Link),
-		hostEgressObjs: &HostEgressObjects{},
+		client:           cl,
+		nwepInformer:     nwepInformer,
+		nodeName:         nodeName,
+		vxlanIfindex:     vxlanIfindex,
+		hostIfindex:      hostIfindex,
+		hostMac:          defaultGatewayMac,
+		podEgressObjs:    &PodEgressObjects{},
+		podEgressLinks:   make(map[int]link.Link),
+		hostEgressObjs:   &HostEgressObjects{},
+		vxlanIngressObjs: &VxlanIngressObjects{},
 	}
 }
 
