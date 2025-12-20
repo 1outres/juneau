@@ -27,7 +27,6 @@ struct ifindex_subnet_val {
   __u8 gw_mac[6];
   __u32 gw_addr;
   __u32 mask;
-  __u32 host_ifindex;
 };
 
 struct {
@@ -37,6 +36,14 @@ struct {
   __type(value, struct ifindex_subnet_val);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } ifindex_subnet SEC(".maps");
+
+struct {
+  __uint(type, BPF_MAP_TYPE_ARRAY);
+  __uint(max_entries, 1);
+  __type(key, __u32);
+  __type(value, __u32); // host iface index
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} host_ifindex SEC(".maps");
 
 struct arp_payload {
   __u8 sha[ETH_ALEN];
@@ -111,8 +118,13 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
   if (h_proto == ETH_P_ARP)
     return handle_arp(skb, data_end, eth, val);
 
-  if (val->subnet_id == 1)
-    return bpf_redirect(val->host_ifindex, 0);
+  if (val->subnet_id == 1) {
+    __u32 host_key = 0;
+    __u32 *host_if = bpf_map_lookup_elem(&host_ifindex, &host_key);
+    if (!host_if)
+      return TC_ACT_SHOT;
+    return bpf_redirect(*host_if, 0);
+  }
 
   return TC_ACT_SHOT;
 }

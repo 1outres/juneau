@@ -19,13 +19,12 @@ type PodEgressIfindexSubnetKey struct {
 }
 
 type PodEgressIfindexSubnetVal struct {
-	_           structs.HostLayout
-	SubnetId    uint32
-	GwMac       [6]uint8
-	_           [2]byte
-	GwAddr      uint32
-	Mask        uint32
-	HostIfindex uint32
+	_        structs.HostLayout
+	SubnetId uint32
+	GwMac    [6]uint8
+	_        [2]byte
+	GwAddr   uint32
+	Mask     uint32
 }
 
 // LoadPodEgress returns the embedded CollectionSpec for PodEgress.
@@ -77,6 +76,7 @@ type PodEgressProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type PodEgressMapSpecs struct {
+	HostIfindex   *ebpf.MapSpec `ebpf:"host_ifindex"`
 	IfindexSubnet *ebpf.MapSpec `ebpf:"ifindex_subnet"`
 }
 
@@ -106,11 +106,13 @@ func (o *PodEgressObjects) Close() error {
 //
 // It can be passed to LoadPodEgressObjects or ebpf.CollectionSpec.LoadAndAssign.
 type PodEgressMaps struct {
+	HostIfindex   *ebpf.Map `ebpf:"host_ifindex"`
 	IfindexSubnet *ebpf.Map `ebpf:"ifindex_subnet"`
 }
 
 func (m *PodEgressMaps) Close() error {
 	return _PodEgressClose(
+		m.HostIfindex,
 		m.IfindexSubnet,
 	)
 }

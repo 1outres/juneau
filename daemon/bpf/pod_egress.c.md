@@ -20,7 +20,6 @@ struct ifindex_subnet_val {
     __u8   gw_mac[6];
     __u32  gw_addr;
     __u32  mask;
-    __u32  host_ifindex;
 };
 
 struct {
@@ -30,6 +29,18 @@ struct {
     __type(value,       struct ifindex_subnet_val);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } ifindex_subnet SEC(".maps");
+```
+
+## host_ifindex
+
+```
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key,   __u32);
+    __type(value, __u32);  // host iface index
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} host_ifindex SEC(".maps");
 ```
 
 - `gw_addr` と `mask` は host order の `__u32` を格納する (例: 10.16.0.1 -> 0x0a100001, /16 -> 0xffff0000)
@@ -45,7 +56,7 @@ struct {
 1. L2ヘッダーのパースを行う
 2. ifindex_subnet mapを引く(key: skb->ifindex)
 3. ARPリクエストの場合、handle_arp関数を呼び出し、その関数の返り値を返す（handle_arp関数にはifindex_subnet mapのvalも渡す）
-4. subnet_idが1の場合、host_ifindexに転送する
+4. subnet_idが1の場合、host_ifindex mapを引いて、host iface indexにbpf_redirectする
 5. ドロップする
 
 ## handle_arp
