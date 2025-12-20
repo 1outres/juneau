@@ -38,12 +38,20 @@ func NewApp() *cli.Command {
 				Name:  "cni-conf-dir",
 				Value: "/etc/cni/net.d",
 			},
+			&cli.StringFlag{
+				Name:     "node-name",
+				Required: true,
+				Sources: cli.ValueSourceChain{Chain: []cli.ValueSource{
+					cli.EnvVar("NODE_NAME"),
+				}},
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			udsPath := cmd.String("uds-path")
 			cniUDSTimeoutMs := cmd.Int("cni-uds-timeout-ms")
 			cniBinDir := cmd.String("cni-bin-dir")
-			cniCOnfDir := cmd.String("cni-conf-dir")
+			cniConfDir := cmd.String("cni-conf-dir")
+			nodeName := cmd.String("node-name")
 
 			var zapcfg zap.Config
 			zapcfg = zap.NewDevelopmentConfig()
@@ -182,10 +190,10 @@ func NewApp() *cli.Command {
 			}
 			zap.S().Infof("installed CNI binary to %s", cniBinDir)
 
-			if err := bootstrap.InstallCNIConfig(cniCOnfDir, udsPath, cniUDSTimeoutMs); err != nil {
+			if err := bootstrap.InstallCNIConfig(cniConfDir, udsPath, cniUDSTimeoutMs); err != nil {
 				zap.S().Fatalf("failed to install CNI config: %v", err)
 			}
-			zap.S().Infof("installed CNI config to %s", cniCOnfDir)
+			zap.S().Infof("installed CNI config to %s", cniConfDir)
 
 			if err := bootstrap.CopyLoopbackCNI(cniBinDir); err != nil {
 				zap.S().Fatalf("failed to copy loopback CNI binary: %v", err)
@@ -200,8 +208,8 @@ func NewApp() *cli.Command {
 				zap.S().Fatalf("failed to setup default gateway iface: %v", err)
 			}
 
-			bpfManager := bpf.NewManager(cl, nwepInfromer, "", defaultGwMac)
-			if err := bpfManager.Init(); err != nil {
+			bpfManager := bpf.NewManager(cl, nwepInfromer, nodeName, defaultGwMac)
+			if err := bpfManager.Start(ctx); err != nil {
 				zap.S().Fatalf("failed to initialize BPF manager: %v", err)
 			}
 
@@ -214,6 +222,8 @@ func NewApp() *cli.Command {
 			defer stop()
 			<-ctx.Done()
 			zap.S().Infof("shutting down...")
+
+			bpfManager.Stop()
 
 			return nil
 		},
