@@ -29,10 +29,10 @@ type Manager struct {
 	nwepInformer cache.Informer
 	nwepHandler  toolscache.ResourceEventHandlerRegistration
 
-	nodeName          string
-	vxlanIfindex      int
-	hostIfindex       int
-	defaultGatewayMac net.HardwareAddr
+	nodeName     string
+	vxlanIfindex int
+	hostIfindex  int
+	hostMac      net.HardwareAddr
 
 	podEgressObjs  *PodEgressObjects
 	podEgressLinks map[int]link.Link
@@ -61,7 +61,15 @@ func (m *Manager) Start(ctx context.Context) error {
 		return err
 	}
 
-	if err := m.podEgressObjs.HostIfindex.Update(uint32(0), uint32(m.hostIfindex), ebpf.UpdateAny); err != nil {
+	mac, err := HardwareAddrToUint8Array(m.hostMac)
+	if err != nil {
+		return err
+	}
+
+	if err := m.podEgressObjs.HostIface.Update(uint32(0), &PodEgressHostIfaceVal{
+		Ifindex: uint32(m.hostIfindex),
+		Mac:     mac,
+	}, ebpf.UpdateAny); err != nil {
 		zap.S().Errorf("failed to update HostIfindex map: %v", err)
 		return err
 	}
@@ -199,7 +207,7 @@ func (m *Manager) UpsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 
 	var netgwmac net.HardwareAddr
 	if subnet.Status.VNI == 1 {
-		netgwmac = m.defaultGatewayMac
+		netgwmac = m.hostMac
 	} else {
 		var err error
 		netgwmac, err = net.ParseMAC(subnet.Status.GatewayMAC)
@@ -337,15 +345,15 @@ func (m *Manager) DeleteNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 
 func NewManager(cl client.Client, nwepInformer cache.Informer, nodeName string, vxlanIfindex int, hostIfindex int, defaultGatewayMac net.HardwareAddr) *Manager {
 	return &Manager{
-		client:            cl,
-		nwepInformer:      nwepInformer,
-		nodeName:          nodeName,
-		vxlanIfindex:      vxlanIfindex,
-		hostIfindex:       hostIfindex,
-		defaultGatewayMac: defaultGatewayMac,
-		podEgressObjs:     &PodEgressObjects{},
-		podEgressLinks:    make(map[int]link.Link),
-		hostEgressObjs:    &HostEgressObjects{},
+		client:         cl,
+		nwepInformer:   nwepInformer,
+		nodeName:       nodeName,
+		vxlanIfindex:   vxlanIfindex,
+		hostIfindex:    hostIfindex,
+		hostMac:        defaultGatewayMac,
+		podEgressObjs:  &PodEgressObjects{},
+		podEgressLinks: make(map[int]link.Link),
+		hostEgressObjs: &HostEgressObjects{},
 	}
 }
 

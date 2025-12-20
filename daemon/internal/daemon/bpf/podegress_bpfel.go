@@ -13,6 +13,13 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type PodEgressHostIfaceVal struct {
+	_       structs.HostLayout
+	Ifindex uint32
+	Mac     [6]uint8
+	_       [2]byte
+}
+
 type PodEgressIfindexSubnetKey struct {
 	_       structs.HostLayout
 	Ifindex uint32
@@ -76,7 +83,7 @@ type PodEgressProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type PodEgressMapSpecs struct {
-	HostIfindex   *ebpf.MapSpec `ebpf:"host_ifindex"`
+	HostIface     *ebpf.MapSpec `ebpf:"host_iface"`
 	IfindexSubnet *ebpf.MapSpec `ebpf:"ifindex_subnet"`
 }
 
@@ -106,13 +113,13 @@ func (o *PodEgressObjects) Close() error {
 //
 // It can be passed to LoadPodEgressObjects or ebpf.CollectionSpec.LoadAndAssign.
 type PodEgressMaps struct {
-	HostIfindex   *ebpf.Map `ebpf:"host_ifindex"`
+	HostIface     *ebpf.Map `ebpf:"host_iface"`
 	IfindexSubnet *ebpf.Map `ebpf:"ifindex_subnet"`
 }
 
 func (m *PodEgressMaps) Close() error {
 	return _PodEgressClose(
-		m.HostIfindex,
+		m.HostIface,
 		m.IfindexSubnet,
 	)
 }
