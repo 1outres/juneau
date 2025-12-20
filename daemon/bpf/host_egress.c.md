@@ -25,6 +25,7 @@ struct {
     __uint(max_entries, MAX_ARP_TABLE);
     __type(key,   struct arp_table_key);
     __type(value, struct arp_table_val);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } arp_table SEC(".maps");
 ```
 

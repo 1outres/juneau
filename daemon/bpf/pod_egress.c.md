@@ -28,6 +28,7 @@ struct {
     __uint(max_entries, MAX_IF_SUBNET);
     __type(key,         struct ifindex_subnet_key);
     __type(value,       struct ifindex_subnet_val);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } ifindex_subnet SEC(".maps");
 ```
 

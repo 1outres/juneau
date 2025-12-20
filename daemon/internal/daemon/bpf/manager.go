@@ -33,22 +33,50 @@ type Manager struct {
 
 	podEgressObjs  *PodEgressObjects
 	podEgressLinks map[int]link.Link
+	hostEgressObjs *HostEgressObjects
+	hostEgressLink link.Link
 }
 
 func (m *Manager) Start(ctx context.Context) error {
-	if err := os.MkdirAll("/sys/fs/bpf/juneau", 0755); err != nil {
+	const pinPath = "/sys/fs/bpf/juneau"
+
+	if err := os.RemoveAll(pinPath); err != nil {
+		zap.S().Errorf("failed to remove BPF pin path: %v", err)
+		return fmt.Errorf("failed to remove BPF pin path: %w", err)
+	}
+	if err := os.MkdirAll(pinPath, 0755); err != nil {
 		zap.S().Errorf("failed to create BPF pin path: %v", err)
 		return fmt.Errorf("failed to create BPF pin path: %w", err)
 	}
 
 	if err := LoadPodEgressObjects(m.podEgressObjs, &ebpf.CollectionOptions{
 		Maps: ebpf.MapOptions{
-			PinPath: "/sys/fs/bpf/juneau",
+			PinPath: pinPath,
 		},
 	}); err != nil {
 		zap.S().Errorf("failed to load pod egress objects: %v", err)
 		return err
 	}
+
+	if err := LoadHostEgressObjects(m.hostEgressObjs, &ebpf.CollectionOptions{
+		Maps: ebpf.MapOptions{
+			PinPath: pinPath,
+		},
+	}); err != nil {
+		zap.S().Errorf("failed to load host egress objects: %v", err)
+		return err
+	}
+
+	l, err := link.AttachTCX(link.TCXOptions{
+		Program:   m.hostEgressObjs.TcHostEgress,
+		Interface: m.hostIfindex,
+		Attach:    ebpf.AttachTCXIngress,
+	})
+	if err != nil {
+		zap.S().Errorf("failed to attach TC program to host interface: %v", err)
+		return err
+	}
+	m.hostEgressLink = l
 
 	h, err := addEventHandler(ctx, m.nwepInformer, m.UpsertNetworkEndpoint, m.DeleteNetworkEndpoint)
 	if err != nil {
@@ -68,19 +96,57 @@ func (m *Manager) Stop() error {
 
 	m.nwepInformer.RemoveEventHandler(m.nwepHandler)
 
+	m.hostEgressLink.Close()
+	m.hostEgressObjs.Close()
+
 	return nil
 }
 
 func (m *Manager) UpsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha1.NetworkEndpoint) error {
-	if nwep.Spec.NodeName != m.nodeName {
-		return nil
-	}
-
 	zap.S().Infof("UpsertNetworkEndpoint called for %s/%s", nwep.Namespace, nwep.Name)
 
 	var subnet juneauv1alpha1.Subnet
 	if err := m.client.Get(ctx, client.ObjectKey{Name: nwep.Spec.Subnet}, &subnet); err != nil {
 		return err
+	}
+
+	netaddr, _, err := net.ParseCIDR(nwep.Spec.Address)
+	if err != nil {
+		return err
+	}
+
+	addr, err := IPv4ToUint32(netaddr)
+	if err != nil {
+		return err
+	}
+
+	netmac, err := net.ParseMAC(nwep.Spec.MACAddress)
+	if err != nil {
+		return err
+	}
+
+	mac, err := HardwareAddrToUint8Array(netmac)
+	if err != nil {
+		return err
+	}
+
+	if err := m.hostEgressObjs.ArpTable.Update(
+		&HostEgressArpTableKey{
+			SubnetId: subnet.Status.VNI,
+			Ipaddr:   addr,
+		},
+		&HostEgressArpTableVal{
+			Mac: mac,
+		},
+		ebpf.UpdateAny); err != nil {
+		zap.S().Errorf("failed to update ArpTable map: %v", err)
+		return err
+	}
+
+	// Host only
+
+	if nwep.Spec.NodeName != m.nodeName {
+		return nil
 	}
 
 	var netgwmac net.HardwareAddr
@@ -104,12 +170,12 @@ func (m *Manager) UpsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 		return err
 	}
 
-	ip := net.ParseIP(subnet.Status.Gateway)
-	if ip == nil {
+	netgwaddr := net.ParseIP(subnet.Status.Gateway)
+	if netgwaddr == nil {
 		return fmt.Errorf("failed to parse gateway IP: %s", subnet.Status.Gateway)
 	}
 
-	gwaddr, err := IPv4ToUint32(ip)
+	gwaddr, err := IPv4ToUint32(netgwaddr)
 	if err != nil {
 		return err
 	}
@@ -153,11 +219,36 @@ func (m *Manager) UpsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 }
 
 func (m *Manager) DeleteNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha1.NetworkEndpoint) error {
+	zap.S().Infof("DeleteNetworkEndpoint called for %s/%s", nwep.Namespace, nwep.Name)
+
+	var subnet juneauv1alpha1.Subnet
+	if err := m.client.Get(ctx, client.ObjectKey{Name: nwep.Spec.Subnet}, &subnet); err != nil {
+		return err
+	}
+
+	netaddr, _, err := net.ParseCIDR(nwep.Spec.Address)
+	if err != nil {
+		return err
+	}
+
+	addr, err := IPv4ToUint32(netaddr)
+	if err != nil {
+		return err
+	}
+
+	if err := m.hostEgressObjs.ArpTable.Delete(&HostEgressArpTableKey{
+		SubnetId: subnet.Status.VNI,
+		Ipaddr:   addr,
+	}); err != nil {
+		zap.S().Errorf("failed to delete from ArpTable map: %v", err)
+		return err
+	}
+
+	// Host only
+
 	if nwep.Spec.NodeName != m.nodeName {
 		return nil
 	}
-
-	zap.S().Infof("DeleteNetworkEndpoint called for %s/%s", nwep.Namespace, nwep.Name)
 
 	if err := m.podEgressObjs.IfindexSubnet.Delete(&PodEgressIfindexSubnetKey{
 		Ifindex: uint32(nwep.Spec.Ifindex),
@@ -183,6 +274,7 @@ func NewManager(cl client.Client, nwepInformer cache.Informer, nodeName string, 
 		defaultGatewayMac: defaultGatewayMac,
 		podEgressObjs:     &PodEgressObjects{},
 		podEgressLinks:    make(map[int]link.Link),
+		hostEgressObjs:    &HostEgressObjects{},
 	}
 }
 
