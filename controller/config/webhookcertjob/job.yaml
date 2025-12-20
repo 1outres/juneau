@@ -8,6 +8,7 @@ metadata:
     app.kubernetes.io/part-of: juneau
 spec:
   backoffLimit: 3
+  ttlSecondsAfterFinished: 300
   template:
     metadata:
       labels:
