@@ -30,6 +30,7 @@ rules:
   - juneau.loutres.me
   resources:
   - ipleases
+  - networkendpoints
   - networkinterfaces
   - subnets
   - vpcs
@@ -45,6 +46,7 @@ rules:
   - juneau.loutres.me
   resources:
   - ipleases/finalizers
+  - networkendpoints/finalizers
   - networkinterfaces/finalizers
   - subnets/finalizers
   - vpcs/finalizers
@@ -54,6 +56,7 @@ rules:
   - juneau.loutres.me
   resources:
   - ipleases/status
+  - networkendpoints/status
   - networkinterfaces/status
   - subnets/status
   - vpcs/status
