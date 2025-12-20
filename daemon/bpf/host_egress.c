@@ -145,8 +145,8 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
     return TC_ACT_SHOT;
 
   struct bpf_tunnel_key tkey = {};
-  tkey.remote_ipv4 = bpf_htonl(fdb_val->vtep_ip);
-  tkey.tunnel_id = bpf_htonl(1U << 8);
+  tkey.remote_ipv4 = fdb_val->vtep_ip;
+  tkey.tunnel_id = 1;
   tkey.tunnel_ttl = 64;
   tkey.tunnel_tos = 0;
 

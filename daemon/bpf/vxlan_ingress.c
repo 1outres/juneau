@@ -35,7 +35,7 @@ static __always_inline int tc_vxlan_ingress(struct __sk_buff *skb) {
   if (bpf_skb_get_tunnel_key(skb, &tkey, sizeof(tkey), 0) < 0)
     return TC_ACT_SHOT;
 
-  __u32 subnet_id = bpf_ntohl(tkey.tunnel_id) >> 8;
+  __u32 subnet_id = tkey.tunnel_id & 0xFFFFFF;
   if (subnet_id != 1)
     return TC_ACT_SHOT;
 
@@ -55,4 +55,3 @@ int tc_vxlan_ingress_entry(struct __sk_buff *skb) {
 }
 
 char __license[] SEC("license") = "Dual MIT/GPL";
-
