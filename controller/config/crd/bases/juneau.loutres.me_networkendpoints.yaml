@@ -11,6 +11,8 @@ spec:
     kind: NetworkEndpoint
     listKind: NetworkEndpointList
     plural: networkendpoints
+    shortNames:
+    - nwep
     singular: networkendpoint
   scope: Namespaced
   versions:
@@ -39,10 +41,33 @@ spec:
           spec:
             description: NetworkEndpointSpec defines the desired state of NetworkEndpoint.
             properties:
-              foo:
-                description: Foo is an example field of NetworkEndpoint. Edit networkendpoint_types.go
-                  to remove/update
+              address:
                 type: string
+              ifindex:
+                type: integer
+              macAddress:
+                type: string
+              nodeName:
+                type: string
+              podRef:
+                properties:
+                  interface:
+                    type: string
+                  name:
+                    type: string
+                  uid:
+                    type: string
+                required:
+                - interface
+                - name
+                - uid
+                type: object
+              subnet:
+                type: string
+            required:
+            - nodeName
+            - podRef
+            - subnet
             type: object
           status:
             description: NetworkEndpointStatus defines the observed state of NetworkEndpoint.

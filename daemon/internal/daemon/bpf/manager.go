@@ -1,7 +1,6 @@
 package bpf
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"os"
@@ -21,8 +20,8 @@ import (
 type Manager struct {
 	mu sync.Mutex
 
-	client         client.Client
-	subnetInformer cache.Informer
+	client       client.Client
+	nwepInformer cache.Informer
 
 	nodeName          string
 	defaultGatewayMac net.HardwareAddr
@@ -30,7 +29,7 @@ type Manager struct {
 	podEgressObjs *PodEgressObjects
 }
 
-func (m *Manager) Init(ctx context.Context) error {
+func (m *Manager) Init() error {
 	if err := os.MkdirAll("/sys/fs/bpf/juneau", 0755); err != nil {
 		zap.S().Errorf("failed to create BPF pin path: %v", err)
 		return fmt.Errorf("failed to create BPF pin path: %w", err)
@@ -45,34 +44,33 @@ func (m *Manager) Init(ctx context.Context) error {
 		return err
 	}
 
-	err := addEventHandler(ctx, m.subnetInformer, m.UpsertSubnet, m.DeleteSubnet)
+	err := addEventHandler(m.nwepInformer, m.UpsertNetworkEndpoint, m.DeleteNetworkEndpoint)
 
 	return err
 }
 
-func (m *Manager) UpsertSubnet(subnet *juneauv1alpha1.Subnet) error {
-	zap.S().Infof("UpsertSubnet called for subnet %s", subnet.Name)
+func (m *Manager) UpsertNetworkEndpoint(subnet *juneauv1alpha1.NetworkEndpoint) error {
+	zap.S().Infof("UpsertNetworkEndpoint called for %s/%s", subnet.Namespace, subnet.Name)
 
 	return nil
 }
 
-func (m *Manager) DeleteSubnet(subnet *juneauv1alpha1.Subnet) error {
-	zap.S().Infof("DeleteSubnet called for subnet %s", subnet.Name)
-
+func (m *Manager) DeleteNetworkEndpoint(subnet *juneauv1alpha1.NetworkEndpoint) error {
+	zap.S().Infof("DeleteNetworkEndpoint called for %s/%s", subnet.Namespace, subnet.Name)
 	return nil
 }
 
-func NewManager(cl client.Client, subnetInformer cache.Informer, nodeName string, defaultGatewayMac net.HardwareAddr) *Manager {
+func NewManager(cl client.Client, nwepInformer cache.Informer, nodeName string, defaultGatewayMac net.HardwareAddr) *Manager {
 	return &Manager{
 		client:            cl,
-		subnetInformer:    subnetInformer,
+		nwepInformer:      nwepInformer,
 		nodeName:          nodeName,
 		defaultGatewayMac: defaultGatewayMac,
 		podEgressObjs:     &PodEgressObjects{},
 	}
 }
 
-func addEventHandler[T any](ctx context.Context, informer cache.Informer, upsert func(obj *T) error, delete func(obj *T) error) error {
+func addEventHandler[T any](informer cache.Informer, upsert func(obj *T) error, delete func(obj *T) error) error {
 	_, err := informer.AddEventHandlerWithResyncPeriod(toolscache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj any) {
 			p, ok := obj.(*T)

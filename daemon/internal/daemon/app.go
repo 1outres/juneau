@@ -65,6 +65,7 @@ func NewApp() *cli.Command {
 				Scheme: scheme,
 				ByObject: map[client.Object]cache.ByObject{
 					&juneauv1alpha1.NetworkInterface{}: {},
+					&juneauv1alpha1.NetworkEndpoint{}:  {},
 					&juneauv1alpha1.Subnet{}:           {},
 				},
 			})
@@ -72,9 +73,9 @@ func NewApp() *cli.Command {
 				zap.S().Fatalf("failed to create cache: %v", err)
 			}
 
-			subnetInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.Subnet{})
+			nwepInfromer, err := cache.GetInformer(ctx, &juneauv1alpha1.NetworkEndpoint{})
 			if err != nil {
-				zap.S().Fatalf("failed to get Subnet informer: %v", err)
+				zap.S().Fatalf("failed to get NetworkEndpoint informer: %v", err)
 			}
 
 			cl, err := client.New(kubecfg, client.Options{
@@ -89,11 +90,11 @@ func NewApp() *cli.Command {
 				&juneauv1alpha1.NetworkInterface{},
 				"spec.podRef.interface",
 				func(obj client.Object) []string {
-					pod := obj.(*juneauv1alpha1.NetworkInterface)
-					if pod.Spec.PodRef.Interface == "" {
+					nwif := obj.(*juneauv1alpha1.NetworkInterface)
+					if nwif.Spec.PodRef.Interface == "" {
 						return nil
 					}
-					return []string{pod.Spec.PodRef.Interface}
+					return []string{nwif.Spec.PodRef.Interface}
 				},
 			); err != nil {
 				zap.S().Fatalf("failed to index NetworkInterface by spec.podRef.interface: %v", err)
@@ -103,11 +104,11 @@ func NewApp() *cli.Command {
 				&juneauv1alpha1.NetworkInterface{},
 				"spec.podRef.name",
 				func(obj client.Object) []string {
-					pod := obj.(*juneauv1alpha1.NetworkInterface)
-					if pod.Spec.PodRef.Name == "" {
+					nwif := obj.(*juneauv1alpha1.NetworkInterface)
+					if nwif.Spec.PodRef.Name == "" {
 						return nil
 					}
-					return []string{pod.Spec.PodRef.Name}
+					return []string{nwif.Spec.PodRef.Name}
 				},
 			); err != nil {
 				zap.S().Fatalf("failed to index NetworkInterface by spec.podRef.name: %v", err)
@@ -117,14 +118,57 @@ func NewApp() *cli.Command {
 				&juneauv1alpha1.NetworkInterface{},
 				"spec.podRef.uid",
 				func(obj client.Object) []string {
-					pod := obj.(*juneauv1alpha1.NetworkInterface)
-					if pod.Spec.PodRef.UID == "" {
+					nwif := obj.(*juneauv1alpha1.NetworkInterface)
+					if nwif.Spec.PodRef.UID == "" {
 						return nil
 					}
-					return []string{pod.Spec.PodRef.UID}
+					return []string{nwif.Spec.PodRef.UID}
 				},
 			); err != nil {
 				zap.S().Fatalf("failed to index NetworkInterface by spec.podRef.name: %v", err)
+			}
+
+			if err := cache.IndexField(
+				ctx,
+				&juneauv1alpha1.NetworkEndpoint{},
+				"spec.podRef.interface",
+				func(obj client.Object) []string {
+					nwep := obj.(*juneauv1alpha1.NetworkEndpoint)
+					if nwep.Spec.PodRef.Interface == "" {
+						return nil
+					}
+					return []string{nwep.Spec.PodRef.Interface}
+				},
+			); err != nil {
+				zap.S().Fatalf("failed to index NetworkEndpoint by spec.podRef.interface: %v", err)
+			}
+			if err := cache.IndexField(
+				ctx,
+				&juneauv1alpha1.NetworkEndpoint{},
+				"spec.podRef.name",
+				func(obj client.Object) []string {
+					nwep := obj.(*juneauv1alpha1.NetworkEndpoint)
+					if nwep.Spec.PodRef.Name == "" {
+						return nil
+					}
+					return []string{nwep.Spec.PodRef.Name}
+				},
+			); err != nil {
+				zap.S().Fatalf("failed to index NetworkEndpoint by spec.podRef.name: %v", err)
+			}
+			if err := cache.IndexField(
+				ctx,
+				&juneauv1alpha1.NetworkEndpoint{},
+				"spec.podRef.uid",
+				func(obj client.Object) []string {
+					nwep := obj.(*juneauv1alpha1.NetworkEndpoint)
+					if nwep.Spec.PodRef.UID == "" {
+						return nil
+					}
+					return []string{nwep.Spec.PodRef.UID}
+				},
+			); err != nil {
+				zap.S().Fatalf("failed to index NetworkEndpoint by spec.podRef.name: %v", err)
 			}
 
 			go func() {
@@ -156,8 +200,8 @@ func NewApp() *cli.Command {
 				zap.S().Fatalf("failed to setup default gateway iface: %v", err)
 			}
 
-			bpfManager := bpf.NewManager(cl, subnetInformer, "", defaultGwMac)
-			if err := bpfManager.Init(ctx); err != nil {
+			bpfManager := bpf.NewManager(cl, nwepInfromer, "", defaultGwMac)
+			if err := bpfManager.Init(); err != nil {
 				zap.S().Fatalf("failed to initialize BPF manager: %v", err)
 			}
 

@@ -20,26 +20,33 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
 // NetworkEndpointSpec defines the desired state of NetworkEndpoint.
 type NetworkEndpointSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	PodRef NetworkEndpointPodReference `json:"podRef"`
 
-	// Foo is an example field of NetworkEndpoint. Edit networkendpoint_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	NodeName string `json:"nodeName"`
+
+	Subnet string `json:"subnet"`
+
+	Address string `json:"address,omitempty"`
+
+	MACAddress string `json:"macAddress,omitempty"`
+	Ifindex    int    `json:"ifindex,omitempty"`
 }
 
 // NetworkEndpointStatus defines the observed state of NetworkEndpoint.
 type NetworkEndpointStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+}
+
+type NetworkEndpointPodReference struct {
+	Name      string `json:"name"`
+	Interface string `json:"interface"`
+	UID       string `json:"uid"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName={"nwep"}
 
 // NetworkEndpoint is the Schema for the networkendpoints API.
 type NetworkEndpoint struct {

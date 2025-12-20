@@ -9,6 +9,7 @@ import (
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
 	"github.com/1outres/juneau/daemon/pkg/cnipb"
@@ -163,7 +164,7 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (*cnipb.CNIR
 		gw := net.ParseIP(route.GW)
 		if gw == nil {
 			zap.L().Error("failed to parse route gateway IP", zap.Error(err))
-			return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to parse route gateway IP", err.Error())
+			return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to parse route gateway IP", "")
 		}
 
 		routes = append(routes, Route{dst: dst, gw: gw})
@@ -199,6 +200,40 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (*cnipb.CNIR
 	}); err != nil {
 		zap.L().Error("failed to configure interface in netns", zap.Error(err))
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to configure interface in netns", err.Error())
+	}
+
+	nwep := &juneauv1alpha1.NetworkEndpoint{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: podNamespace,
+			Name:      podName + "." + req.Ifname,
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: juneauv1alpha1.GroupVersion.String(),
+					Kind:       "NetworkInterface",
+					Name:       nwiface.Name,
+					UID:        nwiface.UID,
+					Controller: ptr.To(true),
+				},
+			},
+		},
+		Spec: juneauv1alpha1.NetworkEndpointSpec{
+			PodRef: juneauv1alpha1.NetworkEndpointPodReference{
+				Name:      podName,
+				Interface: req.Ifname,
+				UID:       podUID,
+			},
+			NodeName:   nwiface.Spec.NodeName,
+			Subnet:     nwiface.Spec.Subnet,
+			Address:    nwiface.Status.Address,
+			MACAddress: vethPeer.HardwareAddr.String(),
+			Ifindex:    vethHost.Index,
+		},
+		Status: juneauv1alpha1.NetworkEndpointStatus{},
+	}
+
+	if err := c.client.Create(ctx, nwep); err != nil {
+		zap.L().Error("failed to create NetworkEndpoint resource", zap.Error(err))
+		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to create NetworkEndpoint resource", err.Error())
 	}
 
 	res := &types040.Result{
@@ -252,6 +287,7 @@ func (c *CNIServer) Check(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.
 func (c *CNIServer) Del(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.Empty, error) {
 	podNamespace := req.Args[PodNamespaceKey]
 	podName := req.Args[PodNameKey]
+	podUID := req.Args[PodUIDKey]
 
 	zap.S().Infof("CNI DEL request for pod %s/%s ifname=%s", podNamespace, podName, req.Ifname)
 
@@ -267,6 +303,22 @@ func (c *CNIServer) Del(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.Em
 			return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to delete veth", err.Error())
 		}
 		zap.S().Debugf("Deleted veth: %s", vethHostName)
+	}
+
+	var nwepList juneauv1alpha1.NetworkEndpointList
+	if err := c.client.List(ctx, &nwepList, client.InNamespace(podNamespace), client.MatchingFields{
+		"spec.podRef.uid":       podUID,
+		"spec.podRef.name":      podName,
+		"spec.podRef.interface": req.Ifname,
+	}); err != nil {
+		zap.L().Error("failed to list NetworkEndpoint resources", zap.Error(err))
+		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to list NetworkEndpoint resources", err.Error())
+	}
+
+	for _, nwep := range nwepList.Items {
+		if err := c.client.Delete(ctx, &nwep); err != nil {
+			zap.L().Error("failed to delete NetworkEndpoint resource", zap.Error(err))
+		}
 	}
 
 	return &emptypb.Empty{}, nil
