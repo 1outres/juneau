@@ -74,7 +74,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	ifName := "eth0"
 
 	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
-		niName := pod.Name + "-" + ifName
+		niName := pod.Name + "." + ifName
 		var nwiface juneauv1alpha1.NetworkInterface
 		if err := r.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: niName}, &nwiface); err != nil {
 			if errors.IsNotFound(err) {
@@ -134,9 +134,4 @@ func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&corev1.Pod{}).
 		Named("pod").
 		Complete(r)
-}
-
-func ptrTrue() *bool {
-	b := true
-	return &b
 }

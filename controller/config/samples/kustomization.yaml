@@ -4,4 +4,5 @@ resources:
 - v1alpha1_subnet.yaml
 - v1alpha1_networkinterface.yaml
 - v1alpha1_iplease.yaml
+- v1alpha1_networkendpoint.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

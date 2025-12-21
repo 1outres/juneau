@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package cni.v1;
+
+option go_package = "github.com/1outres/juneau/daemon/pkg/cnipb";
+
+import "google/protobuf/empty.proto";
+
+service CNI {
+  rpc Add(CNIRequest) returns (CNIResponse);
+  rpc Del(CNIRequest) returns (google.protobuf.Empty);
+  rpc Check(CNIRequest) returns (google.protobuf.Empty);
+}
+
+message CNIRequest {
+  string container_id = 1;
+  string netns = 2;
+  string ifname = 3;
+  string path = 4;
+  map<string,string> args = 5;
+  bytes stdin_data = 6;
+}
+
+enum ErrorCode {
+  UNKNOWN = 0;
+  INCOMPATIBLE_CNI_VERSION = 1;
+  UNSUPPORTED_FIELD = 2;
+  UNKNOWN_CONTAINER = 3;
+  INVALID_ENVIRONMENT_VARIABLES = 4;
+  IO_FAILURE = 5;
+  DECODING_FAILURE = 6;
+  INVALID_NETWORK_CONFIG = 7;
+  TRY_AGAIN_LATER = 11;
+  INTERNAL = 999;
+}
+
+message CNIError {
+  ErrorCode code = 1;
+  string msg = 2;
+  string details = 3;
+}
+
+message CNIResponse {
+  bytes result_json = 1;
+}

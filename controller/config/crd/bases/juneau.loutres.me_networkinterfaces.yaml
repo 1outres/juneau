@@ -67,12 +67,12 @@ spec:
                     type: string
                   name:
                     type: string
-                  podUID:
+                  uid:
                     type: string
                 required:
                 - interface
                 - name
-                - podUID
+                - uid
                 type: object
               subnet:
                 type: string

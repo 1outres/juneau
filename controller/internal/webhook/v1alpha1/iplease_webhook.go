@@ -26,7 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
 // nolint:unused
@@ -35,7 +35,7 @@ var ipleaselog = logf.Log.WithName("iplease-resource")
 
 // SetupIPLeaseWebhookWithManager registers the webhook for IPLease in the manager.
 func SetupIPLeaseWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(&juneauloutresmev1alpha1.IPLease{}).
+	return ctrl.NewWebhookManagedBy(mgr).For(&juneauv1alpha1.IPLease{}).
 		WithValidator(&IPLeaseCustomValidator{}).
 		WithDefaulter(&IPLeaseCustomDefaulter{}).
 		Complete()
@@ -52,7 +52,7 @@ var _ webhook.CustomDefaulter = &IPLeaseCustomDefaulter{}
 
 // Default implements webhook.CustomDefaulter so a webhook will be registered for the Kind IPLease.
 func (d *IPLeaseCustomDefaulter) Default(ctx context.Context, obj runtime.Object) error {
-	iplease, ok := obj.(*juneauloutresmev1alpha1.IPLease)
+	iplease, ok := obj.(*juneauv1alpha1.IPLease)
 
 	if !ok {
 		return fmt.Errorf("expected an IPLease object but got %T", obj)
@@ -73,7 +73,7 @@ var _ webhook.CustomValidator = &IPLeaseCustomValidator{}
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type IPLease.
 func (v *IPLeaseCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	iplease, ok := obj.(*juneauloutresmev1alpha1.IPLease)
+	iplease, ok := obj.(*juneauv1alpha1.IPLease)
 	if !ok {
 		return nil, fmt.Errorf("expected a IPLease object but got %T", obj)
 	}
@@ -84,7 +84,7 @@ func (v *IPLeaseCustomValidator) ValidateCreate(ctx context.Context, obj runtime
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type IPLease.
 func (v *IPLeaseCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	iplease, ok := newObj.(*juneauloutresmev1alpha1.IPLease)
+	iplease, ok := newObj.(*juneauv1alpha1.IPLease)
 	if !ok {
 		return nil, fmt.Errorf("expected a IPLease object for the newObj but got %T", newObj)
 	}
@@ -95,7 +95,7 @@ func (v *IPLeaseCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type IPLease.
 func (v *IPLeaseCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	iplease, ok := obj.(*juneauloutresmev1alpha1.IPLease)
+	iplease, ok := obj.(*juneauv1alpha1.IPLease)
 	if !ok {
 		return nil, fmt.Errorf("expected a IPLease object but got %T", obj)
 	}
