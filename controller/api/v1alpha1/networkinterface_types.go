@@ -42,7 +42,7 @@ type NetworkInterfaceStatus struct {
 }
 
 type NetworkInterfacePodReference struct {
-	UID       string `json:"podUID"`
+	UID       string `json:"uid"`
 	Name      string `json:"name"`
 	Interface string `json:"interface"`
 }

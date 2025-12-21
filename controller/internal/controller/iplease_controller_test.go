@@ -27,7 +27,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
 var _ = Describe("IPLease Controller", func() {
@@ -40,13 +40,13 @@ var _ = Describe("IPLease Controller", func() {
 			Name:      resourceName,
 			Namespace: "default", // TODO(user):Modify as needed
 		}
-		iplease := &juneauloutresmev1alpha1.IPLease{}
+		iplease := &juneauv1alpha1.IPLease{}
 
 		BeforeEach(func() {
 			By("creating the custom resource for the Kind IPLease")
 			err := k8sClient.Get(ctx, typeNamespacedName, iplease)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &juneauloutresmev1alpha1.IPLease{
+				resource := &juneauv1alpha1.IPLease{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
@@ -59,7 +59,7 @@ var _ = Describe("IPLease Controller", func() {
 
 		AfterEach(func() {
 			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &juneauloutresmev1alpha1.IPLease{}
+			resource := &juneauv1alpha1.IPLease{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 

@@ -182,10 +182,10 @@ func (r *NetworkInterfaceReconciler) reuseExistingLease(ctx context.Context, log
 
 	ipLease := ipLeases.Items[0]
 	if ipLease.Spec.OwnerDeletionTimeStamp != nil {
-	  ipLease.Spec.OwnerDeletionTimeStamp = nil
-	  if err := r.Update(ctx, &ipLease); err != nil {
-	  	return true, err
-	  }
+		ipLease.Spec.OwnerDeletionTimeStamp = nil
+		if err := r.Update(ctx, &ipLease); err != nil {
+			return true, err
+		}
 	}
 
 	if err := r.updateAllocatedStatus(ctx, resource, ipLease.Name, &net.IPNet{IP: net.ParseIP(ipLease.Spec.Address), Mask: cidr.Mask}, subnet.Status.Gateway); err != nil {
@@ -321,21 +321,42 @@ func (r *NetworkInterfaceReconciler) buildIPLease(resource *juneauv1alpha1.Netwo
 func (r *NetworkInterfaceReconciler) updateAllocatedStatus(ctx context.Context, resource *juneauv1alpha1.NetworkInterface, ipLeaseName string, address *net.IPNet, gateway string) error {
 	resource.Status.ObservedGeneration = resource.Generation
 	resource.Status.IPLease = ipLeaseName
-	resource.Status.Phase = juneauv1alpha1.NetworkInterfacePhaseAllocated
 	resource.Status.Address = address.String()
 	resource.Status.Routes = buildDefaultRoutes(gateway)
-	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-		Type:    juneauv1alpha1.NetworkInterfaceStatusReady,
-		Status:  metav1.ConditionFalse,
-		Reason:  conditionReasonWaitingForIface,
-		Message: "Waiting for interface",
-	})
 	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
 		Type:    juneauv1alpha1.NetworkInterfaceStatusAllocated,
 		Status:  metav1.ConditionTrue,
 		Reason:  conditionReasonAllocationSucceeded,
 		Message: "IP allocated successfully: " + address.String(),
 	})
+
+	var nwepList juneauv1alpha1.NetworkEndpointList
+	if err := r.List(ctx, &nwepList, client.InNamespace(resource.Namespace), client.MatchingFields{
+		"spec.podRef.interface": resource.Spec.PodRef.Interface,
+		"spec.podRef.name":      resource.Spec.PodRef.Name,
+		"spec.podRef.uid":       resource.Spec.PodRef.UID,
+	}); err != nil {
+		return err
+	}
+
+	if len(nwepList.Items) > 0 {
+		resource.Status.Phase = juneauv1alpha1.NetworkInterfacePhaseReady
+		meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+			Type:    juneauv1alpha1.NetworkInterfaceStatusReady,
+			Status:  metav1.ConditionTrue,
+			Reason:  conditionReasonWaitingForIface,
+			Message: "Interface is ready",
+		})
+	} else {
+		resource.Status.Phase = juneauv1alpha1.NetworkInterfacePhaseAllocated
+		meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+			Type:    juneauv1alpha1.NetworkInterfaceStatusReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  conditionReasonWaitingForIface,
+			Message: "Waiting for interface",
+		})
+	}
+
 	return r.Status().Update(ctx, resource)
 }
 

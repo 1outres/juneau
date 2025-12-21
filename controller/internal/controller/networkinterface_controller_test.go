@@ -27,7 +27,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
 var _ = Describe("NetworkInterface Controller", func() {
@@ -40,13 +40,13 @@ var _ = Describe("NetworkInterface Controller", func() {
 			Name:      resourceName,
 			Namespace: "default", // TODO(user):Modify as needed
 		}
-		networkinterface := &juneauloutresmev1alpha1.NetworkInterface{}
+		networkinterface := &juneauv1alpha1.NetworkInterface{}
 
 		BeforeEach(func() {
 			By("creating the custom resource for the Kind NetworkInterface")
 			err := k8sClient.Get(ctx, typeNamespacedName, networkinterface)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &juneauloutresmev1alpha1.NetworkInterface{
+				resource := &juneauv1alpha1.NetworkInterface{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
@@ -59,7 +59,7 @@ var _ = Describe("NetworkInterface Controller", func() {
 
 		AfterEach(func() {
 			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &juneauloutresmev1alpha1.NetworkInterface{}
+			resource := &juneauv1alpha1.NetworkInterface{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 

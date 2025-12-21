@@ -1,0 +1,7 @@
+resources:
+- daemonset.yaml
+- rbac.yaml
+
+namespace: kube-system
+
+namePrefix: juneau-

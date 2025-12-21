@@ -47,3 +47,32 @@ docker_build_with_restart(
         sync('./controller/bin/manager', '/manager'),
     ]
 )
+
+local_resource('protobuf', 'protoc --go_out=module=github.com/1outres/juneau/daemon:. --go-grpc_out=module=github.com/1outres/juneau/daemon:. pkg/cnipb/cni.proto', deps=['daemon/pkg/cnipb/cni.proto'], dir='daemon/')
+
+local_resource(
+    'CNI Compile', 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/cni cmd/cni/main.go', deps=['daemon/cmd/cni/main.go', 'daemon/pkg/cnipb'], dir='daemon/')
+
+DAEMON_DOCKERFILE = '''FROM golang:alpine
+RUN apk add --no-cache iptables ip6tables
+WORKDIR /
+COPY ./bin/daemon /
+CMD ["/daemon"]
+'''
+
+local_resource(
+    'Daemon Compile', 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/daemon cmd/juneaud/main.go', deps=['daemon/cmd/juneaud/main.go', 'daemon/internal/daemon', 'daemon/pkg', 'daemon/bin/cni'],
+    ignore=[], dir='daemon/')
+
+docker_build_with_restart(
+    'daemon:latest', './daemon',
+    dockerfile_contents=DAEMON_DOCKERFILE,
+    entrypoint=['/daemon'],
+    only=['./bin/daemon'],
+    live_update=[
+        sync('./daemon/bin/daemon', '/daemon'),
+    ]
+)
+
+watch_file('./daemon/config/')
+k8s_yaml(kustomize('./daemon/config/default'))
