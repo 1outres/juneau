@@ -84,11 +84,6 @@ func (v *VpcCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Obj
 
 	var errs field.ErrorList
 
-	// TODO: Temporary limitation. Remove in future.
-	if vpc.Name != "default" {
-		errs = append(errs, field.Invalid(field.NewPath("metadata").Child("name"), vpc.Name, "only 'default' is allowed as Vpc name for now"))
-	}
-
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "Vpc"}, vpc.Name, errs)
 		vpclog.Info("Validation failed for Vpc", "name", vpc.GetName(), "error", err)

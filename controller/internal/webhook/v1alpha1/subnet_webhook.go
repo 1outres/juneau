@@ -92,11 +92,6 @@ func (v *SubnetCustomValidator) ValidateCreate(ctx context.Context, obj runtime.
 
 	var errs field.ErrorList
 
-	// TODO: Temporary limitation. Remove in future.
-	if subnet.Name != "default" {
-		errs = append(errs, field.Invalid(field.NewPath("metadata").Child("name"), subnet.Name, "only 'default' is allowed as Subnet name for now"))
-	}
-
 	var vpc juneauv1alpha1.Vpc
 	if err := v.Get(ctx, client.ObjectKey{Name: subnet.Spec.Vpc}, &vpc); err != nil {
 		if errors.IsNotFound(err) {
@@ -107,6 +102,9 @@ func (v *SubnetCustomValidator) ValidateCreate(ctx context.Context, obj runtime.
 	}
 	if subnet.Name == "default" && subnet.Spec.Vpc != "default" {
 		errs = append(errs, field.Invalid(field.NewPath("spec").Child("vpc"), subnet.Spec.Vpc, "the default Subnet must reference the default Vpc"))
+	}
+	if subnet.Spec.Vpc == "default" && subnet.Name != "default" {
+		errs = append(errs, field.Invalid(field.NewPath("spec").Child("vpc"), subnet.Spec.Vpc, "only the default Subnet can reference the default Vpc"))
 	}
 
 	_, _, err := net.ParseCIDR(subnet.Spec.CIDR)

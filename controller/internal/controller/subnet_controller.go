@@ -18,7 +18,10 @@ package controller
 
 import (
 	"context"
+	"crypto/rand"
+	"fmt"
 	"net"
+	"strconv"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -75,10 +78,25 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	var vni uint32 = 1
 	if resource.Name != "default" {
-		if err := r.updateReadyCondition(ctx, &resource, metav1.ConditionFalse, subnetReasonNotImplemented, ""); err != nil {
-			return ctrl.Result{}, err
+		for {
+			vni++
+
+			if vni > 0xFFFFFF {
+				if err := r.updateReadyCondition(ctx, &resource, metav1.ConditionFalse, subnetReasonNotImplemented, "VNI limit reached"); err != nil {
+					return ctrl.Result{}, err
+				}
+				return ctrl.Result{}, nil
+			}
+
+			var subnetList juneauv1alpha1.SubnetList
+			if err := r.List(ctx, &subnetList, client.MatchingFields{"status.vni": strconv.FormatUint(uint64(vni), 10)}); err != nil {
+				return ctrl.Result{}, err
+			}
+
+			if len(subnetList.Items) == 0 {
+				break
+			}
 		}
-		return ctrl.Result{}, nil
 	}
 
 	_, cidr, err := net.ParseCIDR(resource.Spec.CIDR)
@@ -93,7 +111,12 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	resource.Status.Gateway = nextGateway(cidr)
 
 	if resource.Name != "default" {
-		// TODO: generate a MAC address
+		randMac, err := newLAA()
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+
+		resource.Status.GatewayMAC = randMac.String()
 	}
 
 	if err := r.updateReadyCondition(ctx, &resource, metav1.ConditionTrue, subnetReasonReconcileSuccess, ""); err != nil {
@@ -105,6 +128,21 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *SubnetReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&juneauv1alpha1.Subnet{},
+		"status.vni",
+		func(obj client.Object) []string {
+			subnet := obj.(*juneauv1alpha1.Subnet)
+			if subnet.Status.VNI == 0 {
+				return nil
+			}
+			return []string{strconv.FormatUint(uint64(subnet.Status.VNI), 10)}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to set up field indexer for Subnet.status.vni: %w", err)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&juneauv1alpha1.Subnet{}).
 		Named("subnet").
@@ -131,4 +169,18 @@ func nextGateway(cidr *net.IPNet) string {
 		}
 	}
 	return ip.String()
+}
+
+func newLAA() (net.HardwareAddr, error) {
+	mac := make([]byte, 6)
+	if _, err := rand.Read(mac); err != nil {
+		return nil, err
+	}
+
+	// bit0: I/G (0 = unicast)
+	// bit1: U/L (1 = locally administered)
+	mac[0] &^= 0x01 // clear I/G
+	mac[0] |= 0x02  // set U/L
+
+	return net.HardwareAddr(mac), nil
 }
