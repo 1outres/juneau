@@ -54,6 +54,7 @@ local_resource(
     'CNI Compile', 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/cni cmd/cni/main.go', deps=['daemon/cmd/cni/main.go', 'daemon/pkg/cnipb'], dir='daemon/')
 
 DAEMON_DOCKERFILE = '''FROM golang:alpine
+RUN apk add --no-cache iptables ip6tables
 WORKDIR /
 COPY ./bin/daemon /
 CMD ["/daemon"]

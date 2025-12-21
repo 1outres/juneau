@@ -49,6 +49,9 @@ func NewApp() *cli.Command {
 			&cli.StringFlag{
 				Name: "vxlan-parent-iface",
 			},
+			&cli.StringFlag{
+				Name: "masquerade-iface",
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			udsPath := cmd.String("uds-path")
@@ -57,6 +60,7 @@ func NewApp() *cli.Command {
 			cniConfDir := cmd.String("cni-conf-dir")
 			nodeName := cmd.String("node-name")
 			vxlanParentIface := cmd.String("vxlan-parent-iface")
+			masqueradeIface := cmd.String("masquerade-iface")
 
 			var zapcfg zap.Config
 			zapcfg = zap.NewDevelopmentConfig()
@@ -214,10 +218,17 @@ func NewApp() *cli.Command {
 				zap.S().Fatalf("failed to setup default gateway iface: %v", err)
 			}
 
-			if vxlanParentIface == "" {
-				vxlanParentIface, err = bootstrap.SearchMainIface(ctx, cl, nodeName)
+			if vxlanParentIface == "" || masqueradeIface == "" {
+				mainIface, err := bootstrap.SearchMainIface(ctx, cl, nodeName)
 				if err != nil {
 					zap.S().Fatalf("failed to find main iface: %v", err)
+				}
+
+				if vxlanParentIface == "" {
+					vxlanParentIface = mainIface
+				}
+				if masqueradeIface == "" {
+					masqueradeIface = mainIface
 				}
 			}
 
@@ -228,6 +239,10 @@ func NewApp() *cli.Command {
 
 			if err := bootstrap.ConfigureSysctl(); err != nil {
 				zap.S().Fatalf("failed to configure sysctl: %v", err)
+			}
+
+			if err := bootstrap.EnsureMasqueradeRule(ctx, cl, masqueradeIface); err != nil {
+				zap.S().Fatalf("failed to ensure masquerade rule: %v", err)
 			}
 
 			bpfManager := bpf.NewManager(cl, nwepInfromer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, hostIfaceInfo.MAC)
