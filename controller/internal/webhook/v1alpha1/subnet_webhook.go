@@ -107,9 +107,17 @@ func (v *SubnetCustomValidator) ValidateCreate(ctx context.Context, obj runtime.
 		errs = append(errs, field.Invalid(field.NewPath("spec").Child("vpc"), subnet.Spec.Vpc, "only the default Subnet can reference the default Vpc"))
 	}
 
-	_, _, err := net.ParseCIDR(subnet.Spec.CIDR)
+	_, ipnet, err := net.ParseCIDR(subnet.Spec.CIDR)
 	if err != nil {
 		errs = append(errs, field.Invalid(field.NewPath("spec").Child("cidr"), subnet.Spec.CIDR, "invalid CIDR format"))
+	}
+
+	if ipnet.IP.To4() == nil {
+		errs = append(errs, field.Invalid(field.NewPath("spec").Child("cidr"), subnet.Spec.CIDR, "only IPv4 CIDR blocks are supported"))
+	} else if ones, _ := ipnet.Mask.Size(); ones > 28 {
+		errs = append(errs, field.Invalid(field.NewPath("spec").Child("cidr"), subnet.Spec.CIDR, "CIDR block must allow for at least 14 usable IP addresses (/28 or larger)"))
+	} else if ones, _ := ipnet.Mask.Size(); ones < 16 {
+		errs = append(errs, field.Invalid(field.NewPath("spec").Child("cidr"), subnet.Spec.CIDR, "CIDR block must be /16 or larger"))
 	}
 
 	if len(errs) > 0 {

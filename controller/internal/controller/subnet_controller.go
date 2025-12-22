@@ -76,8 +76,10 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	var vni uint32 = 1
-	if resource.Name != "default" {
+	if resource.Name == "default" {
+		resource.Status.VNI = 1
+	} else if resource.Status.VNI == 0 {
+		var vni uint32 = 1
 		for {
 			vni++
 
@@ -97,6 +99,7 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 				break
 			}
 		}
+		resource.Status.VNI = vni
 	}
 
 	_, cidr, err := net.ParseCIDR(resource.Spec.CIDR)
@@ -107,10 +110,9 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, nil
 	}
 
-	resource.Status.VNI = vni
 	resource.Status.Gateway = nextGateway(cidr)
 
-	if resource.Name != "default" {
+	if resource.Name != "default" && resource.Status.GatewayMAC == "" {
 		randMac, err := newLAA()
 		if err != nil {
 			return ctrl.Result{}, err

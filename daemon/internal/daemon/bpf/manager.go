@@ -133,6 +133,9 @@ func (m *Manager) Start(ctx context.Context) error {
 }
 
 func (m *Manager) Stop() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	for _, l := range m.podEgressLinks {
 		l.Close()
 	}
@@ -201,6 +204,8 @@ func (m *Manager) UpsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 				Ifindex: uint32(nwep.Spec.Ifindex),
 			},
 			ebpf.UpdateAny); err != nil {
+			zap.S().Errorf("failed to update Fdb map: %v", err)
+			return err
 		}
 	} else if nwep.Status.NodeIP != "" {
 		netNodeAddr := net.ParseIP(nwep.Status.NodeIP)
@@ -222,6 +227,8 @@ func (m *Manager) UpsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 				VtepIp: nodeAddr,
 			},
 			ebpf.UpdateAny); err != nil {
+			zap.S().Errorf("failed to update Fdb map: %v", err)
+			return err
 		}
 	}
 
@@ -360,6 +367,9 @@ func (m *Manager) DeleteNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 		zap.S().Errorf("failed to delete from IfindexSubnet map: %v", err)
 		return err
 	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	if l, ok := m.podEgressLinks[nwep.Spec.Ifindex]; ok {
 		l.Close()

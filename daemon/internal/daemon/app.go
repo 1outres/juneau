@@ -102,6 +102,9 @@ func NewApp() *cli.Command {
 					Reader: cache,
 				},
 			})
+			if err != nil {
+				zap.S().Fatalf("failed to create client: %v", err)
+			}
 
 			if err := cache.IndexField(
 				ctx,

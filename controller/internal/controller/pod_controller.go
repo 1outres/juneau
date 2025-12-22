@@ -104,7 +104,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	nwiface := &juneauv1alpha1.NetworkInterface{}
-	nwiface.SetName(pod.Name + "-" + ifName)
+	nwiface.SetName(pod.Name + "." + ifName)
 	nwiface.SetNamespace(pod.Namespace)
 
 	_, err := ctrl.CreateOrUpdate(ctx, r.Client, nwiface, func() error {
