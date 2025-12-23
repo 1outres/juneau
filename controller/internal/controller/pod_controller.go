@@ -121,6 +121,9 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	})
 
 	if err != nil {
+		if errors.IsConflict(err) || errors.IsAlreadyExists(err) {
+			return ctrl.Result{Requeue: true}, nil
+		}
 		logger.Error(err, "unable to create or update NetworkInterface")
 		return ctrl.Result{}, err
 	}

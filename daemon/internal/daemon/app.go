@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os/signal"
 	"syscall"
 
@@ -13,7 +15,6 @@ import (
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
@@ -54,6 +55,12 @@ func NewApp() *cli.Command {
 			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
+			ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+
 			udsPath := cmd.String("uds-path")
 			cniUDSTimeoutMs := cmd.Int("cni-uds-timeout-ms")
 			cniBinDir := cmd.String("cni-bin-dir")
@@ -62,9 +69,11 @@ func NewApp() *cli.Command {
 			vxlanParentIface := cmd.String("vxlan-parent-iface")
 			masqueradeIface := cmd.String("masquerade-iface")
 
-			var zapcfg zap.Config
-			zapcfg = zap.NewDevelopmentConfig()
-			logger, _ := zapcfg.Build()
+			zapcfg := zap.NewDevelopmentConfig()
+			logger, err := zapcfg.Build()
+			if err != nil {
+				return fmt.Errorf("build logger: %w", err)
+			}
 			defer func() {
 				_ = logger.Sync()
 			}()
@@ -72,12 +81,16 @@ func NewApp() *cli.Command {
 
 			kubecfg, err := config.GetConfig()
 			if err != nil {
-				zap.S().Fatalf("failed to get kubeconfig: %v", err)
+				return fmt.Errorf("get kubeconfig: %w", err)
 			}
 
 			scheme := runtime.NewScheme()
-			utilruntime.Must(juneauv1alpha1.AddToScheme(scheme))
-			utilruntime.Must(corev1.AddToScheme(scheme))
+			if err := juneauv1alpha1.AddToScheme(scheme); err != nil {
+				return fmt.Errorf("add juneau scheme: %w", err)
+			}
+			if err := corev1.AddToScheme(scheme); err != nil {
+				return fmt.Errorf("add corev1 scheme: %w", err)
+			}
 
 			cache, err := cache.New(kubecfg, cache.Options{
 				Scheme: scheme,
@@ -88,12 +101,12 @@ func NewApp() *cli.Command {
 				},
 			})
 			if err != nil {
-				zap.S().Fatalf("failed to create cache: %v", err)
+				return fmt.Errorf("create cache: %w", err)
 			}
 
 			nwepInfromer, err := cache.GetInformer(ctx, &juneauv1alpha1.NetworkEndpoint{})
 			if err != nil {
-				zap.S().Fatalf("failed to get NetworkEndpoint informer: %v", err)
+				return fmt.Errorf("get NetworkEndpoint informer: %w", err)
 			}
 
 			cl, err := client.New(kubecfg, client.Options{
@@ -103,7 +116,7 @@ func NewApp() *cli.Command {
 				},
 			})
 			if err != nil {
-				zap.S().Fatalf("failed to create client: %v", err)
+				return fmt.Errorf("create client: %w", err)
 			}
 
 			if err := cache.IndexField(
@@ -118,7 +131,7 @@ func NewApp() *cli.Command {
 					return []string{nwif.Spec.PodRef.Interface}
 				},
 			); err != nil {
-				zap.S().Fatalf("failed to index NetworkInterface by spec.podRef.interface: %v", err)
+				return fmt.Errorf("index NetworkInterface by spec.podRef.interface: %w", err)
 			}
 			if err := cache.IndexField(
 				ctx,
@@ -132,7 +145,7 @@ func NewApp() *cli.Command {
 					return []string{nwif.Spec.PodRef.Name}
 				},
 			); err != nil {
-				zap.S().Fatalf("failed to index NetworkInterface by spec.podRef.name: %v", err)
+				return fmt.Errorf("index NetworkInterface by spec.podRef.name: %w", err)
 			}
 			if err := cache.IndexField(
 				ctx,
@@ -146,7 +159,7 @@ func NewApp() *cli.Command {
 					return []string{nwif.Spec.PodRef.UID}
 				},
 			); err != nil {
-				zap.S().Fatalf("failed to index NetworkInterface by spec.podRef.name: %v", err)
+				return fmt.Errorf("index NetworkInterface by spec.podRef.uid: %w", err)
 			}
 
 			if err := cache.IndexField(
@@ -161,7 +174,7 @@ func NewApp() *cli.Command {
 					return []string{nwep.Spec.PodRef.Interface}
 				},
 			); err != nil {
-				zap.S().Fatalf("failed to index NetworkEndpoint by spec.podRef.interface: %v", err)
+				return fmt.Errorf("index NetworkEndpoint by spec.podRef.interface: %w", err)
 			}
 			if err := cache.IndexField(
 				ctx,
@@ -175,7 +188,7 @@ func NewApp() *cli.Command {
 					return []string{nwep.Spec.PodRef.Name}
 				},
 			); err != nil {
-				zap.S().Fatalf("failed to index NetworkEndpoint by spec.podRef.name: %v", err)
+				return fmt.Errorf("index NetworkEndpoint by spec.podRef.name: %w", err)
 			}
 			if err := cache.IndexField(
 				ctx,
@@ -189,42 +202,41 @@ func NewApp() *cli.Command {
 					return []string{nwep.Spec.PodRef.UID}
 				},
 			); err != nil {
-				zap.S().Fatalf("failed to index NetworkEndpoint by spec.podRef.name: %v", err)
+				return fmt.Errorf("index NetworkEndpoint by spec.podRef.uid: %w", err)
 			}
 
+			cacheErrCh := make(chan error, 1)
 			go func() {
-				if err := cache.Start(ctx); err != nil {
-					zap.S().Fatalf("failed to start cache: %v", err)
-				}
+				cacheErrCh <- cache.Start(ctx)
 			}()
 
 			if err := bootstrap.InstallCNIBinary(cniBinDir); err != nil {
-				zap.S().Fatalf("failed to install CNI binary: %v", err)
+				return fmt.Errorf("install CNI binary: %w", err)
 			}
 			zap.S().Infof("installed CNI binary to %s", cniBinDir)
 
 			if err := bootstrap.InstallCNIConfig(cniConfDir, udsPath, cniUDSTimeoutMs); err != nil {
-				zap.S().Fatalf("failed to install CNI config: %v", err)
+				return fmt.Errorf("install CNI config: %w", err)
 			}
 			zap.S().Infof("installed CNI config to %s", cniConfDir)
 
 			if err := bootstrap.CopyLoopbackCNI(cniBinDir); err != nil {
-				zap.S().Fatalf("failed to copy loopback CNI binary: %v", err)
+				return fmt.Errorf("copy loopback CNI binary: %w", err)
 			}
 
 			if ok := cache.WaitForCacheSync(ctx); !ok {
-				zap.S().Fatalf("failed to sync cache")
+				return fmt.Errorf("failed to sync cache")
 			}
 
 			hostIfaceInfo, err := bootstrap.SetupDefaultGatewayIface(ctx, cl)
 			if err != nil {
-				zap.S().Fatalf("failed to setup default gateway iface: %v", err)
+				return fmt.Errorf("setup default gateway iface: %w", err)
 			}
 
 			if vxlanParentIface == "" || masqueradeIface == "" {
 				mainIface, err := bootstrap.SearchMainIface(ctx, cl, nodeName)
 				if err != nil {
-					zap.S().Fatalf("failed to find main iface: %v", err)
+					return fmt.Errorf("find main iface: %w", err)
 				}
 
 				if vxlanParentIface == "" {
@@ -237,35 +249,51 @@ func NewApp() *cli.Command {
 
 			vxlanIfindex, err := bootstrap.SetupVxlanIface(vxlanParentIface)
 			if err != nil {
-				zap.S().Fatalf("failed to setup vxlan iface: %v", err)
+				return fmt.Errorf("setup vxlan iface: %w", err)
 			}
 
 			if err := bootstrap.ConfigureSysctl(); err != nil {
-				zap.S().Fatalf("failed to configure sysctl: %v", err)
+				return fmt.Errorf("configure sysctl: %w", err)
 			}
 
 			if err := bootstrap.EnsureMasqueradeRule(ctx, cl, masqueradeIface); err != nil {
-				zap.S().Fatalf("failed to ensure masquerade rule: %v", err)
+				return fmt.Errorf("ensure masquerade rule: %w", err)
 			}
 
 			bpfManager := bpf.NewManager(cl, nwepInfromer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, hostIfaceInfo.MAC)
 			if err := bpfManager.Start(ctx); err != nil {
-				zap.S().Fatalf("failed to initialize BPF manager: %v", err)
+				return fmt.Errorf("initialize BPF manager: %w", err)
 			}
+			defer func() {
+				_ = bpfManager.Stop()
+			}()
 
 			grpcServer := grpc.NewServer(cl)
-			if err := grpcServer.Start(udsPath); err != nil {
-				zap.S().Fatalf("failed to start gRPC server: %v", err)
+			defer grpcServer.Stop()
+
+			grpcErrCh := make(chan error, 1)
+			go func() {
+				grpcErrCh <- grpcServer.Run(ctx, udsPath)
+			}()
+
+			select {
+			case <-ctx.Done():
+				zap.S().Infof("shutting down...")
+				_ = <-grpcErrCh
+				_ = <-cacheErrCh
+				return nil
+			case err := <-grpcErrCh:
+				cancel()
+				_ = <-cacheErrCh
+				return err
+			case err := <-cacheErrCh:
+				cancel()
+				_ = <-grpcErrCh
+				if err == nil || errors.Is(err, context.Canceled) {
+					return nil
+				}
+				return fmt.Errorf("cache stopped: %w", err)
 			}
-
-			ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
-			defer stop()
-			<-ctx.Done()
-			zap.S().Infof("shutting down...")
-
-			bpfManager.Stop()
-
-			return nil
 		},
 	}
 }
