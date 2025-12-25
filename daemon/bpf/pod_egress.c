@@ -18,6 +18,14 @@
 #define MAX_IF_SUBNET 32768
 #endif
 
+#ifndef MAX_ARP_TABLE
+#define MAX_ARP_TABLE 131072
+#endif
+
+#ifndef MAX_FDB
+#define MAX_FDB 131072
+#endif
+
 struct ifindex_subnet_key {
   __u32 ifindex;
 };
@@ -34,6 +42,25 @@ struct host_iface_val {
   __u8 mac[6];
 };
 
+struct arp_table_key {
+  __u32 subnet_id;
+  __u32 ipaddr;
+};
+
+struct arp_table_val {
+  __u8 mac[6];
+};
+
+struct fdb_key {
+  __u32 subnet_id;
+  __u8 mac[6];
+};
+
+struct fdb_val {
+  __u32 ifindex;
+  __u32 vtep_ip;
+};
+
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
   __uint(max_entries, MAX_IF_SUBNET);
@@ -43,12 +70,36 @@ struct {
 } ifindex_subnet SEC(".maps");
 
 struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_ARP_TABLE);
+  __type(key, struct arp_table_key);
+  __type(value, struct arp_table_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} arp_table SEC(".maps");
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_FDB);
+  __type(key, struct fdb_key);
+  __type(value, struct fdb_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} fdb SEC(".maps");
+
+struct {
   __uint(type, BPF_MAP_TYPE_ARRAY);
   __uint(max_entries, 1);
   __type(key, __u32);
   __type(value, struct host_iface_val);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } host_iface SEC(".maps");
+
+struct {
+  __uint(type, BPF_MAP_TYPE_ARRAY);
+  __uint(max_entries, 1);
+  __type(key, __u32);
+  __type(value, __u32); // vxlan ifindex
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} vxlan_ifindex SEC(".maps");
 
 struct arp_payload {
   __u8 sha[ETH_ALEN];
@@ -83,8 +134,20 @@ static __always_inline int handle_arp(struct __sk_buff *skb, void *data_end,
 
   if ((tpa & mask) != (gw_addr & mask))
     return TC_ACT_SHOT;
-  if (val->subnet_id != 1)
-    return TC_ACT_SHOT;
+
+  __u8 responder_mac[ETH_ALEN];
+  if (val->subnet_id == 1) {
+    __builtin_memcpy(responder_mac, val->gw_mac, ETH_ALEN);
+  } else {
+    struct arp_table_key ak = {
+        .subnet_id = val->subnet_id,
+        .ipaddr = tpa,
+    };
+    const struct arp_table_val *av = bpf_map_lookup_elem(&arp_table, &ak);
+    if (!av)
+      return TC_ACT_SHOT;
+    __builtin_memcpy(responder_mac, av->mac, ETH_ALEN);
+  }
 
   __u8 requester_mac[ETH_ALEN];
   __builtin_memcpy(requester_mac, eth->h_source, ETH_ALEN);
@@ -92,12 +155,12 @@ static __always_inline int handle_arp(struct __sk_buff *skb, void *data_end,
   __be32 target_ip = payload->tpa;
 
   __builtin_memcpy(eth->h_dest, requester_mac, ETH_ALEN);
-  __builtin_memcpy(eth->h_source, val->gw_mac, ETH_ALEN);
+  __builtin_memcpy(eth->h_source, responder_mac, ETH_ALEN);
 
   arp->ar_op = bpf_htons(ARPOP_REPLY);
   __builtin_memcpy(payload->tha, requester_mac, ETH_ALEN);
   payload->tpa = requester_ip;
-  __builtin_memcpy(payload->sha, val->gw_mac, ETH_ALEN);
+  __builtin_memcpy(payload->sha, responder_mac, ETH_ALEN);
   payload->spa = target_ip;
 
   return bpf_redirect(skb->ifindex, 0);
@@ -131,6 +194,33 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
       return TC_ACT_SHOT;
     return bpf_redirect(host->ifindex, 0);
   }
+
+  struct fdb_key fk = {
+      .subnet_id = val->subnet_id,
+  };
+  __builtin_memcpy(fk.mac, eth->h_dest, ETH_ALEN);
+  const struct fdb_val *fv = bpf_map_lookup_elem(&fdb, &fk);
+  if (!fv)
+    return TC_ACT_SHOT;
+
+  if (fv->ifindex != 0)
+    return bpf_redirect(fv->ifindex, 0);
+
+  __u32 vx_key = 0;
+  __u32 *vx_if = bpf_map_lookup_elem(&vxlan_ifindex, &vx_key);
+  if (!vx_if)
+    return TC_ACT_SHOT;
+
+  struct bpf_tunnel_key tkey = {};
+  tkey.remote_ipv4 = fv->vtep_ip;
+  tkey.tunnel_id = val->subnet_id;
+  tkey.tunnel_ttl = 64;
+  tkey.tunnel_tos = 0;
+
+  if (bpf_skb_set_tunnel_key(skb, &tkey, sizeof(tkey), 0) < 0)
+    return TC_ACT_SHOT;
+
+  return bpf_redirect(*vx_if, 0);
 
   return TC_ACT_SHOT;
 }

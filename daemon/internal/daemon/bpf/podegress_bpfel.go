@@ -13,6 +13,30 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type PodEgressArpTableKey struct {
+	_        structs.HostLayout
+	SubnetId uint32
+	Ipaddr   uint32
+}
+
+type PodEgressArpTableVal struct {
+	_   structs.HostLayout
+	Mac [6]uint8
+}
+
+type PodEgressFdbKey struct {
+	_        structs.HostLayout
+	SubnetId uint32
+	Mac      [6]uint8
+	_        [2]byte
+}
+
+type PodEgressFdbVal struct {
+	_       structs.HostLayout
+	Ifindex uint32
+	VtepIp  uint32
+}
+
 type PodEgressHostIfaceVal struct {
 	_       structs.HostLayout
 	Ifindex uint32
@@ -83,8 +107,11 @@ type PodEgressProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type PodEgressMapSpecs struct {
+	ArpTable      *ebpf.MapSpec `ebpf:"arp_table"`
+	Fdb           *ebpf.MapSpec `ebpf:"fdb"`
 	HostIface     *ebpf.MapSpec `ebpf:"host_iface"`
 	IfindexSubnet *ebpf.MapSpec `ebpf:"ifindex_subnet"`
+	VxlanIfindex  *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
 }
 
 // PodEgressVariableSpecs contains global variables before they are loaded into the kernel.
@@ -113,14 +140,20 @@ func (o *PodEgressObjects) Close() error {
 //
 // It can be passed to LoadPodEgressObjects or ebpf.CollectionSpec.LoadAndAssign.
 type PodEgressMaps struct {
+	ArpTable      *ebpf.Map `ebpf:"arp_table"`
+	Fdb           *ebpf.Map `ebpf:"fdb"`
 	HostIface     *ebpf.Map `ebpf:"host_iface"`
 	IfindexSubnet *ebpf.Map `ebpf:"ifindex_subnet"`
+	VxlanIfindex  *ebpf.Map `ebpf:"vxlan_ifindex"`
 }
 
 func (m *PodEgressMaps) Close() error {
 	return _PodEgressClose(
+		m.ArpTable,
+		m.Fdb,
 		m.HostIface,
 		m.IfindexSubnet,
+		m.VxlanIfindex,
 	)
 }
 
