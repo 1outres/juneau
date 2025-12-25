@@ -109,9 +109,8 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
     return bpf_redirect(host->ifindex, 0);
   }
 
-  struct fdb_key fk = {
-      .subnet_id = val->subnet_id,
-  };
+  struct fdb_key fk = {};
+  fk.subnet_id = val->subnet_id;
   __builtin_memcpy(fk.mac, eth->h_dest, ETH_ALEN);
   const struct fdb_val *fv = bpf_map_lookup_elem(&fdb, &fk);
   if (!fv)

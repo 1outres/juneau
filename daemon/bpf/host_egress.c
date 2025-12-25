@@ -78,9 +78,8 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
   if (h_proto == ETH_P_ARP)
     return handle_arp(skb, data_end, eth);
 
-  struct fdb_key fdb_key = {
-      .subnet_id = 1,
-  };
+  struct fdb_key fdb_key = {};
+  fdb_key.subnet_id = 1;
   __builtin_memcpy(fdb_key.mac, eth->h_dest, ETH_ALEN);
   const struct fdb_val *fdb_val = bpf_map_lookup_elem(&fdb, &fdb_key);
   if (!fdb_val)

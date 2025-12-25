@@ -195,7 +195,7 @@ func (m *Manager) UpsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 	}
 
 	if nwep.Spec.NodeName == m.nodeName {
-		if err := m.hostEgressObjs.Fdb.Update(
+		if err := m.vxlanIngressObjs.Fdb.Update(
 			&HostEgressFdbKey{
 				SubnetId: subnet.Status.VNI,
 				Mac:      mac,
@@ -207,6 +207,8 @@ func (m *Manager) UpsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 			zap.S().Errorf("failed to update Fdb map: %v", err)
 			return err
 		}
+		// debug log for local pod including pods,podname, subnetid,mac,ifindex
+		zap.S().Debugf("Local pod added to Fdb map: pod=%s/%s, subnetid=%d, mac=%s, ifindex=%d", nwep.Namespace, nwep.Name, subnet.Status.VNI, nwep.Spec.MACAddress, nwep.Spec.Ifindex)
 	} else if nwep.Status.NodeIP != "" {
 		netNodeAddr := net.ParseIP(nwep.Status.NodeIP)
 		if netNodeAddr == nil {
