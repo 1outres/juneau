@@ -13,6 +13,17 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type VxlanIngressArpTableKey struct {
+	_        structs.HostLayout
+	SubnetId uint32
+	Ipaddr   uint32
+}
+
+type VxlanIngressArpTableVal struct {
+	_   structs.HostLayout
+	Mac [6]uint8
+}
+
 type VxlanIngressFdbKey struct {
 	_        structs.HostLayout
 	SubnetId uint32
@@ -31,6 +42,20 @@ type VxlanIngressHostIfaceVal struct {
 	Ifindex uint32
 	Mac     [6]uint8
 	_       [2]byte
+}
+
+type VxlanIngressIfindexSubnetKey struct {
+	_       structs.HostLayout
+	Ifindex uint32
+}
+
+type VxlanIngressIfindexSubnetVal struct {
+	_        structs.HostLayout
+	SubnetId uint32
+	GwMac    [6]uint8
+	_        [2]byte
+	GwAddr   uint32
+	Mask     uint32
 }
 
 // LoadVxlanIngress returns the embedded CollectionSpec for VxlanIngress.
@@ -82,8 +107,11 @@ type VxlanIngressProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type VxlanIngressMapSpecs struct {
-	Fdb       *ebpf.MapSpec `ebpf:"fdb"`
-	HostIface *ebpf.MapSpec `ebpf:"host_iface"`
+	ArpTable      *ebpf.MapSpec `ebpf:"arp_table"`
+	Fdb           *ebpf.MapSpec `ebpf:"fdb"`
+	HostIface     *ebpf.MapSpec `ebpf:"host_iface"`
+	IfindexSubnet *ebpf.MapSpec `ebpf:"ifindex_subnet"`
+	VxlanIfindex  *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
 }
 
 // VxlanIngressVariableSpecs contains global variables before they are loaded into the kernel.
@@ -112,14 +140,20 @@ func (o *VxlanIngressObjects) Close() error {
 //
 // It can be passed to LoadVxlanIngressObjects or ebpf.CollectionSpec.LoadAndAssign.
 type VxlanIngressMaps struct {
-	Fdb       *ebpf.Map `ebpf:"fdb"`
-	HostIface *ebpf.Map `ebpf:"host_iface"`
+	ArpTable      *ebpf.Map `ebpf:"arp_table"`
+	Fdb           *ebpf.Map `ebpf:"fdb"`
+	HostIface     *ebpf.Map `ebpf:"host_iface"`
+	IfindexSubnet *ebpf.Map `ebpf:"ifindex_subnet"`
+	VxlanIfindex  *ebpf.Map `ebpf:"vxlan_ifindex"`
 }
 
 func (m *VxlanIngressMaps) Close() error {
 	return _VxlanIngressClose(
+		m.ArpTable,
 		m.Fdb,
 		m.HostIface,
+		m.IfindexSubnet,
+		m.VxlanIfindex,
 	)
 }
 
