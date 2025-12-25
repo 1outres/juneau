@@ -140,7 +140,7 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
     return bpf_redirect(fdb_val->ifindex, 0);
 
   __u32 vx_key = 0;
-  __u32 *vx_if = bpf_map_lookup_elem(&vxlan_ifindex, &vx_key);
+  const __u32 *vx_if = bpf_map_lookup_elem(&vxlan_ifindex, &vx_key);
   if (!vx_if)
     return TC_ACT_SHOT;
 

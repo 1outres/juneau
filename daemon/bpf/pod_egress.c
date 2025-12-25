@@ -188,7 +188,7 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
 
   if (val->subnet_id == 1) {
     __u32 host_key = 0;
-    struct host_iface_val *host =
+    const struct host_iface_val *host =
         bpf_map_lookup_elem(&host_iface, &host_key);
     if (!host)
       return TC_ACT_SHOT;
@@ -207,7 +207,7 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
     return bpf_redirect(fv->ifindex, 0);
 
   __u32 vx_key = 0;
-  __u32 *vx_if = bpf_map_lookup_elem(&vxlan_ifindex, &vx_key);
+  const __u32 *vx_if = bpf_map_lookup_elem(&vxlan_ifindex, &vx_key);
   if (!vx_if)
     return TC_ACT_SHOT;
 
@@ -221,8 +221,6 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
     return TC_ACT_SHOT;
 
   return bpf_redirect(*vx_if, 0);
-
-  return TC_ACT_SHOT;
 }
 
 SEC("tc")

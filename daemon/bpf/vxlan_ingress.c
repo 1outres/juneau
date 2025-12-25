@@ -10,9 +10,23 @@
 #define TC_ACT_OK 0
 #define TC_ACT_SHOT 2
 
+#ifndef MAX_FDB
+#define MAX_FDB 131072
+#endif
+
 struct host_iface_val {
   __u32 ifindex;
   __u8 mac[6];
+};
+
+struct fdb_key {
+  __u32 subnet_id;
+  __u8 mac[6];
+};
+
+struct fdb_val {
+  __u32 ifindex;
+  __u32 vtep_ip;
 };
 
 struct {
@@ -22,6 +36,14 @@ struct {
   __type(value, struct host_iface_val);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } host_iface SEC(".maps");
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_FDB);
+  __type(key, struct fdb_key);
+  __type(value, struct fdb_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} fdb SEC(".maps");
 
 static __always_inline int tc_vxlan_ingress(struct __sk_buff *skb) {
   void *data = (void *)(long)skb->data;
@@ -36,17 +58,30 @@ static __always_inline int tc_vxlan_ingress(struct __sk_buff *skb) {
     return TC_ACT_SHOT;
 
   __u32 subnet_id = tkey.tunnel_id & 0xFFFFFF;
-  if (subnet_id != 1)
+  if (subnet_id == 1) {
+    __u32 host_key = 0;
+    const struct host_iface_val *host =
+        bpf_map_lookup_elem(&host_iface, &host_key);
+    if (!host)
+      return TC_ACT_SHOT;
+
+    __builtin_memcpy(eth->h_dest, host->mac, ETH_ALEN);
+
+    return bpf_redirect(host->ifindex, 0);
+  }
+
+  struct fdb_key fk = {
+      .subnet_id = subnet_id,
+  };
+  __builtin_memcpy(fk.mac, eth->h_dest, ETH_ALEN);
+  const struct fdb_val *fv = bpf_map_lookup_elem(&fdb, &fk);
+  if (!fv)
     return TC_ACT_SHOT;
 
-  __u32 host_key = 0;
-  struct host_iface_val *host = bpf_map_lookup_elem(&host_iface, &host_key);
-  if (!host)
-    return TC_ACT_SHOT;
+  if (fv->ifindex != 0)
+    return bpf_redirect(fv->ifindex, 0);
 
-  __builtin_memcpy(eth->h_dest, host->mac, ETH_ALEN);
-
-  return bpf_redirect(host->ifindex, 0);
+  return TC_ACT_SHOT;
 }
 
 SEC("tc")

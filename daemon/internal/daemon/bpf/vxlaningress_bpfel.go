@@ -13,6 +13,19 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type VxlanIngressFdbKey struct {
+	_        structs.HostLayout
+	SubnetId uint32
+	Mac      [6]uint8
+	_        [2]byte
+}
+
+type VxlanIngressFdbVal struct {
+	_       structs.HostLayout
+	Ifindex uint32
+	VtepIp  uint32
+}
+
 type VxlanIngressHostIfaceVal struct {
 	_       structs.HostLayout
 	Ifindex uint32
@@ -69,6 +82,7 @@ type VxlanIngressProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type VxlanIngressMapSpecs struct {
+	Fdb       *ebpf.MapSpec `ebpf:"fdb"`
 	HostIface *ebpf.MapSpec `ebpf:"host_iface"`
 }
 
@@ -98,11 +112,13 @@ func (o *VxlanIngressObjects) Close() error {
 //
 // It can be passed to LoadVxlanIngressObjects or ebpf.CollectionSpec.LoadAndAssign.
 type VxlanIngressMaps struct {
+	Fdb       *ebpf.Map `ebpf:"fdb"`
 	HostIface *ebpf.Map `ebpf:"host_iface"`
 }
 
 func (m *VxlanIngressMaps) Close() error {
 	return _VxlanIngressClose(
+		m.Fdb,
 		m.HostIface,
 	)
 }
