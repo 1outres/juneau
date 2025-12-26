@@ -28,7 +28,8 @@ type RouteTableSpec struct {
 
 // RouteTableStatus defines the observed state of RouteTable.
 type RouteTableStatus struct {
-	Routes []Route `json:"routes,omitempty"`
+	Routes  []Route `json:"routes,omitempty"`
+	TableID uint32  `json:"tableID,omitempty"`
 }
 
 type Route struct {

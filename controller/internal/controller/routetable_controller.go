@@ -18,7 +18,10 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"slices"
+	"strconv"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -106,8 +109,30 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			statusRoutes = append(statusRoutes, route)
 		}
 	}
-
 	resource.Status.Routes = statusRoutes
+
+	if resource.Status.TableID == 0 {
+		var id uint32 = 1
+		for {
+			if id == math.MaxUint32 {
+				// TODO: set condition
+				return ctrl.Result{}, nil
+			}
+			id++
+
+			var tableList juneauloutresmev1alpha1.RouteTableList
+			if err := r.List(ctx, &tableList, client.MatchingFields{"status.tableID": strconv.FormatUint(uint64(id), 10)}); err != nil {
+				return ctrl.Result{}, err
+			}
+
+			if len(tableList.Items) == 0 {
+				break
+			}
+		}
+
+		resource.Status.TableID = id
+	}
+
 	if err := r.Status().Update(ctx, &resource); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -126,6 +151,21 @@ func getRoute(routes []juneauloutresmev1alpha1.Route, dst string) *juneauloutres
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *RouteTableReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&juneauloutresmev1alpha1.RouteTable{},
+		"status.tableID",
+		func(obj client.Object) []string {
+			table := obj.(*juneauloutresmev1alpha1.RouteTable)
+			if table.Status.TableID == 0 {
+				return nil
+			}
+			return []string{strconv.FormatUint(uint64(table.Status.TableID), 10)}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to set up field indexer for RouteTable.status.tableID: %w", err)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&juneauloutresmev1alpha1.RouteTable{}).
 		Named("routetable").

@@ -89,6 +89,9 @@ spec:
                   - via
                   type: object
                 type: array
+              tableID:
+                format: int32
+                type: integer
             type: object
         type: object
     served: true
