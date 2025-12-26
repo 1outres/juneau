@@ -28,6 +28,8 @@ type VpcSpec struct {
 type VpcStatus struct {
 	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
 	Conditions         []metav1.Condition `json:"conditions,omitempty"`
+
+	MainRouteTable string `json:"mainRouteTable,omitempty"`
 }
 
 // +kubebuilder:object:root=true

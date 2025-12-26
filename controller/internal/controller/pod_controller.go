@@ -104,7 +104,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	nwiface := &juneauv1alpha1.NetworkInterface{}
-	nwiface.SetName(pod.Name + "-" + ifName)
+	nwiface.SetName(pod.Name + "." + ifName)
 	nwiface.SetNamespace(pod.Namespace)
 
 	_, err := ctrl.CreateOrUpdate(ctx, r.Client, nwiface, func() error {
@@ -121,6 +121,9 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	})
 
 	if err != nil {
+		if errors.IsConflict(err) || errors.IsAlreadyExists(err) {
+			return ctrl.Result{Requeue: true}, nil
+		}
 		logger.Error(err, "unable to create or update NetworkInterface")
 		return ctrl.Result{}, err
 	}

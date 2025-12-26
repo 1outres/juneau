@@ -7,6 +7,7 @@ resources:
 - bases/juneau.loutres.me_networkinterfaces.yaml
 - bases/juneau.loutres.me_ipleases.yaml
 - bases/juneau.loutres.me_networkendpoints.yaml
+- bases/juneau.loutres.me_routetables.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

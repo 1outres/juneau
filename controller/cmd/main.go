@@ -47,7 +47,6 @@ import (
 	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	"github.com/1outres/juneau/controller/internal/controller"
-	webhookjuneauloutresmev1alpha1 "github.com/1outres/juneau/controller/internal/webhook/v1alpha1"
 	webhookjuneauv1alpha1 "github.com/1outres/juneau/controller/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
@@ -62,12 +61,13 @@ func init() {
 
 	utilruntime.Must(juneauv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(juneauv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(juneauv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(juneauloutresmev1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
-// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,namespace=system,resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=mutatingwebhookconfigurations,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingwebhookconfigurations,verbs=get;list;watch;create;update;patch
 
@@ -299,10 +299,17 @@ func main() {
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookjuneauloutresmev1alpha1.SetupNetworkEndpointWebhookWithManager(mgr); err != nil {
+		if err = webhookjuneauv1alpha1.SetupNetworkEndpointWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "NetworkEndpoint")
 			os.Exit(1)
 		}
+	}
+	if err = (&controller.RouteTableReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "RouteTable")
+		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
 

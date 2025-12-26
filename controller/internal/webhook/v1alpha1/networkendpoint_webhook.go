@@ -26,7 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
 // nolint:unused
@@ -35,7 +35,7 @@ var networkendpointlog = logf.Log.WithName("networkendpoint-resource")
 
 // SetupNetworkEndpointWebhookWithManager registers the webhook for NetworkEndpoint in the manager.
 func SetupNetworkEndpointWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(&juneauloutresmev1alpha1.NetworkEndpoint{}).
+	return ctrl.NewWebhookManagedBy(mgr).For(&juneauv1alpha1.NetworkEndpoint{}).
 		WithValidator(&NetworkEndpointCustomValidator{}).
 		WithDefaulter(&NetworkEndpointCustomDefaulter{}).
 		Complete()
@@ -52,7 +52,7 @@ var _ webhook.CustomDefaulter = &NetworkEndpointCustomDefaulter{}
 
 // Default implements webhook.CustomDefaulter so a webhook will be registered for the Kind NetworkEndpoint.
 func (d *NetworkEndpointCustomDefaulter) Default(ctx context.Context, obj runtime.Object) error {
-	networkendpoint, ok := obj.(*juneauloutresmev1alpha1.NetworkEndpoint)
+	networkendpoint, ok := obj.(*juneauv1alpha1.NetworkEndpoint)
 
 	if !ok {
 		return fmt.Errorf("expected an NetworkEndpoint object but got %T", obj)
@@ -73,7 +73,7 @@ var _ webhook.CustomValidator = &NetworkEndpointCustomValidator{}
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type NetworkEndpoint.
 func (v *NetworkEndpointCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	networkendpoint, ok := obj.(*juneauloutresmev1alpha1.NetworkEndpoint)
+	networkendpoint, ok := obj.(*juneauv1alpha1.NetworkEndpoint)
 	if !ok {
 		return nil, fmt.Errorf("expected a NetworkEndpoint object but got %T", obj)
 	}
@@ -84,7 +84,7 @@ func (v *NetworkEndpointCustomValidator) ValidateCreate(ctx context.Context, obj
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type NetworkEndpoint.
 func (v *NetworkEndpointCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	networkendpoint, ok := newObj.(*juneauloutresmev1alpha1.NetworkEndpoint)
+	networkendpoint, ok := newObj.(*juneauv1alpha1.NetworkEndpoint)
 	if !ok {
 		return nil, fmt.Errorf("expected a NetworkEndpoint object for the newObj but got %T", newObj)
 	}
@@ -95,7 +95,7 @@ func (v *NetworkEndpointCustomValidator) ValidateUpdate(ctx context.Context, old
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type NetworkEndpoint.
 func (v *NetworkEndpointCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	networkendpoint, ok := obj.(*juneauloutresmev1alpha1.NetworkEndpoint)
+	networkendpoint, ok := obj.(*juneauv1alpha1.NetworkEndpoint)
 	if !ok {
 		return nil, fmt.Errorf("expected a NetworkEndpoint object but got %T", obj)
 	}

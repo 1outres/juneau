@@ -1,8 +1,0 @@
-apiVersion: juneau.loutres.me/v1alpha1
-kind: Vpc
-metadata:
-  labels:
-    app.kubernetes.io/name: controller
-    app.kubernetes.io/managed-by: kustomize
-  name: vpc-sample
-spec:

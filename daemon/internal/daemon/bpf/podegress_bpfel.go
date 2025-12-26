@@ -13,6 +13,44 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type PodEgressArpTableKey struct {
+	_        structs.HostLayout
+	SubnetId uint32
+	Ipaddr   uint32
+}
+
+type PodEgressArpTableVal struct {
+	_   structs.HostLayout
+	Mac [6]uint8
+}
+
+type PodEgressFdbKey struct {
+	_        structs.HostLayout
+	SubnetId uint32
+	Mac      [6]uint8
+	_        [2]byte
+}
+
+type PodEgressFdbVal struct {
+	_       structs.HostLayout
+	Ifindex uint32
+	VtepIp  uint32
+}
+
+type PodEgressFibKey struct {
+	_         structs.HostLayout
+	Prefixlen uint32
+	Dst       uint32
+}
+
+type PodEgressFibVal struct {
+	_        structs.HostLayout
+	Dmac     [6]uint8
+	Smac     [6]uint8
+	SubnetId uint32
+	Oif      uint32
+}
+
 type PodEgressHostIfaceVal struct {
 	_       structs.HostLayout
 	Ifindex uint32
@@ -28,6 +66,7 @@ type PodEgressIfindexSubnetKey struct {
 type PodEgressIfindexSubnetVal struct {
 	_        structs.HostLayout
 	SubnetId uint32
+	TableId  uint32
 	GwMac    [6]uint8
 	_        [2]byte
 	GwAddr   uint32
@@ -83,8 +122,13 @@ type PodEgressProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type PodEgressMapSpecs struct {
+	ArpTable      *ebpf.MapSpec `ebpf:"arp_table"`
+	Fdb           *ebpf.MapSpec `ebpf:"fdb"`
+	FibInner      *ebpf.MapSpec `ebpf:"fib_inner"`
+	FibMap        *ebpf.MapSpec `ebpf:"fib_map"`
 	HostIface     *ebpf.MapSpec `ebpf:"host_iface"`
 	IfindexSubnet *ebpf.MapSpec `ebpf:"ifindex_subnet"`
+	VxlanIfindex  *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
 }
 
 // PodEgressVariableSpecs contains global variables before they are loaded into the kernel.
@@ -113,14 +157,24 @@ func (o *PodEgressObjects) Close() error {
 //
 // It can be passed to LoadPodEgressObjects or ebpf.CollectionSpec.LoadAndAssign.
 type PodEgressMaps struct {
+	ArpTable      *ebpf.Map `ebpf:"arp_table"`
+	Fdb           *ebpf.Map `ebpf:"fdb"`
+	FibInner      *ebpf.Map `ebpf:"fib_inner"`
+	FibMap        *ebpf.Map `ebpf:"fib_map"`
 	HostIface     *ebpf.Map `ebpf:"host_iface"`
 	IfindexSubnet *ebpf.Map `ebpf:"ifindex_subnet"`
+	VxlanIfindex  *ebpf.Map `ebpf:"vxlan_ifindex"`
 }
 
 func (m *PodEgressMaps) Close() error {
 	return _PodEgressClose(
+		m.ArpTable,
+		m.Fdb,
+		m.FibInner,
+		m.FibMap,
 		m.HostIface,
 		m.IfindexSubnet,
+		m.VxlanIfindex,
 	)
 }
 

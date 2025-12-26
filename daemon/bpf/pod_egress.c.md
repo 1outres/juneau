@@ -2,54 +2,6 @@
 - Podのveth peerのingressにアタッチするが、実質podのegressを見る形になる
 - ドロップすると書かれている場合、TC_ACT_SHOTを返す。
 
-# eBPF map
-
-## ifindex_subnet
-
-```
-#ifndef MAX_IF_SUBNET
-#define MAX_IF_SUBNET 32768
-#endif
-
-struct ifindex_subnet_key {
-    __u32 ifindex;
-};
-
-struct ifindex_subnet_val {
-    __u32  subnet_id;
-    __u8   gw_mac[6];
-    __u32  gw_addr;
-    __u32  mask;
-};
-
-struct {
-    __uint(type,        BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_IF_SUBNET);
-    __type(key,         struct ifindex_subnet_key);
-    __type(value,       struct ifindex_subnet_val);
-    __uint(pinning, LIBBPF_PIN_BY_NAME);
-} ifindex_subnet SEC(".maps");
-```
-
-## host_iface
-
-```
-struct host_iface_val {
-    __u32  ifindex;
-    __u8   mac[6];
-};
-
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 1);
-    __type(key,   __u32);
-    __type(value, struct host_iface_val);
-    __uint(pinning, LIBBPF_PIN_BY_NAME);
-} host_iface SEC(".maps");
-```
-
-- `gw_addr` と `mask` は host order の `__u32` を格納する (例: 10.16.0.1 -> 0x0a100001, /16 -> 0xffff0000)
-
 # Functions
 
 ## tc_pod_egress
@@ -62,7 +14,17 @@ struct {
 2. ifindex_subnet mapを引く(key: skb->ifindex)
 3. ARPリクエストの場合、handle_arp関数を呼び出し、その関数の返り値を返す（handle_arp関数にはifindex_subnet mapのvalも渡す）
 4. subnet_idが1の場合、host_iface mapを引いて、ifindexにbpf_redirectする
-5. ドロップする
+5. subnet_idが1以外の場合、もし対象がgw_macだったらhandle_l3関数を呼び出し、その関数の返り値を返す(ifindex_subnet mapのvalも渡す)
+6. そうじゃなかったらforward_l2関数を呼び出し、その返り値を返す(ifindex_subnet mapのvalも渡す)
+
+## forward_l2
+
+1. fdb mapを引く(macは宛先macaddr)
+2. fdp mapになかったらドロップ
+3. ifindexが0じゃなかったら、そのifindexにbpf_redirect
+4. ifindexが0だったら
+5. vxlan_ifindex mapを引く
+6. vtep_ipを使ってbpf_skb_set_tunnel_key（VNIはsubnet_id）して、vxlan ifindexにbpf_redirectする
 
 ## handle_arp
 
@@ -71,4 +33,17 @@ struct {
 3. subnet_idが1の場合、gw_macをARPレスポンスとして返す(bpf_redirectを使う)
   - dst macをrequester mac, source macをgw_mac
   - thaをrequester mac, tpaをrequester ip, shaをgw_mac, spaを元のtpa
-4. subnet_idが1以外の場合、ドロップする
+4. subnet_idが1以外の場合、もし対象がgw_addrだったらgw_macをARPレスポンスとして返す(bpf_redirectを使う)
+5. そうじゃなかったらarp_table mapを引く
+6. arp_tableに見つからない場合ドロップ
+7. エントリが見つかった場合、ARPレスポンスとして返す(bpf_redirectを使う)
+
+## handle_l3
+
+1. IPヘッダーのパースを行う
+2. fib_mapをlongest matchで引く(table_idはifindex_subnet mapにあるやつ、宛先ipaddr)
+3. 見つからなかったらドロップ
+4. dmacが0だったら、宛先ipaddrのarp mapを引く(ここのsubnet_idは、mapを引いたvalのsubnet_idを使う)
+5. パケットのdmacを、dmac(0じゃなかった場合)もしくはarp mapの結果で書き換える
+6. パケットのsmacを、smacで書き換える
+7. dmacが0じゃなかった場合、oifにbpf_redirectする。0だったら、forward_l2に渡す

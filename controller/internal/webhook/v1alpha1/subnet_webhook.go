@@ -92,11 +92,6 @@ func (v *SubnetCustomValidator) ValidateCreate(ctx context.Context, obj runtime.
 
 	var errs field.ErrorList
 
-	// TODO: Temporary limitation. Remove in future.
-	if subnet.Name != "default" {
-		errs = append(errs, field.Invalid(field.NewPath("metadata").Child("name"), subnet.Name, "only 'default' is allowed as Subnet name for now"))
-	}
-
 	var vpc juneauv1alpha1.Vpc
 	if err := v.Get(ctx, client.ObjectKey{Name: subnet.Spec.Vpc}, &vpc); err != nil {
 		if errors.IsNotFound(err) {
@@ -108,10 +103,21 @@ func (v *SubnetCustomValidator) ValidateCreate(ctx context.Context, obj runtime.
 	if subnet.Name == "default" && subnet.Spec.Vpc != "default" {
 		errs = append(errs, field.Invalid(field.NewPath("spec").Child("vpc"), subnet.Spec.Vpc, "the default Subnet must reference the default Vpc"))
 	}
+	if subnet.Spec.Vpc == "default" && subnet.Name != "default" {
+		errs = append(errs, field.Invalid(field.NewPath("spec").Child("vpc"), subnet.Spec.Vpc, "only the default Subnet can reference the default Vpc"))
+	}
 
-	_, _, err := net.ParseCIDR(subnet.Spec.CIDR)
+	_, ipnet, err := net.ParseCIDR(subnet.Spec.CIDR)
 	if err != nil {
 		errs = append(errs, field.Invalid(field.NewPath("spec").Child("cidr"), subnet.Spec.CIDR, "invalid CIDR format"))
+	}
+
+	if ipnet.IP.To4() == nil {
+		errs = append(errs, field.Invalid(field.NewPath("spec").Child("cidr"), subnet.Spec.CIDR, "only IPv4 CIDR blocks are supported"))
+	} else if ones, _ := ipnet.Mask.Size(); ones > 28 {
+		errs = append(errs, field.Invalid(field.NewPath("spec").Child("cidr"), subnet.Spec.CIDR, "CIDR block must allow for at least 14 usable IP addresses (/28 or larger)"))
+	} else if ones, _ := ipnet.Mask.Size(); ones < 16 {
+		errs = append(errs, field.Invalid(field.NewPath("spec").Child("cidr"), subnet.Spec.CIDR, "CIDR block must be /16 or larger"))
 	}
 
 	if len(errs) > 0 {

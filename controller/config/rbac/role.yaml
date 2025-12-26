@@ -9,7 +9,6 @@ rules:
   resources:
   - nodes
   - pods
-  - secrets
   verbs:
   - get
   - list
@@ -32,6 +31,7 @@ rules:
   - ipleases
   - networkendpoints
   - networkinterfaces
+  - routetables
   - subnets
   - vpcs
   verbs:
@@ -48,6 +48,7 @@ rules:
   - ipleases/finalizers
   - networkendpoints/finalizers
   - networkinterfaces/finalizers
+  - routetables/finalizers
   - subnets/finalizers
   - vpcs/finalizers
   verbs:
@@ -58,9 +59,25 @@ rules:
   - ipleases/status
   - networkendpoints/status
   - networkinterfaces/status
+  - routetables/status
   - subnets/status
   - vpcs/status
   verbs:
   - get
   - patch
   - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: manager-role
+  namespace: system
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch

@@ -62,6 +62,18 @@ func (r *VpcReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, nil
 	}
 
+	routeTable := &juneauv1alpha1.RouteTable{}
+	routeTable.SetName(resource.Name)
+
+	_, err := ctrl.CreateOrUpdate(ctx, r.Client, routeTable, func() error {
+		routeTable.Spec.Vpc = resource.Name
+		return nil
+	})
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	resource.Status.MainRouteTable = routeTable.Name
 	if err := r.updateReadyCondition(ctx, &resource, metav1.ConditionTrue, vpcReasonReconcileSucceeded, ""); err != nil {
 		return ctrl.Result{}, err
 	}

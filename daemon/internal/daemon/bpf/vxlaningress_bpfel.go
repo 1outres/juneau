@@ -13,11 +13,64 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type VxlanIngressArpTableKey struct {
+	_        structs.HostLayout
+	SubnetId uint32
+	Ipaddr   uint32
+}
+
+type VxlanIngressArpTableVal struct {
+	_   structs.HostLayout
+	Mac [6]uint8
+}
+
+type VxlanIngressFdbKey struct {
+	_        structs.HostLayout
+	SubnetId uint32
+	Mac      [6]uint8
+	_        [2]byte
+}
+
+type VxlanIngressFdbVal struct {
+	_       structs.HostLayout
+	Ifindex uint32
+	VtepIp  uint32
+}
+
+type VxlanIngressFibKey struct {
+	_         structs.HostLayout
+	Prefixlen uint32
+	Dst       uint32
+}
+
+type VxlanIngressFibVal struct {
+	_        structs.HostLayout
+	Dmac     [6]uint8
+	Smac     [6]uint8
+	SubnetId uint32
+	Oif      uint32
+}
+
 type VxlanIngressHostIfaceVal struct {
 	_       structs.HostLayout
 	Ifindex uint32
 	Mac     [6]uint8
 	_       [2]byte
+}
+
+type VxlanIngressIfindexSubnetKey struct {
+	_       structs.HostLayout
+	Ifindex uint32
+}
+
+type VxlanIngressIfindexSubnetVal struct {
+	_        structs.HostLayout
+	SubnetId uint32
+	TableId  uint32
+	GwMac    [6]uint8
+	_        [2]byte
+	GwAddr   uint32
+	Mask     uint32
 }
 
 // LoadVxlanIngress returns the embedded CollectionSpec for VxlanIngress.
@@ -69,7 +122,13 @@ type VxlanIngressProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type VxlanIngressMapSpecs struct {
-	HostIface *ebpf.MapSpec `ebpf:"host_iface"`
+	ArpTable      *ebpf.MapSpec `ebpf:"arp_table"`
+	Fdb           *ebpf.MapSpec `ebpf:"fdb"`
+	FibInner      *ebpf.MapSpec `ebpf:"fib_inner"`
+	FibMap        *ebpf.MapSpec `ebpf:"fib_map"`
+	HostIface     *ebpf.MapSpec `ebpf:"host_iface"`
+	IfindexSubnet *ebpf.MapSpec `ebpf:"ifindex_subnet"`
+	VxlanIfindex  *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
 }
 
 // VxlanIngressVariableSpecs contains global variables before they are loaded into the kernel.
@@ -98,12 +157,24 @@ func (o *VxlanIngressObjects) Close() error {
 //
 // It can be passed to LoadVxlanIngressObjects or ebpf.CollectionSpec.LoadAndAssign.
 type VxlanIngressMaps struct {
-	HostIface *ebpf.Map `ebpf:"host_iface"`
+	ArpTable      *ebpf.Map `ebpf:"arp_table"`
+	Fdb           *ebpf.Map `ebpf:"fdb"`
+	FibInner      *ebpf.Map `ebpf:"fib_inner"`
+	FibMap        *ebpf.Map `ebpf:"fib_map"`
+	HostIface     *ebpf.Map `ebpf:"host_iface"`
+	IfindexSubnet *ebpf.Map `ebpf:"ifindex_subnet"`
+	VxlanIfindex  *ebpf.Map `ebpf:"vxlan_ifindex"`
 }
 
 func (m *VxlanIngressMaps) Close() error {
 	return _VxlanIngressClose(
+		m.ArpTable,
+		m.Fdb,
+		m.FibInner,
+		m.FibMap,
 		m.HostIface,
+		m.IfindexSubnet,
+		m.VxlanIfindex,
 	)
 }
 

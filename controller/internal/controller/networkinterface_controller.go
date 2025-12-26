@@ -112,6 +112,7 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 func (r *NetworkInterfaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&juneauv1alpha1.NetworkInterface{}).
+		Owns(&juneauv1alpha1.NetworkEndpoint{}).
 		Named("networkinterface").
 		Complete(r)
 }
