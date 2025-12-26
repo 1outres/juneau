@@ -66,6 +66,7 @@ type VxlanIngressIfindexSubnetKey struct {
 type VxlanIngressIfindexSubnetVal struct {
 	_        structs.HostLayout
 	SubnetId uint32
+	TableId  uint32
 	GwMac    [6]uint8
 	_        [2]byte
 	GwAddr   uint32

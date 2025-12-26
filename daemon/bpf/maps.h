@@ -31,6 +31,7 @@ struct ifindex_subnet_key {
 
 struct ifindex_subnet_val {
   __u32 subnet_id;
+  __u32 table_id;
   __u8 gw_mac[6];
   __u32 gw_addr;
   __u32 mask;
@@ -125,7 +126,7 @@ struct fib_inner_map fib_inner SEC(".maps");
 struct {
   __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
   __uint(max_entries, MAX_FIB_MAP);
-  __type(key, __u32); // subnet_id
+  __type(key, __u32); // table_id
   __type(value, __u32);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
   __array(values, struct fib_inner_map);

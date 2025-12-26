@@ -41,7 +41,7 @@
 ## handle_l3
 
 1. IPヘッダーのパースを行う
-2. fib_mapをlongest matchで引く(subnet_idと宛先ipaddr)
+2. fib_mapをlongest matchで引く(table_idはifindex_subnet mapにあるやつ、宛先ipaddr)
 3. 見つからなかったらドロップ
 4. dmacが0だったら、宛先ipaddrのarp mapを引く(ここのsubnet_idは、mapを引いたvalのsubnet_idを使う)
 5. パケットのdmacを、dmac(0じゃなかった場合)もしくはarp mapの結果で書き換える

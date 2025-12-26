@@ -66,6 +66,7 @@ type HostEgressIfindexSubnetKey struct {
 type HostEgressIfindexSubnetVal struct {
 	_        structs.HostLayout
 	SubnetId uint32
+	TableId  uint32
 	GwMac    [6]uint8
 	_        [2]byte
 	GwAddr   uint32

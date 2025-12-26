@@ -123,8 +123,8 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
 
   __u32 dst = bpf_ntohl(iph->daddr);
 
-  __u32 sid = val->subnet_id;
-  void *fib_inner_map = bpf_map_lookup_elem(&fib_map, &sid);
+  __u32 tid = val->table_id;
+  void *fib_inner_map = bpf_map_lookup_elem(&fib_map, &tid);
   if (!fib_inner_map)
     return TC_ACT_SHOT;
 
