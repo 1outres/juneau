@@ -27,7 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
 // NetworkEndpointReconciler reconciles a NetworkEndpoint object
@@ -46,7 +46,7 @@ type NetworkEndpointReconciler struct {
 func (r *NetworkEndpointReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	var resource juneauloutresmev1alpha1.NetworkEndpoint
+	var resource juneauv1alpha1.NetworkEndpoint
 	if err := r.Get(ctx, req.NamespacedName, &resource); err != nil {
 		if errors.IsNotFound(err) {
 			return ctrl.Result{}, nil
@@ -84,10 +84,10 @@ func (r *NetworkEndpointReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 func (r *NetworkEndpointReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
-		&juneauloutresmev1alpha1.NetworkEndpoint{},
+		&juneauv1alpha1.NetworkEndpoint{},
 		"spec.podRef.name",
 		func(obj client.Object) []string {
-			nwep := obj.(*juneauloutresmev1alpha1.NetworkEndpoint)
+			nwep := obj.(*juneauv1alpha1.NetworkEndpoint)
 			if nwep.Spec.PodRef.Name == "" {
 				return nil
 			}
@@ -98,10 +98,10 @@ func (r *NetworkEndpointReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
-		&juneauloutresmev1alpha1.NetworkEndpoint{},
+		&juneauv1alpha1.NetworkEndpoint{},
 		"spec.podRef.interface",
 		func(obj client.Object) []string {
-			nwep := obj.(*juneauloutresmev1alpha1.NetworkEndpoint)
+			nwep := obj.(*juneauv1alpha1.NetworkEndpoint)
 			if nwep.Spec.PodRef.Interface == "" {
 				return nil
 			}
@@ -112,10 +112,10 @@ func (r *NetworkEndpointReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
-		&juneauloutresmev1alpha1.NetworkEndpoint{},
+		&juneauv1alpha1.NetworkEndpoint{},
 		"spec.podRef.uid",
 		func(obj client.Object) []string {
-			nwep := obj.(*juneauloutresmev1alpha1.NetworkEndpoint)
+			nwep := obj.(*juneauv1alpha1.NetworkEndpoint)
 			if nwep.Spec.PodRef.UID == "" {
 				return nil
 			}
@@ -126,7 +126,7 @@ func (r *NetworkEndpointReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&juneauloutresmev1alpha1.NetworkEndpoint{}).
+		For(&juneauv1alpha1.NetworkEndpoint{}).
 		Named("networkendpoint").
 		Complete(r)
 }

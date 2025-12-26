@@ -28,11 +28,15 @@ type Manager struct {
 	client       client.Client
 	nwepInformer cache.Informer
 	nwepHandler  toolscache.ResourceEventHandlerRegistration
+	rtInformer   cache.Informer
+	rtHandler    toolscache.ResourceEventHandlerRegistration
 
 	nodeName     string
 	vxlanIfindex int
 	hostIfindex  int
 	hostMac      net.HardwareAddr
+
+	podEgressMapSpecs *PodEgressMapSpecs
 
 	podEgressObjs    *PodEgressObjects
 	podEgressLinks   map[int]link.Link
@@ -52,6 +56,15 @@ func (m *Manager) Start(ctx context.Context) error {
 	if err := os.MkdirAll(pinPath, 0755); err != nil {
 		zap.S().Errorf("failed to create BPF pin path: %v", err)
 		return fmt.Errorf("failed to create BPF pin path: %w", err)
+	}
+
+	spec, err := LoadPodEgress()
+	if err != nil {
+		return err
+	}
+
+	if err := spec.Assign(m.podEgressMapSpecs); err != nil {
+		return err
 	}
 
 	if err := LoadPodEgressObjects(m.podEgressObjs, &ebpf.CollectionOptions{
@@ -123,16 +136,27 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.vxlanIngressLink = vxlanIngressLink
 	zap.S().Infof("attached TC program to vxlan interface (ifindex: %d)", m.vxlanIfindex)
 
-	h, err := addEventHandler(ctx, m.nwepInformer, m.UpsertNetworkEndpoint, m.DeleteNetworkEndpoint)
+	nwepHandler, err := addEventHandler(ctx, m.nwepInformer, m.UpsertNetworkEndpoint, m.DeleteNetworkEndpoint)
 	if err != nil {
 		zap.S().Errorf("failed to add event handler for NetworkEndpoint: %v", err)
+		return err
 	}
-	m.nwepHandler = h
+	m.nwepHandler = nwepHandler
 
-	return err
+	rtHandler, err := addEventHandler(ctx, m.rtInformer, m.UpsertRouteTable, m.DeleteRouteTable)
+	if err != nil {
+		zap.S().Errorf("failed to add event handler for RouteTable: %v", err)
+		return err
+	}
+	m.rtHandler = rtHandler
+
+	return nil
 }
 
 func (m *Manager) Stop() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	for _, l := range m.podEgressLinks {
 		l.Close()
 	}
@@ -192,7 +216,7 @@ func (m *Manager) UpsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 	}
 
 	if nwep.Spec.NodeName == m.nodeName {
-		if err := m.hostEgressObjs.Fdb.Update(
+		if err := m.vxlanIngressObjs.Fdb.Update(
 			&HostEgressFdbKey{
 				SubnetId: subnet.Status.VNI,
 				Mac:      mac,
@@ -201,7 +225,11 @@ func (m *Manager) UpsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 				Ifindex: uint32(nwep.Spec.Ifindex),
 			},
 			ebpf.UpdateAny); err != nil {
+			zap.S().Errorf("failed to update Fdb map: %v", err)
+			return err
 		}
+		// debug log for local pod including pods,podname, subnetid,mac,ifindex
+		zap.S().Debugf("Local pod added to Fdb map: pod=%s/%s, subnetid=%d, mac=%s, ifindex=%d", nwep.Namespace, nwep.Name, subnet.Status.VNI, nwep.Spec.MACAddress, nwep.Spec.Ifindex)
 	} else if nwep.Status.NodeIP != "" {
 		netNodeAddr := net.ParseIP(nwep.Status.NodeIP)
 		if netNodeAddr == nil {
@@ -222,6 +250,8 @@ func (m *Manager) UpsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 				VtepIp: nodeAddr,
 			},
 			ebpf.UpdateAny); err != nil {
+			zap.S().Errorf("failed to update Fdb map: %v", err)
+			return err
 		}
 	}
 
@@ -229,6 +259,15 @@ func (m *Manager) UpsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 
 	if nwep.Spec.NodeName != m.nodeName {
 		return nil
+	}
+
+	var vpc juneauv1alpha1.Vpc
+	if err := m.client.Get(ctx, client.ObjectKey{Name: subnet.Spec.Vpc}, &vpc); err != nil {
+		return err
+	}
+	var mainTable juneauv1alpha1.RouteTable
+	if err := m.client.Get(ctx, client.ObjectKey{Name: vpc.Status.MainRouteTable}, &mainTable); err != nil {
+		return err
 	}
 
 	var netgwmac net.HardwareAddr
@@ -273,6 +312,7 @@ func (m *Manager) UpsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 		},
 		&PodEgressIfindexSubnetVal{
 			SubnetId: subnet.Status.VNI,
+			TableId:  mainTable.Status.TableID,
 			GwMac:    gwmac,
 			GwAddr:   gwaddr,
 			Mask:     mask,
@@ -361,6 +401,9 @@ func (m *Manager) DeleteNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 		return err
 	}
 
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	if l, ok := m.podEgressLinks[nwep.Spec.Ifindex]; ok {
 		l.Close()
 	}
@@ -369,18 +412,93 @@ func (m *Manager) DeleteNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 	return nil
 }
 
-func NewManager(cl client.Client, nwepInformer cache.Informer, nodeName string, vxlanIfindex int, hostIfindex int, defaultGatewayMac net.HardwareAddr) *Manager {
+func (m *Manager) UpsertRouteTable(ctx context.Context, rt *juneauv1alpha1.RouteTable) error {
+	fib, err := ebpf.NewMap(m.podEgressMapSpecs.FibInner.Copy())
+	if err != nil {
+		zap.S().Errorf("failed to create new FIB inner map: %v", err)
+		return err
+	}
+
+	for _, route := range rt.Status.Routes {
+		var subnet juneauv1alpha1.Subnet
+		if err := m.client.Get(ctx, client.ObjectKey{Name: route.Subnet}, &subnet); err != nil {
+			return err
+		}
+
+		netaddr, ipnet, err := net.ParseCIDR(route.Dst)
+		if err != nil {
+			zap.S().Errorf("failed to parse CIDR %s: %v", route.Dst, err)
+			continue
+		}
+
+		addr := binary.LittleEndian.Uint32(netaddr.To4())
+
+		prefixlen, _ := ipnet.Mask.Size()
+
+		key := PodEgressFibKey{
+			Dst:       addr,
+			Prefixlen: uint32(prefixlen),
+		}
+		val := PodEgressFibVal{
+			Dmac:     [6]uint8{},
+			Smac:     [6]uint8{},
+			SubnetId: subnet.Status.VNI,
+			Oif:      0,
+		}
+
+		if route.Via.Type == juneauv1alpha1.ViaConnnected {
+
+			netmac, err := net.ParseMAC(subnet.Status.GatewayMAC)
+			if err != nil {
+				return err
+			}
+
+			mac, err := HardwareAddrToUint8Array(netmac)
+			if err != nil {
+				return err
+			}
+
+			val.Smac = mac
+
+		} else if route.Via.Type == juneauv1alpha1.ViaEndpoint {
+			// TODO:
+			continue
+		}
+
+		if err := fib.Update(&key, &val, ebpf.UpdateAny); err != nil {
+			zap.S().Errorf("failed to update FIB inner map: %v", err)
+		}
+	}
+
+	if err := m.podEgressObjs.FibMap.Update(uint32(rt.Status.TableID), uint32(fib.FD()), ebpf.UpdateAny); err != nil {
+		fib.Close()
+		return err
+	}
+
+	return nil
+}
+
+func (m *Manager) DeleteRouteTable(ctx context.Context, rt *juneauv1alpha1.RouteTable) error {
+	if err := m.podEgressObjs.FibMap.Delete(uint32(rt.Status.TableID)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func NewManager(cl client.Client, nwepInformer cache.Informer, rtInformer cache.Informer, nodeName string, vxlanIfindex int, hostIfindex int, defaultGatewayMac net.HardwareAddr) *Manager {
 	return &Manager{
-		client:           cl,
-		nwepInformer:     nwepInformer,
-		nodeName:         nodeName,
-		vxlanIfindex:     vxlanIfindex,
-		hostIfindex:      hostIfindex,
-		hostMac:          defaultGatewayMac,
-		podEgressObjs:    &PodEgressObjects{},
-		podEgressLinks:   make(map[int]link.Link),
-		hostEgressObjs:   &HostEgressObjects{},
-		vxlanIngressObjs: &VxlanIngressObjects{},
+		client:            cl,
+		nwepInformer:      nwepInformer,
+		rtInformer:        rtInformer,
+		nodeName:          nodeName,
+		vxlanIfindex:      vxlanIfindex,
+		hostIfindex:       hostIfindex,
+		hostMac:           defaultGatewayMac,
+		podEgressMapSpecs: &PodEgressMapSpecs{},
+		podEgressObjs:     &PodEgressObjects{},
+		podEgressLinks:    make(map[int]link.Link),
+		hostEgressObjs:    &HostEgressObjects{},
+		vxlanIngressObjs:  &VxlanIngressObjects{},
 	}
 }
 

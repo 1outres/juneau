@@ -102,6 +102,8 @@ spec:
                   - type
                   type: object
                 type: array
+              mainRouteTable:
+                type: string
               observedGeneration:
                 format: int64
                 type: integer
