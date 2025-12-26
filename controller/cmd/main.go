@@ -44,6 +44,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	"github.com/1outres/juneau/controller/internal/controller"
 	webhookjuneauv1alpha1 "github.com/1outres/juneau/controller/internal/webhook/v1alpha1"
@@ -61,6 +62,7 @@ func init() {
 	utilruntime.Must(juneauv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(juneauv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(juneauv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(juneauloutresmev1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -301,6 +303,13 @@ func main() {
 			setupLog.Error(err, "unable to create webhook", "webhook", "NetworkEndpoint")
 			os.Exit(1)
 		}
+	}
+	if err = (&controller.RouteTableReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "RouteTable")
+		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
 

@@ -31,6 +31,7 @@ rules:
   - ipleases
   - networkendpoints
   - networkinterfaces
+  - routetables
   - subnets
   - vpcs
   verbs:
@@ -47,6 +48,7 @@ rules:
   - ipleases/finalizers
   - networkendpoints/finalizers
   - networkinterfaces/finalizers
+  - routetables/finalizers
   - subnets/finalizers
   - vpcs/finalizers
   verbs:
@@ -57,6 +59,7 @@ rules:
   - ipleases/status
   - networkendpoints/status
   - networkinterfaces/status
+  - routetables/status
   - subnets/status
   - vpcs/status
   verbs:

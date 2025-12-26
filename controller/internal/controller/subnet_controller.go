@@ -133,6 +133,20 @@ func (r *SubnetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
 		&juneauv1alpha1.Subnet{},
+		"spec.vpc",
+		func(obj client.Object) []string {
+			subnet := obj.(*juneauv1alpha1.Subnet)
+			if subnet.Spec.Vpc == "" {
+				return nil
+			}
+			return []string{subnet.Spec.Vpc}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to set up field indexer for Subnet.spec.vpc: %w", err)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&juneauv1alpha1.Subnet{},
 		"status.vni",
 		func(obj client.Object) []string {
 			subnet := obj.(*juneauv1alpha1.Subnet)
