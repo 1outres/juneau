@@ -17,6 +17,14 @@
 #define MAX_FDB 131072
 #endif
 
+#ifndef MAX_FIB
+#define MAX_FIB 32768
+#endif
+
+#ifndef MAX_FIB_MAP
+#define MAX_FIB_MAP 32768
+#endif
+
 struct ifindex_subnet_key {
   __u32 ifindex;
 };
@@ -91,5 +99,36 @@ struct {
   __type(value, __u32); // vxlan ifindex
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } vxlan_ifindex SEC(".maps");
+
+struct fib_key {
+  __u32 prefixlen;
+  __u32 dst;
+};
+
+struct fib_val {
+  __u8 dmac[6]; // 0 == connected
+  __u8 smac[6];
+  __u32 subnet_id;
+  __u32 oif;
+};
+
+struct fib_inner_map {
+  __uint(type, BPF_MAP_TYPE_LPM_TRIE);
+  __uint(max_entries, MAX_FIB);
+  __uint(map_flags, BPF_F_NO_PREALLOC);
+  __type(key, struct fib_key);
+  __type(value, struct fib_val);
+};
+
+struct fib_inner_map fib_inner SEC(".maps");
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
+  __uint(max_entries, MAX_FIB_MAP);
+  __type(key, __u32); // subnet_id
+  __type(value, __u32);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+  __array(values, struct fib_inner_map);
+} fib_map SEC(".maps");
 
 #endif // JUNEAU_BPF_MAPS_H

@@ -37,6 +37,20 @@ type VxlanIngressFdbVal struct {
 	VtepIp  uint32
 }
 
+type VxlanIngressFibKey struct {
+	_         structs.HostLayout
+	Prefixlen uint32
+	Dst       uint32
+}
+
+type VxlanIngressFibVal struct {
+	_        structs.HostLayout
+	Dmac     [6]uint8
+	Smac     [6]uint8
+	SubnetId uint32
+	Oif      uint32
+}
+
 type VxlanIngressHostIfaceVal struct {
 	_       structs.HostLayout
 	Ifindex uint32
@@ -109,6 +123,8 @@ type VxlanIngressProgramSpecs struct {
 type VxlanIngressMapSpecs struct {
 	ArpTable      *ebpf.MapSpec `ebpf:"arp_table"`
 	Fdb           *ebpf.MapSpec `ebpf:"fdb"`
+	FibInner      *ebpf.MapSpec `ebpf:"fib_inner"`
+	FibMap        *ebpf.MapSpec `ebpf:"fib_map"`
 	HostIface     *ebpf.MapSpec `ebpf:"host_iface"`
 	IfindexSubnet *ebpf.MapSpec `ebpf:"ifindex_subnet"`
 	VxlanIfindex  *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
@@ -142,6 +158,8 @@ func (o *VxlanIngressObjects) Close() error {
 type VxlanIngressMaps struct {
 	ArpTable      *ebpf.Map `ebpf:"arp_table"`
 	Fdb           *ebpf.Map `ebpf:"fdb"`
+	FibInner      *ebpf.Map `ebpf:"fib_inner"`
+	FibMap        *ebpf.Map `ebpf:"fib_map"`
 	HostIface     *ebpf.Map `ebpf:"host_iface"`
 	IfindexSubnet *ebpf.Map `ebpf:"ifindex_subnet"`
 	VxlanIfindex  *ebpf.Map `ebpf:"vxlan_ifindex"`
@@ -151,6 +169,8 @@ func (m *VxlanIngressMaps) Close() error {
 	return _VxlanIngressClose(
 		m.ArpTable,
 		m.Fdb,
+		m.FibInner,
+		m.FibMap,
 		m.HostIface,
 		m.IfindexSubnet,
 		m.VxlanIfindex,
