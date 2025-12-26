@@ -121,7 +121,7 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
   if ((void *)(iph + 1) > data_end)
     return TC_ACT_SHOT;
 
-  __u32 dst = bpf_ntohl(iph->daddr);
+  __u32 dst_be = iph->daddr; // keep network order for LPM trie
 
   __u32 tid = val->table_id;
   void *fib_inner_map = bpf_map_lookup_elem(&fib_map, &tid);
@@ -130,7 +130,7 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
 
   struct fib_key fkey = {
       .prefixlen = 32,
-      .dst = dst,
+      .dst = dst_be,
   };
   const struct fib_val *fv = bpf_map_lookup_elem(fib_inner_map, &fkey);
   if (!fv)
@@ -151,7 +151,7 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
   } else {
     struct arp_table_key ak = {
         .subnet_id = fv->subnet_id,
-        .ipaddr = dst,
+        .ipaddr = bpf_ntohl(dst_be), // arp_table expects host order
     };
     const struct arp_table_val *av = bpf_map_lookup_elem(&arp_table, &ak);
     if (!av)

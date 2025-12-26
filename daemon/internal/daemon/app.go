@@ -98,6 +98,8 @@ func NewApp() *cli.Command {
 					&juneauv1alpha1.NetworkInterface{}: {},
 					&juneauv1alpha1.NetworkEndpoint{}:  {},
 					&juneauv1alpha1.Subnet{}:           {},
+					&juneauv1alpha1.Vpc{}:              {},
+					&juneauv1alpha1.RouteTable{}:       {},
 				},
 			})
 			if err != nil {
@@ -107,6 +109,11 @@ func NewApp() *cli.Command {
 			nwepInfromer, err := cache.GetInformer(ctx, &juneauv1alpha1.NetworkEndpoint{})
 			if err != nil {
 				return fmt.Errorf("get NetworkEndpoint informer: %w", err)
+			}
+
+			rtInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.RouteTable{})
+			if err != nil {
+				return fmt.Errorf("get RouteTable informer: %w", err)
 			}
 
 			cl, err := client.New(kubecfg, client.Options{
@@ -204,6 +211,20 @@ func NewApp() *cli.Command {
 			); err != nil {
 				return fmt.Errorf("index NetworkEndpoint by spec.podRef.uid: %w", err)
 			}
+			if err := cache.IndexField(
+				ctx,
+				&juneauv1alpha1.Subnet{},
+				"spec.vpc",
+				func(obj client.Object) []string {
+					subnet := obj.(*juneauv1alpha1.Subnet)
+					if subnet.Spec.Vpc == "" {
+						return nil
+					}
+					return []string{subnet.Spec.Vpc}
+				},
+			); err != nil {
+				return fmt.Errorf("index Subnet by spec.vpc: %w", err)
+			}
 
 			cacheErrCh := make(chan error, 1)
 			go func() {
@@ -260,7 +281,7 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("ensure masquerade rule: %w", err)
 			}
 
-			bpfManager := bpf.NewManager(cl, nwepInfromer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, hostIfaceInfo.MAC)
+			bpfManager := bpf.NewManager(cl, nwepInfromer, rtInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, hostIfaceInfo.MAC)
 			if err := bpfManager.Start(ctx); err != nil {
 				return fmt.Errorf("initialize BPF manager: %w", err)
 			}
