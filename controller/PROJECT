@@ -76,4 +76,40 @@ resources:
   kind: RouteTable
   path: github.com/1outres/juneau/controller/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: juneau.loutres.me
+  kind: AddressPool
+  path: github.com/1outres/juneau/controller/api/v1alpha1
+  version: v1alpha1
+  webhooks:
+    defaulting: true
+    validation: true
+    webhookVersion: v1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: juneau.loutres.me
+  kind: ExternalNetwork
+  path: github.com/1outres/juneau/controller/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: juneau.loutres.me
+  kind: BGPPeer
+  path: github.com/1outres/juneau/controller/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: juneau.loutres.me
+  kind: BGPAdvertisement
+  path: github.com/1outres/juneau/controller/api/v1alpha1
+  version: v1alpha1
 version: "3"

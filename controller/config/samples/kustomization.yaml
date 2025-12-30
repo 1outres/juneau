@@ -1,4 +1,8 @@
 ## Append samples of your project ##
 resources:
 - v1alpha1_routetable.yaml
+- v1alpha1_addresspool.yaml
+- v1alpha1_externalnetwork.yaml
+- v1alpha1_bgppeer.yaml
+- v1alpha1_bgpadvertisement.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples
