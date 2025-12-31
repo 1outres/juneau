@@ -42,6 +42,7 @@ const (
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Cluster
 
 // AddressPool is the Schema for the addresspools API.
 type AddressPool struct {

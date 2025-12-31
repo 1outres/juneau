@@ -12,7 +12,7 @@ spec:
     listKind: ExternalNetworkList
     plural: externalnetworks
     singular: externalnetwork
-  scope: Namespaced
+  scope: Cluster
   versions:
   - name: v1alpha1
     schema:

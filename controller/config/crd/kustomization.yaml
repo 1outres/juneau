@@ -12,6 +12,7 @@ resources:
 - bases/juneau.loutres.me_externalnetworks.yaml
 - bases/juneau.loutres.me_bgppeers.yaml
 - bases/juneau.loutres.me_bgpadvertisements.yaml
+- bases/juneau.loutres.me_bgpnodestates.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

@@ -5,4 +5,5 @@ resources:
 - v1alpha1_externalnetwork.yaml
 - v1alpha1_bgppeer.yaml
 - v1alpha1_bgpadvertisement.yaml
+- v1alpha1_bgpnodestate.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

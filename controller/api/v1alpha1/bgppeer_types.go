@@ -34,6 +34,7 @@ type BGPPeerStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Cluster
 
 // BGPPeer is the Schema for the bgppeers API.
 type BGPPeer struct {

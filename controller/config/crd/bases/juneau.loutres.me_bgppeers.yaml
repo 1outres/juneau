@@ -12,7 +12,7 @@ spec:
     listKind: BGPPeerList
     plural: bgppeers
     singular: bgppeer
-  scope: Namespaced
+  scope: Cluster
   versions:
   - name: v1alpha1
     schema:

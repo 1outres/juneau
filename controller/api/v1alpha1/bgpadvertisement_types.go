@@ -31,6 +31,7 @@ type BGPAdvertisementStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Cluster
 
 // BGPAdvertisement is the Schema for the bgpadvertisements API.
 type BGPAdvertisement struct {
