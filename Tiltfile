@@ -76,3 +76,28 @@ docker_build_with_restart(
 
 watch_file('./daemon/config/')
 k8s_yaml(kustomize('./daemon/config/default'))
+
+
+BGP_SPEAKER_DOCKERFILE = '''FROM golang:alpine
+RUN apk add --no-cache bird2
+WORKDIR /
+COPY ./bin/bgpspeaker /
+CMD ["/bgpspeaker"]
+'''
+
+local_resource(
+    'BGP Speaker Compile', 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/bgpspeaker cmd/bgpspeaker/main.go', deps=['bgp-speaker/cmd/bgpspeaker/main.go', 'bgp-speaker/internal'],
+    ignore=[], dir='bgp-speaker/')
+
+docker_build_with_restart(
+    'bgp-speaker:latest', './bgp-speaker',
+    dockerfile_contents=BGP_SPEAKER_DOCKERFILE,
+    entrypoint=['/bgpspeaker'],
+    only=['./bin/bgpspeaker'],
+    live_update=[
+        sync('./bgp-speaker/bin/bgpspeaker', '/bgpspeaker'),
+    ]
+)
+
+watch_file('./bgp-speaker/config/')
+k8s_yaml(kustomize('./bgp-speaker/config/default'))

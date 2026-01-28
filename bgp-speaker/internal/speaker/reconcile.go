@@ -1,47 +1,72 @@
 package speaker
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/1outres/juneau/bgp-speaker/internal/bird"
 	bgptypes "github.com/1outres/juneau/bgp-speaker/internal/types"
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	"go.uber.org/zap"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-func reconcileOnce(ctx context.Context, nodeName string, cl client.Client) error {
+type Reconciler struct {
+	nodeName string
+	client   client.Client
+	builder  bird.ConfigBuilder
+	process  *bird.ProcessManager
+
+	mu       sync.Mutex
+	lastHash []byte
+}
+
+func NewReconciler(nodeName string, cl client.Client, builder bird.ConfigBuilder, process *bird.ProcessManager) *Reconciler {
+	return &Reconciler{
+		nodeName: nodeName,
+		client:   cl,
+		builder:  builder,
+		process:  process,
+	}
+}
+
+func (r *Reconciler) Reconcile(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	var pools juneauv1alpha1.AddressPoolList
-	if err := cl.List(ctx, &pools); err != nil {
+	if err := r.client.List(ctx, &pools); err != nil {
 		return fmt.Errorf("list AddressPool: %w", err)
 	}
 
 	var advs juneauv1alpha1.BGPAdvertisementList
-	if err := cl.List(ctx, &advs); err != nil {
+	if err := r.client.List(ctx, &advs); err != nil {
 		return fmt.Errorf("list BGPAdvertisement: %w", err)
 	}
 
 	var peers juneauv1alpha1.BGPPeerList
-	if err := cl.List(ctx, &peers); err != nil {
+	if err := r.client.List(ctx, &peers); err != nil {
 		return fmt.Errorf("list BGPPeer: %w", err)
 	}
 
-	desired, warnings := buildDesiredConfig(nodeName, &pools, &advs, &peers)
+	desired, warnings := buildDesiredConfig(r.nodeName, &pools, &advs, &peers)
 	for _, w := range warnings {
-		zap.S().Warnw("ignored invalid bgp resource/config", "nodeName", nodeName, "warning", w)
+		zap.S().Warnw("ignored invalid bgp resource/config", "nodeName", r.nodeName, "warning", w)
 	}
 
 	zap.S().Infow(
 		"reconciled (desired config built)",
-		"nodeName", nodeName,
+		"nodeName", r.nodeName,
 		"addressPools", len(pools.Items),
 		"bgpAdvertisements", len(advs.Items),
 		"bgpPeers", len(peers.Items),
@@ -50,9 +75,55 @@ func reconcileOnce(ctx context.Context, nodeName string, cl client.Client) error
 	)
 
 	if b, err := json.Marshal(desiredConfigForLog(desired)); err != nil {
-		zap.S().Warnw("marshal desired config failed", "nodeName", nodeName, "error", err)
+		zap.S().Warnw("marshal desired config failed", "nodeName", r.nodeName, "error", err)
 	} else {
-		zap.S().Debugw("desired config", "nodeName", nodeName, "desiredConfig", string(b))
+		zap.S().Debugw("desired config", "nodeName", r.nodeName, "desiredConfig", string(b))
+	}
+
+	config, err := r.builder.Build(desired)
+	if err != nil {
+		return fmt.Errorf("build bird config: %w", err)
+	}
+
+	hash := sha256.Sum256([]byte(config))
+
+	r.mu.Lock()
+	changed := r.lastHash == nil || !bytes.Equal(r.lastHash, hash[:])
+	r.mu.Unlock()
+
+	running := r.process.IsRunning()
+	if !running || changed {
+		if err := os.MkdirAll(filepath.Dir(r.process.ConfigPath()), 0o755); err != nil {
+			return fmt.Errorf("create bird config dir: %w", err)
+		}
+		if err := os.WriteFile(r.process.ConfigPath(), []byte(config), 0o644); err != nil {
+			return fmt.Errorf("write bird config: %w", err)
+		}
+	}
+
+	if !running {
+		if err := r.process.EnsureControlDir(); err != nil {
+			return fmt.Errorf("create bird control dir: %w", err)
+		}
+		if err := r.process.Start(); err != nil {
+			return fmt.Errorf("start bird: %w", err)
+		}
+	}
+
+	if changed || !running {
+		if !running {
+			waitCtx, waitCancel := context.WithTimeout(ctx, 1*time.Second)
+			defer waitCancel()
+			if err := r.process.WaitForControlSocket(waitCtx, 50*time.Millisecond); err != nil {
+				return fmt.Errorf("wait for bird control socket: %w", err)
+			}
+		}
+		if err := r.process.Reload(ctx); err != nil {
+			return fmt.Errorf("reload bird: %w", err)
+		}
+		r.mu.Lock()
+		r.lastHash = append([]byte(nil), hash[:]...)
+		r.mu.Unlock()
 	}
 
 	return nil
