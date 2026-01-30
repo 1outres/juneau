@@ -31,11 +31,20 @@ struct ifindex_subnet_key {
 
 struct ifindex_subnet_val {
   __u32 subnet_id;
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_IF_SUBNET);
+  __type(key, struct ifindex_subnet_key);
+  __type(value, struct ifindex_subnet_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} ifindex_subnet SEC(".maps");
   __u32 table_id;
   __u8 gw_mac[6];
   __u32 gw_addr;
   __u32 mask;
 };
+
 
 struct arp_table_key {
   __u32 subnet_id;
@@ -45,6 +54,14 @@ struct arp_table_key {
 struct arp_table_val {
   __u8 mac[6];
 };
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_ARP_TABLE);
+  __type(key, struct arp_table_key);
+  __type(value, struct arp_table_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} arp_table SEC(".maps");
 
 struct fdb_key {
   __u32 subnet_id;
@@ -56,27 +73,6 @@ struct fdb_val {
   __u32 vtep_ip;
 };
 
-struct host_iface_val {
-  __u32 ifindex;
-  __u8 mac[6];
-};
-
-struct {
-  __uint(type, BPF_MAP_TYPE_HASH);
-  __uint(max_entries, MAX_IF_SUBNET);
-  __type(key, struct ifindex_subnet_key);
-  __type(value, struct ifindex_subnet_val);
-  __uint(pinning, LIBBPF_PIN_BY_NAME);
-} ifindex_subnet SEC(".maps");
-
-struct {
-  __uint(type, BPF_MAP_TYPE_HASH);
-  __uint(max_entries, MAX_ARP_TABLE);
-  __type(key, struct arp_table_key);
-  __type(value, struct arp_table_val);
-  __uint(pinning, LIBBPF_PIN_BY_NAME);
-} arp_table SEC(".maps");
-
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
   __uint(max_entries, MAX_FDB);
@@ -84,6 +80,11 @@ struct {
   __type(value, struct fdb_val);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } fdb SEC(".maps");
+
+struct host_iface_val {
+  __u32 ifindex;
+  __u8 mac[6];
+};
 
 struct {
   __uint(type, BPF_MAP_TYPE_ARRAY);
