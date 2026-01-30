@@ -25,11 +25,13 @@ import (
 type Manager struct {
 	mu sync.Mutex
 
-	client       client.Client
-	nwepInformer cache.Informer
-	nwepHandler  toolscache.ResourceEventHandlerRegistration
-	rtInformer   cache.Informer
-	rtHandler    toolscache.ResourceEventHandlerRegistration
+	client         client.Client
+	nwepInformer   cache.Informer
+	nwepHandler    toolscache.ResourceEventHandlerRegistration
+	subnetInformer cache.Informer
+	subnetHandler  toolscache.ResourceEventHandlerRegistration
+	rtInformer     cache.Informer
+	rtHandler      toolscache.ResourceEventHandlerRegistration
 
 	nodeName     string
 	vxlanIfindex int
@@ -143,6 +145,13 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 	m.nwepHandler = nwepHandler
 
+	subnetHandler, err := addEventHandler(ctx, m.subnetInformer, m.UpsertSubnet, m.DeleteSubnet)
+	if err != nil {
+		zap.S().Errorf("failed to add event handler for Subnet: %v", err)
+		return err
+	}
+	m.subnetHandler = subnetHandler
+
 	rtHandler, err := addEventHandler(ctx, m.rtInformer, m.UpsertRouteTable, m.DeleteRouteTable)
 	if err != nil {
 		zap.S().Errorf("failed to add event handler for RouteTable: %v", err)
@@ -170,6 +179,81 @@ func (m *Manager) Stop() error {
 
 	m.vxlanIngressLink.Close()
 	m.vxlanIngressObjs.Close()
+
+	return nil
+}
+
+func (m *Manager) UpsertSubnet(ctx context.Context, subnet *juneauv1alpha1.Subnet) error {
+	zap.S().Infof("UpsertSubnet called for %s/%s", subnet.Namespace, subnet.Name)
+
+	var vpc juneauv1alpha1.Vpc
+	if err := m.client.Get(ctx, client.ObjectKey{Name: subnet.Spec.Vpc}, &vpc); err != nil {
+		return err
+	}
+
+	var mainTable juneauv1alpha1.RouteTable
+	if err := m.client.Get(ctx, client.ObjectKey{Name: vpc.Status.MainRouteTable}, &mainTable); err != nil {
+		return err
+	}
+
+	var netgwmac net.HardwareAddr
+	if subnet.Status.VNI == 1 {
+		netgwmac = m.hostMac
+	} else {
+		var err error
+		netgwmac, err = net.ParseMAC(subnet.Status.GatewayMAC)
+		if err != nil {
+			return err
+		}
+	}
+
+	gwmac, err := HardwareAddrToUint8Array(netgwmac)
+	if err != nil {
+		return err
+	}
+
+	_, ipnet, err := net.ParseCIDR(subnet.Spec.CIDR)
+	if err != nil {
+		return err
+	}
+
+	netgwaddr := net.ParseIP(subnet.Status.Gateway)
+	if netgwaddr == nil {
+		return fmt.Errorf("failed to parse gateway IP: %s", subnet.Status.Gateway)
+	}
+
+	gwaddr, err := IPv4ToUint32(netgwaddr)
+	if err != nil {
+		return err
+	}
+
+	mask, err := IPMaskToUint32(ipnet.Mask)
+	if err != nil {
+		return err
+	}
+
+	if err := m.hostEgressObjs.SubnetMap.Update(&HostEgressSubnetKey{
+		SubnetId: subnet.Status.VNI,
+	}, &HostEgressSubnetVal{
+		TableId: mainTable.Status.TableID,
+		GwMac:   gwmac,
+		GwAddr:  gwaddr,
+		Mask:    mask,
+	}, ebpf.UpdateAny); err != nil {
+		zap.S().Errorf("failed to update Subnet map: %v", err)
+		return err
+	}
+
+	return nil
+}
+
+func (m *Manager) DeleteSubnet(ctx context.Context, subnet *juneauv1alpha1.Subnet) error {
+	zap.S().Infof("DeleteSubnet called for %s/%s", subnet.Namespace, subnet.Name)
+
+	if err := m.hostEgressObjs.SubnetMap.Delete(&HostEgressSubnetKey{SubnetId: subnet.Status.VNI}); err != nil {
+		zap.S().Errorf("failed to delete from Subnet map: %v", err)
+		return err
+	}
 
 	return nil
 }
@@ -270,52 +354,12 @@ func (m *Manager) UpsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 		return err
 	}
 
-	var netgwmac net.HardwareAddr
-	if subnet.Status.VNI == 1 {
-		netgwmac = m.hostMac
-	} else {
-		var err error
-		netgwmac, err = net.ParseMAC(subnet.Status.GatewayMAC)
-		if err != nil {
-			return err
-		}
-	}
-
-	gwmac, err := HardwareAddrToUint8Array(netgwmac)
-	if err != nil {
-		return err
-	}
-
-	_, ipnet, err := net.ParseCIDR(subnet.Spec.CIDR)
-	if err != nil {
-		return err
-	}
-
-	netgwaddr := net.ParseIP(subnet.Status.Gateway)
-	if netgwaddr == nil {
-		return fmt.Errorf("failed to parse gateway IP: %s", subnet.Status.Gateway)
-	}
-
-	gwaddr, err := IPv4ToUint32(netgwaddr)
-	if err != nil {
-		return err
-	}
-
-	mask, err := IPMaskToUint32(ipnet.Mask)
-	if err != nil {
-		return err
-	}
-
 	if err := m.podEgressObjs.IfindexSubnet.Update(
 		&PodEgressIfindexSubnetKey{
 			Ifindex: uint32(nwep.Spec.Ifindex),
 		},
 		&PodEgressIfindexSubnetVal{
 			SubnetId: subnet.Status.VNI,
-			TableId:  mainTable.Status.TableID,
-			GwMac:    gwmac,
-			GwAddr:   gwaddr,
-			Mask:     mask,
 		},
 		ebpf.UpdateAny); err != nil {
 		zap.S().Errorf("failed to update IfindexSubnet map: %v", err)
@@ -485,11 +529,12 @@ func (m *Manager) DeleteRouteTable(ctx context.Context, rt *juneauv1alpha1.Route
 	return nil
 }
 
-func NewManager(cl client.Client, nwepInformer cache.Informer, rtInformer cache.Informer, nodeName string, vxlanIfindex int, hostIfindex int, defaultGatewayMac net.HardwareAddr) *Manager {
+func NewManager(cl client.Client, nwepInformer cache.Informer, rtInformer cache.Informer, subnetInformer cache.Informer, nodeName string, vxlanIfindex int, hostIfindex int, defaultGatewayMac net.HardwareAddr) *Manager {
 	return &Manager{
 		client:            cl,
 		nwepInformer:      nwepInformer,
 		rtInformer:        rtInformer,
+		subnetInformer:    subnetInformer,
 		nodeName:          nodeName,
 		vxlanIfindex:      vxlanIfindex,
 		hostIfindex:       hostIfindex,

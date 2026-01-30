@@ -24,8 +24,8 @@ struct arp_payload {
 } __attribute__((packed));
 
 static __always_inline int handle_arp(struct __sk_buff *skb, void *data_end,
-                                      struct ethhdr *eth,
-                                      const struct ifindex_subnet_val *val) {
+                                      struct ethhdr *eth, __u32 subnet_id,
+                                      const struct subnet_val *subnet) {
   struct arphdr *arp = (void *)(eth + 1);
   if ((void *)(arp + 1) > data_end)
     return TC_ACT_SHOT;
@@ -44,21 +44,21 @@ static __always_inline int handle_arp(struct __sk_buff *skb, void *data_end,
     return TC_ACT_SHOT;
 
   __u32 tpa = bpf_ntohl(payload->tpa);
-  __u32 gw_addr = val->gw_addr;
-  __u32 mask = val->mask;
+  __u32 gw_addr = subnet->gw_addr;
+  __u32 mask = subnet->mask;
 
   if ((tpa & mask) != (gw_addr & mask))
     return TC_ACT_SHOT;
 
   __u8 responder_mac[ETH_ALEN];
-  if (val->subnet_id == 1) {
-    __builtin_memcpy(responder_mac, val->gw_mac, ETH_ALEN);
+  if (subnet_id == 1) {
+    __builtin_memcpy(responder_mac, subnet->gw_mac, ETH_ALEN);
   } else {
     if (tpa == gw_addr) {
-      __builtin_memcpy(responder_mac, val->gw_mac, ETH_ALEN);
+      __builtin_memcpy(responder_mac, subnet->gw_mac, ETH_ALEN);
     } else {
       struct arp_table_key ak = {
-          .subnet_id = val->subnet_id,
+          .subnet_id = subnet_id,
           .ipaddr = tpa,
       };
       const struct arp_table_val *av = bpf_map_lookup_elem(&arp_table, &ak);
@@ -115,7 +115,7 @@ static __always_inline int forward_l2(struct __sk_buff *skb, struct ethhdr *eth,
 }
 
 static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
-                                     const struct ifindex_subnet_val *val) {
+                                     const struct subnet_val *subnet) {
   void *data_end = (void *)(long)skb->data_end;
   struct iphdr *iph = (void *)(eth + 1);
   if ((void *)(iph + 1) > data_end)
@@ -123,7 +123,7 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
 
   __u32 dst_be = iph->daddr; // keep network order for LPM trie
 
-  __u32 tid = val->table_id;
+  __u32 tid = subnet->table_id;
   void *fib_inner_map = bpf_map_lookup_elem(&fib_map, &tid);
   if (!fib_inner_map)
     return TC_ACT_SHOT;
@@ -184,9 +184,16 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
   if (!val)
     return TC_ACT_SHOT;
 
+  struct subnet_key skey = {
+      .subnet_id = val->subnet_id,
+  };
+  const struct subnet_val *subnet = bpf_map_lookup_elem(&subnet_map, &skey);
+  if (!subnet)
+    return TC_ACT_SHOT;
+
   __u16 h_proto = bpf_ntohs(eth->h_proto);
   if (h_proto == ETH_P_ARP)
-    return handle_arp(skb, data_end, eth, val);
+    return handle_arp(skb, data_end, eth, val->subnet_id, subnet);
 
   if (val->subnet_id == 1) {
     __u32 host_key = 0;
@@ -201,13 +208,13 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
   bool is_gw = true;
 #pragma unroll
   for (int i = 0; i < ETH_ALEN; i++) {
-    if (eth->h_dest[i] != val->gw_mac[i]) {
+    if (eth->h_dest[i] != subnet->gw_mac[i]) {
       is_gw = false;
       break;
     }
   }
   if (is_gw)
-    return handle_l3(skb, eth, val);
+    return handle_l3(skb, eth, subnet);
 
   return forward_l2(skb, eth, val->subnet_id);
 }

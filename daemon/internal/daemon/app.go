@@ -116,6 +116,11 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("get RouteTable informer: %w", err)
 			}
 
+			subnetInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.Subnet{})
+			if err != nil {
+				return fmt.Errorf("get Subnet informer: %w", err)
+			}
+
 			cl, err := client.New(kubecfg, client.Options{
 				Scheme: scheme,
 				Cache: &client.CacheOptions{
@@ -281,7 +286,7 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("ensure masquerade rule: %w", err)
 			}
 
-			bpfManager := bpf.NewManager(cl, nwepInfromer, rtInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, hostIfaceInfo.MAC)
+			bpfManager := bpf.NewManager(cl, nwepInfromer, rtInformer, subnetInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, hostIfaceInfo.MAC)
 			if err := bpfManager.Start(ctx); err != nil {
 				return fmt.Errorf("initialize BPF manager: %w", err)
 			}

@@ -66,11 +66,20 @@ type HostEgressIfindexSubnetKey struct {
 type HostEgressIfindexSubnetVal struct {
 	_        structs.HostLayout
 	SubnetId uint32
-	TableId  uint32
-	GwMac    [6]uint8
-	_        [2]byte
-	GwAddr   uint32
-	Mask     uint32
+}
+
+type HostEgressSubnetKey struct {
+	_        structs.HostLayout
+	SubnetId uint32
+}
+
+type HostEgressSubnetVal struct {
+	_       structs.HostLayout
+	TableId uint32
+	GwMac   [6]uint8
+	_       [2]byte
+	GwAddr  uint32
+	Mask    uint32
 }
 
 // LoadHostEgress returns the embedded CollectionSpec for HostEgress.
@@ -128,6 +137,7 @@ type HostEgressMapSpecs struct {
 	FibMap        *ebpf.MapSpec `ebpf:"fib_map"`
 	HostIface     *ebpf.MapSpec `ebpf:"host_iface"`
 	IfindexSubnet *ebpf.MapSpec `ebpf:"ifindex_subnet"`
+	SubnetMap     *ebpf.MapSpec `ebpf:"subnet_map"`
 	VxlanIfindex  *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
 }
 
@@ -163,6 +173,7 @@ type HostEgressMaps struct {
 	FibMap        *ebpf.Map `ebpf:"fib_map"`
 	HostIface     *ebpf.Map `ebpf:"host_iface"`
 	IfindexSubnet *ebpf.Map `ebpf:"ifindex_subnet"`
+	SubnetMap     *ebpf.Map `ebpf:"subnet_map"`
 	VxlanIfindex  *ebpf.Map `ebpf:"vxlan_ifindex"`
 }
 
@@ -174,6 +185,7 @@ func (m *HostEgressMaps) Close() error {
 		m.FibMap,
 		m.HostIface,
 		m.IfindexSubnet,
+		m.SubnetMap,
 		m.VxlanIfindex,
 	)
 }

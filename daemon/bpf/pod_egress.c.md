@@ -12,10 +12,11 @@
 
 1. L2ヘッダーのパースを行う
 2. ifindex_subnet mapを引く(key: skb->ifindex)
-3. ARPリクエストの場合、handle_arp関数を呼び出し、その関数の返り値を返す（handle_arp関数にはifindex_subnet mapのvalも渡す）
-4. subnet_idが1の場合、host_iface mapを引いて、ifindexにbpf_redirectする
-5. subnet_idが1以外の場合、もし対象がgw_macだったらhandle_l3関数を呼び出し、その関数の返り値を返す(ifindex_subnet mapのvalも渡す)
-6. そうじゃなかったらforward_l2関数を呼び出し、その返り値を返す(ifindex_subnet mapのvalも渡す)
+3. subnet_mapを引く
+4. ARPリクエストの場合、handle_arp関数を呼び出し、その関数の返り値を返す（handle_arp関数にはsubnet_idとsubnet_mapのvalも渡す）
+5. subnet_idが1の場合、host_iface mapを引いて、ifindexにbpf_redirectする
+6. subnet_idが1以外の場合、もし対象がgw_macだったらhandle_l3関数を呼び出し、その関数の返り値を返す(subnet_idとsubnet_mapのvalも渡す)
+7. そうじゃなかったらforward_l2関数を呼び出し、その返り値を返す(subnet_idとsubnet_mapのvalも渡す)
 
 ## forward_l2
 

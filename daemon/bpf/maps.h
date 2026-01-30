@@ -9,6 +9,10 @@
 #define MAX_IF_SUBNET 32768
 #endif
 
+#ifndef MAX_SUBNET
+#define MAX_SUBNET 16384
+#endif
+
 #ifndef MAX_ARP_TABLE
 #define MAX_ARP_TABLE 131072
 #endif
@@ -31,6 +35,7 @@ struct ifindex_subnet_key {
 
 struct ifindex_subnet_val {
   __u32 subnet_id;
+};
 
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
@@ -39,12 +44,25 @@ struct {
   __type(value, struct ifindex_subnet_val);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } ifindex_subnet SEC(".maps");
+
+struct subnet_key {
+  __u32 subnet_id;
+};
+
+struct subnet_val {
   __u32 table_id;
   __u8 gw_mac[6];
   __u32 gw_addr;
   __u32 mask;
 };
 
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_SUBNET);
+  __type(key, struct subnet_key);
+  __type(value, struct subnet_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} subnet_map SEC(".maps");
 
 struct arp_table_key {
   __u32 subnet_id;
