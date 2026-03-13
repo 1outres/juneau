@@ -367,6 +367,20 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	if err = (&controller.ElasticIPReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ElasticIP")
+		os.Exit(1)
+	}
+	if err = (&controller.ElasticIPAttachmentReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ElasticIPAttachment")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err = (&controller.PodReconciler{

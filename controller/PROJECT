@@ -131,4 +131,20 @@ resources:
   kind: BGPNodeState
   path: github.com/1outres/juneau/controller/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: juneau.loutres.me
+  kind: ElasticIP
+  path: github.com/1outres/juneau/controller/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: juneau.loutres.me
+  kind: ElasticIPAttachment
+  path: github.com/1outres/juneau/controller/api/v1alpha1
+  version: v1alpha1
 version: "3"

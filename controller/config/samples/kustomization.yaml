@@ -6,4 +6,6 @@ resources:
 - v1alpha1_bgppeer.yaml
 - v1alpha1_bgpadvertisement.yaml
 - v1alpha1_bgpnodestate.yaml
+- v1alpha1_elasticip.yaml
+- v1alpha1_elasticipattachment.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

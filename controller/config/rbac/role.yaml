@@ -31,6 +31,8 @@ rules:
   - addresspools
   - bgpadvertisements
   - bgppeers
+  - elasticipattachments
+  - elasticips
   - externalnetworks
   - ipleases
   - networkendpoints
@@ -52,6 +54,8 @@ rules:
   - addresspools/finalizers
   - bgpadvertisements/finalizers
   - bgppeers/finalizers
+  - elasticipattachments/finalizers
+  - elasticips/finalizers
   - externalnetworks/finalizers
   - ipleases/finalizers
   - networkendpoints/finalizers
@@ -67,6 +71,8 @@ rules:
   - addresspools/status
   - bgpadvertisements/status
   - bgppeers/status
+  - elasticipattachments/status
+  - elasticips/status
   - externalnetworks/status
   - ipleases/status
   - networkendpoints/status
