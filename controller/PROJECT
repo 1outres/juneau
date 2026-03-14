@@ -139,6 +139,10 @@ resources:
   kind: ElasticIP
   path: github.com/1outres/juneau/controller/api/v1alpha1
   version: v1alpha1
+  webhooks:
+    defaulting: true
+    validation: true
+    webhookVersion: v1
 - api:
     crdVersion: v1
     namespaced: true
@@ -147,4 +151,8 @@ resources:
   kind: ElasticIPAttachment
   path: github.com/1outres/juneau/controller/api/v1alpha1
   version: v1alpha1
+  webhooks:
+    defaulting: true
+    validation: true
+    webhookVersion: v1
 version: "3"

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -56,6 +57,36 @@ func (r *ElasticIPAttachmentReconciler) Reconcile(ctx context.Context, req ctrl.
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ElasticIPAttachmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&juneauloutresmev1alpha1.ElasticIPAttachment{},
+		"spec.elasticIPRef.name",
+		func(obj client.Object) []string {
+			attachment := obj.(*juneauloutresmev1alpha1.ElasticIPAttachment)
+			if attachment.Spec.ElasticIPRef.Name == "" {
+				return nil
+			}
+			return []string{attachment.Spec.ElasticIPRef.Name}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to set up field indexer for ElasticIPAttachment.spec.elasticIPRef.name: %w", err)
+	}
+
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&juneauloutresmev1alpha1.ElasticIPAttachment{},
+		"spec.targetRef.networkInterfaceName",
+		func(obj client.Object) []string {
+			attachment := obj.(*juneauloutresmev1alpha1.ElasticIPAttachment)
+			if attachment.Spec.TargetRef.NetworkInterfaceName == "" {
+				return nil
+			}
+			return []string{attachment.Spec.TargetRef.NetworkInterfaceName}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to set up field indexer for ElasticIPAttachment.spec.targetRef.networkInterfaceName: %w", err)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&juneauloutresmev1alpha1.ElasticIPAttachment{}).
 		Named("elasticipattachment").
