@@ -55,6 +55,13 @@ type ElasticIPAttachmentStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="ElasticIP",type="string",JSONPath=".spec.elasticIPRef.name"
+// +kubebuilder:printcolumn:name="NetworkInterface",type="string",JSONPath=".spec.targetRef.networkInterfaceName"
+// +kubebuilder:printcolumn:name="EIP",type="string",JSONPath=".status.elasticIP"
+// +kubebuilder:printcolumn:name="PodIP",type="string",JSONPath=".status.podIP"
+// +kubebuilder:printcolumn:name="Node",type="string",JSONPath=".status.nodeName"
+// +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
+// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type==\"Ready\")].status"
 
 // ElasticIPAttachment is the Schema for the elasticipattachments API.
 type ElasticIPAttachment struct {

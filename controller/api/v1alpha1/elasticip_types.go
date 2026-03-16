@@ -47,6 +47,12 @@ type ElasticIPStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="ExternalNetwork",type="string",JSONPath=".spec.externalNetwork"
+// +kubebuilder:printcolumn:name="Address",type="string",JSONPath=".status.address"
+// +kubebuilder:printcolumn:name="Attachment",type="string",JSONPath=".status.attachmentName"
+// +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
+// +kubebuilder:printcolumn:name="Allocated",type="string",JSONPath=".status.conditions[?(@.type==\"Allocated\")].status"
+// +kubebuilder:printcolumn:name="Attached",type="string",JSONPath=".status.conditions[?(@.type==\"Attached\")].status"
 
 // ElasticIP is the Schema for the elasticips API.
 type ElasticIP struct {

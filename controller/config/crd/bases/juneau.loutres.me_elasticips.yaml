@@ -14,7 +14,26 @@ spec:
     singular: elasticip
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.externalNetwork
+      name: ExternalNetwork
+      type: string
+    - jsonPath: .status.address
+      name: Address
+      type: string
+    - jsonPath: .status.attachmentName
+      name: Attachment
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Allocated")].status
+      name: Allocated
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Attached")].status
+      name: Attached
+      type: string
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: ElasticIP is the Schema for the elasticips API.

@@ -14,7 +14,29 @@ spec:
     singular: elasticipattachment
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.elasticIPRef.name
+      name: ElasticIP
+      type: string
+    - jsonPath: .spec.targetRef.networkInterfaceName
+      name: NetworkInterface
+      type: string
+    - jsonPath: .status.elasticIP
+      name: EIP
+      type: string
+    - jsonPath: .status.podIP
+      name: PodIP
+      type: string
+    - jsonPath: .status.nodeName
+      name: Node
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: ElasticIPAttachment is the Schema for the elasticipattachments
