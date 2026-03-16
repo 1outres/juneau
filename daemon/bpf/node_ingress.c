@@ -112,6 +112,17 @@ static __always_inline int handle_dnat(struct __sk_buff *skb, struct ethhdr *eth
   if (csum_ret != TC_ACT_OK)
     return csum_ret;
 
+  void *data = (void *)(long)skb->data;
+  data_end = (void *)(long)skb->data_end;
+
+  eth = data;
+  if ((void *)(eth + 1) > data_end)
+    return TC_ACT_SHOT;
+
+  iph = (void *)(eth + 1);
+  if ((void *)(iph + 1) > data_end)
+    return TC_ACT_SHOT;
+
   iph->daddr = new_addr;
 
   if (nat->subnet_id == 1)
