@@ -13,43 +13,43 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-type VxlanIngressArpTableKey struct {
+type NodeIngressArpTableKey struct {
 	_        structs.HostLayout
 	SubnetId uint32
 	Ipaddr   uint32
 }
 
-type VxlanIngressArpTableVal struct {
+type NodeIngressArpTableVal struct {
 	_   structs.HostLayout
 	Mac [6]uint8
 }
 
-type VxlanIngressBgpAddressPoolsKey struct {
+type NodeIngressBgpAddressPoolsKey struct {
 	_         structs.HostLayout
 	Prefixlen uint32
 	Addr      uint32
 }
 
-type VxlanIngressFdbKey struct {
+type NodeIngressFdbKey struct {
 	_        structs.HostLayout
 	SubnetId uint32
 	Mac      [6]uint8
 	_        [2]byte
 }
 
-type VxlanIngressFdbVal struct {
+type NodeIngressFdbVal struct {
 	_       structs.HostLayout
 	Ifindex uint32
 	VtepIp  uint32
 }
 
-type VxlanIngressFibKey struct {
+type NodeIngressFibKey struct {
 	_         structs.HostLayout
 	Prefixlen uint32
 	Dst       uint32
 }
 
-type VxlanIngressFibVal struct {
+type NodeIngressFibVal struct {
 	_        structs.HostLayout
 	Dmac     [6]uint8
 	Smac     [6]uint8
@@ -57,40 +57,40 @@ type VxlanIngressFibVal struct {
 	Oif      uint32
 }
 
-type VxlanIngressHostIfaceVal struct {
+type NodeIngressHostIfaceVal struct {
 	_       structs.HostLayout
 	Ifindex uint32
 	Mac     [6]uint8
 	_       [2]byte
 }
 
-type VxlanIngressIfindexSubnetKey struct {
+type NodeIngressIfindexSubnetKey struct {
 	_       structs.HostLayout
 	Ifindex uint32
 }
 
-type VxlanIngressIfindexSubnetVal struct {
+type NodeIngressIfindexSubnetVal struct {
 	_        structs.HostLayout
 	SubnetId uint32
 }
 
-type VxlanIngressNatInside struct {
+type NodeIngressNatInside struct {
 	_        structs.HostLayout
 	SubnetId uint32
 	Addr     uint32
 }
 
-type VxlanIngressNatOutside struct {
+type NodeIngressNatOutside struct {
 	_    structs.HostLayout
 	Addr uint32
 }
 
-type VxlanIngressSubnetKey struct {
+type NodeIngressSubnetKey struct {
 	_        structs.HostLayout
 	SubnetId uint32
 }
 
-type VxlanIngressSubnetVal struct {
+type NodeIngressSubnetVal struct {
 	_       structs.HostLayout
 	TableId uint32
 	GwMac   [6]uint8
@@ -99,28 +99,28 @@ type VxlanIngressSubnetVal struct {
 	Mask    uint32
 }
 
-// LoadVxlanIngress returns the embedded CollectionSpec for VxlanIngress.
-func LoadVxlanIngress() (*ebpf.CollectionSpec, error) {
-	reader := bytes.NewReader(_VxlanIngressBytes)
+// LoadNodeIngress returns the embedded CollectionSpec for NodeIngress.
+func LoadNodeIngress() (*ebpf.CollectionSpec, error) {
+	reader := bytes.NewReader(_NodeIngressBytes)
 	spec, err := ebpf.LoadCollectionSpecFromReader(reader)
 	if err != nil {
-		return nil, fmt.Errorf("can't load VxlanIngress: %w", err)
+		return nil, fmt.Errorf("can't load NodeIngress: %w", err)
 	}
 
 	return spec, err
 }
 
-// LoadVxlanIngressObjects loads VxlanIngress and converts it into a struct.
+// LoadNodeIngressObjects loads NodeIngress and converts it into a struct.
 //
 // The following types are suitable as obj argument:
 //
-//	*VxlanIngressObjects
-//	*VxlanIngressPrograms
-//	*VxlanIngressMaps
+//	*NodeIngressObjects
+//	*NodeIngressPrograms
+//	*NodeIngressMaps
 //
 // See ebpf.CollectionSpec.LoadAndAssign documentation for details.
-func LoadVxlanIngressObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
-	spec, err := LoadVxlanIngress()
+func LoadNodeIngressObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
+	spec, err := LoadNodeIngress()
 	if err != nil {
 		return err
 	}
@@ -128,26 +128,26 @@ func LoadVxlanIngressObjects(obj interface{}, opts *ebpf.CollectionOptions) erro
 	return spec.LoadAndAssign(obj, opts)
 }
 
-// VxlanIngressSpecs contains maps and programs before they are loaded into the kernel.
+// NodeIngressSpecs contains maps and programs before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
-type VxlanIngressSpecs struct {
-	VxlanIngressProgramSpecs
-	VxlanIngressMapSpecs
-	VxlanIngressVariableSpecs
+type NodeIngressSpecs struct {
+	NodeIngressProgramSpecs
+	NodeIngressMapSpecs
+	NodeIngressVariableSpecs
 }
 
-// VxlanIngressProgramSpecs contains programs before they are loaded into the kernel.
+// NodeIngressProgramSpecs contains programs before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
-type VxlanIngressProgramSpecs struct {
-	TcVxlanIngressEntry *ebpf.ProgramSpec `ebpf:"tc_vxlan_ingress_entry"`
+type NodeIngressProgramSpecs struct {
+	TcNodeIngress *ebpf.ProgramSpec `ebpf:"tc_node_ingress"`
 }
 
-// VxlanIngressMapSpecs contains maps before they are loaded into the kernel.
+// NodeIngressMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
-type VxlanIngressMapSpecs struct {
+type NodeIngressMapSpecs struct {
 	ArpTable        *ebpf.MapSpec `ebpf:"arp_table"`
 	BgpAddressPools *ebpf.MapSpec `ebpf:"bgp_address_pools"`
 	Fdb             *ebpf.MapSpec `ebpf:"fdb"`
@@ -161,32 +161,32 @@ type VxlanIngressMapSpecs struct {
 	VxlanIfindex    *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
 }
 
-// VxlanIngressVariableSpecs contains global variables before they are loaded into the kernel.
+// NodeIngressVariableSpecs contains global variables before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
-type VxlanIngressVariableSpecs struct {
+type NodeIngressVariableSpecs struct {
 }
 
-// VxlanIngressObjects contains all objects after they have been loaded into the kernel.
+// NodeIngressObjects contains all objects after they have been loaded into the kernel.
 //
-// It can be passed to LoadVxlanIngressObjects or ebpf.CollectionSpec.LoadAndAssign.
-type VxlanIngressObjects struct {
-	VxlanIngressPrograms
-	VxlanIngressMaps
-	VxlanIngressVariables
+// It can be passed to LoadNodeIngressObjects or ebpf.CollectionSpec.LoadAndAssign.
+type NodeIngressObjects struct {
+	NodeIngressPrograms
+	NodeIngressMaps
+	NodeIngressVariables
 }
 
-func (o *VxlanIngressObjects) Close() error {
-	return _VxlanIngressClose(
-		&o.VxlanIngressPrograms,
-		&o.VxlanIngressMaps,
+func (o *NodeIngressObjects) Close() error {
+	return _NodeIngressClose(
+		&o.NodeIngressPrograms,
+		&o.NodeIngressMaps,
 	)
 }
 
-// VxlanIngressMaps contains all maps after they have been loaded into the kernel.
+// NodeIngressMaps contains all maps after they have been loaded into the kernel.
 //
-// It can be passed to LoadVxlanIngressObjects or ebpf.CollectionSpec.LoadAndAssign.
-type VxlanIngressMaps struct {
+// It can be passed to LoadNodeIngressObjects or ebpf.CollectionSpec.LoadAndAssign.
+type NodeIngressMaps struct {
 	ArpTable        *ebpf.Map `ebpf:"arp_table"`
 	BgpAddressPools *ebpf.Map `ebpf:"bgp_address_pools"`
 	Fdb             *ebpf.Map `ebpf:"fdb"`
@@ -200,8 +200,8 @@ type VxlanIngressMaps struct {
 	VxlanIfindex    *ebpf.Map `ebpf:"vxlan_ifindex"`
 }
 
-func (m *VxlanIngressMaps) Close() error {
-	return _VxlanIngressClose(
+func (m *NodeIngressMaps) Close() error {
+	return _NodeIngressClose(
 		m.ArpTable,
 		m.BgpAddressPools,
 		m.Fdb,
@@ -216,26 +216,26 @@ func (m *VxlanIngressMaps) Close() error {
 	)
 }
 
-// VxlanIngressVariables contains all global variables after they have been loaded into the kernel.
+// NodeIngressVariables contains all global variables after they have been loaded into the kernel.
 //
-// It can be passed to LoadVxlanIngressObjects or ebpf.CollectionSpec.LoadAndAssign.
-type VxlanIngressVariables struct {
+// It can be passed to LoadNodeIngressObjects or ebpf.CollectionSpec.LoadAndAssign.
+type NodeIngressVariables struct {
 }
 
-// VxlanIngressPrograms contains all programs after they have been loaded into the kernel.
+// NodeIngressPrograms contains all programs after they have been loaded into the kernel.
 //
-// It can be passed to LoadVxlanIngressObjects or ebpf.CollectionSpec.LoadAndAssign.
-type VxlanIngressPrograms struct {
-	TcVxlanIngressEntry *ebpf.Program `ebpf:"tc_vxlan_ingress_entry"`
+// It can be passed to LoadNodeIngressObjects or ebpf.CollectionSpec.LoadAndAssign.
+type NodeIngressPrograms struct {
+	TcNodeIngress *ebpf.Program `ebpf:"tc_node_ingress"`
 }
 
-func (p *VxlanIngressPrograms) Close() error {
-	return _VxlanIngressClose(
-		p.TcVxlanIngressEntry,
+func (p *NodeIngressPrograms) Close() error {
+	return _NodeIngressClose(
+		p.TcNodeIngress,
 	)
 }
 
-func _VxlanIngressClose(closers ...io.Closer) error {
+func _NodeIngressClose(closers ...io.Closer) error {
 	for _, closer := range closers {
 		if err := closer.Close(); err != nil {
 			return err
@@ -246,5 +246,5 @@ func _VxlanIngressClose(closers ...io.Closer) error {
 
 // Do not access this directly.
 //
-//go:embed vxlaningress_bpfel.o
-var _VxlanIngressBytes []byte
+//go:embed nodeingress_bpfel.o
+var _NodeIngressBytes []byte

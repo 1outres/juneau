@@ -29,6 +29,14 @@
 #define MAX_FIB_MAP 32768
 #endif
 
+#ifndef MAX_ADDRESS_POOLS_MAP
+#define MAX_ADDRESS_POOLS_MAP 512
+#endif
+
+#ifndef MAX_NAT_MAP
+#define MAX_NAT_MAP 131072
+#endif
+
 struct ifindex_subnet_key {
   __u32 ifindex;
 };
@@ -150,5 +158,44 @@ struct {
   __uint(pinning, LIBBPF_PIN_BY_NAME);
   __array(values, struct fib_inner_map);
 } fib_map SEC(".maps");
+
+struct bgp_address_pools_key {
+  __u32 prefixlen;
+  __u32 addr;
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_LPM_TRIE);
+  __uint(max_entries, MAX_ADDRESS_POOLS_MAP);
+  __uint(map_flags, BPF_F_NO_PREALLOC);
+  __type(key, struct bgp_address_pools_key);
+  __type(value, __u8);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} bgp_address_pools SEC(".maps");
+
+struct nat_inside {
+  __u32 subnet_id;
+  __u32 addr;
+};
+
+struct nat_outside {
+  __u32 addr;
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_NAT_MAP);
+  __type(key, struct nat_inside);
+  __type(value, struct nat_outside);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} nat_snat_map SEC(".maps");
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_NAT_MAP);
+  __type(key, struct nat_outside);
+  __type(value, struct nat_inside);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} nat_dnat_map SEC(".maps");
 
 #endif // JUNEAU_BPF_MAPS_H

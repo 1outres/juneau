@@ -24,6 +24,12 @@ type VxlanIngressArpTableVal struct {
 	Mac [6]uint8
 }
 
+type VxlanIngressBgpAddressPoolsKey struct {
+	_         structs.HostLayout
+	Prefixlen uint32
+	Addr      uint32
+}
+
 type VxlanIngressFdbKey struct {
 	_        structs.HostLayout
 	SubnetId uint32
@@ -66,6 +72,17 @@ type VxlanIngressIfindexSubnetKey struct {
 type VxlanIngressIfindexSubnetVal struct {
 	_        structs.HostLayout
 	SubnetId uint32
+}
+
+type VxlanIngressNatInside struct {
+	_        structs.HostLayout
+	SubnetId uint32
+	Addr     uint32
+}
+
+type VxlanIngressNatOutside struct {
+	_    structs.HostLayout
+	Addr uint32
 }
 
 type VxlanIngressSubnetKey struct {
@@ -131,14 +148,17 @@ type VxlanIngressProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type VxlanIngressMapSpecs struct {
-	ArpTable      *ebpf.MapSpec `ebpf:"arp_table"`
-	Fdb           *ebpf.MapSpec `ebpf:"fdb"`
-	FibInner      *ebpf.MapSpec `ebpf:"fib_inner"`
-	FibMap        *ebpf.MapSpec `ebpf:"fib_map"`
-	HostIface     *ebpf.MapSpec `ebpf:"host_iface"`
-	IfindexSubnet *ebpf.MapSpec `ebpf:"ifindex_subnet"`
-	SubnetMap     *ebpf.MapSpec `ebpf:"subnet_map"`
-	VxlanIfindex  *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
+	ArpTable        *ebpf.MapSpec `ebpf:"arp_table"`
+	BgpAddressPools *ebpf.MapSpec `ebpf:"bgp_address_pools"`
+	Fdb             *ebpf.MapSpec `ebpf:"fdb"`
+	FibInner        *ebpf.MapSpec `ebpf:"fib_inner"`
+	FibMap          *ebpf.MapSpec `ebpf:"fib_map"`
+	HostIface       *ebpf.MapSpec `ebpf:"host_iface"`
+	IfindexSubnet   *ebpf.MapSpec `ebpf:"ifindex_subnet"`
+	NatDnatMap      *ebpf.MapSpec `ebpf:"nat_dnat_map"`
+	NatSnatMap      *ebpf.MapSpec `ebpf:"nat_snat_map"`
+	SubnetMap       *ebpf.MapSpec `ebpf:"subnet_map"`
+	VxlanIfindex    *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
 }
 
 // VxlanIngressVariableSpecs contains global variables before they are loaded into the kernel.
@@ -167,24 +187,30 @@ func (o *VxlanIngressObjects) Close() error {
 //
 // It can be passed to LoadVxlanIngressObjects or ebpf.CollectionSpec.LoadAndAssign.
 type VxlanIngressMaps struct {
-	ArpTable      *ebpf.Map `ebpf:"arp_table"`
-	Fdb           *ebpf.Map `ebpf:"fdb"`
-	FibInner      *ebpf.Map `ebpf:"fib_inner"`
-	FibMap        *ebpf.Map `ebpf:"fib_map"`
-	HostIface     *ebpf.Map `ebpf:"host_iface"`
-	IfindexSubnet *ebpf.Map `ebpf:"ifindex_subnet"`
-	SubnetMap     *ebpf.Map `ebpf:"subnet_map"`
-	VxlanIfindex  *ebpf.Map `ebpf:"vxlan_ifindex"`
+	ArpTable        *ebpf.Map `ebpf:"arp_table"`
+	BgpAddressPools *ebpf.Map `ebpf:"bgp_address_pools"`
+	Fdb             *ebpf.Map `ebpf:"fdb"`
+	FibInner        *ebpf.Map `ebpf:"fib_inner"`
+	FibMap          *ebpf.Map `ebpf:"fib_map"`
+	HostIface       *ebpf.Map `ebpf:"host_iface"`
+	IfindexSubnet   *ebpf.Map `ebpf:"ifindex_subnet"`
+	NatDnatMap      *ebpf.Map `ebpf:"nat_dnat_map"`
+	NatSnatMap      *ebpf.Map `ebpf:"nat_snat_map"`
+	SubnetMap       *ebpf.Map `ebpf:"subnet_map"`
+	VxlanIfindex    *ebpf.Map `ebpf:"vxlan_ifindex"`
 }
 
 func (m *VxlanIngressMaps) Close() error {
 	return _VxlanIngressClose(
 		m.ArpTable,
+		m.BgpAddressPools,
 		m.Fdb,
 		m.FibInner,
 		m.FibMap,
 		m.HostIface,
 		m.IfindexSubnet,
+		m.NatDnatMap,
+		m.NatSnatMap,
 		m.SubnetMap,
 		m.VxlanIfindex,
 	)
