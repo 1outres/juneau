@@ -90,8 +90,6 @@ static __always_inline int update_l4_csum(struct __sk_buff *skb, struct iphdr *i
 static __always_inline int handle_dnat(struct __sk_buff *skb, struct ethhdr *eth,
                                        struct iphdr *iph,
                                        const struct nat_inside *nat) {
-  void *data_end = (void *)(long)skb->data_end;
-
   struct subnet_key sk = {
       .subnet_id = nat->subnet_id,
   };
@@ -101,29 +99,6 @@ static __always_inline int handle_dnat(struct __sk_buff *skb, struct ethhdr *eth
 
   __be32 old_addr = iph->daddr;
   __be32 new_addr = nat->addr;
-
-  if (bpf_l3_csum_replace(skb,
-                          sizeof(struct ethhdr) +
-                              __builtin_offsetof(struct iphdr, check),
-                          old_addr, new_addr, sizeof(new_addr)) < 0)
-    return TC_ACT_SHOT;
-
-  int csum_ret = update_l4_csum(skb, iph, data_end, old_addr, new_addr);
-  if (csum_ret != TC_ACT_OK)
-    return csum_ret;
-
-  void *data = (void *)(long)skb->data;
-  data_end = (void *)(long)skb->data_end;
-
-  eth = data;
-  if ((void *)(eth + 1) > data_end)
-    return TC_ACT_SHOT;
-
-  iph = (void *)(eth + 1);
-  if ((void *)(iph + 1) > data_end)
-    return TC_ACT_SHOT;
-
-  iph->daddr = new_addr;
 
   if (nat->subnet_id == 1)
     return TC_ACT_SHOT;
@@ -135,6 +110,39 @@ static __always_inline int handle_dnat(struct __sk_buff *skb, struct ethhdr *eth
   const struct arp_table_val *av = bpf_map_lookup_elem(&arp_table, &ak);
   if (!av)
     return TC_ACT_SHOT;
+
+  if (bpf_l3_csum_replace(skb,
+                          sizeof(struct ethhdr) +
+                              __builtin_offsetof(struct iphdr, check),
+                          old_addr, new_addr, sizeof(new_addr)) < 0)
+    return TC_ACT_SHOT;
+
+  void *data = (void *)(long)skb->data;
+  void *data_end = (void *)(long)skb->data_end;
+
+  eth = data;
+  if ((void *)(eth + 1) > data_end)
+    return TC_ACT_SHOT;
+
+  iph = (void *)(eth + 1);
+  if ((void *)(iph + 1) > data_end)
+    return TC_ACT_SHOT;
+
+  int csum_ret = update_l4_csum(skb, iph, data_end, old_addr, new_addr);
+  if (csum_ret != TC_ACT_OK)
+    return csum_ret;
+
+  data_end = (void *)(long)skb->data_end;
+
+  eth = data;
+  if ((void *)(eth + 1) > data_end)
+    return TC_ACT_SHOT;
+
+  iph = (void *)(eth + 1);
+  if ((void *)(iph + 1) > data_end)
+    return TC_ACT_SHOT;
+
+  iph->daddr = new_addr;
 
   __builtin_memcpy(eth->h_dest, av->mac, ETH_ALEN);
   __builtin_memcpy(eth->h_source, subnet->gw_mac, ETH_ALEN);
