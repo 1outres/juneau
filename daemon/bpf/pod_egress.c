@@ -136,36 +136,32 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
   if (!fv)
     return TC_ACT_SHOT;
 
-  bool has_dmac = false;
-#pragma unroll
-  for (int i = 0; i < ETH_ALEN; i++) {
-    if (fv->dmac[i]) {
-      has_dmac = true;
-      break;
-    }
-  }
-
-  __u8 dmac[ETH_ALEN];
-  if (has_dmac) {
-    __builtin_memcpy(dmac, fv->dmac, ETH_ALEN);
-  } else {
+  if (fv->type == FIB_ROUTE_TYPE_CONNECTED) {
     struct arp_table_key ak = {
         .subnet_id = fv->subnet_id,
-        .ipaddr = bpf_ntohl(dst_be), // arp_table expects host order
+        .ipaddr = bpf_ntohl(dst_be),
     };
     const struct arp_table_val *av = bpf_map_lookup_elem(&arp_table, &ak);
     if (!av)
       return TC_ACT_SHOT;
-    __builtin_memcpy(dmac, av->mac, ETH_ALEN);
+
+    __builtin_memcpy(eth->h_dest, av->mac, ETH_ALEN);
+    __builtin_memcpy(eth->h_source, fv->smac, ETH_ALEN);
+
+    return forward_l2(skb, eth, fv->subnet_id);
   }
 
-  __builtin_memcpy(eth->h_dest, dmac, ETH_ALEN);
-  __builtin_memcpy(eth->h_source, fv->smac, ETH_ALEN);
+  if (fv->type == FIB_ROUTE_TYPE_ENDPOINT) {
+    __builtin_memcpy(eth->h_dest, fv->dmac, ETH_ALEN);
+    __builtin_memcpy(eth->h_source, fv->smac, ETH_ALEN);
 
-  if (has_dmac)
-    return bpf_redirect(fv->oif, 0);
+    return forward_l2(skb, eth, fv->subnet_id);
+  }
 
-  return forward_l2(skb, eth, fv->subnet_id);
+  if (fv->type == FIB_ROUTE_TYPE_INTERNET_GATEWAY)
+    return TC_ACT_SHOT;
+
+  return TC_ACT_SHOT;
 }
 
 static __always_inline int handle_l2(struct __sk_buff *skb) {

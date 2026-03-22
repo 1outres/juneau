@@ -37,6 +37,10 @@
 #define MAX_NAT_MAP 131072
 #endif
 
+#define FIB_ROUTE_TYPE_CONNECTED 1
+#define FIB_ROUTE_TYPE_ENDPOINT 2
+#define FIB_ROUTE_TYPE_INTERNET_GATEWAY 3
+
 struct ifindex_subnet_key {
   __u32 ifindex;
 };
@@ -134,7 +138,8 @@ struct fib_key {
 };
 
 struct fib_val {
-  __u8 dmac[6]; // 0 == connected
+  __u8 type;
+  __u8 dmac[6];
   __u8 smac[6];
   __u32 subnet_id;
   __u32 oif;

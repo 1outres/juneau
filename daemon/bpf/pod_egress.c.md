@@ -44,7 +44,12 @@
 1. IPヘッダーのパースを行う
 2. fib_mapをlongest matchで引く(table_idはifindex_subnet mapにあるやつ、宛先ipaddr)
 3. 見つからなかったらドロップ
-4. dmacが0だったら、宛先ipaddrのarp mapを引く(ここのsubnet_idは、mapを引いたvalのsubnet_idを使う)
-5. パケットのdmacを、dmac(0じゃなかった場合)もしくはarp mapの結果で書き換える
-6. パケットのsmacを、smacで書き換える
-7. dmacが0じゃなかった場合、oifにbpf_redirectする。0だったら、forward_l2に渡す
+4. fib_val.type が CONNECTED の場合、宛先ipaddrのarp mapを引く(ここのsubnet_idは、mapを引いたvalのsubnet_idを使う)
+5. arp mapに見つからなかったらドロップ
+6. パケットのdmacをarp mapの結果で書き換える
+7. パケットのsmacをfib_val.smacで書き換える
+8. forward_l2にfib_val.subnet_idを渡す
+9. fib_val.type が ENDPOINT の場合、パケットのdmacをfib_val.dmacで書き換える
+10. パケットのsmacをfib_val.smacで書き換える
+11. forward_l2にfib_val.subnet_idを渡す
+12. fib_val.type が INTERNET_GATEWAY の場合、いったん未実装としてドロップする

@@ -48,6 +48,12 @@ type Manager struct {
 	vxlanIngressLink link.Link
 }
 
+const (
+	fibRouteTypeConnected       = 1
+	fibRouteTypeEndpoint        = 2
+	fibRouteTypeInternetGateway = 3
+)
+
 func (m *Manager) Start(ctx context.Context) error {
 	const pinPath = "/sys/fs/bpf/juneau"
 
@@ -342,7 +348,7 @@ func (m *Manager) UpsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 	// Host only
 
 	if nwep.Spec.NodeName != m.nodeName {
-		return nil
+		return m.rebuildAllRouteTables(ctx)
 	}
 
 	var vpc juneauv1alpha1.Vpc
@@ -373,19 +379,20 @@ func (m *Manager) UpsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 	})
 	if err != nil {
 		if errors.Is(err, os.ErrExist) || errors.Is(err, syscall.EEXIST) {
-			return nil
+			zap.S().Debugf("TC program already attached to pod interface (ifindex: %d)", nwep.Spec.Ifindex)
 		}
-		zap.S().Errorf("failed to attach TC program: %v", err)
-		return err
+		if !errors.Is(err, os.ErrExist) && !errors.Is(err, syscall.EEXIST) {
+			zap.S().Errorf("failed to attach TC program: %v", err)
+			return err
+		}
 	} else {
 		zap.S().Infof("attached TC program to pod interface (ifindex: %d)", nwep.Spec.Ifindex)
+		m.mu.Lock()
+		m.podEgressLinks[nwep.Spec.Ifindex] = l
+		m.mu.Unlock()
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.podEgressLinks[nwep.Spec.Ifindex] = l
-
-	return nil
+	return m.rebuildAllRouteTables(ctx)
 }
 
 func (m *Manager) DeleteNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha1.NetworkEndpoint) error {
@@ -435,7 +442,7 @@ func (m *Manager) DeleteNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 	// Host only
 
 	if nwep.Spec.NodeName != m.nodeName {
-		return nil
+		return m.rebuildAllRouteTables(ctx)
 	}
 
 	if err := m.podEgressObjs.IfindexSubnet.Delete(&PodEgressIfindexSubnetKey{
@@ -446,14 +453,14 @@ func (m *Manager) DeleteNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 	}
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	if l, ok := m.podEgressLinks[nwep.Spec.Ifindex]; ok {
 		l.Close()
 	}
 	delete(m.podEgressLinks, nwep.Spec.Ifindex)
+	m.mu.Unlock()
 
-	return nil
+	return m.rebuildAllRouteTables(ctx)
 }
 
 func (m *Manager) UpsertRouteTable(ctx context.Context, rt *juneauv1alpha1.RouteTable) error {
@@ -464,11 +471,6 @@ func (m *Manager) UpsertRouteTable(ctx context.Context, rt *juneauv1alpha1.Route
 	}
 
 	for _, route := range rt.Status.Routes {
-		var subnet juneauv1alpha1.Subnet
-		if err := m.client.Get(ctx, client.ObjectKey{Name: route.Subnet}, &subnet); err != nil {
-			return err
-		}
-
 		netaddr, ipnet, err := net.ParseCIDR(route.Dst)
 		if err != nil {
 			zap.S().Errorf("failed to parse CIDR %s: %v", route.Dst, err)
@@ -483,29 +485,33 @@ func (m *Manager) UpsertRouteTable(ctx context.Context, rt *juneauv1alpha1.Route
 			Dst:       addr,
 			Prefixlen: uint32(prefixlen),
 		}
-		val := PodEgressFibVal{
-			Dmac:     [6]uint8{},
-			Smac:     [6]uint8{},
-			SubnetId: subnet.Status.VNI,
-			Oif:      0,
-		}
 
-		if route.Via.Type == juneauv1alpha1.ViaConnnected {
-
-			netmac, err := net.ParseMAC(subnet.Status.GatewayMAC)
-			if err != nil {
+		var val PodEgressFibVal
+		switch route.Via.Type {
+		case juneauv1alpha1.ViaConnnected:
+			var subnet juneauv1alpha1.Subnet
+			if err := m.client.Get(ctx, client.ObjectKey{Name: route.Subnet}, &subnet); err != nil {
 				return err
 			}
-
-			mac, err := HardwareAddrToUint8Array(netmac)
+			val, err = m.buildConnectedFibVal(&subnet)
 			if err != nil {
+				zap.S().Warnf("failed to build connected FIB route for %s: %v", route.Dst, err)
+				continue
+			}
+		case juneauv1alpha1.ViaEndpoint:
+			var subnet juneauv1alpha1.Subnet
+			if err := m.client.Get(ctx, client.ObjectKey{Name: route.Subnet}, &subnet); err != nil {
 				return err
 			}
-
-			val.Smac = mac
-
-		} else if route.Via.Type == juneauv1alpha1.ViaEndpoint {
-			// TODO:
+			val, err = m.buildEndpointFibVal(ctx, &subnet, &route)
+			if err != nil {
+				zap.S().Warnf("failed to build endpoint FIB route for %s via %s: %v", route.Dst, route.Via.Endpoint, err)
+				continue
+			}
+		case juneauv1alpha1.ViaInternetGateway:
+			continue
+		default:
+			zap.S().Warnf("unsupported route type %q for %s", route.Via.Type, route.Dst)
 			continue
 		}
 
@@ -526,6 +532,76 @@ func (m *Manager) DeleteRouteTable(ctx context.Context, rt *juneauv1alpha1.Route
 	if err := m.podEgressObjs.FibMap.Delete(uint32(rt.Status.TableID)); err != nil {
 		return err
 	}
+	return nil
+}
+
+func (m *Manager) buildConnectedFibVal(subnet *juneauv1alpha1.Subnet) (PodEgressFibVal, error) {
+	netmac, err := net.ParseMAC(subnet.Status.GatewayMAC)
+	if err != nil {
+		return PodEgressFibVal{}, err
+	}
+
+	mac, err := HardwareAddrToUint8Array(netmac)
+	if err != nil {
+		return PodEgressFibVal{}, err
+	}
+
+	return PodEgressFibVal{
+		Type:     fibRouteTypeConnected,
+		Dmac:     [6]uint8{},
+		Smac:     mac,
+		SubnetId: subnet.Status.VNI,
+		Oif:      0,
+	}, nil
+}
+
+func (m *Manager) buildEndpointFibVal(ctx context.Context, subnet *juneauv1alpha1.Subnet, route *juneauv1alpha1.Route) (PodEgressFibVal, error) {
+	var nwep juneauv1alpha1.NetworkEndpoint
+	if err := m.client.Get(ctx, client.ObjectKey{Name: route.Via.Endpoint}, &nwep); err != nil {
+		return PodEgressFibVal{}, err
+	}
+
+	nextHopMAC, err := net.ParseMAC(nwep.Spec.MACAddress)
+	if err != nil {
+		return PodEgressFibVal{}, err
+	}
+
+	dmac, err := HardwareAddrToUint8Array(nextHopMAC)
+	if err != nil {
+		return PodEgressFibVal{}, err
+	}
+
+	sourceMAC, err := net.ParseMAC(subnet.Status.GatewayMAC)
+	if err != nil {
+		return PodEgressFibVal{}, err
+	}
+
+	smac, err := HardwareAddrToUint8Array(sourceMAC)
+	if err != nil {
+		return PodEgressFibVal{}, err
+	}
+
+	return PodEgressFibVal{
+		Type:     fibRouteTypeEndpoint,
+		Dmac:     dmac,
+		Smac:     smac,
+		SubnetId: subnet.Status.VNI,
+		Oif:      0,
+	}, nil
+}
+
+func (m *Manager) rebuildAllRouteTables(ctx context.Context) error {
+	var routeTables juneauv1alpha1.RouteTableList
+	if err := m.client.List(ctx, &routeTables); err != nil {
+		return err
+	}
+
+	for i := range routeTables.Items {
+		if err := m.UpsertRouteTable(ctx, &routeTables.Items[i]); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
