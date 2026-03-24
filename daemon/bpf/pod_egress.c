@@ -12,6 +12,7 @@
 #define ARPHRD_ETHER 1
 #define ARPOP_REQUEST 1
 #define ARPOP_REPLY 2
+#define IP_OFFSET 0x1FFF
 
 #define TC_ACT_OK 0
 #define TC_ACT_SHOT 2
@@ -22,6 +23,109 @@ struct arp_payload {
   __u8 tha[ETH_ALEN];
   __be32 tpa;
 } __attribute__((packed));
+
+static __always_inline int update_l4_csum(struct __sk_buff *skb,
+                                          struct iphdr *iph, void *data_end,
+                                          __be32 old_addr, __be32 new_addr) {
+  __u32 ihl = iph->ihl;
+  if (ihl < 5)
+    return TC_ACT_SHOT;
+
+  if ((bpf_ntohs(iph->frag_off) & IP_OFFSET) != 0)
+    return TC_ACT_OK;
+
+  __u32 l4_off = sizeof(struct ethhdr) + ihl * 4;
+
+  if (iph->protocol == IPPROTO_TCP) {
+    struct tcphdr *tcp = (void *)iph + ihl * 4;
+    if ((void *)(tcp + 1) > data_end)
+      return TC_ACT_SHOT;
+
+    if (bpf_l4_csum_replace(skb,
+                            l4_off + __builtin_offsetof(struct tcphdr, check),
+                            old_addr, new_addr,
+                            BPF_F_PSEUDO_HDR | sizeof(new_addr)) < 0)
+      return TC_ACT_SHOT;
+
+    return TC_ACT_OK;
+  }
+
+  if (iph->protocol == IPPROTO_UDP) {
+    struct udphdr *udp = (void *)iph + ihl * 4;
+    if ((void *)(udp + 1) > data_end)
+      return TC_ACT_SHOT;
+
+    if (udp->check == 0)
+      return TC_ACT_OK;
+
+    if (bpf_l4_csum_replace(skb,
+                            l4_off + __builtin_offsetof(struct udphdr, check),
+                            old_addr, new_addr,
+                            BPF_F_PSEUDO_HDR | sizeof(new_addr)) < 0)
+      return TC_ACT_SHOT;
+  }
+
+  return TC_ACT_OK;
+}
+
+static __always_inline int handle_snat(struct __sk_buff *skb,
+                                       struct ethhdr *eth, struct iphdr *iph,
+                                       __u32 subnet_id) {
+  struct nat_inside nk = {
+      .subnet_id = subnet_id,
+      .addr = bpf_ntohl(iph->saddr),
+  };
+  const struct nat_outside *nv = bpf_map_lookup_elem(&nat_snat_map, &nk);
+  if (!nv)
+    return TC_ACT_SHOT;
+
+  struct ifindex_host_mac_key hk = {
+      .ifindex = skb->ifindex,
+  };
+  const struct ifindex_host_mac_val *hv =
+      bpf_map_lookup_elem(&ifindex_host_mac, &hk);
+  if (!hv)
+    return TC_ACT_SHOT;
+
+  __be32 old_addr = iph->saddr;
+  __be32 new_addr = bpf_htonl(nv->addr);
+
+  if (bpf_l3_csum_replace(skb,
+                          sizeof(struct ethhdr) +
+                              __builtin_offsetof(struct iphdr, check),
+                          old_addr, new_addr, sizeof(new_addr)) < 0)
+    return TC_ACT_SHOT;
+
+  void *data = (void *)(long)skb->data;
+  void *data_end = (void *)(long)skb->data_end;
+
+  eth = data;
+  if ((void *)(eth + 1) > data_end)
+    return TC_ACT_SHOT;
+
+  iph = (void *)(eth + 1);
+  if ((void *)(iph + 1) > data_end)
+    return TC_ACT_SHOT;
+
+  int csum_ret = update_l4_csum(skb, iph, data_end, old_addr, new_addr);
+  if (csum_ret != TC_ACT_OK)
+    return csum_ret;
+
+  data_end = (void *)(long)skb->data_end;
+
+  eth = data;
+  if ((void *)(eth + 1) > data_end)
+    return TC_ACT_SHOT;
+
+  iph = (void *)(eth + 1);
+  if ((void *)(iph + 1) > data_end)
+    return TC_ACT_SHOT;
+
+  iph->saddr = new_addr;
+  __builtin_memcpy(eth->h_dest, hv->mac, ETH_ALEN);
+
+  return TC_ACT_OK;
+}
 
 static __always_inline int handle_arp(struct __sk_buff *skb, void *data_end,
                                       struct ethhdr *eth, __u32 subnet_id,
@@ -159,7 +263,7 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
   }
 
   if (fv->type == FIB_ROUTE_TYPE_INTERNET_GATEWAY)
-    return TC_ACT_SHOT;
+    return handle_snat(skb, eth, iph, fv->subnet_id);
 
   return TC_ACT_SHOT;
 }

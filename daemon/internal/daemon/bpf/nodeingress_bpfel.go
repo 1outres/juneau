@@ -66,6 +66,16 @@ type NodeIngressHostIfaceVal struct {
 	_       [2]byte
 }
 
+type NodeIngressIfindexHostMacKey struct {
+	_       structs.HostLayout
+	Ifindex uint32
+}
+
+type NodeIngressIfindexHostMacVal struct {
+	_   structs.HostLayout
+	Mac [6]uint8
+}
+
 type NodeIngressIfindexSubnetKey struct {
 	_       structs.HostLayout
 	Ifindex uint32
@@ -156,6 +166,7 @@ type NodeIngressMapSpecs struct {
 	FibInner        *ebpf.MapSpec `ebpf:"fib_inner"`
 	FibMap          *ebpf.MapSpec `ebpf:"fib_map"`
 	HostIface       *ebpf.MapSpec `ebpf:"host_iface"`
+	IfindexHostMac  *ebpf.MapSpec `ebpf:"ifindex_host_mac"`
 	IfindexSubnet   *ebpf.MapSpec `ebpf:"ifindex_subnet"`
 	NatDnatMap      *ebpf.MapSpec `ebpf:"nat_dnat_map"`
 	NatSnatMap      *ebpf.MapSpec `ebpf:"nat_snat_map"`
@@ -195,6 +206,7 @@ type NodeIngressMaps struct {
 	FibInner        *ebpf.Map `ebpf:"fib_inner"`
 	FibMap          *ebpf.Map `ebpf:"fib_map"`
 	HostIface       *ebpf.Map `ebpf:"host_iface"`
+	IfindexHostMac  *ebpf.Map `ebpf:"ifindex_host_mac"`
 	IfindexSubnet   *ebpf.Map `ebpf:"ifindex_subnet"`
 	NatDnatMap      *ebpf.Map `ebpf:"nat_dnat_map"`
 	NatSnatMap      *ebpf.Map `ebpf:"nat_snat_map"`
@@ -210,6 +222,7 @@ func (m *NodeIngressMaps) Close() error {
 		m.FibInner,
 		m.FibMap,
 		m.HostIface,
+		m.IfindexHostMac,
 		m.IfindexSubnet,
 		m.NatDnatMap,
 		m.NatSnatMap,

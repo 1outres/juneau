@@ -52,4 +52,12 @@
 9. fib_val.type が ENDPOINT の場合、パケットのdmacをfib_val.dmacで書き換える
 10. パケットのsmacをfib_val.smacで書き換える
 11. forward_l2にfib_val.subnet_idを渡す
-12. fib_val.type が INTERNET_GATEWAY の場合、いったん未実装としてドロップする
+12. fib_val.type が INTERNET_GATEWAY の場合、handle_snatに渡す
+
+## handle_snat
+
+1. nat_snat_mapを引く(送信元IPアドレスとsubnet_id)
+2. 見つからなかったらTC_ACT_SHOT
+3. 送信元IPアドレスをaddrで置き換える
+4. ifindex_host_macを引いて、dmacを置き換える
+5. OSに渡す(TC_ACT_OK)
