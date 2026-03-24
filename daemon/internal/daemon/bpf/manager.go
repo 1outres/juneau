@@ -728,6 +728,9 @@ func (m *Manager) UpsertRouteTable(ctx context.Context, rt *juneauv1alpha1.Route
 			if err := m.client.Get(ctx, client.ObjectKey{Name: route.Subnet}, &subnet); err != nil {
 				return err
 			}
+			if subnet.Status.VNI == 1 {
+				continue
+			}
 			val, err = m.buildConnectedFibVal(&subnet)
 			if err != nil {
 				zap.S().Warnf("failed to build connected FIB route for %s: %v", route.Dst, err)
@@ -737,6 +740,9 @@ func (m *Manager) UpsertRouteTable(ctx context.Context, rt *juneauv1alpha1.Route
 			var subnet juneauv1alpha1.Subnet
 			if err := m.client.Get(ctx, client.ObjectKey{Name: route.Subnet}, &subnet); err != nil {
 				return err
+			}
+			if subnet.Status.VNI == 1 {
+				continue
 			}
 			val, err = m.buildEndpointFibVal(ctx, &subnet, &route)
 			if err != nil {
