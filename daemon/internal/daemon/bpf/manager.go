@@ -21,6 +21,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+	"github.com/vishvananda/netlink"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -47,6 +48,7 @@ type Manager struct {
 	hostIfindex        int
 	nodeIngressIfindex int
 	hostMac            net.HardwareAddr
+	externalGateway    *InternetGatewayInfo
 
 	podEgressMapSpecs *PodEgressMapSpecs
 
@@ -61,6 +63,13 @@ type Manager struct {
 	nodeIngressLink  link.Link
 }
 
+type InternetGatewayInfo struct {
+	Ifindex    int
+	SourceMAC  net.HardwareAddr
+	NextHopIP  net.IP
+	NextHopMAC net.HardwareAddr
+}
+
 const (
 	fibRouteTypeConnected       = 1
 	fibRouteTypeEndpoint        = 2
@@ -69,6 +78,12 @@ const (
 
 func (m *Manager) Start(ctx context.Context) error {
 	const pinPath = "/sys/fs/bpf/juneau"
+
+	internetGateway, err := resolveInternetGatewayInfo(m.nodeIngressIfindex)
+	if err != nil {
+		return fmt.Errorf("resolve internet gateway info: %w", err)
+	}
+	m.externalGateway = internetGateway
 
 	if err := os.RemoveAll(pinPath); err != nil {
 		zap.S().Errorf("failed to remove BPF pin path: %v", err)
@@ -88,7 +103,7 @@ func (m *Manager) Start(ctx context.Context) error {
 		return err
 	}
 
-	if err := LoadPodEgressObjects(m.podEgressObjs, &ebpf.CollectionOptions{
+	if err = LoadPodEgressObjects(m.podEgressObjs, &ebpf.CollectionOptions{
 		Maps: ebpf.MapOptions{
 			PinPath: pinPath,
 		},
@@ -750,7 +765,11 @@ func (m *Manager) UpsertRouteTable(ctx context.Context, rt *juneauv1alpha1.Route
 				continue
 			}
 		case juneauv1alpha1.ViaInternetGateway:
-			val = buildInternetGatewayFibVal()
+			val, err = m.buildInternetGatewayFibVal()
+			if err != nil {
+				zap.S().Warnf("failed to build internet gateway FIB route for %s: %v", route.Dst, err)
+				continue
+			}
 		default:
 			zap.S().Warnf("unsupported route type %q for %s", route.Via.Type, route.Dst)
 			continue
@@ -831,14 +850,75 @@ func (m *Manager) buildEndpointFibVal(ctx context.Context, subnet *juneauv1alpha
 	}, nil
 }
 
-func buildInternetGatewayFibVal() PodEgressFibVal {
+func (m *Manager) buildInternetGatewayFibVal() (PodEgressFibVal, error) {
+	if m.externalGateway == nil {
+		return PodEgressFibVal{}, fmt.Errorf("internet gateway info is not initialized")
+	}
+
+	smac, err := HardwareAddrToUint8Array(m.externalGateway.SourceMAC)
+	if err != nil {
+		return PodEgressFibVal{}, err
+	}
+
+	dmac, err := HardwareAddrToUint8Array(m.externalGateway.NextHopMAC)
+	if err != nil {
+		return PodEgressFibVal{}, err
+	}
+
 	return PodEgressFibVal{
 		Type:     fibRouteTypeInternetGateway,
-		Dmac:     [6]uint8{},
-		Smac:     [6]uint8{},
+		Dmac:     dmac,
+		Smac:     smac,
 		SubnetId: 0,
-		Oif:      0,
+		Oif:      uint32(m.externalGateway.Ifindex),
+	}, nil
+}
+
+func resolveInternetGatewayInfo(ifindex int) (*InternetGatewayInfo, error) {
+	link, err := netlink.LinkByIndex(ifindex)
+	if err != nil {
+		return nil, err
 	}
+
+	routes, err := netlink.RouteGet(net.IPv4(1, 1, 1, 1))
+	if err != nil {
+		return nil, err
+	}
+
+	var route *netlink.Route
+	for i := range routes {
+		r := &routes[i]
+		if r.LinkIndex == ifindex && r.Gw != nil {
+			route = r
+			break
+		}
+	}
+	if route == nil {
+		return nil, fmt.Errorf("no default route with gateway found on ifindex %d", ifindex)
+	}
+
+	neighs, err := netlink.NeighList(ifindex, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range neighs {
+		neigh := &neighs[i]
+		if neigh.IP == nil || !neigh.IP.Equal(route.Gw) {
+			continue
+		}
+		if len(neigh.HardwareAddr) == 0 {
+			continue
+		}
+		return &InternetGatewayInfo{
+			Ifindex:    ifindex,
+			SourceMAC:  link.Attrs().HardwareAddr,
+			NextHopIP:  route.Gw,
+			NextHopMAC: neigh.HardwareAddr,
+		}, nil
+	}
+
+	return nil, fmt.Errorf("no neighbor entry found for gateway %s on ifindex %d", route.Gw, ifindex)
 }
 
 func (m *Manager) rebuildAllRouteTables(ctx context.Context) error {

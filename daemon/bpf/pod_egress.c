@@ -69,7 +69,8 @@ static __always_inline int update_l4_csum(struct __sk_buff *skb,
 }
 
 static __always_inline int handle_snat(struct __sk_buff *skb,
-                                       struct ethhdr *eth, struct iphdr *iph) {
+                                       struct ethhdr *eth, struct iphdr *iph,
+                                       const struct fib_val *fv) {
   void *data;
   void *data_end;
 
@@ -89,16 +90,10 @@ static __always_inline int handle_snat(struct __sk_buff *skb,
   if (!nv)
     return TC_ACT_SHOT;
 
-  struct ifindex_host_mac_key hk = {
-      .ifindex = skb->ifindex,
-  };
-  const struct ifindex_host_mac_val *hv =
-      bpf_map_lookup_elem(&ifindex_host_mac, &hk);
-  if (!hv)
-    return TC_ACT_SHOT;
-
-  __u8 host_mac[ETH_ALEN];
-  __builtin_memcpy(host_mac, hv->mac, ETH_ALEN);
+  __u8 dst_mac[ETH_ALEN];
+  __u8 src_mac[ETH_ALEN];
+  __builtin_memcpy(dst_mac, fv->dmac, ETH_ALEN);
+  __builtin_memcpy(src_mac, fv->smac, ETH_ALEN);
 
   __be32 old_addr = iph->saddr;
   __be32 new_addr = bpf_htonl(nv->addr);
@@ -135,10 +130,32 @@ static __always_inline int handle_snat(struct __sk_buff *skb,
   if ((void *)(iph + 1) > data_end)
     return TC_ACT_SHOT;
 
-  iph->saddr = new_addr;
-  __builtin_memcpy(eth->h_dest, host_mac, ETH_ALEN);
+  if (bpf_skb_store_bytes(skb,
+                          sizeof(struct ethhdr) +
+                              __builtin_offsetof(struct iphdr, saddr),
+                          &new_addr, sizeof(new_addr), 0) < 0)
+    return TC_ACT_SHOT;
 
-  return TC_ACT_OK;
+  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_dest),
+                          dst_mac, ETH_ALEN, 0) < 0)
+    return TC_ACT_SHOT;
+
+  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_source),
+                          src_mac, ETH_ALEN, 0) < 0)
+    return TC_ACT_SHOT;
+
+  data = (void *)(long)skb->data;
+  data_end = (void *)(long)skb->data_end;
+
+  eth = data;
+  if ((void *)(eth + 1) > data_end)
+    return TC_ACT_SHOT;
+
+  iph = (void *)(eth + 1);
+  if ((void *)(iph + 1) > data_end)
+    return TC_ACT_SHOT;
+
+  return bpf_redirect(fv->oif, 0);
 }
 
 static __always_inline int handle_arp(struct __sk_buff *skb, void *data_end,
@@ -277,7 +294,7 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
   }
 
   if (fv->type == FIB_ROUTE_TYPE_INTERNET_GATEWAY)
-    return handle_snat(skb, eth, iph);
+    return handle_snat(skb, eth, iph, fv);
 
   return TC_ACT_SHOT;
 }
