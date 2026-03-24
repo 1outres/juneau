@@ -71,6 +71,9 @@ static __always_inline int update_l4_csum(struct __sk_buff *skb,
 static __always_inline int handle_snat(struct __sk_buff *skb,
                                        struct ethhdr *eth, struct iphdr *iph,
                                        __u32 subnet_id) {
+  void *data;
+  void *data_end;
+
   struct nat_inside nk = {
       .subnet_id = subnet_id,
       .addr = bpf_ntohl(iph->saddr),
@@ -87,6 +90,9 @@ static __always_inline int handle_snat(struct __sk_buff *skb,
   if (!hv)
     return TC_ACT_SHOT;
 
+  __u8 host_mac[ETH_ALEN];
+  __builtin_memcpy(host_mac, hv->mac, ETH_ALEN);
+
   __be32 old_addr = iph->saddr;
   __be32 new_addr = bpf_htonl(nv->addr);
 
@@ -96,8 +102,8 @@ static __always_inline int handle_snat(struct __sk_buff *skb,
                           old_addr, new_addr, sizeof(new_addr)) < 0)
     return TC_ACT_SHOT;
 
-  void *data = (void *)(long)skb->data;
-  void *data_end = (void *)(long)skb->data_end;
+  data = (void *)(long)skb->data;
+  data_end = (void *)(long)skb->data_end;
 
   eth = data;
   if ((void *)(eth + 1) > data_end)
@@ -111,6 +117,7 @@ static __always_inline int handle_snat(struct __sk_buff *skb,
   if (csum_ret != TC_ACT_OK)
     return csum_ret;
 
+  data = (void *)(long)skb->data;
   data_end = (void *)(long)skb->data_end;
 
   eth = data;
@@ -122,7 +129,7 @@ static __always_inline int handle_snat(struct __sk_buff *skb,
     return TC_ACT_SHOT;
 
   iph->saddr = new_addr;
-  __builtin_memcpy(eth->h_dest, hv->mac, ETH_ALEN);
+  __builtin_memcpy(eth->h_dest, host_mac, ETH_ALEN);
 
   return TC_ACT_OK;
 }

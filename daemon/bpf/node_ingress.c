@@ -90,6 +90,9 @@ static __always_inline int update_l4_csum(struct __sk_buff *skb, struct iphdr *i
 static __always_inline int handle_dnat(struct __sk_buff *skb, struct ethhdr *eth,
                                        struct iphdr *iph,
                                        const struct nat_inside *nat) {
+  void *data;
+  void *data_end;
+
   struct subnet_key sk = {
       .subnet_id = nat->subnet_id,
   };
@@ -111,14 +114,19 @@ static __always_inline int handle_dnat(struct __sk_buff *skb, struct ethhdr *eth
   if (!av)
     return TC_ACT_SHOT;
 
+  __u8 dst_mac[ETH_ALEN];
+  __u8 src_mac[ETH_ALEN];
+  __builtin_memcpy(dst_mac, av->mac, ETH_ALEN);
+  __builtin_memcpy(src_mac, subnet->gw_mac, ETH_ALEN);
+
   if (bpf_l3_csum_replace(skb,
                           sizeof(struct ethhdr) +
                               __builtin_offsetof(struct iphdr, check),
                           old_addr, new_addr, sizeof(new_addr)) < 0)
     return TC_ACT_SHOT;
 
-  void *data = (void *)(long)skb->data;
-  void *data_end = (void *)(long)skb->data_end;
+  data = (void *)(long)skb->data;
+  data_end = (void *)(long)skb->data_end;
 
   eth = data;
   if ((void *)(eth + 1) > data_end)
@@ -132,6 +140,7 @@ static __always_inline int handle_dnat(struct __sk_buff *skb, struct ethhdr *eth
   if (csum_ret != TC_ACT_OK)
     return csum_ret;
 
+  data = (void *)(long)skb->data;
   data_end = (void *)(long)skb->data_end;
 
   eth = data;
@@ -144,8 +153,8 @@ static __always_inline int handle_dnat(struct __sk_buff *skb, struct ethhdr *eth
 
   iph->daddr = new_addr;
 
-  __builtin_memcpy(eth->h_dest, av->mac, ETH_ALEN);
-  __builtin_memcpy(eth->h_source, subnet->gw_mac, ETH_ALEN);
+  __builtin_memcpy(eth->h_dest, dst_mac, ETH_ALEN);
+  __builtin_memcpy(eth->h_source, src_mac, ETH_ALEN);
 
   return forward_l2(skb, eth, nat->subnet_id);
 }
