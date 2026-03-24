@@ -95,11 +95,14 @@ func NewApp() *cli.Command {
 			cache, err := cache.New(kubecfg, cache.Options{
 				Scheme: scheme,
 				ByObject: map[client.Object]cache.ByObject{
-					&juneauv1alpha1.NetworkInterface{}: {},
-					&juneauv1alpha1.NetworkEndpoint{}:  {},
-					&juneauv1alpha1.Subnet{}:           {},
-					&juneauv1alpha1.Vpc{}:              {},
-					&juneauv1alpha1.RouteTable{}:       {},
+					&juneauv1alpha1.NetworkInterface{}:    {},
+					&juneauv1alpha1.NetworkEndpoint{}:     {},
+					&juneauv1alpha1.ElasticIPAttachment{}: {},
+					&juneauv1alpha1.AddressPool{}:         {},
+					&juneauv1alpha1.BGPAdvertisement{}:    {},
+					&juneauv1alpha1.Subnet{}:              {},
+					&juneauv1alpha1.Vpc{}:                 {},
+					&juneauv1alpha1.RouteTable{}:          {},
 				},
 			})
 			if err != nil {
@@ -109,6 +112,21 @@ func NewApp() *cli.Command {
 			nwepInfromer, err := cache.GetInformer(ctx, &juneauv1alpha1.NetworkEndpoint{})
 			if err != nil {
 				return fmt.Errorf("get NetworkEndpoint informer: %w", err)
+			}
+
+			eipaInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.ElasticIPAttachment{})
+			if err != nil {
+				return fmt.Errorf("get ElasticIPAttachment informer: %w", err)
+			}
+
+			addressPoolInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.AddressPool{})
+			if err != nil {
+				return fmt.Errorf("get AddressPool informer: %w", err)
+			}
+
+			bgpAdvertisementInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.BGPAdvertisement{})
+			if err != nil {
+				return fmt.Errorf("get BGPAdvertisement informer: %w", err)
 			}
 
 			rtInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.RouteTable{})
@@ -286,7 +304,7 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("ensure masquerade rule: %w", err)
 			}
 
-			bpfManager := bpf.NewManager(cl, nwepInfromer, rtInformer, subnetInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, hostIfaceInfo.MAC)
+			bpfManager := bpf.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, hostIfaceInfo.MAC)
 			if err := bpfManager.Start(ctx); err != nil {
 				return fmt.Errorf("initialize BPF manager: %w", err)
 			}
