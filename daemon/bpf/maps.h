@@ -57,6 +57,22 @@ struct {
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } ifindex_subnet SEC(".maps");
 
+struct ifindex_host_mac_key {
+  __u32 ifindex;
+};
+
+struct ifindex_host_mac_val {
+  __u8 mac[6];
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_IF_SUBNET);
+  __type(key, struct ifindex_host_mac_key);
+  __type(value, struct ifindex_host_mac_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} ifindex_host_mac SEC(".maps");
+
 struct subnet_key {
   __u32 subnet_id;
 };

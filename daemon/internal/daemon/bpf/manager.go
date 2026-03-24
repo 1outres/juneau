@@ -372,6 +372,28 @@ func (m *Manager) UpsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 		return err
 	}
 
+	hostMAC, err := net.ParseMAC(nwep.Spec.HostMACAddress)
+	if err != nil {
+		return err
+	}
+
+	hostMACArray, err := HardwareAddrToUint8Array(hostMAC)
+	if err != nil {
+		return err
+	}
+
+	if err := m.podEgressObjs.IfindexHostMac.Update(
+		&PodEgressIfindexHostMacKey{
+			Ifindex: uint32(nwep.Spec.Ifindex),
+		},
+		&PodEgressIfindexHostMacVal{
+			Mac: hostMACArray,
+		},
+		ebpf.UpdateAny); err != nil {
+		zap.S().Errorf("failed to update IfindexHostMac map: %v", err)
+		return err
+	}
+
 	l, err := link.AttachTCX(link.TCXOptions{
 		Program:   m.podEgressObjs.TcPodEgress,
 		Interface: int(nwep.Spec.Ifindex),
@@ -449,6 +471,13 @@ func (m *Manager) DeleteNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 		Ifindex: uint32(nwep.Spec.Ifindex),
 	}); err != nil {
 		zap.S().Errorf("failed to delete from IfindexSubnet map: %v", err)
+		return err
+	}
+
+	if err := m.podEgressObjs.IfindexHostMac.Delete(&PodEgressIfindexHostMacKey{
+		Ifindex: uint32(nwep.Spec.Ifindex),
+	}); err != nil {
+		zap.S().Errorf("failed to delete from IfindexHostMac map: %v", err)
 		return err
 	}
 
