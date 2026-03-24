@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -128,7 +129,14 @@ func (r *ElasticIPAttachmentReconciler) reconcileNormal(ctx context.Context, res
 	}
 
 	if networkInterface.Spec.NodeName == "" {
-		if err := r.updatePendingStatus(ctx, resource, elasticIP.Status.Address, networkInterface.Status.Address, "", elasticIPAttachmentReasonReconcileFailed, fmt.Sprintf("waiting for NetworkInterface %q node assignment", networkInterface.Name)); err != nil {
+		podIP, err := normalizeIPAddress(networkInterface.Status.Address)
+		if err != nil {
+			if err := r.updateErrorStatus(ctx, resource, elasticIPAttachmentReasonReconcileFailed, fmt.Sprintf("invalid NetworkInterface %q address %q", networkInterface.Name, networkInterface.Status.Address)); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
+		if err := r.updatePendingStatus(ctx, resource, elasticIP.Status.Address, podIP, "", elasticIPAttachmentReasonReconcileFailed, fmt.Sprintf("waiting for NetworkInterface %q node assignment", networkInterface.Name)); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
@@ -137,7 +145,14 @@ func (r *ElasticIPAttachmentReconciler) reconcileNormal(ctx context.Context, res
 	var networkEndpoint juneauloutresmev1alpha1.NetworkEndpoint
 	if err := r.Get(ctx, client.ObjectKey{Namespace: resource.Namespace, Name: networkInterface.Name}, &networkEndpoint); err != nil {
 		if errors.IsNotFound(err) {
-			if err := r.updatePendingStatus(ctx, resource, elasticIP.Status.Address, networkInterface.Status.Address, networkInterface.Spec.NodeName, elasticIPAttachmentReasonWaitingForNetworkEndpoint, fmt.Sprintf("waiting for NetworkEndpoint %q", networkInterface.Name)); err != nil {
+			podIP, err := normalizeIPAddress(networkInterface.Status.Address)
+			if err != nil {
+				if err := r.updateErrorStatus(ctx, resource, elasticIPAttachmentReasonReconcileFailed, fmt.Sprintf("invalid NetworkInterface %q address %q", networkInterface.Name, networkInterface.Status.Address)); err != nil {
+					return ctrl.Result{}, err
+				}
+				return ctrl.Result{}, nil
+			}
+			if err := r.updatePendingStatus(ctx, resource, elasticIP.Status.Address, podIP, networkInterface.Spec.NodeName, elasticIPAttachmentReasonWaitingForNetworkEndpoint, fmt.Sprintf("waiting for NetworkEndpoint %q", networkInterface.Name)); err != nil {
 				return ctrl.Result{}, err
 			}
 			return ctrl.Result{}, nil
@@ -146,7 +161,22 @@ func (r *ElasticIPAttachmentReconciler) reconcileNormal(ctx context.Context, res
 	}
 
 	if networkEndpoint.DeletionTimestamp != nil {
-		if err := r.updatePendingStatus(ctx, resource, elasticIP.Status.Address, networkInterface.Status.Address, networkInterface.Spec.NodeName, elasticIPAttachmentReasonWaitingForNetworkEndpoint, fmt.Sprintf("NetworkEndpoint %q is being deleted", networkEndpoint.Name)); err != nil {
+		podIP, err := normalizeIPAddress(networkInterface.Status.Address)
+		if err != nil {
+			if err := r.updateErrorStatus(ctx, resource, elasticIPAttachmentReasonReconcileFailed, fmt.Sprintf("invalid NetworkInterface %q address %q", networkInterface.Name, networkInterface.Status.Address)); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
+		if err := r.updatePendingStatus(ctx, resource, elasticIP.Status.Address, podIP, networkInterface.Spec.NodeName, elasticIPAttachmentReasonWaitingForNetworkEndpoint, fmt.Sprintf("NetworkEndpoint %q is being deleted", networkEndpoint.Name)); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
+	podIP, err := normalizeIPAddress(networkInterface.Status.Address)
+	if err != nil {
+		if err := r.updateErrorStatus(ctx, resource, elasticIPAttachmentReasonReconcileFailed, fmt.Sprintf("invalid NetworkInterface %q address %q", networkInterface.Name, networkInterface.Status.Address)); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
@@ -155,7 +185,7 @@ func (r *ElasticIPAttachmentReconciler) reconcileNormal(ctx context.Context, res
 	if err := r.updateStatus(ctx, resource,
 		juneauloutresmev1alpha1.ElasticIPAttachmentPhaseAttached,
 		elasticIP.Status.Address,
-		networkInterface.Status.Address,
+		podIP,
 		networkInterface.Spec.NodeName,
 		metav1.Condition{
 			Type:    elasticIPAttachmentConditionReady,
@@ -231,6 +261,24 @@ func (r *ElasticIPAttachmentReconciler) updateStatus(
 		meta.SetStatusCondition(&resource.Status.Conditions, condition)
 	}
 	return r.Status().Update(ctx, resource)
+}
+
+func normalizeIPAddress(address string) (string, error) {
+	if address == "" {
+		return "", nil
+	}
+
+	ip := net.ParseIP(address)
+	if ip != nil {
+		return ip.String(), nil
+	}
+
+	ip, _, err := net.ParseCIDR(address)
+	if err != nil {
+		return "", err
+	}
+
+	return ip.String(), nil
 }
 
 func (r *ElasticIPAttachmentReconciler) mapElasticIPToAttachments(ctx context.Context, obj client.Object) []reconcile.Request {
