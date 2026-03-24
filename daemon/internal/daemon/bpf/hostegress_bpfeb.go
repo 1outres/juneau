@@ -51,8 +51,10 @@ type HostEgressFibKey struct {
 
 type HostEgressFibVal struct {
 	_        structs.HostLayout
+	Type     uint8
 	Dmac     [6]uint8
 	Smac     [6]uint8
+	_        [3]byte
 	SubnetId uint32
 	Oif      uint32
 }
