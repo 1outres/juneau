@@ -982,7 +982,7 @@ func parseBGPAddressPoolPrefix(raw string) (PodEgressBgpAddressPoolsKey, string,
 		return key, "", fmt.Errorf("IPv6 is not supported")
 	}
 
-	addr, err := IPv4ToUint32(ip4)
+	addr, err := IPv4ToLPMTrieUint32(ip4)
 	if err != nil {
 		return key, "", err
 	}
@@ -1098,6 +1098,14 @@ func IPv4ToUint32(ip net.IP) (uint32, error) {
 		return 0, fmt.Errorf("not an IPv4 address: %v", ip)
 	}
 	return binary.BigEndian.Uint32(ip4), nil
+}
+
+func IPv4ToLPMTrieUint32(ip net.IP) (uint32, error) {
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return 0, fmt.Errorf("not an IPv4 address: %v", ip)
+	}
+	return binary.LittleEndian.Uint32(ip4), nil
 }
 
 // net.IPMask -> uint32 (eBPF map host-order value, e.g. /16 -> 0xffff0000)

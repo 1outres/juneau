@@ -101,14 +101,14 @@ static __always_inline int handle_dnat(struct __sk_buff *skb, struct ethhdr *eth
     return TC_ACT_SHOT;
 
   __be32 old_addr = iph->daddr;
-  __be32 new_addr = nat->addr;
+  __be32 new_addr = bpf_htonl(nat->addr);
 
   if (nat->subnet_id == 1)
     return TC_ACT_SHOT;
 
   struct arp_table_key ak = {
       .subnet_id = nat->subnet_id,
-      .ipaddr = bpf_ntohl(nat->addr),
+      .ipaddr = nat->addr,
   };
   const struct arp_table_val *av = bpf_map_lookup_elem(&arp_table, &ak);
   if (!av)
@@ -175,7 +175,7 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth) 
     return TC_ACT_OK;
 
   struct nat_outside nk = {
-      .addr = iph->daddr,
+      .addr = bpf_ntohl(iph->daddr),
   };
   const struct nat_inside *nv = bpf_map_lookup_elem(&nat_dnat_map, &nk);
   if (!nv)
