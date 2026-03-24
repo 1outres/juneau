@@ -69,13 +69,20 @@ static __always_inline int update_l4_csum(struct __sk_buff *skb,
 }
 
 static __always_inline int handle_snat(struct __sk_buff *skb,
-                                       struct ethhdr *eth, struct iphdr *iph,
-                                       __u32 subnet_id) {
+                                       struct ethhdr *eth, struct iphdr *iph) {
   void *data;
   void *data_end;
 
+  struct ifindex_subnet_key isk = {
+      .ifindex = skb->ifindex,
+  };
+  const struct ifindex_subnet_val *isv =
+      bpf_map_lookup_elem(&ifindex_subnet, &isk);
+  if (!isv)
+    return TC_ACT_SHOT;
+
   struct nat_inside nk = {
-      .subnet_id = subnet_id,
+      .subnet_id = isv->subnet_id,
       .addr = bpf_ntohl(iph->saddr),
   };
   const struct nat_outside *nv = bpf_map_lookup_elem(&nat_snat_map, &nk);
@@ -270,7 +277,7 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
   }
 
   if (fv->type == FIB_ROUTE_TYPE_INTERNET_GATEWAY)
-    return handle_snat(skb, eth, iph, fv->subnet_id);
+    return handle_snat(skb, eth, iph);
 
   return TC_ACT_SHOT;
 }

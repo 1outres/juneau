@@ -750,7 +750,7 @@ func (m *Manager) UpsertRouteTable(ctx context.Context, rt *juneauv1alpha1.Route
 				continue
 			}
 		case juneauv1alpha1.ViaInternetGateway:
-			continue
+			val = buildInternetGatewayFibVal()
 		default:
 			zap.S().Warnf("unsupported route type %q for %s", route.Via.Type, route.Dst)
 			continue
@@ -829,6 +829,16 @@ func (m *Manager) buildEndpointFibVal(ctx context.Context, subnet *juneauv1alpha
 		SubnetId: subnet.Status.VNI,
 		Oif:      0,
 	}, nil
+}
+
+func buildInternetGatewayFibVal() PodEgressFibVal {
+	return PodEgressFibVal{
+		Type:     fibRouteTypeInternetGateway,
+		Dmac:     [6]uint8{},
+		Smac:     [6]uint8{},
+		SubnetId: 0,
+		Oif:      0,
+	}
 }
 
 func (m *Manager) rebuildAllRouteTables(ctx context.Context) error {
