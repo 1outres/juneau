@@ -42,10 +42,11 @@ type Manager struct {
 	rtInformer               cache.Informer
 	rtHandler                toolscache.ResourceEventHandlerRegistration
 
-	nodeName     string
-	vxlanIfindex int
-	hostIfindex  int
-	hostMac      net.HardwareAddr
+	nodeName           string
+	vxlanIfindex       int
+	hostIfindex        int
+	nodeIngressIfindex int
+	hostMac            net.HardwareAddr
 
 	podEgressMapSpecs *PodEgressMapSpecs
 
@@ -56,6 +57,8 @@ type Manager struct {
 	hostEgressLink   link.Link
 	vxlanIngressObjs *VxlanIngressObjects
 	vxlanIngressLink link.Link
+	nodeIngressObjs  *NodeIngressObjects
+	nodeIngressLink  link.Link
 }
 
 const (
@@ -154,6 +157,27 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.vxlanIngressLink = vxlanIngressLink
 	zap.S().Infof("attached TC program to vxlan interface (ifindex: %d)", m.vxlanIfindex)
 
+	if err := LoadNodeIngressObjects(m.nodeIngressObjs, &ebpf.CollectionOptions{
+		Maps: ebpf.MapOptions{
+			PinPath: pinPath,
+		},
+	}); err != nil {
+		zap.S().Errorf("failed to load node ingress objects: %v", err)
+		return err
+	}
+
+	nodeIngressLink, err := link.AttachTCX(link.TCXOptions{
+		Program:   m.nodeIngressObjs.TcNodeIngress,
+		Interface: m.nodeIngressIfindex,
+		Attach:    ebpf.AttachTCXIngress,
+	})
+	if err != nil {
+		zap.S().Errorf("failed to attach TC program to node ingress interface: %v", err)
+		return err
+	}
+	m.nodeIngressLink = nodeIngressLink
+	zap.S().Infof("attached TC program to node ingress interface (ifindex: %d)", m.nodeIngressIfindex)
+
 	nwepHandler, err := addEventHandler(ctx, m.nwepInformer, m.UpsertNetworkEndpoint, m.DeleteNetworkEndpoint)
 	if err != nil {
 		zap.S().Errorf("failed to add event handler for NetworkEndpoint: %v", err)
@@ -223,6 +247,9 @@ func (m *Manager) Stop() error {
 
 	m.vxlanIngressLink.Close()
 	m.vxlanIngressObjs.Close()
+
+	m.nodeIngressLink.Close()
+	m.nodeIngressObjs.Close()
 
 	return nil
 }
@@ -961,7 +988,7 @@ func parseBGPAddressPoolPrefix(raw string) (PodEgressBgpAddressPoolsKey, string,
 	return key, ipnet.String(), nil
 }
 
-func NewManager(cl client.Client, nwepInformer cache.Informer, eipaInformer cache.Informer, addressPoolInformer cache.Informer, bgpAdvertisementInformer cache.Informer, rtInformer cache.Informer, subnetInformer cache.Informer, nodeName string, vxlanIfindex int, hostIfindex int, defaultGatewayMac net.HardwareAddr) *Manager {
+func NewManager(cl client.Client, nwepInformer cache.Informer, eipaInformer cache.Informer, addressPoolInformer cache.Informer, bgpAdvertisementInformer cache.Informer, rtInformer cache.Informer, subnetInformer cache.Informer, nodeName string, vxlanIfindex int, hostIfindex int, nodeIngressIfindex int, defaultGatewayMac net.HardwareAddr) *Manager {
 	return &Manager{
 		client:                   cl,
 		nwepInformer:             nwepInformer,
@@ -973,6 +1000,7 @@ func NewManager(cl client.Client, nwepInformer cache.Informer, eipaInformer cach
 		nodeName:                 nodeName,
 		vxlanIfindex:             vxlanIfindex,
 		hostIfindex:              hostIfindex,
+		nodeIngressIfindex:       nodeIngressIfindex,
 		hostMac:                  defaultGatewayMac,
 		podEgressMapSpecs:        &PodEgressMapSpecs{},
 		podEgressObjs:            &PodEgressObjects{},
@@ -980,6 +1008,7 @@ func NewManager(cl client.Client, nwepInformer cache.Informer, eipaInformer cach
 		bgpAddressPools:          make(map[string]PodEgressBgpAddressPoolsKey),
 		hostEgressObjs:           &HostEgressObjects{},
 		vxlanIngressObjs:         &VxlanIngressObjects{},
+		nodeIngressObjs:          &NodeIngressObjects{},
 	}
 }
 

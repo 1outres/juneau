@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os/signal"
 	"syscall"
 
@@ -304,7 +305,12 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("ensure masquerade rule: %w", err)
 			}
 
-			bpfManager := bpf.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, hostIfaceInfo.MAC)
+			nodeIngressIface, err := net.InterfaceByName(masqueradeIface)
+			if err != nil {
+				return fmt.Errorf("lookup node ingress iface %q: %w", masqueradeIface, err)
+			}
+
+			bpfManager := bpf.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, hostIfaceInfo.MAC)
 			if err := bpfManager.Start(ctx); err != nil {
 				return fmt.Errorf("initialize BPF manager: %w", err)
 			}
