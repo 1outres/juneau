@@ -1,20 +1,13 @@
-FROM ghcr.io/cilium/ebpf-builder:1762345965
+FROM golang:1.24-bookworm
 
-RUN update-alternatives --install /usr/bin/clang clang /usr/bin/clang-17 90
-RUN update-alternatives --install /usr/bin/llvm-strip llvm-strip /usr/bin/llvm-strip-17 90
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bpftool \
+    clang \
+    libbpf-dev \
+    llvm \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN apt update && apt install -y libssl-dev
+RUN ln -sf /usr/bin/clang /usr/local/bin/bpf-clang
+RUN ln -sf /usr/bin/llvm-strip /usr/local/bin/bpf-llvm-strip
 
-RUN git clone --recurse-submodules https://github.com/libbpf/bpftool.git /tmp/bpftool \
-    && cd /tmp/bpftool/src \
-    && make install \
-    && rm -r /tmp/bpftool
-
-WORKDIR /app
-
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-RUN bpftool btf dump file /sys/kernel/btf/vmlinux format c > /vmlinux.h
-
-ENTRYPOINT ["/entrypoint.sh"]
+WORKDIR /workspace/daemon

@@ -1,6 +1,6 @@
 package bpf
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go PodEgress ../../../bpf/pod_egress.c
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go HostEgress ../../../bpf/host_egress.c
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go VxlanIngress ../../../bpf/vxlan_ingress.c
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go NodeIngress ../../../bpf/node_ingress.c
+//go:generate bpf2go -cc bpf-clang -strip bpf-llvm-strip PodEgress ../../../bpf/pod_egress.c -- -I../../../bpf
+//go:generate bpf2go -cc bpf-clang -strip bpf-llvm-strip HostEgress ../../../bpf/host_egress.c -- -I../../../bpf
+//go:generate bpf2go -cc bpf-clang -strip bpf-llvm-strip VxlanIngress ../../../bpf/vxlan_ingress.c -- -I../../../bpf
+//go:generate bpf2go -cc bpf-clang -strip bpf-llvm-strip NodeIngress ../../../bpf/node_ingress.c -- -I../../../bpf

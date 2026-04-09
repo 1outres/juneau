@@ -48,8 +48,6 @@ docker_build_with_restart(
     ]
 )
 
-local_resource('protobuf', 'protoc --go_out=module=github.com/1outres/juneau/daemon:. --go-grpc_out=module=github.com/1outres/juneau/daemon:. pkg/cnipb/cni.proto', deps=['daemon/pkg/cnipb/cni.proto'], dir='daemon/')
-
 local_resource(
     'CNI Compile', 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/cni cmd/cni/main.go', deps=['daemon/cmd/cni/main.go', 'daemon/pkg/cnipb'], dir='daemon/')
 
