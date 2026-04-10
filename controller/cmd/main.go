@@ -4,7 +4,6 @@ Copyright 2025.
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
-
     http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
@@ -47,6 +46,7 @@ import (
 	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	"github.com/1outres/juneau/controller/internal/controller"
+	webhookjuneauloutresmev1alpha1 "github.com/1outres/juneau/controller/internal/webhook/v1alpha1"
 	webhookjuneauv1alpha1 "github.com/1outres/juneau/controller/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
@@ -311,6 +311,90 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "RouteTable")
 		os.Exit(1)
 	}
+	if err = (&controller.AddressPoolReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "AddressPool")
+		os.Exit(1)
+	}
+	if err = (&controller.ExternalNetworkReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ExternalNetwork")
+		os.Exit(1)
+	}
+	if err = (&controller.BGPPeerReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "BGPPeer")
+		os.Exit(1)
+	}
+	if err = (&controller.BGPAdvertisementReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "BGPAdvertisement")
+		os.Exit(1)
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err = webhookjuneauloutresmev1alpha1.SetupAddressPoolWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "AddressPool")
+			os.Exit(1)
+		}
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err = webhookjuneauloutresmev1alpha1.SetupBGPAdvertisementWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "BGPAdvertisement")
+			os.Exit(1)
+		}
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err = webhookjuneauloutresmev1alpha1.SetupBGPPeerWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "BGPPeer")
+			os.Exit(1)
+		}
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err = webhookjuneauloutresmev1alpha1.SetupExternalNetworkWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "ExternalNetwork")
+			os.Exit(1)
+		}
+	}
+	if err = (&controller.ElasticIPReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ElasticIP")
+		os.Exit(1)
+	}
+	if err = (&controller.ElasticIPAttachmentReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ElasticIPAttachment")
+		os.Exit(1)
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err = webhookjuneauloutresmev1alpha1.SetupElasticIPWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "ElasticIP")
+			os.Exit(1)
+		}
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err = webhookjuneauloutresmev1alpha1.SetupElasticIPAttachmentWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "ElasticIPAttachment")
+			os.Exit(1)
+		}
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err = (&controller.PodReconciler{
@@ -318,6 +402,13 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Pod")
+		os.Exit(1)
+	}
+	if err = (&controller.NodeReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Node")
 		os.Exit(1)
 	}
 

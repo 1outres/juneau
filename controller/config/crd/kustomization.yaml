@@ -8,6 +8,13 @@ resources:
 - bases/juneau.loutres.me_ipleases.yaml
 - bases/juneau.loutres.me_networkendpoints.yaml
 - bases/juneau.loutres.me_routetables.yaml
+- bases/juneau.loutres.me_addresspools.yaml
+- bases/juneau.loutres.me_externalnetworks.yaml
+- bases/juneau.loutres.me_bgppeers.yaml
+- bases/juneau.loutres.me_bgpadvertisements.yaml
+- bases/juneau.loutres.me_bgpnodestates.yaml
+- bases/juneau.loutres.me_elasticips.yaml
+- bases/juneau.loutres.me_elasticipattachments.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

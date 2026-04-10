@@ -30,8 +30,9 @@ type NetworkEndpointSpec struct {
 
 	Address string `json:"address,omitempty"`
 
-	MACAddress string `json:"macAddress,omitempty"`
-	Ifindex    int    `json:"ifindex,omitempty"`
+	MACAddress     string `json:"macAddress,omitempty"`
+	HostMACAddress string `json:"hostMACAddress,omitempty"`
+	Ifindex        int    `json:"ifindex,omitempty"`
 }
 
 // NetworkEndpointStatus defines the observed state of NetworkEndpoint.

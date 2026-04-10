@@ -43,6 +43,8 @@ spec:
             properties:
               address:
                 type: string
+              hostMACAddress:
+                type: string
               ifindex:
                 type: integer
               macAddress:

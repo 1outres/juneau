@@ -10,6 +10,126 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /mutate-juneau-loutres-me-v1alpha1-addresspool
+  failurePolicy: Fail
+  name: maddresspool-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - addresspools
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-juneau-loutres-me-v1alpha1-bgpadvertisement
+  failurePolicy: Fail
+  name: mbgpadvertisement-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - bgpadvertisements
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-juneau-loutres-me-v1alpha1-bgppeer
+  failurePolicy: Fail
+  name: mbgppeer-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - bgppeers
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-juneau-loutres-me-v1alpha1-elasticip
+  failurePolicy: Fail
+  name: melasticip-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - elasticips
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-juneau-loutres-me-v1alpha1-elasticipattachment
+  failurePolicy: Fail
+  name: melasticipattachment-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - elasticipattachments
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-juneau-loutres-me-v1alpha1-externalnetwork
+  failurePolicy: Fail
+  name: mexternalnetwork-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - externalnetworks
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /mutate-juneau-loutres-me-v1alpha1-iplease
   failurePolicy: Fail
   name: miplease-v1alpha1.kb.io
@@ -110,6 +230,126 @@ kind: ValidatingWebhookConfiguration
 metadata:
   name: validating-webhook-configuration
 webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-juneau-loutres-me-v1alpha1-addresspool
+  failurePolicy: Fail
+  name: vaddresspool-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - addresspools
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-juneau-loutres-me-v1alpha1-bgpadvertisement
+  failurePolicy: Fail
+  name: vbgpadvertisement-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - bgpadvertisements
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-juneau-loutres-me-v1alpha1-bgppeer
+  failurePolicy: Fail
+  name: vbgppeer-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - bgppeers
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-juneau-loutres-me-v1alpha1-elasticip
+  failurePolicy: Fail
+  name: velasticip-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - elasticips
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-juneau-loutres-me-v1alpha1-elasticipattachment
+  failurePolicy: Fail
+  name: velasticipattachment-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - elasticipattachments
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-juneau-loutres-me-v1alpha1-externalnetwork
+  failurePolicy: Fail
+  name: vexternalnetwork-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - externalnetworks
+  sideEffects: None
 - admissionReviewVersions:
   - v1
   clientConfig:

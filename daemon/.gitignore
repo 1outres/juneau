@@ -1,3 +1,5 @@
-bin
+/bin/*
+!/bin/*.go
 .cache
 compile_commands.json
+bpf/vmlinux.h
