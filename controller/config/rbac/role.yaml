@@ -28,6 +28,12 @@ rules:
 - apiGroups:
   - juneau.loutres.me
   resources:
+  - addresspools
+  - bgpadvertisements
+  - bgppeers
+  - elasticipattachments
+  - elasticips
+  - externalnetworks
   - ipleases
   - networkendpoints
   - networkinterfaces
@@ -45,6 +51,12 @@ rules:
 - apiGroups:
   - juneau.loutres.me
   resources:
+  - addresspools/finalizers
+  - bgpadvertisements/finalizers
+  - bgppeers/finalizers
+  - elasticipattachments/finalizers
+  - elasticips/finalizers
+  - externalnetworks/finalizers
   - ipleases/finalizers
   - networkendpoints/finalizers
   - networkinterfaces/finalizers
@@ -56,6 +68,12 @@ rules:
 - apiGroups:
   - juneau.loutres.me
   resources:
+  - addresspools/status
+  - bgpadvertisements/status
+  - bgppeers/status
+  - elasticipattachments/status
+  - elasticips/status
+  - externalnetworks/status
   - ipleases/status
   - networkendpoints/status
   - networkinterfaces/status
@@ -66,6 +84,17 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - juneau.loutres.me
+  resources:
+  - bgpnodestates
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

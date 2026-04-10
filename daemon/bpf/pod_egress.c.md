@@ -12,10 +12,11 @@
 
 1. L2ヘッダーのパースを行う
 2. ifindex_subnet mapを引く(key: skb->ifindex)
-3. ARPリクエストの場合、handle_arp関数を呼び出し、その関数の返り値を返す（handle_arp関数にはifindex_subnet mapのvalも渡す）
-4. subnet_idが1の場合、host_iface mapを引いて、ifindexにbpf_redirectする
-5. subnet_idが1以外の場合、もし対象がgw_macだったらhandle_l3関数を呼び出し、その関数の返り値を返す(ifindex_subnet mapのvalも渡す)
-6. そうじゃなかったらforward_l2関数を呼び出し、その返り値を返す(ifindex_subnet mapのvalも渡す)
+3. subnet_mapを引く
+4. ARPリクエストの場合、handle_arp関数を呼び出し、その関数の返り値を返す（handle_arp関数にはsubnet_idとsubnet_mapのvalも渡す）
+5. subnet_idが1の場合、host_iface mapを引いて、ifindexにbpf_redirectする
+6. subnet_idが1以外の場合、もし対象がgw_macだったらhandle_l3関数を呼び出し、その関数の返り値を返す(subnet_idとsubnet_mapのvalも渡す)
+7. そうじゃなかったらforward_l2関数を呼び出し、その返り値を返す(subnet_idとsubnet_mapのvalも渡す)
 
 ## forward_l2
 
@@ -43,7 +44,20 @@
 1. IPヘッダーのパースを行う
 2. fib_mapをlongest matchで引く(table_idはifindex_subnet mapにあるやつ、宛先ipaddr)
 3. 見つからなかったらドロップ
-4. dmacが0だったら、宛先ipaddrのarp mapを引く(ここのsubnet_idは、mapを引いたvalのsubnet_idを使う)
-5. パケットのdmacを、dmac(0じゃなかった場合)もしくはarp mapの結果で書き換える
-6. パケットのsmacを、smacで書き換える
-7. dmacが0じゃなかった場合、oifにbpf_redirectする。0だったら、forward_l2に渡す
+4. fib_val.type が CONNECTED の場合、宛先ipaddrのarp mapを引く(ここのsubnet_idは、mapを引いたvalのsubnet_idを使う)
+5. arp mapに見つからなかったらドロップ
+6. パケットのdmacをarp mapの結果で書き換える
+7. パケットのsmacをfib_val.smacで書き換える
+8. forward_l2にfib_val.subnet_idを渡す
+9. fib_val.type が ENDPOINT の場合、パケットのdmacをfib_val.dmacで書き換える
+10. パケットのsmacをfib_val.smacで書き換える
+11. forward_l2にfib_val.subnet_idを渡す
+12. fib_val.type が INTERNET_GATEWAY の場合、handle_snatに渡す
+
+## handle_snat
+
+1. nat_snat_mapを引く(送信元IPアドレスとsubnet_id)
+2. 見つからなかったらTC_ACT_SHOT
+3. 送信元IPアドレスをaddrで置き換える
+4. ifindex_host_macを引いて、dmacを置き換える
+5. OSに渡す(TC_ACT_OK)

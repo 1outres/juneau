@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bgp-speaker
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: bgp-speaker-bgpadvertisement-viewer-binding
+subjects:
+  - kind: ServiceAccount
+    name: bgp-speaker
+    namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: juneau-bgpadvertisement-viewer-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: bgp-speaker-bgppeer-viewer-binding
+subjects:
+  - kind: ServiceAccount
+    name: bgp-speaker
+    namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: juneau-bgppeer-viewer-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: bgp-speaker-externalnetwork-viewer-binding
+subjects:
+  - kind: ServiceAccount
+    name: bgp-speaker
+    namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: juneau-externalnetwork-viewer-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: bgp-speaker-addresspool-viewer-binding
+subjects:
+  - kind: ServiceAccount
+    name: bgp-speaker
+    namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: juneau-addresspool-viewer-role
+  apiGroup: rbac.authorization.k8s.io

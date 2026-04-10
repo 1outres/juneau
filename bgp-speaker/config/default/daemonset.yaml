@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: bgp-speaker
+  labels:
+    app: bgp-speaker
+spec:
+  selector:
+    matchLabels:
+      app: bgp-speaker
+  template:
+    metadata:
+      labels:
+        app: bgp-speaker
+    spec:
+      hostNetwork: true
+      hostPID: true
+      dnsPolicy: ClusterFirstWithHostNet
+      terminationGracePeriodSeconds: 10
+      tolerations:
+        - operator: "Exists"
+      serviceAccountName: bgp-speaker
+      containers:
+        - name: bgp-speaker
+          image: bgp-speaker:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP

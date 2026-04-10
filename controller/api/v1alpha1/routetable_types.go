@@ -46,8 +46,9 @@ type RouteVia struct {
 type RouteViaType string
 
 const (
-	ViaConnnected RouteViaType = "connected"
-	ViaEndpoint   RouteViaType = "endpoint"
+	ViaConnnected      RouteViaType = "connected"
+	ViaEndpoint        RouteViaType = "endpoint"
+	ViaInternetGateway RouteViaType = "internetGateway"
 )
 
 // +kubebuilder:object:root=true

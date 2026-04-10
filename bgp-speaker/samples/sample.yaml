@@ -1,0 +1,34 @@
+apiVersion: juneau.loutres.me/v1alpha1
+kind: BGPAdvertisement
+metadata:
+  name: bgpadvertisement-sample
+spec:
+  addressPools:
+    - pool-1
+---
+apiVersion: juneau.loutres.me/v1alpha1
+kind: BGPPeer
+metadata:
+  name: bgppeer-sample
+spec:
+  myASN: 65001
+  peerASN: 65002
+  peerAddress: 10.225.32.1
+---
+apiVersion: juneau.loutres.me/v1alpha1
+kind: ExternalNetwork
+metadata:
+  name: external
+spec:
+  type: bgp
+  addressPools:
+    - pool-1
+---
+apiVersion: juneau.loutres.me/v1alpha1
+kind: AddressPool
+metadata:
+  name: pool-1
+spec:
+  advertiseMode: bgp
+  addresses:
+    - 10.225.51.0/24

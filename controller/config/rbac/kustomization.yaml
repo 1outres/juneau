@@ -22,6 +22,27 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the {{ .ProjectName }} itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
+- elasticipattachment_admin_role.yaml
+- elasticipattachment_editor_role.yaml
+- elasticipattachment_viewer_role.yaml
+- elasticip_admin_role.yaml
+- elasticip_editor_role.yaml
+- elasticip_viewer_role.yaml
+- bgpnodestate_admin_role.yaml
+- bgpnodestate_editor_role.yaml
+- bgpnodestate_viewer_role.yaml
+- bgpadvertisement_admin_role.yaml
+- bgpadvertisement_editor_role.yaml
+- bgpadvertisement_viewer_role.yaml
+- bgppeer_admin_role.yaml
+- bgppeer_editor_role.yaml
+- bgppeer_viewer_role.yaml
+- externalnetwork_admin_role.yaml
+- externalnetwork_editor_role.yaml
+- externalnetwork_viewer_role.yaml
+- addresspool_admin_role.yaml
+- addresspool_editor_role.yaml
+- addresspool_viewer_role.yaml
 - routetable_admin_role.yaml
 - routetable_editor_role.yaml
 - routetable_viewer_role.yaml
