@@ -31,16 +31,20 @@ import (
 )
 
 // namespace where the project is deployed in
-const namespace = "controller-system"
+const namespace = "juneau-system"
 
 // serviceAccountName created for the project
-const serviceAccountName = "controller-controller-manager"
+const serviceAccountName = "juneau-controller-manager"
 
 // metricsServiceName is the name of the metrics service of the project
-const metricsServiceName = "controller-controller-manager-metrics-service"
+const metricsServiceName = "juneau-controller-manager-metrics-service"
 
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
 const metricsRoleBindingName = "controller-metrics-binding"
+
+const mutatingWebhookConfigName = "juneau-mutating-webhook-configuration"
+
+const validatingWebhookConfigName = "juneau-validating-webhook-configuration"
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
@@ -271,7 +275,7 @@ var _ = Describe("Manager", Ordered, func() {
 			verifyCAInjection := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get",
 					"mutatingwebhookconfigurations.admissionregistration.k8s.io",
-					"controller-mutating-webhook-configuration",
+					mutatingWebhookConfigName,
 					"-o", "go-template={{ range .webhooks }}{{ .clientConfig.caBundle }}{{ end }}")
 				mwhOutput, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -285,7 +289,7 @@ var _ = Describe("Manager", Ordered, func() {
 			verifyCAInjection := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get",
 					"validatingwebhookconfigurations.admissionregistration.k8s.io",
-					"controller-validating-webhook-configuration",
+					validatingWebhookConfigName,
 					"-o", "go-template={{ range .webhooks }}{{ .clientConfig.caBundle }}{{ end }}")
 				vwhOutput, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
