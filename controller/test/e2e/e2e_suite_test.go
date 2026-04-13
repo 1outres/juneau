@@ -52,7 +52,6 @@ var _ = BeforeSuite(func() {
 
 	By("building the webhook cert job image")
 	cmd = exec.Command("make", "docker-build-webhookcertjob",
-		"CONTAINER_TOOL=podman",
 		fmt.Sprintf("WEBHOOKCERTJOB_IMG=%s", webhookCertJobImage))
 	_, err = utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the webhook cert job image")

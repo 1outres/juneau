@@ -1,0 +1,215 @@
+package e2e
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+)
+
+const (
+	clusterName         = "juneau-e2e"
+	controllerImage     = "example.com/controller:v0.0.1"
+	webhookCertJobImage = "example.com/webhookcertjob:v0.0.1"
+	daemonImage         = "daemon:latest"
+	controllerNamespace = "juneau-system"
+	daemonNamespace     = "kube-system"
+	workloadNamespace   = "juneau-e2e"
+	testVpcName         = "e2e-vpc"
+	testSubnetName      = "e2e-subnet"
+	testSubnetCIDR      = "10.32.0.0/24"
+	kindKubectlTimeout  = 5 * time.Minute
+	defaultPollInterval = 2 * time.Second
+)
+
+var repoRoot string
+
+func TestE2E(t *testing.T) {
+	RegisterFailHandler(Fail)
+	SetDefaultEventuallyTimeout(kindKubectlTimeout)
+	SetDefaultEventuallyPollingInterval(defaultPollInterval)
+	RunSpecs(t, "Juneau Cluster E2E Suite")
+}
+
+var _ = SynchronizedBeforeSuite(func() []byte {
+	root, err := findRepoRoot()
+	Expect(err).NotTo(HaveOccurred())
+	repoRoot = root
+
+	runBestEffort(root, "kind", "delete", "cluster", "--name", clusterName)
+
+	configFile, err := writeKindConfig(root)
+	Expect(err).NotTo(HaveOccurred())
+
+	mustRun(root, "kind", "create", "cluster", "--name", clusterName, "--config", configFile)
+	mustRun(filepath.Join(root, "controller"), "make", "docker-build", fmt.Sprintf("IMG=%s", controllerImage))
+	mustRun(filepath.Join(root, "controller"), "make", "docker-build-webhookcertjob", fmt.Sprintf("WEBHOOKCERTJOB_IMG=%s", webhookCertJobImage))
+	mustRun(filepath.Join(root, "daemon"), "make", "docker-build", fmt.Sprintf("IMG=%s", daemonImage))
+
+	for _, image := range []string{controllerImage, webhookCertJobImage, daemonImage} {
+		mustRun(root, "kind", "load", "docker-image", image, "--name", clusterName)
+	}
+
+	mustRun(filepath.Join(root, "controller"), "make", "install")
+	mustRun(filepath.Join(root, "controller"), "make", "deploy", fmt.Sprintf("IMG=%s", controllerImage))
+	mustRun(root, "kubectl", "label", "--overwrite", "namespace", controllerNamespace, "pod-security.kubernetes.io/enforce=privileged")
+	mustRun(root, "kubectl", "label", "--overwrite", "namespace", daemonNamespace, "pod-security.kubernetes.io/enforce=privileged")
+	mustRun(root, "kubectl", "apply", "-k", filepath.Join(root, "daemon", "config", "default"))
+	runBestEffort(root, "kubectl", "taint", "nodes", "--all", "node-role.kubernetes.io/control-plane-")
+
+	Eventually(func(g Gomega) {
+		g.Expect(run(root, "kubectl", "rollout", "status", "deployment/juneau-controller-manager", "-n", controllerNamespace, "--timeout=30s")).To(Succeed())
+	}).Should(Succeed())
+
+	Eventually(func(g Gomega) {
+		g.Expect(run(root, "kubectl", "rollout", "status", "daemonset/juneau-cni-daemon", "-n", daemonNamespace, "--timeout=30s")).To(Succeed())
+	}).Should(Succeed())
+
+	Eventually(func(g Gomega) {
+		status, err := kubectlJSONPath(root, "{.metadata.name}", "-n", controllerNamespace, "get", "secret", "webhook-certs")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(strings.TrimSpace(status)).To(Equal("webhook-certs"))
+	}).Should(Succeed())
+
+	Eventually(func(g Gomega) {
+		g.Expect(run(root, "kubectl", "wait", "--for=condition=Ready", "node", "--all", "--timeout=30s")).To(Succeed())
+	}).Should(Succeed())
+
+	return []byte(root)
+}, func(data []byte) {
+	repoRoot = string(data)
+})
+
+var _ = SynchronizedAfterSuite(func() {
+	if strings.EqualFold(os.Getenv("E2E_KEEP_CLUSTER"), "true") {
+		return
+	}
+	run(repoRoot, "kind", "delete", "cluster", "--name", clusterName)
+}, func() {})
+
+var _ = AfterEach(func() {
+	if !CurrentSpecReport().Failed() {
+		return
+	}
+
+	dumpResource("pods", "-A", "-o", "wide")
+	dumpResource("networkinterfaces.juneau.loutres.me", "-A")
+	dumpResource("networkendpoints.juneau.loutres.me", "-A")
+	dumpResource("ipleases.juneau.loutres.me")
+	dumpResource("subnets.juneau.loutres.me")
+	dumpResource("vpcs.juneau.loutres.me")
+	dumpLogs(controllerNamespace, "deployment/juneau-controller-manager")
+	dumpLogs(daemonNamespace, "daemonset/juneau-cni-daemon")
+})
+
+func findRepoRoot() (string, error) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(filepath.Join(wd, "..", "..")), nil
+}
+
+func writeKindConfig(root string) (string, error) {
+	config := `kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  disableDefaultCNI: true
+nodes:
+  - role: control-plane
+`
+
+	path := filepath.Join(root, "test", "e2e", ".kind-config.yaml")
+	if err := os.WriteFile(path, []byte(config), 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func run(dir string, name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GO111MODULE=on", fmt.Sprintf("KIND_CLUSTER=%s", clusterName))
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	_, _ = fmt.Fprintf(GinkgoWriter, "running: (cd %s && %s %s)\n", dir, name, strings.Join(args, " "))
+	err := cmd.Run()
+	if stdout.Len() > 0 {
+		_, _ = GinkgoWriter.Write(stdout.Bytes())
+	}
+	if stderr.Len() > 0 {
+		_, _ = GinkgoWriter.Write(stderr.Bytes())
+	}
+	if err != nil {
+		return fmt.Errorf("%s %s failed: %w", name, strings.Join(args, " "), err)
+	}
+	return nil
+}
+
+func runBestEffort(dir string, name string, args ...string) {
+	if err := run(dir, name, args...); err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "best-effort command failed: %v\n", err)
+	}
+}
+
+func mustRun(dir string, name string, args ...string) {
+	Expect(run(dir, name, args...)).To(Succeed())
+}
+
+func kubectlOutput(dir string, args ...string) (string, error) {
+	cmd := exec.Command("kubectl", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), fmt.Sprintf("KIND_CLUSTER=%s", clusterName))
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	_, _ = fmt.Fprintf(GinkgoWriter, "running: (cd %s && kubectl %s)\n", dir, strings.Join(args, " "))
+	err := cmd.Run()
+	if stderr.Len() > 0 {
+		_, _ = GinkgoWriter.Write(stderr.Bytes())
+	}
+	if err != nil {
+		return strings.TrimSpace(stdout.String()), fmt.Errorf("kubectl %s failed: %w", strings.Join(args, " "), err)
+	}
+	if stdout.Len() > 0 {
+		_, _ = GinkgoWriter.Write(stdout.Bytes())
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+func kubectlJSONPath(dir string, jsonPath string, args ...string) (string, error) {
+	fullArgs := append(args, "-o", "jsonpath="+jsonPath)
+	return kubectlOutput(dir, fullArgs...)
+}
+
+func dumpResource(resource string, args ...string) {
+	out, err := kubectlOutput(repoRoot, append([]string{"get", resource}, args...)...)
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "failed to dump %s: %v\n", resource, err)
+		return
+	}
+	_, _ = fmt.Fprintf(GinkgoWriter, "\n%s\n", out)
+}
+
+func dumpLogs(namespace string, target string) {
+	out, err := kubectlOutput(repoRoot, "logs", "-n", namespace, target, "--all-containers=true")
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "failed to dump logs for %s/%s: %v\n", namespace, target, err)
+		return
+	}
+	_, _ = fmt.Fprintf(GinkgoWriter, "\nlogs %s/%s\n%s\n", namespace, target, out)
+}

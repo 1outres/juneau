@@ -3,6 +3,7 @@ module github.com/1outres/juneau/daemon
 go 1.24.2
 
 require (
+	github.com/1outres/juneau/controller v0.0.0
 	github.com/cilium/ebpf v0.20.0
 	github.com/containernetworking/cni v1.3.0
 	github.com/containernetworking/plugins v1.9.0
@@ -61,3 +62,5 @@ require (
 	sigs.k8s.io/structured-merge-diff/v4 v4.4.2 // indirect
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )
+
+replace github.com/1outres/juneau/controller => ../controller

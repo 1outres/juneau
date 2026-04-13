@@ -47,6 +47,7 @@ type Manager struct {
 	vxlanIfindex       int
 	hostIfindex        int
 	nodeIngressIfindex int
+	pinPath            string
 	hostMac            net.HardwareAddr
 	externalGateway    *InternetGatewayInfo
 
@@ -77,19 +78,17 @@ const (
 )
 
 func (m *Manager) Start(ctx context.Context) error {
-	const pinPath = "/sys/fs/bpf/juneau"
-
 	internetGateway, err := resolveInternetGatewayInfo(m.nodeIngressIfindex)
 	if err != nil {
 		return fmt.Errorf("resolve internet gateway info: %w", err)
 	}
 	m.externalGateway = internetGateway
 
-	if err := os.RemoveAll(pinPath); err != nil {
+	if err := os.RemoveAll(m.pinPath); err != nil {
 		zap.S().Errorf("failed to remove BPF pin path: %v", err)
 		return fmt.Errorf("failed to remove BPF pin path: %w", err)
 	}
-	if err := os.MkdirAll(pinPath, 0755); err != nil {
+	if err := os.MkdirAll(m.pinPath, 0755); err != nil {
 		zap.S().Errorf("failed to create BPF pin path: %v", err)
 		return fmt.Errorf("failed to create BPF pin path: %w", err)
 	}
@@ -105,7 +104,7 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	if err = LoadPodEgressObjects(m.podEgressObjs, &ebpf.CollectionOptions{
 		Maps: ebpf.MapOptions{
-			PinPath: pinPath,
+			PinPath: m.pinPath,
 		},
 	}); err != nil {
 		zap.S().Errorf("failed to load pod egress objects: %v", err)
@@ -127,7 +126,7 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	if err := LoadHostEgressObjects(m.hostEgressObjs, &ebpf.CollectionOptions{
 		Maps: ebpf.MapOptions{
-			PinPath: pinPath,
+			PinPath: m.pinPath,
 		},
 	}); err != nil {
 		zap.S().Errorf("failed to load host egress objects: %v", err)
@@ -153,7 +152,7 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	if err := LoadVxlanIngressObjects(m.vxlanIngressObjs, &ebpf.CollectionOptions{
 		Maps: ebpf.MapOptions{
-			PinPath: pinPath,
+			PinPath: m.pinPath,
 		},
 	}); err != nil {
 		zap.S().Errorf("failed to load vxlan ingress objects: %v", err)
@@ -174,7 +173,7 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	if err := LoadNodeIngressObjects(m.nodeIngressObjs, &ebpf.CollectionOptions{
 		Maps: ebpf.MapOptions{
-			PinPath: pinPath,
+			PinPath: m.pinPath,
 		},
 	}); err != nil {
 		zap.S().Errorf("failed to load node ingress objects: %v", err)
@@ -1084,7 +1083,7 @@ func parseBGPAddressPoolPrefix(raw string) (PodEgressBgpAddressPoolsKey, string,
 	return key, ipnet.String(), nil
 }
 
-func NewManager(cl client.Client, nwepInformer cache.Informer, eipaInformer cache.Informer, addressPoolInformer cache.Informer, bgpAdvertisementInformer cache.Informer, rtInformer cache.Informer, subnetInformer cache.Informer, nodeName string, vxlanIfindex int, hostIfindex int, nodeIngressIfindex int, defaultGatewayMac net.HardwareAddr) *Manager {
+func NewManager(cl client.Client, nwepInformer cache.Informer, eipaInformer cache.Informer, addressPoolInformer cache.Informer, bgpAdvertisementInformer cache.Informer, rtInformer cache.Informer, subnetInformer cache.Informer, nodeName string, vxlanIfindex int, hostIfindex int, nodeIngressIfindex int, pinPath string, defaultGatewayMac net.HardwareAddr) *Manager {
 	return &Manager{
 		client:                   cl,
 		nwepInformer:             nwepInformer,
@@ -1097,6 +1096,7 @@ func NewManager(cl client.Client, nwepInformer cache.Informer, eipaInformer cach
 		vxlanIfindex:             vxlanIfindex,
 		hostIfindex:              hostIfindex,
 		nodeIngressIfindex:       nodeIngressIfindex,
+		pinPath:                  pinPath,
 		hostMac:                  defaultGatewayMac,
 		podEgressMapSpecs:        &PodEgressMapSpecs{},
 		podEgressObjs:            &PodEgressObjects{},

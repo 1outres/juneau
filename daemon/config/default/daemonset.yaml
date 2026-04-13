@@ -40,8 +40,6 @@ spec:
             - name: host-lib-modules
               mountPath: /lib/modules
               readOnly: true
-            - name: host-bpf
-              mountPath: /sys/fs/bpf
             - name: k3s-data
               mountPath: /var/lib/rancher/k3s/data
               readOnly: true
@@ -69,10 +67,6 @@ spec:
         - name: host-lib-modules
           hostPath:
             path: /lib/modules
-        - name: host-bpf
-          hostPath:
-            path: /sys/fs/bpf
-            type: DirectoryOrCreate
         - name: k3s-data
           hostPath:
             path: /var/lib/rancher/k3s/data

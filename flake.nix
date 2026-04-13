@@ -45,14 +45,6 @@
           bpfLlvmStrip = pkgs.writeShellScriptBin "bpf-llvm-strip" ''
             exec ${pkgs.llvmPackages.bintools-unwrapped}/bin/llvm-strip "$@"
           '';
-          kindWrapped = pkgs.writeShellScriptBin "kind" ''
-            exec ${pkgs.systemd}/bin/systemd-run \
-              --scope \
-              --user \
-              -p Delegate=yes \
-              --setenv=KIND_EXPERIMENTAL_PROVIDER=podman \
-              ${pkgs.kind}/bin/kind "$@"
-          '';
           generateVmlinuxHeader = pkgs.writeShellScriptBin "juneau-gen-vmlinux" ''
             set -euo pipefail
             out="''${1:-daemon/bpf/vmlinux.h}"
@@ -67,7 +59,7 @@
               golangci-lint
               tilt
               kustomize
-              kindWrapped
+              kind
               protobuf
               clang
               llvmPackages.bintools
