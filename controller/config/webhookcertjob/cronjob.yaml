@@ -28,7 +28,7 @@ spec:
           restartPolicy: OnFailure
           containers:
             - name: webhook-cert-job
-              image: webhookcertjob:latest
+              image: example.com/webhookcertjob:v0.0.1
               imagePullPolicy: IfNotPresent
               command:
                 - /webhookcertjob

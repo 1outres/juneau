@@ -1,5 +1,6 @@
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
+WEBHOOKCERTJOB_IMG ?= webhookcertjob:latest
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -105,6 +106,10 @@ run: manifests generate fmt vet ## Run a controller from your host.
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
 	$(CONTAINER_TOOL) build -t ${IMG} .
+
+.PHONY: docker-build-webhookcertjob
+docker-build-webhookcertjob: ## Build docker image with the webhook cert job.
+	$(CONTAINER_TOOL) build -f Dockerfile.webhookcertjob -t ${WEBHOOKCERTJOB_IMG} .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
