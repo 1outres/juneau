@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"sort"
 	"strings"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+	"github.com/mdlayher/arp"
 	"github.com/vishvananda/netlink"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -80,9 +82,10 @@ const (
 func (m *Manager) Start(ctx context.Context) error {
 	internetGateway, err := resolveInternetGatewayInfo(m.nodeIngressIfindex)
 	if err != nil {
-		return fmt.Errorf("resolve internet gateway info: %w", err)
+		zap.S().Warnf("failed to resolve internet gateway info: %v", err)
+	} else {
+		m.externalGateway = internetGateway
 	}
-	m.externalGateway = internetGateway
 
 	if err := os.RemoveAll(m.pinPath); err != nil {
 		zap.S().Errorf("failed to remove BPF pin path: %v", err)
@@ -878,46 +881,93 @@ func resolveInternetGatewayInfo(ifindex int) (*InternetGatewayInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	routes, err := netlink.RouteGet(net.IPv4(1, 1, 1, 1))
+	ifi, err := net.InterfaceByIndex(ifindex)
 	if err != nil {
 		return nil, err
 	}
 
-	var route *netlink.Route
-	for i := range routes {
-		r := &routes[i]
-		if r.LinkIndex == ifindex && r.Gw != nil {
-			route = r
-			break
+	route, err := resolveDefaultGatewayRoute(link)
+	if err != nil {
+		return nil, err
+	}
+
+	mac, ok, err := lookupNeighborMAC(ifindex, route.Gw)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		mac, err = resolveNeighborMACWithARP(ifi, route.Gw)
+		if err != nil {
+			return nil, err
 		}
 	}
-	if route == nil {
-		return nil, fmt.Errorf("no default route with gateway found on ifindex %d", ifindex)
-	}
 
-	neighs, err := netlink.NeighList(ifindex, 0)
+	return &InternetGatewayInfo{
+		Ifindex:    ifindex,
+		SourceMAC:  link.Attrs().HardwareAddr,
+		NextHopIP:  route.Gw,
+		NextHopMAC: mac,
+	}, nil
+}
+
+func resolveDefaultGatewayRoute(link netlink.Link) (*netlink.Route, error) {
+	routes, err := netlink.RouteList(link, netlink.FAMILY_V4)
 	if err != nil {
 		return nil, err
+	}
+
+	for i := range routes {
+		route := &routes[i]
+		if route.Dst == nil && route.Gw != nil {
+			return route, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no default route with gateway found on ifindex %d", link.Attrs().Index)
+}
+
+func lookupNeighborMAC(ifindex int, gw net.IP) (net.HardwareAddr, bool, error) {
+	neighs, err := netlink.NeighList(ifindex, netlink.FAMILY_V4)
+	if err != nil {
+		return nil, false, err
 	}
 
 	for i := range neighs {
 		neigh := &neighs[i]
-		if neigh.IP == nil || !neigh.IP.Equal(route.Gw) {
+		if neigh.IP == nil || !neigh.IP.Equal(gw) {
 			continue
 		}
 		if len(neigh.HardwareAddr) == 0 {
 			continue
 		}
-		return &InternetGatewayInfo{
-			Ifindex:    ifindex,
-			SourceMAC:  link.Attrs().HardwareAddr,
-			NextHopIP:  route.Gw,
-			NextHopMAC: neigh.HardwareAddr,
-		}, nil
+		return neigh.HardwareAddr, true, nil
 	}
 
-	return nil, fmt.Errorf("no neighbor entry found for gateway %s on ifindex %d", route.Gw, ifindex)
+	return nil, false, nil
+}
+
+func resolveNeighborMACWithARP(ifi *net.Interface, gw net.IP) (net.HardwareAddr, error) {
+	gwAddr, ok := netip.AddrFromSlice(gw.To4())
+	if !ok {
+		return nil, fmt.Errorf("gateway %s is not IPv4", gw)
+	}
+
+	client, err := arp.Dial(ifi)
+	if err != nil {
+		return nil, fmt.Errorf("dial arp on %s: %w", ifi.Name, err)
+	}
+	defer client.Close()
+
+	if err := client.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		return nil, err
+	}
+
+	hwAddr, err := client.Resolve(gwAddr)
+	if err != nil {
+		return nil, fmt.Errorf("resolve gateway %s MAC on %s: %w", gw, ifi.Name, err)
+	}
+
+	return hwAddr, nil
 }
 
 func (m *Manager) rebuildAllRouteTables(ctx context.Context) error {

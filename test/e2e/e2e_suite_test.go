@@ -21,15 +21,15 @@ const (
 	daemonImage         = "daemon:latest"
 	controllerNamespace = "juneau-system"
 	daemonNamespace     = "kube-system"
-	workloadNamespace   = "juneau-e2e"
-	testVpcName         = "e2e-vpc"
-	testSubnetName      = "e2e-subnet"
-	testSubnetCIDR      = "10.32.0.0/24"
+	defaultVpcName      = "default"
+	defaultSubnetName   = "default"
 	kindKubectlTimeout  = 5 * time.Minute
 	defaultPollInterval = 2 * time.Second
 )
 
 var repoRoot string
+var workerNodes []string
+var currentCase *caseContext
 
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -82,9 +82,23 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 		g.Expect(run(root, "kubectl", "wait", "--for=condition=Ready", "node", "--all", "--timeout=30s")).To(Succeed())
 	}).Should(Succeed())
 
+	Eventually(func(g Gomega) {
+		ready, err := kubectlJSONPath(root, `{.status.conditions[?(@.type=="Ready")].status}`, "get", "subnet", defaultSubnetName)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(strings.TrimSpace(ready)).To(Equal("True"))
+	}).Should(Succeed())
+
+	nodes, err := discoverWorkerNodes(root)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(nodes).To(HaveLen(2))
+	workerNodes = nodes
+
 	return []byte(root)
 }, func(data []byte) {
 	repoRoot = string(data)
+	nodes, err := discoverWorkerNodes(repoRoot)
+	Expect(err).NotTo(HaveOccurred())
+	workerNodes = nodes
 })
 
 var _ = SynchronizedAfterSuite(func() {
@@ -105,8 +119,20 @@ var _ = AfterEach(func() {
 	dumpResource("ipleases.juneau.loutres.me")
 	dumpResource("subnets.juneau.loutres.me")
 	dumpResource("vpcs.juneau.loutres.me")
+	dumpResource("routetables.juneau.loutres.me")
+	dumpResource("services", "-A", "-o", "wide")
+	dumpResource("endpoints", "-A")
+	dumpResource("endpointslices.discovery.k8s.io", "-A")
+	dumpDescribe("nodes")
+	dumpEvents()
+	if currentCase != nil {
+		dumpDescribe("pods", "-n", currentCase.namespace)
+		dumpDescribe("services", "-n", currentCase.namespace)
+		dumpDescribe("endpoints", "-n", currentCase.namespace)
+	}
 	dumpLogs(controllerNamespace, "deployment/juneau-controller-manager")
 	dumpLogs(daemonNamespace, "daemonset/juneau-cni-daemon")
+	dumpNodeState()
 })
 
 func findRepoRoot() (string, error) {
@@ -124,6 +150,8 @@ networking:
   disableDefaultCNI: true
 nodes:
   - role: control-plane
+  - role: worker
+  - role: worker
 `
 
 	path := filepath.Join(root, "test", "e2e", ".kind-config.yaml")
@@ -131,6 +159,23 @@ nodes:
 		return "", err
 	}
 	return path, nil
+}
+
+func discoverWorkerNodes(dir string) ([]string, error) {
+	out, err := kubectlOutput(dir, "get", "nodes", "-l", "!node-role.kubernetes.io/control-plane", "-o", `jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}`)
+	if err != nil {
+		return nil, err
+	}
+
+	var nodes []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		nodes = append(nodes, line)
+	}
+	return nodes, nil
 }
 
 func run(dir string, name string, args ...string) error {
@@ -212,4 +257,40 @@ func dumpLogs(namespace string, target string) {
 		return
 	}
 	_, _ = fmt.Fprintf(GinkgoWriter, "\nlogs %s/%s\n%s\n", namespace, target, out)
+}
+
+func dumpDescribe(resource string, args ...string) {
+	out, err := kubectlOutput(repoRoot, append([]string{"describe", resource}, args...)...)
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "failed to describe %s: %v\n", resource, err)
+		return
+	}
+	_, _ = fmt.Fprintf(GinkgoWriter, "\ndescribe %s\n%s\n", resource, out)
+}
+
+func dumpEvents() {
+	out, err := kubectlOutput(repoRoot, "get", "events", "-A", "--sort-by=.lastTimestamp")
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "failed to dump events: %v\n", err)
+		return
+	}
+	_, _ = fmt.Fprintf(GinkgoWriter, "\nevents\n%s\n", out)
+}
+
+func dumpNodeState() {
+	nodes := append([]string{clusterName + "-control-plane"}, workerNodes...)
+	for _, node := range nodes {
+		if node == "" {
+			continue
+		}
+		dumpDockerExec(node, "sh", "-lc", "ip addr; printf '\n==== routes ====\n'; ip route; printf '\n==== iptables ====\n'; iptables-save; printf '\n==== cni ====\n'; ls -al /etc/cni/net.d")
+	}
+}
+
+func dumpDockerExec(container string, args ...string) {
+	cmdArgs := append([]string{"exec", container}, args...)
+	err := run(repoRoot, "docker", cmdArgs...)
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "failed to inspect node %s: %v\n", container, err)
+	}
 }

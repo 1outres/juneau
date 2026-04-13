@@ -7,9 +7,12 @@ require (
 	github.com/cilium/ebpf v0.20.0
 	github.com/containernetworking/cni v1.3.0
 	github.com/containernetworking/plugins v1.9.0
+	github.com/coreos/go-iptables v0.8.0
+	github.com/mdlayher/arp v0.0.0-20220512170110-6706a2966875
 	github.com/urfave/cli/v3 v3.6.1
 	github.com/vishvananda/netlink v1.3.1
 	go.uber.org/zap v1.27.1
+	golang.org/x/sys v0.37.0
 	google.golang.org/grpc v1.77.0
 	google.golang.org/protobuf v1.36.11
 	k8s.io/api v0.32.1
@@ -20,7 +23,6 @@ require (
 )
 
 require (
-	github.com/coreos/go-iptables v0.8.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/emicklei/go-restful/v3 v3.11.0 // indirect
 	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
@@ -36,12 +38,15 @@ require (
 	github.com/google/gofuzz v1.2.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
+	github.com/josharian/native v1.1.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
+	github.com/mdlayher/ethernet v0.0.0-20220221185849-529eae5b6118 // indirect
+	github.com/mdlayher/packet v1.1.2 // indirect
+	github.com/mdlayher/socket v0.5.1 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
@@ -49,7 +54,7 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/net v0.46.1-0.20251013234738-63d1a5100f82 // indirect
 	golang.org/x/oauth2 v0.32.0 // indirect
-	golang.org/x/sys v0.37.0 // indirect
+	golang.org/x/sync v0.17.0 // indirect
 	golang.org/x/term v0.36.0 // indirect
 	golang.org/x/text v0.30.0 // indirect
 	golang.org/x/time v0.7.0 // indirect
