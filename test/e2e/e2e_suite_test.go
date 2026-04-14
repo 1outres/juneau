@@ -148,6 +148,7 @@ func writeKindConfig(root string) (string, error) {
 apiVersion: kind.x-k8s.io/v1alpha4
 networking:
   disableDefaultCNI: true
+  podSubnet: "10.16.0.0/16"
 nodes:
   - role: control-plane
   - role: worker
