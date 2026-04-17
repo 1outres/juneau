@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - "docs/**"
+      - "controller/api/**"
+      - "controller/Makefile"
       - "mkdocs.yml"
       - ".github/workflows/docs.yml"
       - "Makefile"
@@ -24,6 +26,12 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: docs/requirements.txt
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+          cache: true
 
       - name: Install docs dependencies
         run: python -m pip install -r docs/requirements.txt

@@ -38,3 +38,4 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - API Reference: api-reference/v1alpha1.md
