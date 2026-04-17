@@ -809,7 +809,7 @@ func (m *Manager) UpsertRouteTable(ctx context.Context, rt *juneauv1alpha1.Route
 		}
 	}
 
-	if err := m.podEgressObjs.FibMap.Update(rt.Status.TableID, fib.FD(), ebpf.UpdateAny); err != nil {
+	if err := m.podEgressObjs.FibMap.Update(rt.Status.TableID, uint32(fib.FD()), ebpf.UpdateAny); err != nil {
 		_ = fib.Close()
 		return err
 	}
