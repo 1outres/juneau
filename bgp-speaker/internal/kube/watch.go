@@ -42,13 +42,15 @@ func (i *Invalidator) RegisterHandlers(ctx context.Context, c cache.Cache) error
 			return fmt.Errorf("get informer for %T: %w", obj, err)
 		}
 
-		inf.AddEventHandler(toolscache.ResourceEventHandlerFuncs{
+		if _, err := inf.AddEventHandler(toolscache.ResourceEventHandlerFuncs{
 			AddFunc: func(any) { i.Notify() },
 			UpdateFunc: func(any, any) {
 				i.Notify()
 			},
 			DeleteFunc: func(any) { i.Notify() },
-		})
+		}); err != nil {
+			return fmt.Errorf("add event handler for %T: %w", obj, err)
+		}
 	}
 
 	return nil

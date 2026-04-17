@@ -249,24 +249,48 @@ func (m *Manager) Stop() error {
 	defer m.mu.Unlock()
 
 	for _, l := range m.podEgressLinks {
-		l.Close()
+		if err := l.Close(); err != nil {
+			return err
+		}
 	}
 
-	m.podEgressObjs.Close()
+	if err := m.podEgressObjs.Close(); err != nil {
+		return err
+	}
 
-	m.nwepInformer.RemoveEventHandler(m.nwepHandler)
-	m.eipaInformer.RemoveEventHandler(m.eipaHandler)
-	m.addressPoolInformer.RemoveEventHandler(m.addressPoolHandler)
-	m.bgpAdvertisementInformer.RemoveEventHandler(m.bgpAdvertisementHandler)
+	if err := m.nwepInformer.RemoveEventHandler(m.nwepHandler); err != nil {
+		return err
+	}
+	if err := m.eipaInformer.RemoveEventHandler(m.eipaHandler); err != nil {
+		return err
+	}
+	if err := m.addressPoolInformer.RemoveEventHandler(m.addressPoolHandler); err != nil {
+		return err
+	}
+	if err := m.bgpAdvertisementInformer.RemoveEventHandler(m.bgpAdvertisementHandler); err != nil {
+		return err
+	}
 
-	m.hostEgressLink.Close()
-	m.hostEgressObjs.Close()
+	if err := m.hostEgressLink.Close(); err != nil {
+		return err
+	}
+	if err := m.hostEgressObjs.Close(); err != nil {
+		return err
+	}
 
-	m.vxlanIngressLink.Close()
-	m.vxlanIngressObjs.Close()
+	if err := m.vxlanIngressLink.Close(); err != nil {
+		return err
+	}
+	if err := m.vxlanIngressObjs.Close(); err != nil {
+		return err
+	}
 
-	m.nodeIngressLink.Close()
-	m.nodeIngressObjs.Close()
+	if err := m.nodeIngressLink.Close(); err != nil {
+		return err
+	}
+	if err := m.nodeIngressObjs.Close(); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -619,7 +643,7 @@ func (m *Manager) UpsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 
 	l, err := link.AttachTCX(link.TCXOptions{
 		Program:   m.podEgressObjs.TcPodEgress,
-		Interface: int(nwep.Spec.Ifindex),
+		Interface: nwep.Spec.Ifindex,
 		Attach:    ebpf.AttachTCXIngress,
 	})
 	if err != nil {
@@ -707,7 +731,10 @@ func (m *Manager) DeleteNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha
 	m.mu.Lock()
 
 	if l, ok := m.podEgressLinks[nwep.Spec.Ifindex]; ok {
-		l.Close()
+		if err := l.Close(); err != nil {
+			m.mu.Unlock()
+			return err
+		}
 	}
 	delete(m.podEgressLinks, nwep.Spec.Ifindex)
 	m.mu.Unlock()
@@ -782,8 +809,8 @@ func (m *Manager) UpsertRouteTable(ctx context.Context, rt *juneauv1alpha1.Route
 		}
 	}
 
-	if err := m.podEgressObjs.FibMap.Update(uint32(rt.Status.TableID), uint32(fib.FD()), ebpf.UpdateAny); err != nil {
-		fib.Close()
+	if err := m.podEgressObjs.FibMap.Update(rt.Status.TableID, fib.FD(), ebpf.UpdateAny); err != nil {
+		_ = fib.Close()
 		return err
 	}
 
@@ -791,7 +818,7 @@ func (m *Manager) UpsertRouteTable(ctx context.Context, rt *juneauv1alpha1.Route
 }
 
 func (m *Manager) DeleteRouteTable(ctx context.Context, rt *juneauv1alpha1.RouteTable) error {
-	if err := m.podEgressObjs.FibMap.Delete(uint32(rt.Status.TableID)); err != nil {
+	if err := m.podEgressObjs.FibMap.Delete(rt.Status.TableID); err != nil {
 		return err
 	}
 	return nil
@@ -956,7 +983,9 @@ func resolveNeighborMACWithARP(ifi *net.Interface, gw net.IP) (net.HardwareAddr,
 	if err != nil {
 		return nil, fmt.Errorf("dial arp on %s: %w", ifi.Name, err)
 	}
-	defer client.Close()
+	defer func() {
+		_ = client.Close()
+	}()
 
 	if err := client.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
 		return nil, err
