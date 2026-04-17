@@ -13,6 +13,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Cache local Go tools and envtest assets
+        uses: actions/cache@v4
+        with:
+          path: |
+            bin
+            controller/bin
+            ~/.cache/golangci-lint
+          key: ${{ runner.os }}-tools-${{ hashFiles('Makefile', 'controller/Makefile', '.golangci.yml', 'go.work.sum', 'controller/go.sum', 'daemon/go.sum', 'bgp-speaker/go.sum', 'test/e2e/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-tools-
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -33,6 +44,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Cache local Go tools and envtest assets
+        uses: actions/cache@v4
+        with:
+          path: |
+            bin
+            controller/bin
+            ~/.cache/golangci-lint
+          key: ${{ runner.os }}-tools-${{ hashFiles('Makefile', 'controller/Makefile', '.golangci.yml', 'go.work.sum', 'controller/go.sum', 'daemon/go.sum', 'bgp-speaker/go.sum', 'test/e2e/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-tools-
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -58,5 +80,38 @@ jobs:
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build runtime images
-        run: make images
+      - name: Build controller image
+        uses: docker/build-push-action@v6
+        with:
+          context: controller
+          file: controller/Dockerfile
+          push: false
+          cache-from: type=gha,scope=controller-image
+          cache-to: type=gha,mode=max,scope=controller-image
+
+      - name: Build webhook cert job image
+        uses: docker/build-push-action@v6
+        with:
+          context: controller
+          file: controller/Dockerfile.webhookcertjob
+          push: false
+          cache-from: type=gha,scope=webhookcertjob-image
+          cache-to: type=gha,mode=max,scope=webhookcertjob-image
+
+      - name: Build daemon image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: daemon/Dockerfile
+          push: false
+          cache-from: type=gha,scope=daemon-image
+          cache-to: type=gha,mode=max,scope=daemon-image
+
+      - name: Build BGP speaker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: bgp-speaker/Dockerfile
+          push: false
+          cache-from: type=gha,scope=bgp-speaker-image
+          cache-to: type=gha,mode=max,scope=bgp-speaker-image
