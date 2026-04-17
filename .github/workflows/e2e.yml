@@ -1,4 +1,4 @@
-name: E2E Manual
+name: E2E
 
 on:
   workflow_dispatch:
@@ -7,19 +7,86 @@ on:
         description: Git ref to test
         required: false
         type: string
+      pr_number:
+        description: Pull request number for comment-triggered runs
+        required: false
+        type: string
+      head_repository:
+        description: PR head repository in owner/name form
+        required: false
+        type: string
+      head_ref:
+        description: PR head ref
+        required: false
+        type: string
+      head_sha:
+        description: PR head commit SHA
+        required: false
+        type: string
+      requested_by:
+        description: User who requested the run
+        required: false
+        type: string
+      status_comment_id:
+        description: Existing PR status comment id to update
+        required: false
+        type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: e2e-${{ github.event.inputs.pr_number || github.event.inputs.ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Mark E2E as running
+        if: ${{ inputs.pr_number != '' && inputs.status_comment_id != '' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+            const issueNumber = Number('${{ inputs.pr_number }}')
+            const commentId = Number('${{ inputs.status_comment_id }}')
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`
+
+            await github.rest.issues.updateComment({
+              owner,
+              repo,
+              comment_id: commentId,
+              body: [
+                '<!-- juneau-e2e -->',
+                '## E2E Status',
+                'Status: Running',
+                `Requested by: @${{ inputs.requested_by }}`,
+                `Commit: \`${{ inputs.head_sha }}\``,
+                `Workflow: [run details](${runUrl})`,
+              ].join('\n'),
+            })
+
+            core.setOutput('issue_number', String(issueNumber))
+            core.setOutput('comment_id', String(commentId))
+
   e2e:
+    needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          repository: ${{ inputs.head_repository || github.repository }}
+          ref: ${{ inputs.head_sha || inputs.ref || github.sha }}
 
       - name: Cache local Go tools and envtest assets
         uses: actions/cache@v4
@@ -52,3 +119,42 @@ jobs:
 
       - name: Run repository E2E
         run: make e2e
+
+  report:
+    if: ${{ always() }}
+    needs:
+      - prepare
+      - e2e
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Report E2E result
+        if: ${{ inputs.pr_number != '' && inputs.status_comment_id != '' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+            const commentId = Number('${{ inputs.status_comment_id }}')
+            const result = '${{ needs.e2e.result }}'
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`
+
+            const status = result === 'success' ? 'Passed' : 'Failed'
+            const body = [
+              '<!-- juneau-e2e -->',
+              '## E2E Status',
+              `Status: ${status}`,
+              `Requested by: @${{ inputs.requested_by }}`,
+              `Commit: \`${{ inputs.head_sha || inputs.ref || github.sha }}\``,
+              `Workflow: [run details](${runUrl})`,
+            ].join('\n')
+
+            await github.rest.issues.updateComment({
+              owner,
+              repo,
+              comment_id: commentId,
+              body,
+            })

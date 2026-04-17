@@ -1,0 +1,118 @@
+name: PR Comment E2E
+
+on:
+  issue_comment:
+    types:
+      - created
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+  actions: write
+
+jobs:
+  dispatch:
+    if: ${{ github.event.issue.pull_request && github.event.comment.body && startsWith(github.event.comment.body, '/test e2e') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate command and queue E2E
+        id: queue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+            const issueNumber = context.payload.issue.number
+            const command = context.payload.comment.body.trim()
+            const requester = context.payload.comment.user.login
+
+            if (command !== '/test e2e') {
+              core.setOutput('dispatch', 'false')
+              return
+            }
+
+            const permission = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner,
+              repo,
+              username: requester,
+            })
+
+            if (!['admin', 'maintain', 'write'].includes(permission.data.permission)) {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                body: [
+                  '<!-- juneau-e2e -->',
+                  `@${requester} only collaborators with write access can run \`/test e2e\`.`,
+                ].join('\n\n'),
+              })
+              core.setOutput('dispatch', 'false')
+              return
+            }
+
+            const { data: pull } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: issueNumber,
+            })
+
+            if (pull.state !== 'open') {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                body: [
+                  '<!-- juneau-e2e -->',
+                  `@${requester} E2E can only be queued for open pull requests.`,
+                ].join('\n\n'),
+              })
+              core.setOutput('dispatch', 'false')
+              return
+            }
+
+            const queuedBody = [
+              '<!-- juneau-e2e -->',
+              '## E2E Status',
+              `Status: Queued`,
+              `Requested by: @${requester}`,
+              `Commit: \`${pull.head.sha}\``,
+              '',
+              'The workflow will post updates here when it starts and finishes.',
+            ].join('\n')
+
+            const { data: comment } = await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: issueNumber,
+              body: queuedBody,
+            })
+
+            core.setOutput('dispatch', 'true')
+            core.setOutput('pr_number', String(issueNumber))
+            core.setOutput('head_repository', pull.head.repo.full_name)
+            core.setOutput('head_ref', pull.head.ref)
+            core.setOutput('head_sha', pull.head.sha)
+            core.setOutput('requested_by', requester)
+            core.setOutput('comment_id', String(comment.id))
+
+      - name: Dispatch E2E workflow
+        if: ${{ steps.queue.outputs.dispatch == 'true' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'e2e.yml',
+              ref: context.payload.repository.default_branch,
+              inputs: {
+                pr_number: '${{ steps.queue.outputs.pr_number }}',
+                head_repository: '${{ steps.queue.outputs.head_repository }}',
+                head_ref: '${{ steps.queue.outputs.head_ref }}',
+                head_sha: '${{ steps.queue.outputs.head_sha }}',
+                requested_by: '${{ steps.queue.outputs.requested_by }}',
+                status_comment_id: '${{ steps.queue.outputs.comment_id }}',
+              },
+            })
