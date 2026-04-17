@@ -49,9 +49,9 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	Expect(err).NotTo(HaveOccurred())
 
 	mustRun(root, "kind", "create", "cluster", "--name", clusterName, "--config", configFile)
-	mustRun(filepath.Join(root, "controller"), "make", "docker-build", fmt.Sprintf("IMG=%s", controllerImage))
-	mustRun(filepath.Join(root, "controller"), "make", "docker-build-webhookcertjob", fmt.Sprintf("WEBHOOKCERTJOB_IMG=%s", webhookCertJobImage))
-	mustRun(filepath.Join(root, "daemon"), "make", "docker-build", fmt.Sprintf("IMG=%s", daemonImage))
+	mustRun(root, "make", "image-controller", fmt.Sprintf("CONTROLLER_IMAGE=%s", controllerImage))
+	mustRun(root, "make", "image-webhookcertjob", fmt.Sprintf("WEBHOOKCERTJOB_IMAGE=%s", webhookCertJobImage))
+	mustRun(root, "make", "image-daemon", fmt.Sprintf("DAEMON_IMAGE=%s", daemonImage))
 
 	for _, image := range []string{controllerImage, webhookCertJobImage, daemonImage} {
 		mustRun(root, "kind", "load", "docker-image", image, "--name", clusterName)

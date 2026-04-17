@@ -14,18 +14,18 @@ COPY ./bin/manager /
 CMD ["/manager"]
 '''
 
-local_resource('make manifests', 'make manifests', deps=["controller/api", "controller/internal", "controller/hooks"], ignore=['controller/*/*/zz_generated.deepcopy.go', 'controller/internal/pkg/webhookmanifests'], dir='controller/')
-local_resource('make generate', 'make generate', deps=["controller/api", "controller/hooks"], ignore=['controller/*/*/zz_generated.deepcopy.go'], dir='controller')
+local_resource('make manifests', 'make controller-manifests', deps=["controller/api", "controller/internal", "controller/hooks"], ignore=['controller/*/*/zz_generated.deepcopy.go', 'controller/internal/pkg/webhookmanifests'])
+local_resource('make generate', 'make controller-generate', deps=["controller/api", "controller/hooks"], ignore=['controller/*/*/zz_generated.deepcopy.go'])
 
 local_resource(
-    'CRD', 'make manifests; kustomize build config/crd | kubectl apply -f -', deps=["controller/api"],
-    ignore=['controller/*/*/zz_generated.deepcopy.go'], dir='controller/')
+    'CRD', 'make controller-manifests && kustomize build controller/config/crd | kubectl apply -f -', deps=["controller/api"],
+    ignore=['controller/*/*/zz_generated.deepcopy.go'])
 
 watch_file('./controller/config/')
 k8s_yaml(kustomize('./controller/config/dev'))
 
 local_resource(
-    'WebhookCertJob Compile', 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/webhookcertjob cmd/webhookcertjob/main.go', deps=['controller/cmd/webhookcertjob/main.go'], dir='controller/')
+    'WebhookCertJob Compile', 'make build-webhookcertjob-bin', deps=['controller/cmd/webhookcertjob/main.go'])
 
 docker_build(
     'webhookcertjob:latest', './controller',
@@ -35,8 +35,8 @@ docker_build(
 )
 
 local_resource(
-    'Controller Compile', 'make generate; CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/manager cmd/main.go', deps=['controller/internal', 'controller/api', 'controller/cmd/main.go'],
-    ignore=['controller/*/*/zz_generated.deepcopy.go'], dir='controller/')
+    'Controller Compile', 'make build-controller-bin', deps=['controller/internal', 'controller/api', 'controller/cmd/main.go'],
+    ignore=['controller/*/*/zz_generated.deepcopy.go'])
 
 docker_build_with_restart(
     'controller:latest', './controller',
@@ -49,7 +49,7 @@ docker_build_with_restart(
 )
 
 local_resource(
-    'CNI Compile', 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/cni cmd/cni/main.go', deps=['daemon/cmd/cni/main.go', 'daemon/pkg/cnipb'], dir='daemon/')
+    'CNI Compile', 'make build-cni-bin', deps=['daemon/cmd/cni/main.go', 'daemon/pkg/cnipb'])
 
 DAEMON_DOCKERFILE = '''FROM golang:alpine
 RUN apk add --no-cache iptables ip6tables
@@ -59,8 +59,8 @@ CMD ["/daemon"]
 '''
 
 local_resource(
-    'Daemon Compile', 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/daemon cmd/juneaud/main.go', deps=['daemon/cmd/juneaud/main.go', 'daemon/internal/daemon', 'daemon/pkg', 'daemon/bin/cni'],
-    ignore=[], dir='daemon/')
+    'Daemon Compile', 'make build-daemon-bin', deps=['daemon/cmd/juneaud/main.go', 'daemon/internal/daemon', 'daemon/pkg', 'daemon/bin/cni'],
+    ignore=[])
 
 docker_build_with_restart(
     'daemon:latest', './daemon',
@@ -84,8 +84,8 @@ CMD ["/bgpspeaker"]
 '''
 
 local_resource(
-    'BGP Speaker Compile', 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/bgpspeaker cmd/bgpspeaker/main.go', deps=['bgp-speaker/cmd/bgpspeaker/main.go', 'bgp-speaker/internal'],
-    ignore=[], dir='bgp-speaker/')
+    'BGP Speaker Compile', 'make build-bgp-speaker-bin', deps=['bgp-speaker/cmd/bgpspeaker/main.go', 'bgp-speaker/internal'],
+    ignore=[])
 
 docker_build_with_restart(
     'bgp-speaker:latest', './bgp-speaker',
