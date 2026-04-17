@@ -53,6 +53,14 @@ daemon-generate-proto: ## Generate daemon protobuf bindings.
 daemon-generate-bpf: ## Generate daemon eBPF bindings.
 	$(MAKE) -C daemon generate-bpf
 
+.PHONY: docs-build
+docs-build: ## Build documentation locally.
+	mkdocs build --strict
+
+.PHONY: docs-serve
+docs-serve: ## Serve documentation locally.
+	mkdocs serve
+
 .PHONY: build-webhookcertjob-bin
 build-webhookcertjob-bin: ## Build the webhook cert job binary for Tilt.
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -C controller -o bin/webhookcertjob ./cmd/webhookcertjob/main.go

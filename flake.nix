@@ -55,6 +55,11 @@
           default = pkgs.mkShell {
             packages = with pkgs; [
               go_1_24
+              python3
+              python3Packages.pip
+              python3Packages.mkdocs
+              python3Packages.mkdocs-material
+              python3Packages.mkdocs-minify-plugin
               gopls
               golangci-lint
               tilt
