@@ -29,7 +29,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
@@ -71,6 +73,14 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	var vpc juneauv1alpha1.Vpc
 	if err := r.Get(ctx, client.ObjectKey{Name: resource.Spec.Vpc}, &vpc); err != nil {
 		if err := r.updateReadyCondition(ctx, &resource, metav1.ConditionFalse, subnetReasonReconcileFailed, "VPC not found"); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	vpcReady := meta.FindStatusCondition(vpc.Status.Conditions, juneauv1alpha1.VpcStatusReady)
+	if vpcReady == nil || vpcReady.Status != metav1.ConditionTrue {
+		if err := r.updateReadyCondition(ctx, &resource, metav1.ConditionFalse, subnetReasonReconcileFailed, "VPC is not ready"); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{Requeue: true}, nil
@@ -161,8 +171,27 @@ func (r *SubnetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&juneauv1alpha1.Subnet{}).
+		Watches(&juneauv1alpha1.Vpc{}, handler.EnqueueRequestsFromMapFunc(r.mapVpcToSubnets)).
 		Named("subnet").
 		Complete(r)
+}
+
+func (r *SubnetReconciler) mapVpcToSubnets(ctx context.Context, obj client.Object) []reconcile.Request {
+	vpc, ok := obj.(*juneauv1alpha1.Vpc)
+	if !ok {
+		return nil
+	}
+
+	var subnetList juneauv1alpha1.SubnetList
+	if err := r.List(ctx, &subnetList, client.MatchingFields{"spec.vpc": vpc.Name}); err != nil {
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0, len(subnetList.Items))
+	for _, subnet := range subnetList.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: subnet.Name}})
+	}
+	return requests
 }
 
 func (r *SubnetReconciler) updateReadyCondition(ctx context.Context, subnet *juneauv1alpha1.Subnet, status metav1.ConditionStatus, reason, message string) error {
