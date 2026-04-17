@@ -1,0 +1,27 @@
+# Build the webhookcertjob binary
+FROM docker.io/golang:1.24 AS builder
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /workspace
+
+# Copy the Go Modules manifests
+COPY go.mod go.mod
+COPY go.sum go.sum
+
+# Cache dependencies before copying the full source tree.
+RUN go mod download
+
+# Copy the Go source
+COPY cmd/webhookcertjob/main.go cmd/webhookcertjob/main.go
+
+# Build the binary for the target platform.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o webhookcertjob cmd/webhookcertjob/main.go
+
+# Use distroless as minimal base image to package the webhookcertjob binary.
+FROM gcr.io/distroless/static:nonroot
+WORKDIR /
+COPY --from=builder /workspace/webhookcertjob .
+USER 65532:65532
+
+ENTRYPOINT ["/webhookcertjob"]

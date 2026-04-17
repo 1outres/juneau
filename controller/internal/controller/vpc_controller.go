@@ -31,6 +31,7 @@ import (
 )
 
 const (
+	vpcReasonReconcileFailed    = "ReconcileFailed"
 	vpcReasonReconcileSucceeded = "ReconcileSucceeded"
 )
 
@@ -70,10 +71,14 @@ func (r *VpcReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return nil
 	})
 	if err != nil {
+		if updateErr := r.updateReadyCondition(ctx, &resource, metav1.ConditionFalse, vpcReasonReconcileFailed, "failed to reconcile main route table"); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
 		return ctrl.Result{}, err
 	}
 
 	resource.Status.MainRouteTable = routeTable.Name
+
 	if err := r.updateReadyCondition(ctx, &resource, metav1.ConditionTrue, vpcReasonReconcileSucceeded, ""); err != nil {
 		return ctrl.Result{}, err
 	}

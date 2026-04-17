@@ -2,3 +2,12 @@ resources:
   - ../default
 patchesStrategicMerge:
   - ./manager-patch.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+images:
+- name: example.com/controller
+  newName: controller
+  newTag: latest
+- name: example.com/webhookcertjob
+  newName: webhookcertjob
+  newTag: latest
