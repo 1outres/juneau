@@ -59,6 +59,7 @@
               golangci-lint
               tilt
               kustomize
+              kind
               protobuf
               clang
               llvmPackages.bintools

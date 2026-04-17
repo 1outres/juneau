@@ -1,8 +1,9 @@
-.PHONY: generate generate-proto generate-bpf generate-bpf-linux generate-bpf-docker bpf-builder-image
+.PHONY: generate generate-proto generate-bpf generate-bpf-linux generate-bpf-docker bpf-builder-image docker-build
 
 UNAME_S := $(shell uname -s)
 
 DOCKER ?= docker
+IMG ?= daemon:latest
 PROTOC ?= protoc
 GO ?= go
 BPF_BUILDER_IMAGE ?= juneau-bpf-builder:local
@@ -38,3 +39,6 @@ generate-bpf-docker: bpf-builder-image
 
 bpf-builder-image:
 	$(DOCKER) build --platform $(BPF_BUILDER_PLATFORM) --load -t $(BPF_BUILDER_IMAGE) -f bpf/Dockerfile .
+
+docker-build:
+	$(DOCKER) build -f Dockerfile -t ${IMG} ..

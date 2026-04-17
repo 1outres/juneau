@@ -27,7 +27,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
@@ -168,6 +170,61 @@ func (r *RouteTableReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&juneauloutresmev1alpha1.RouteTable{}).
+		Watches(&juneauloutresmev1alpha1.Subnet{}, handler.EnqueueRequestsFromMapFunc(r.mapSubnetToRouteTables)).
+		Watches(&juneauloutresmev1alpha1.NetworkEndpoint{}, handler.EnqueueRequestsFromMapFunc(r.mapNetworkEndpointToRouteTables)).
 		Named("routetable").
 		Complete(r)
+}
+
+func (r *RouteTableReconciler) mapSubnetToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
+	subnet, ok := obj.(*juneauloutresmev1alpha1.Subnet)
+	if !ok || subnet.Spec.Vpc == "" {
+		return nil
+	}
+
+	var vpc juneauloutresmev1alpha1.Vpc
+	if err := r.Get(ctx, client.ObjectKey{Name: subnet.Spec.Vpc}, &vpc); err != nil {
+		if errors.IsNotFound(err) {
+			return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: subnet.Spec.Vpc}}}
+		}
+		return nil
+	}
+
+	routeTableName := vpc.Status.MainRouteTable
+	if routeTableName == "" {
+		routeTableName = vpc.Name
+	}
+
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: routeTableName}}}
+}
+
+func (r *RouteTableReconciler) mapNetworkEndpointToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
+	nwep, ok := obj.(*juneauloutresmev1alpha1.NetworkEndpoint)
+	if !ok || nwep.Spec.Subnet == "" {
+		return nil
+	}
+
+	var subnet juneauloutresmev1alpha1.Subnet
+	if err := r.Get(ctx, client.ObjectKey{Name: nwep.Spec.Subnet}, &subnet); err != nil {
+		return nil
+	}
+
+	if subnet.Spec.Vpc == "" {
+		return nil
+	}
+
+	var vpc juneauloutresmev1alpha1.Vpc
+	if err := r.Get(ctx, client.ObjectKey{Name: subnet.Spec.Vpc}, &vpc); err != nil {
+		if errors.IsNotFound(err) {
+			return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: subnet.Spec.Vpc}}}
+		}
+		return nil
+	}
+
+	routeTableName := vpc.Status.MainRouteTable
+	if routeTableName == "" {
+		routeTableName = vpc.Name
+	}
+
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: routeTableName}}}
 }

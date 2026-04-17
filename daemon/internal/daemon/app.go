@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
@@ -14,6 +16,7 @@ import (
 	"github.com/1outres/juneau/daemon/internal/daemon/grpc"
 	"github.com/urfave/cli/v3"
 	"go.uber.org/zap"
+	"golang.org/x/sys/unix"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -54,6 +57,10 @@ func NewApp() *cli.Command {
 			&cli.StringFlag{
 				Name: "masquerade-iface",
 			},
+			&cli.StringFlag{
+				Name:  "bpf-pin-path",
+				Value: "/juneau-bpf/juneau",
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
@@ -69,6 +76,7 @@ func NewApp() *cli.Command {
 			nodeName := cmd.String("node-name")
 			vxlanParentIface := cmd.String("vxlan-parent-iface")
 			masqueradeIface := cmd.String("masquerade-iface")
+			bpfPinPath := cmd.String("bpf-pin-path")
 
 			zapcfg := zap.NewDevelopmentConfig()
 			logger, err := zapcfg.Build()
@@ -305,12 +313,16 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("ensure masquerade rule: %w", err)
 			}
 
+			if err := ensureBPFFSMounted(bpfPinPath); err != nil {
+				return fmt.Errorf("ensure bpf fs mount: %w", err)
+			}
+
 			nodeIngressIface, err := net.InterfaceByName(masqueradeIface)
 			if err != nil {
 				return fmt.Errorf("lookup node ingress iface %q: %w", masqueradeIface, err)
 			}
 
-			bpfManager := bpf.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, hostIfaceInfo.MAC)
+			bpfManager := bpf.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, bpfPinPath, hostIfaceInfo.MAC)
 			if err := bpfManager.Start(ctx); err != nil {
 				return fmt.Errorf("initialize BPF manager: %w", err)
 			}
@@ -346,4 +358,22 @@ func NewApp() *cli.Command {
 			}
 		},
 	}
+}
+
+func ensureBPFFSMounted(pinPath string) error {
+	mountPath := filepath.Dir(pinPath)
+	if err := os.MkdirAll(mountPath, 0o755); err != nil {
+		return err
+	}
+
+	var stat unix.Statfs_t
+	if err := unix.Statfs(mountPath, &stat); err == nil && stat.Type == unix.BPF_FS_MAGIC {
+		return nil
+	}
+
+	if err := unix.Mount("bpffs", mountPath, "bpf", 0, ""); err != nil {
+		return err
+	}
+
+	return nil
 }
