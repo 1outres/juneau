@@ -1,0 +1,43 @@
+name: E2E Manual
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to test
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+          cache: true
+          cache-dependency-path: |
+            go.work.sum
+            controller/go.sum
+            daemon/go.sum
+            bgp-speaker/go.sum
+            test/e2e/go.sum
+
+      - name: Install kind
+        uses: engineerd/setup-kind@v0.6.2
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Run repository E2E
+        run: make e2e
