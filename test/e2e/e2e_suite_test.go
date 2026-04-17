@@ -16,6 +16,7 @@ import (
 
 const (
 	clusterName         = "juneau-e2e"
+	kindNodeImage       = "kindest/node:v1.33.1"
 	controllerImage     = "example.com/controller:v0.0.1"
 	webhookCertJobImage = "example.com/webhookcertjob:v0.0.1"
 	daemonImage         = "daemon:latest"
@@ -132,6 +133,7 @@ var _ = AfterEach(func() {
 	}
 	dumpLogs(controllerNamespace, "deployment/juneau-controller-manager")
 	dumpLogs(daemonNamespace, "daemonset/juneau-cni-daemon")
+	dumpNodeRuntime()
 	dumpNodeState()
 })
 
@@ -151,8 +153,11 @@ networking:
   podSubnet: "10.16.0.0/16"
 nodes:
   - role: control-plane
+    image: ` + kindNodeImage + `
   - role: worker
+    image: ` + kindNodeImage + `
   - role: worker
+    image: ` + kindNodeImage + `
 `
 
 	path := filepath.Join(root, "test", "e2e", ".kind-config.yaml")
@@ -285,6 +290,23 @@ func dumpNodeState() {
 			continue
 		}
 		dumpDockerExec(node, "sh", "-lc", "ip addr; printf '\n==== routes ====\n'; ip route; printf '\n==== iptables ====\n'; iptables-save; printf '\n==== cni ====\n'; ls -al /etc/cni/net.d")
+	}
+}
+
+func dumpNodeRuntime() {
+	out, err := kubectlOutput(repoRoot, "get", "nodes", "-o", `jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.nodeInfo.kubeletVersion}{"\t"}{.status.nodeInfo.containerRuntimeVersion}{"\n"}{end}`)
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "failed to dump node runtime info: %v\n", err)
+		return
+	}
+	_, _ = fmt.Fprintf(GinkgoWriter, "\nnode runtime info\n%s\n", out)
+
+	nodes := append([]string{clusterName + "-control-plane"}, workerNodes...)
+	for _, node := range nodes {
+		if node == "" {
+			continue
+		}
+		dumpDockerExec(node, "sh", "-lc", "crictl info | sed -n '1,120p'")
 	}
 }
 
