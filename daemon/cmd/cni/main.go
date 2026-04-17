@@ -48,7 +48,9 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return err
 	}
 	client := cnipb.NewCNIClient(conn)
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(conf.Daemon.TimeoutMs)*time.Millisecond)
 	defer cancel()
@@ -82,7 +84,9 @@ func cmdDel(args *skel.CmdArgs) error {
 		return err
 	}
 	client := cnipb.NewCNIClient(conn)
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(conf.Daemon.TimeoutMs)*time.Millisecond)
 	defer cancel()
@@ -106,7 +110,9 @@ func cmdCheck(args *skel.CmdArgs) error {
 		return err
 	}
 	client := cnipb.NewCNIClient(conn)
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(conf.Daemon.TimeoutMs)*time.Millisecond)
 	defer cancel()

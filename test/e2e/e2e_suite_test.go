@@ -106,7 +106,7 @@ var _ = SynchronizedAfterSuite(func() {
 	if strings.EqualFold(os.Getenv("E2E_KEEP_CLUSTER"), "true") {
 		return
 	}
-	run(repoRoot, "kind", "delete", "cluster", "--name", clusterName)
+	Expect(run(repoRoot, "kind", "delete", "cluster", "--name", clusterName)).To(Succeed())
 }, func() {})
 
 var _ = AfterEach(func() {

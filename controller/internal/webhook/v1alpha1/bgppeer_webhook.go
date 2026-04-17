@@ -141,15 +141,7 @@ func (v *BGPPeerCustomValidator) validate(newObj *juneauloutresmev1alpha1.BGPPee
 		errs = append(errs, field.Invalid(field.NewPath("spec", "peerAddress"), newObj.Spec.PeerAddress, "peerAddress must be a valid IPv4"))
 	}
 
-	if newObj.Spec.PeerPort != 0 {
-		if newObj.Spec.PeerPort < 1 || newObj.Spec.PeerPort > 65535 {
-			errs = append(errs, field.Invalid(field.NewPath("spec", "peerPort"), newObj.Spec.PeerPort, "peerPort must be 1-65535"))
-		}
-	}
-
-	if oldObj != nil && newObj.Spec.PeerPort != oldObj.Spec.PeerPort && oldObj.Spec.PeerPort != 0 {
-		// peerPort is allowed to change only if old was zero (default) and new sets an explicit port.
-	}
+	_ = oldObj
 
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauloutresmev1alpha1.GroupVersion.Group, Kind: "BGPPeer"}, newObj.Name, errs)

@@ -18,7 +18,7 @@ type Runner struct {
 
 	debounce time.Duration
 
-	queue     workqueue.RateLimitingInterface
+	queue     workqueue.TypedRateLimitingInterface[string]
 	triggerCh chan struct{}
 }
 
@@ -28,7 +28,7 @@ func NewRunner(nodeName string, cl client.Client, debounce time.Duration, reconc
 		client:    cl,
 		reconcile: reconcile,
 		debounce:  debounce,
-		queue:     workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter()),
+		queue:     workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]()),
 		triggerCh: make(chan struct{}, 1),
 	}
 }
