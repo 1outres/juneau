@@ -341,16 +341,16 @@ func NewApp() *cli.Command {
 			select {
 			case <-ctx.Done():
 				zap.S().Infof("shutting down...")
-				_ = <-grpcErrCh
-				_ = <-cacheErrCh
+				<-grpcErrCh
+				<-cacheErrCh
 				return nil
 			case err := <-grpcErrCh:
 				cancel()
-				_ = <-cacheErrCh
+				<-cacheErrCh
 				return err
 			case err := <-cacheErrCh:
 				cancel()
-				_ = <-grpcErrCh
+				<-grpcErrCh
 				if err == nil || errors.Is(err, context.Canceled) {
 					return nil
 				}

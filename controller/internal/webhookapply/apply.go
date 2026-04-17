@@ -14,7 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -121,11 +121,11 @@ func prepareMutating(obj *admv1.MutatingWebhookConfiguration, nodeIP string, caB
 	for i := range obj.Webhooks {
 		path := ""
 		if obj.Webhooks[i].ClientConfig.Service != nil {
-			path = pointer.StringDeref(obj.Webhooks[i].ClientConfig.Service.Path, "")
+			path = ptr.Deref(obj.Webhooks[i].ClientConfig.Service.Path, "")
 		}
 		url := fmt.Sprintf("https://%s:9443%s", nodeIP, path)
 		obj.Webhooks[i].ClientConfig.Service = nil
-		obj.Webhooks[i].ClientConfig.URL = pointer.String(url)
+		obj.Webhooks[i].ClientConfig.URL = ptr.To(url)
 		obj.Webhooks[i].ClientConfig.CABundle = caBundle
 	}
 }
@@ -135,11 +135,11 @@ func prepareValidating(obj *admv1.ValidatingWebhookConfiguration, nodeIP string,
 	for i := range obj.Webhooks {
 		path := ""
 		if obj.Webhooks[i].ClientConfig.Service != nil {
-			path = pointer.StringDeref(obj.Webhooks[i].ClientConfig.Service.Path, "")
+			path = ptr.Deref(obj.Webhooks[i].ClientConfig.Service.Path, "")
 		}
 		url := fmt.Sprintf("https://%s:9443%s", nodeIP, path)
 		obj.Webhooks[i].ClientConfig.Service = nil
-		obj.Webhooks[i].ClientConfig.URL = pointer.String(url)
+		obj.Webhooks[i].ClientConfig.URL = ptr.To(url)
 		obj.Webhooks[i].ClientConfig.CABundle = caBundle
 	}
 }

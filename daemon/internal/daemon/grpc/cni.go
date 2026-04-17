@@ -119,7 +119,9 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (*cnipb.CNIR
 		zap.L().Error("failed to open netns", zap.Error(err))
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to open netns", err.Error())
 	}
-	defer netns.Close()
+	defer func() {
+		_ = netns.Close()
+	}()
 
 	if err := netlink.LinkSetNsFd(vethPeer, int(netns.Fd())); err != nil {
 		zap.L().Error("failed to move peer veth to netns", zap.Error(err))
