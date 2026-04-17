@@ -1,0 +1,92 @@
+name: Publish Images
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Image tag to publish
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve publish tag
+        id: meta
+        run: |
+          tag="${{ inputs.tag }}"
+          if [ -z "$tag" ] && [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+          fi
+          if [ -z "$tag" ]; then
+            tag="sha-${GITHUB_SHA::12}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Publish controller image
+        uses: docker/build-push-action@v6
+        with:
+          context: controller
+          file: controller/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ghcr.io/1outres/juneau/controller:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha,scope=controller-image
+          cache-to: type=gha,mode=max,scope=controller-image
+
+      - name: Publish webhook cert job image
+        uses: docker/build-push-action@v6
+        with:
+          context: controller
+          file: controller/Dockerfile.webhookcertjob
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ghcr.io/1outres/juneau/webhookcertjob:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha,scope=webhookcertjob-image
+          cache-to: type=gha,mode=max,scope=webhookcertjob-image
+
+      - name: Publish daemon image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: daemon/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ghcr.io/1outres/juneau/daemon:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha,scope=daemon-image
+          cache-to: type=gha,mode=max,scope=daemon-image
+
+      - name: Publish BGP speaker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: bgp-speaker/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ghcr.io/1outres/juneau/bgp-speaker:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha,scope=bgp-speaker-image
+          cache-to: type=gha,mode=max,scope=bgp-speaker-image
