@@ -22,20 +22,7 @@ NetworkInterfaceは、Podに紐づく論理NICを表すリソースです。
 `status.routes`は、Pod側に設定すべき経路情報です。
 通常はSubnetのゲートウェイに向かうデフォルトルートが入ります。
 
-## AllocatedとReadyの違い
-
-Allocatedは、IPアドレスが確保されたことを表します。
-つまりIPLeaseが作成され、`status.ipLease`と`status.address`が確定した段階です。
-
-Readyは、割り当て済みであることに加えて、対応するNetworkEndpointが存在し、Pod側の接続準備まで進んだことを表します。
-
-そのため、Allocated=TrueでもReady=Falseの状態はありえます。
-
-## phase
-
-`phase`は、conditionsを要約した見やすい状態表示です。
-
-大まかには次のように読みます。
+## Phase
 
 - Pending:まだ割り当て待ち、または必要な依存リソース待ち
 - Allocated:IPは確保済みだが、まだNetworkEndpoint待ち
