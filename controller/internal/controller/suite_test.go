@@ -18,21 +18,27 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	"github.com/1outres/juneau/controller/internal/bootstrap"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -45,10 +51,12 @@ var (
 	testEnv   *envtest.Environment
 	cfg       *rest.Config
 	k8sClient client.Client
+	mgrDone   chan error
 )
 
 func TestControllers(t *testing.T) {
 	RegisterFailHandler(Fail)
+	SetDefaultEventuallyTimeout(10 * time.Second)
 
 	RunSpecs(t, "Controller Suite")
 }
@@ -80,6 +88,41 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(cfg).NotTo(BeNil())
 
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Scheme: scheme.Scheme,
+		Metrics: metricsserver.Options{
+			BindAddress: "0",
+		},
+		LeaderElection: false,
+	})
+	Expect(err).NotTo(HaveOccurred())
+
+	Expect((&VpcReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr)).To(Succeed())
+	Expect((&SubnetReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr)).To(Succeed())
+	Expect((&RouteTableReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr)).To(Succeed())
+	Expect(mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		if !mgr.GetCache().WaitForCacheSync(ctx) {
+			return fmt.Errorf("cache sync failed")
+		}
+
+		return bootstrap.EnsureDefaults(ctx, mgr.GetClient(), logf.Log.WithName("bootstrap"), "10.16.0.0/16")
+	}))).To(Succeed())
+
+	mgrDone = make(chan error, 1)
+	go func() {
+		mgrDone <- mgr.Start(ctx)
+	}()
+	Expect(mgr.GetCache().WaitForCacheSync(ctx)).To(BeTrue())
+
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
@@ -88,6 +131,9 @@ var _ = BeforeSuite(func() {
 var _ = AfterSuite(func() {
 	By("tearing down the test environment")
 	cancel()
+	if mgrDone != nil {
+		Expect(<-mgrDone).To(Succeed())
+	}
 	err := testEnv.Stop()
 	Expect(err).NotTo(HaveOccurred())
 })
