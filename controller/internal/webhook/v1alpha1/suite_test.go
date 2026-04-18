@@ -89,6 +89,7 @@ var _ = BeforeSuite(func() {
 	Expect(SetupSubnetWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupNetworkInterfaceWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupNetworkEndpointWebhookWithManager(mgr)).To(Succeed())
+	Expect(SetupIPLeaseWebhookWithManager(mgr)).To(Succeed())
 
 	webhookMgrDone = make(chan error, 1)
 	go func() {

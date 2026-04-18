@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -249,10 +250,17 @@ func (r *IPLeaseReconciler) updateStatus(
 	boundCondition metav1.Condition,
 	expiredCondition metav1.Condition,
 ) error {
-	resource.Status.ObservedGeneration = resource.Generation
-	resource.Status.ExpiresAt = expiresAt
-	resource.Status.Phase = phase
-	meta.SetStatusCondition(&resource.Status.Conditions, boundCondition)
-	meta.SetStatusCondition(&resource.Status.Conditions, expiredCondition)
+	updated := resource.Status
+	updated.ObservedGeneration = resource.Generation
+	updated.ExpiresAt = expiresAt
+	updated.Phase = phase
+	meta.SetStatusCondition(&updated.Conditions, boundCondition)
+	meta.SetStatusCondition(&updated.Conditions, expiredCondition)
+
+	if reflect.DeepEqual(resource.Status, updated) {
+		return nil
+	}
+
+	resource.Status = updated
 	return r.Status().Update(ctx, resource)
 }
