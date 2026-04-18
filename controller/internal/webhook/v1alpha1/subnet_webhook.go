@@ -101,6 +101,11 @@ func (v *SubnetCustomValidator) ValidateCreate(ctx context.Context, obj runtime.
 	}
 	errs = append(errs, vpcErrs...)
 	errs = append(errs, validateSubnetCIDR(subnet.Spec.CIDR, errPath.Child("cidr"))...)
+	overlapErrs, err := validateSubnetCIDROverlap(ctx, v.Client, subnet, errPath.Child("cidr"))
+	if err != nil {
+		return nil, err
+	}
+	errs = append(errs, overlapErrs...)
 
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "Subnet"}, subnet.Name, errs)
@@ -200,4 +205,37 @@ func validateSubnetCIDR(cidr string, path *field.Path) field.ErrorList {
 	}
 
 	return errs
+}
+
+func validateSubnetCIDROverlap(ctx context.Context, c client.Client, subnet *juneauv1alpha1.Subnet, path *field.Path) (field.ErrorList, error) {
+	_, subnetCIDR, err := net.ParseCIDR(subnet.Spec.CIDR)
+	if err != nil {
+		return nil, nil
+	}
+
+	var subnetList juneauv1alpha1.SubnetList
+	if err := c.List(ctx, &subnetList); err != nil {
+		return nil, err
+	}
+
+	for _, existingSubnet := range subnetList.Items {
+		if existingSubnet.Spec.Vpc != subnet.Spec.Vpc {
+			continue
+		}
+
+		_, existingCIDR, err := net.ParseCIDR(existingSubnet.Spec.CIDR)
+		if err != nil {
+			continue
+		}
+
+		if cidrsOverlap(subnetCIDR, existingCIDR) {
+			return field.ErrorList{field.Invalid(path, subnet.Spec.CIDR, fmt.Sprintf("overlaps with existing Subnet %q CIDR %q in Vpc %q", existingSubnet.Name, existingSubnet.Spec.CIDR, subnet.Spec.Vpc))}, nil
+		}
+	}
+
+	return nil, nil
+}
+
+func cidrsOverlap(a, b *net.IPNet) bool {
+	return a.Contains(b.IP) || b.Contains(a.IP)
 }
