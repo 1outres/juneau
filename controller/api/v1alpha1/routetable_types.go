@@ -28,6 +28,9 @@ type RouteTableSpec struct {
 
 // RouteTableStatus defines the observed state of RouteTable.
 type RouteTableStatus struct {
+	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
+	Conditions         []metav1.Condition `json:"conditions,omitempty"`
+
 	Routes  []Route `json:"routes,omitempty"`
 	TableID uint32  `json:"tableID,omitempty"`
 }
@@ -54,6 +57,7 @@ const (
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
+// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type==\"Ready\")].status"
 
 // RouteTable is the Schema for the routetables API.
 type RouteTable struct {
@@ -63,6 +67,10 @@ type RouteTable struct {
 	Spec   RouteTableSpec   `json:"spec,omitempty"`
 	Status RouteTableStatus `json:"status,omitempty"`
 }
+
+const (
+	RouteTableStatusReady string = "Ready"
+)
 
 // +kubebuilder:object:root=true
 

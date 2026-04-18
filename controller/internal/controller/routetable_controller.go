@@ -20,10 +20,13 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"reflect"
 	"slices"
 	"strconv"
 
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -32,6 +35,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+)
+
+const (
+	routeTableReasonDeleting           = "Deleting"
+	routeTableReasonReconcileFailed    = "ReconcileFailed"
+	routeTableReasonReconcileSucceeded = "ReconcileSucceeded"
+	routeTableReasonNotReady           = "NotReady"
 )
 
 // RouteTableReconciler reconciles a RouteTable object
@@ -66,6 +76,9 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	if !resource.ObjectMeta.DeletionTimestamp.IsZero() {
+		if err := r.updateStatus(ctx, &resource, resource.Status.Routes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonDeleting, "route table is being deleted"); err != nil {
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -74,6 +87,9 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	var subnets juneauloutresmev1alpha1.SubnetList
 	if err := r.List(ctx, &subnets, client.MatchingFields{"spec.vpc": resource.Spec.Vpc}); err != nil {
+		if updateErr := r.updateStatus(ctx, &resource, resource.Status.Routes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, "failed to list subnets for VPC"); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
 		return ctrl.Result{}, err
 	}
 	for _, subnet := range subnets.Items {
@@ -96,14 +112,21 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				var nwep juneauloutresmev1alpha1.NetworkEndpoint
 				if err := r.Get(ctx, client.ObjectKey{Name: route.Via.Endpoint}, &nwep); err != nil {
 					if errors.IsNotFound(err) {
-						// TODO: set condition
-						continue
+						if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("network endpoint %q not found", route.Via.Endpoint)); err != nil {
+							return ctrl.Result{}, err
+						}
+						return ctrl.Result{}, nil
+					}
+					if updateErr := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, fmt.Sprintf("failed to get network endpoint %q", route.Via.Endpoint)); updateErr != nil {
+						return ctrl.Result{}, updateErr
 					}
 					return ctrl.Result{}, err
 				}
 				if !slices.Contains(subnetNames, nwep.Spec.Subnet) {
-					// TODO: set condition
-					continue
+					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("network endpoint %q is in subnet %q outside VPC %q", route.Via.Endpoint, nwep.Spec.Subnet, resource.Spec.Vpc)); err != nil {
+						return ctrl.Result{}, err
+					}
+					return ctrl.Result{}, nil
 				}
 				subnet = nwep.Spec.Subnet
 			}
@@ -111,19 +134,23 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			statusRoutes = append(statusRoutes, route)
 		}
 	}
-	resource.Status.Routes = statusRoutes
-
-	if resource.Status.TableID == 0 {
+	tableID := resource.Status.TableID
+	if tableID == 0 {
 		var id uint32 = 1
 		for {
 			if id == math.MaxUint32 {
-				// TODO: set condition
+				if err := r.updateStatus(ctx, &resource, statusRoutes, tableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, "route table ID limit reached"); err != nil {
+					return ctrl.Result{}, err
+				}
 				return ctrl.Result{}, nil
 			}
 			id++
 
 			var tableList juneauloutresmev1alpha1.RouteTableList
 			if err := r.List(ctx, &tableList, client.MatchingFields{"status.tableID": strconv.FormatUint(uint64(id), 10)}); err != nil {
+				if updateErr := r.updateStatus(ctx, &resource, statusRoutes, tableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, "failed to list existing route tables"); updateErr != nil {
+					return ctrl.Result{}, updateErr
+				}
 				return ctrl.Result{}, err
 			}
 
@@ -132,14 +159,37 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			}
 		}
 
-		resource.Status.TableID = id
+		tableID = id
 	}
 
-	if err := r.Status().Update(ctx, &resource); err != nil {
+	if err := r.updateStatus(ctx, &resource, statusRoutes, tableID, metav1.ConditionTrue, routeTableReasonReconcileSucceeded, ""); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *RouteTableReconciler) updateStatus(ctx context.Context, resource *juneauloutresmev1alpha1.RouteTable, routes []juneauloutresmev1alpha1.Route, tableID uint32, ready metav1.ConditionStatus, reason, message string) error {
+	updated := resource.DeepCopy()
+	updated.Status.ObservedGeneration = updated.Generation
+	updated.Status.Routes = routes
+	updated.Status.TableID = tableID
+	meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
+		Type:    juneauloutresmev1alpha1.RouteTableStatusReady,
+		Status:  ready,
+		Reason:  reason,
+		Message: message,
+	})
+
+	if updated.Status.ObservedGeneration == resource.Status.ObservedGeneration &&
+		updated.Status.TableID == resource.Status.TableID &&
+		reflect.DeepEqual(updated.Status.Routes, resource.Status.Routes) &&
+		reflect.DeepEqual(updated.Status.Conditions, resource.Status.Conditions) {
+		return nil
+	}
+
+	resource.Status = updated.Status
+	return r.Status().Update(ctx, resource)
 }
 
 func getRoute(routes []juneauloutresmev1alpha1.Route, dst string) *juneauloutresmev1alpha1.Route {

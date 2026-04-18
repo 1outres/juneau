@@ -18,6 +18,8 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -25,12 +27,18 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
 const (
+	vpcReasonDeleting           = "Deleting"
+	vpcReasonRouteTableNotReady = "MainRouteTableNotReady"
+	vpcReasonRouteTableMissing  = "MainRouteTableMissing"
 	vpcReasonReconcileFailed    = "ReconcileFailed"
 	vpcReasonReconcileSucceeded = "ReconcileSucceeded"
 )
@@ -60,26 +68,68 @@ func (r *VpcReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	if !resource.ObjectMeta.DeletionTimestamp.IsZero() {
+		if err := r.updateStatus(ctx, &resource, resource.Status.MainRouteTable, metav1.ConditionFalse, vpcReasonDeleting, "VPC is being deleted"); err != nil {
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{}, nil
 	}
 
 	routeTable := &juneauv1alpha1.RouteTable{}
 	routeTable.SetName(resource.Name)
 
-	_, err := ctrl.CreateOrUpdate(ctx, r.Client, routeTable, func() error {
+	op, err := ctrl.CreateOrUpdate(ctx, r.Client, routeTable, func() error {
 		routeTable.Spec.Vpc = resource.Name
 		return nil
 	})
 	if err != nil {
-		if updateErr := r.updateReadyCondition(ctx, &resource, metav1.ConditionFalse, vpcReasonReconcileFailed, "failed to reconcile main route table"); updateErr != nil {
+		if updateErr := r.updateStatus(ctx, &resource, resource.Status.MainRouteTable, metav1.ConditionFalse, vpcReasonReconcileFailed, "failed to reconcile main route table"); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
 		return ctrl.Result{}, err
 	}
 
-	resource.Status.MainRouteTable = routeTable.Name
+	mainRouteTableName := routeTable.Name
+	if err := r.updateMainRouteTableStatus(ctx, &resource, mainRouteTableName); err != nil {
+		return ctrl.Result{}, err
+	}
 
-	if err := r.updateReadyCondition(ctx, &resource, metav1.ConditionTrue, vpcReasonReconcileSucceeded, ""); err != nil {
+	if op != controllerutil.OperationResultNone {
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	var mainRouteTable juneauv1alpha1.RouteTable
+	if err := r.Get(ctx, client.ObjectKey{Name: mainRouteTableName}, &mainRouteTable); err != nil {
+		if errors.IsNotFound(err) {
+			if updateErr := r.updateStatus(ctx, &resource, mainRouteTableName, metav1.ConditionFalse, vpcReasonRouteTableMissing, fmt.Sprintf("main route table %q not found", mainRouteTableName)); updateErr != nil {
+				return ctrl.Result{}, updateErr
+			}
+			return ctrl.Result{}, nil
+		}
+		if updateErr := r.updateStatus(ctx, &resource, mainRouteTableName, metav1.ConditionFalse, vpcReasonReconcileFailed, "failed to fetch main route table"); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{}, err
+	}
+
+	mainRouteTableReady := meta.FindStatusCondition(mainRouteTable.Status.Conditions, juneauv1alpha1.RouteTableStatusReady)
+	if mainRouteTableReady == nil {
+		if err := r.updateStatus(ctx, &resource, mainRouteTableName, metav1.ConditionFalse, vpcReasonRouteTableNotReady, fmt.Sprintf("main route table %q has no Ready condition", mainRouteTableName)); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+	if mainRouteTableReady.Status != metav1.ConditionTrue {
+		message := mainRouteTableReady.Message
+		if message == "" {
+			message = fmt.Sprintf("reason=%s status=%s", mainRouteTableReady.Reason, mainRouteTableReady.Status)
+		}
+		if err := r.updateStatus(ctx, &resource, mainRouteTableName, metav1.ConditionFalse, vpcReasonRouteTableNotReady, fmt.Sprintf("main route table %q is not ready: %s", mainRouteTableName, message)); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
+	if err := r.updateStatus(ctx, &resource, mainRouteTableName, metav1.ConditionTrue, vpcReasonReconcileSucceeded, ""); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -90,17 +140,56 @@ func (r *VpcReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 func (r *VpcReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&juneauv1alpha1.Vpc{}).
+		Watches(&juneauv1alpha1.RouteTable{}, handler.EnqueueRequestsFromMapFunc(r.mapRouteTableToVpcs)).
 		Named("vpc").
 		Complete(r)
 }
 
-func (r *VpcReconciler) updateReadyCondition(ctx context.Context, vpc *juneauv1alpha1.Vpc, status metav1.ConditionStatus, reason, message string) error {
-	vpc.Status.ObservedGeneration = vpc.Generation
-	meta.SetStatusCondition(&vpc.Status.Conditions, metav1.Condition{
+func (r *VpcReconciler) updateStatus(ctx context.Context, vpc *juneauv1alpha1.Vpc, mainRouteTable string, status metav1.ConditionStatus, reason, message string) error {
+	updated := vpc.DeepCopy()
+	updated.Status.ObservedGeneration = updated.Generation
+	updated.Status.MainRouteTable = mainRouteTable
+	meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
 		Type:    juneauv1alpha1.VpcStatusReady,
 		Status:  status,
 		Reason:  reason,
 		Message: message,
 	})
+
+	if updated.Status.ObservedGeneration == vpc.Status.ObservedGeneration &&
+		updated.Status.MainRouteTable == vpc.Status.MainRouteTable &&
+		reflect.DeepEqual(updated.Status.Conditions, vpc.Status.Conditions) {
+		return nil
+	}
+
+	vpc.Status = updated.Status
 	return r.Status().Update(ctx, vpc)
+}
+
+func (r *VpcReconciler) updateMainRouteTableStatus(ctx context.Context, vpc *juneauv1alpha1.Vpc, mainRouteTable string) error {
+	if vpc.Status.MainRouteTable == mainRouteTable {
+		return nil
+	}
+
+	updated := vpc.DeepCopy()
+	updated.Status.ObservedGeneration = updated.Generation
+	updated.Status.MainRouteTable = mainRouteTable
+
+	if updated.Status.ObservedGeneration == vpc.Status.ObservedGeneration &&
+		updated.Status.MainRouteTable == vpc.Status.MainRouteTable &&
+		reflect.DeepEqual(updated.Status.Conditions, vpc.Status.Conditions) {
+		return nil
+	}
+
+	vpc.Status = updated.Status
+	return r.Status().Update(ctx, vpc)
+}
+
+func (r *VpcReconciler) mapRouteTableToVpcs(ctx context.Context, obj client.Object) []reconcile.Request {
+	routeTable, ok := obj.(*juneauv1alpha1.RouteTable)
+	if !ok || routeTable.Spec.Vpc == "" {
+		return nil
+	}
+
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: routeTable.Spec.Vpc}}}
 }
