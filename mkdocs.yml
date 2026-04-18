@@ -38,4 +38,7 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Resources:
+    - VPC: resources/vpc.md
+    - Subnet: resources/subnet.md
   - API Reference: api-reference/v1alpha1.md
