@@ -47,6 +47,7 @@ spec:
                 items:
                   properties:
                     dst:
+                      minLength: 1
                       type: string
                     subnet:
                       type: string
@@ -55,6 +56,10 @@ spec:
                         endpointName:
                           type: string
                         type:
+                          enum:
+                          - connected
+                          - endpoint
+                          - internetGateway
                           type: string
                       required:
                       - type
@@ -65,6 +70,7 @@ spec:
                   type: object
                 type: array
               vpc:
+                minLength: 1
                 type: string
             required:
             - vpc
@@ -135,6 +141,7 @@ spec:
                 items:
                   properties:
                     dst:
+                      minLength: 1
                       type: string
                     subnet:
                       type: string
@@ -143,6 +150,10 @@ spec:
                         endpointName:
                           type: string
                         type:
+                          enum:
+                          - connected
+                          - endpoint
+                          - internetGateway
                           type: string
                       required:
                       - type

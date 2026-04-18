@@ -22,6 +22,8 @@ import (
 
 // RouteTableSpec defines the desired state of RouteTable.
 type RouteTableSpec struct {
+	// +required
+	// +kubebuilder:validation:MinLength=1
 	Vpc    string  `json:"vpc"`
 	Routes []Route `json:"routes,omitempty"`
 }
@@ -36,12 +38,14 @@ type RouteTableStatus struct {
 }
 
 type Route struct {
+	// +kubebuilder:validation:MinLength=1
 	Dst    string   `json:"dst"`
 	Via    RouteVia `json:"via"`
 	Subnet string   `json:"subnet,omitempty"`
 }
 
 type RouteVia struct {
+	// +kubebuilder:validation:Enum=connected;endpoint;internetGateway
 	Type     RouteViaType `json:"type"`
 	Endpoint string       `json:"endpointName,omitempty"`
 }

@@ -190,6 +190,26 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /mutate-juneau-loutres-me-v1alpha1-routetable
+  failurePolicy: Fail
+  name: mroutetable-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - routetables
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /mutate-juneau-loutres-me-v1alpha1-subnet
   failurePolicy: Fail
   name: msubnet-v1alpha1.kb.io
@@ -409,6 +429,26 @@ webhooks:
     - UPDATE
     resources:
     - networkinterfaces
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-juneau-loutres-me-v1alpha1-routetable
+  failurePolicy: Fail
+  name: vroutetable-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - routetables
   sideEffects: None
 - admissionReviewVersions:
   - v1

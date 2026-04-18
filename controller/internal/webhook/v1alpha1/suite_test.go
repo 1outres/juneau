@@ -90,6 +90,7 @@ var _ = BeforeSuite(func() {
 	Expect(SetupNetworkInterfaceWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupNetworkEndpointWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupIPLeaseWebhookWithManager(mgr)).To(Succeed())
+	Expect(SetupRouteTableWebhookWithManager(mgr)).To(Succeed())
 
 	webhookMgrDone = make(chan error, 1)
 	go func() {

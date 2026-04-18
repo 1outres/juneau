@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -109,8 +110,8 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			if route.Via.Type == juneauloutresmev1alpha1.ViaConnected {
 				continue
 			} else if route.Via.Type == juneauloutresmev1alpha1.ViaEndpoint {
-				var nwep juneauloutresmev1alpha1.NetworkEndpoint
-				if err := r.Get(ctx, client.ObjectKey{Name: route.Via.Endpoint}, &nwep); err != nil {
+				nwep, err := r.getNetworkEndpoint(ctx, route.Via.Endpoint)
+				if err != nil {
 					if errors.IsNotFound(err) {
 						if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("network endpoint %q not found", route.Via.Endpoint)); err != nil {
 							return ctrl.Result{}, err
@@ -193,12 +194,36 @@ func (r *RouteTableReconciler) updateStatus(ctx context.Context, resource *junea
 }
 
 func getRoute(routes []juneauloutresmev1alpha1.Route, dst string) *juneauloutresmev1alpha1.Route {
-	for _, route := range routes {
-		if route.Dst == dst {
-			return &route
+	for i := range routes {
+		if routes[i].Dst == dst {
+			return &routes[i]
 		}
 	}
 	return nil
+}
+
+func (r *RouteTableReconciler) getNetworkEndpoint(ctx context.Context, name string) (*juneauloutresmev1alpha1.NetworkEndpoint, error) {
+	var networkEndpointList juneauloutresmev1alpha1.NetworkEndpointList
+	if err := r.List(ctx, &networkEndpointList); err != nil {
+		return nil, err
+	}
+
+	var match *juneauloutresmev1alpha1.NetworkEndpoint
+	for i := range networkEndpointList.Items {
+		if networkEndpointList.Items[i].Name != name {
+			continue
+		}
+		if match != nil {
+			return nil, fmt.Errorf("multiple network endpoints named %q found", name)
+		}
+		match = &networkEndpointList.Items[i]
+	}
+
+	if match == nil {
+		return nil, errors.NewNotFound(schema.GroupResource{Group: juneauloutresmev1alpha1.GroupVersion.Group, Resource: "networkendpoints"}, name)
+	}
+
+	return match, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
