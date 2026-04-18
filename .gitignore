@@ -1,3 +1,5 @@
 .direnv
 .env
 /bin/
+/site
+/docs/api-reference/*.md
