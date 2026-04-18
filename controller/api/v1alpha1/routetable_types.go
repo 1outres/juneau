@@ -49,7 +49,7 @@ type RouteVia struct {
 type RouteViaType string
 
 const (
-	ViaConnnected      RouteViaType = "connected"
+	ViaConnected       RouteViaType = "connected"
 	ViaEndpoint        RouteViaType = "endpoint"
 	ViaInternetGateway RouteViaType = "internetGateway"
 )

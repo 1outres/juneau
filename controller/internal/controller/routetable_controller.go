@@ -97,7 +97,7 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			Dst:    subnet.Spec.CIDR,
 			Subnet: subnet.Name,
 			Via: juneauloutresmev1alpha1.RouteVia{
-				Type: juneauloutresmev1alpha1.ViaConnnected,
+				Type: juneauloutresmev1alpha1.ViaConnected,
 			},
 		})
 		subnetNames = append(subnetNames, subnet.Name)
@@ -106,7 +106,7 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	for _, route := range resource.Spec.Routes {
 		if rt := getRoute(statusRoutes, route.Dst); rt == nil {
 			var subnet string
-			if route.Via.Type == juneauloutresmev1alpha1.ViaConnnected {
+			if route.Via.Type == juneauloutresmev1alpha1.ViaConnected {
 				continue
 			} else if route.Via.Type == juneauloutresmev1alpha1.ViaEndpoint {
 				var nwep juneauloutresmev1alpha1.NetworkEndpoint

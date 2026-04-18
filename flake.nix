@@ -68,6 +68,7 @@
               tilt
               kustomize
               kind
+              kubebuilder
               protobuf
               clang
               llvmPackages.bintools
