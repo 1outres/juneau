@@ -22,11 +22,17 @@ import (
 
 // NetworkInterfaceSpec defines the desired state of NetworkInterface.
 type NetworkInterfaceSpec struct {
+	// +required
 	PodRef NetworkInterfacePodReference `json:"podRef"`
 
+	// +required
+	// +kubebuilder:validation:MinLength=1
 	NodeName string `json:"nodeName"`
 
-	Subnet  string `json:"subnet"`
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	Subnet string `json:"subnet"`
+	// +optional
 	Address string `json:"address,omitempty"`
 }
 
@@ -42,8 +48,14 @@ type NetworkInterfaceStatus struct {
 }
 
 type NetworkInterfacePodReference struct {
-	UID       string `json:"uid"`
-	Name      string `json:"name"`
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	UID string `json:"uid"`
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// +required
+	// +kubebuilder:validation:MinLength=1
 	Interface string `json:"interface"`
 }
 

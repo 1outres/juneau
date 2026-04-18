@@ -19,9 +19,14 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"net"
 
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -36,7 +41,7 @@ var networkinterfacelog = logf.Log.WithName("networkinterface-resource")
 // SetupNetworkInterfaceWebhookWithManager registers the webhook for NetworkInterface in the manager.
 func SetupNetworkInterfaceWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&juneauv1alpha1.NetworkInterface{}).
-		WithValidator(&NetworkInterfaceCustomValidator{}).
+		WithValidator(&NetworkInterfaceCustomValidator{Client: mgr.GetClient()}).
 		WithDefaulter(&NetworkInterfaceCustomDefaulter{}).
 		Complete()
 }
@@ -67,6 +72,7 @@ func (d *NetworkInterfaceCustomDefaulter) Default(ctx context.Context, obj runti
 // NetworkInterfaceCustomValidator struct is responsible for validating the NetworkInterface resource
 // when it is created, updated, or deleted.
 type NetworkInterfaceCustomValidator struct {
+	client.Client
 }
 
 var _ webhook.CustomValidator = &NetworkInterfaceCustomValidator{}
@@ -79,6 +85,24 @@ func (v *NetworkInterfaceCustomValidator) ValidateCreate(ctx context.Context, ob
 	}
 	networkinterfacelog.Info("Validation for NetworkInterface upon creation", "name", networkinterface.GetName())
 
+	var errs field.ErrorList
+	specPath := field.NewPath("spec")
+
+	subnet, subnetErrs, err := validateNetworkInterfaceSubnet(ctx, v.Client, networkinterface, specPath.Child("subnet"))
+	if err != nil {
+		return nil, err
+	}
+	errs = append(errs, subnetErrs...)
+
+	addressErrs := validateNetworkInterfaceAddress(networkinterface.Spec.Address, subnet, specPath.Child("address"))
+	errs = append(errs, addressErrs...)
+
+	if len(errs) > 0 {
+		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "NetworkInterface"}, networkinterface.Name, errs)
+		networkinterfacelog.Info("Validation failed for NetworkInterface", "name", networkinterface.GetName(), "error", err)
+		return nil, err
+	}
+
 	return nil, nil
 }
 
@@ -88,7 +112,40 @@ func (v *NetworkInterfaceCustomValidator) ValidateUpdate(ctx context.Context, ol
 	if !ok {
 		return nil, fmt.Errorf("expected a NetworkInterface object for the newObj but got %T", newObj)
 	}
+	oldNetworkInterface, ok := oldObj.(*juneauv1alpha1.NetworkInterface)
+	if !ok {
+		return nil, fmt.Errorf("expected a NetworkInterface object for the oldObj but got %T", oldObj)
+	}
 	networkinterfacelog.Info("Validation for NetworkInterface upon update", "name", networkinterface.GetName())
+
+	var errs field.ErrorList
+	specPath := field.NewPath("spec")
+	podRefPath := specPath.Child("podRef")
+
+	if networkinterface.Spec.NodeName != oldNetworkInterface.Spec.NodeName {
+		errs = append(errs, field.Invalid(specPath.Child("nodeName"), networkinterface.Spec.NodeName, "spec.nodeName is immutable"))
+	}
+	if networkinterface.Spec.Subnet != oldNetworkInterface.Spec.Subnet {
+		errs = append(errs, field.Invalid(specPath.Child("subnet"), networkinterface.Spec.Subnet, "spec.subnet is immutable"))
+	}
+	if networkinterface.Spec.Address != oldNetworkInterface.Spec.Address {
+		errs = append(errs, field.Invalid(specPath.Child("address"), networkinterface.Spec.Address, "spec.address is immutable"))
+	}
+	if networkinterface.Spec.PodRef.UID != oldNetworkInterface.Spec.PodRef.UID {
+		errs = append(errs, field.Invalid(podRefPath.Child("uid"), networkinterface.Spec.PodRef.UID, "spec.podRef.uid is immutable"))
+	}
+	if networkinterface.Spec.PodRef.Name != oldNetworkInterface.Spec.PodRef.Name {
+		errs = append(errs, field.Invalid(podRefPath.Child("name"), networkinterface.Spec.PodRef.Name, "spec.podRef.name is immutable"))
+	}
+	if networkinterface.Spec.PodRef.Interface != oldNetworkInterface.Spec.PodRef.Interface {
+		errs = append(errs, field.Invalid(podRefPath.Child("interface"), networkinterface.Spec.PodRef.Interface, "spec.podRef.interface is immutable"))
+	}
+
+	if len(errs) > 0 {
+		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "NetworkInterface"}, networkinterface.Name, errs)
+		networkinterfacelog.Info("Validation failed for NetworkInterface", "name", networkinterface.GetName(), "error", err)
+		return nil, err
+	}
 
 	return nil, nil
 }
@@ -102,4 +159,46 @@ func (v *NetworkInterfaceCustomValidator) ValidateDelete(ctx context.Context, ob
 	networkinterfacelog.Info("Validation for NetworkInterface upon deletion", "name", networkinterface.GetName())
 
 	return nil, nil
+}
+
+func validateNetworkInterfaceSubnet(ctx context.Context, c client.Client, networkinterface *juneauv1alpha1.NetworkInterface, path *field.Path) (*juneauv1alpha1.Subnet, field.ErrorList, error) {
+	if networkinterface.Spec.Subnet == "" {
+		return nil, nil, nil
+	}
+
+	var subnet juneauv1alpha1.Subnet
+	if err := c.Get(ctx, client.ObjectKey{Name: networkinterface.Spec.Subnet}, &subnet); err != nil {
+		if errors.IsNotFound(err) {
+			return nil, field.ErrorList{field.Invalid(path, networkinterface.Spec.Subnet, "referenced Subnet does not exist")}, nil
+		}
+		return nil, nil, err
+	}
+
+	return &subnet, nil, nil
+}
+
+func validateNetworkInterfaceAddress(address string, subnet *juneauv1alpha1.Subnet, path *field.Path) field.ErrorList {
+	if address == "" {
+		return nil
+	}
+
+	ip := net.ParseIP(address)
+	if ip == nil || ip.To4() == nil {
+		return field.ErrorList{field.Invalid(path, address, "must be a valid IPv4 address")}
+	}
+
+	if subnet == nil {
+		return nil
+	}
+
+	_, cidr, err := net.ParseCIDR(subnet.Spec.CIDR)
+	if err != nil {
+		return nil
+	}
+
+	if !cidr.Contains(ip) {
+		return field.ErrorList{field.Invalid(path, address, fmt.Sprintf("must be within Subnet CIDR %q", subnet.Spec.CIDR))}
+	}
+
+	return nil
 }
