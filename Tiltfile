@@ -48,9 +48,6 @@ docker_build_with_restart(
     ]
 )
 
-local_resource(
-    'CNI Compile', 'make build-cni-bin', deps=['daemon/cmd/cni/main.go', 'daemon/pkg/cnipb'])
-
 DAEMON_DOCKERFILE = '''FROM golang:alpine
 RUN apk add --no-cache iptables ip6tables
 WORKDIR /
@@ -59,7 +56,7 @@ CMD ["/daemon"]
 '''
 
 local_resource(
-    'Daemon Compile', 'make build-daemon-bin', deps=['daemon/cmd/juneaud/main.go', 'daemon/internal/daemon', 'daemon/pkg', 'daemon/bin/cni'],
+    'Daemon Compile', 'make build-daemon-bin', deps=['daemon/cmd/juneaud/main.go', 'daemon/cmd/cni/main.go', 'daemon/internal/daemon', 'daemon/pkg', 'daemon/pkg/cnipb'],
     ignore=[])
 
 docker_build_with_restart(

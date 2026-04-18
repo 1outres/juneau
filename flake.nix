@@ -23,6 +23,9 @@
           controllerGen = pkgs.writeShellScriptBin "controller-gen" ''
             exec go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.17.2 "$@"
           '';
+          crddoc = pkgs.writeShellScriptBin "crddoc" ''
+            exec go run github.com/theunrepentantgeek/crddoc@latest "$@"
+          '';
           setupEnvtest = pkgs.writeShellScriptBin "setup-envtest" ''
             exec go run sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.20 "$@"
           '';
@@ -55,6 +58,11 @@
           default = pkgs.mkShell {
             packages = with pkgs; [
               go_1_24
+              python3
+              python3Packages.pip
+              python3Packages.mkdocs
+              python3Packages.mkdocs-material
+              python3Packages.mkdocs-minify-plugin
               gopls
               golangci-lint
               tilt
@@ -67,6 +75,7 @@
               git
               docker
               controllerGen
+              crddoc
               setupEnvtest
               protocGenGo
               protocGenGoGrpc

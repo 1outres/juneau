@@ -3,6 +3,8 @@
 LOCALBIN ?= $(CURDIR)/bin
 GOLANGCI_LINT ?= $(LOCALBIN)/golangci-lint
 GOLANGCI_LINT_VERSION ?= v1.63.4
+CRDDOC ?= $(LOCALBIN)/crddoc
+CRDDOC_VERSION ?= latest
 
 DOCKER ?= docker
 PUBLISH_PLATFORMS ?= linux/amd64,linux/arm64
@@ -52,6 +54,19 @@ daemon-generate-proto: ## Generate daemon protobuf bindings.
 .PHONY: daemon-generate-bpf
 daemon-generate-bpf: ## Generate daemon eBPF bindings.
 	$(MAKE) -C daemon generate-bpf
+
+.PHONY: docs-build
+docs-build: docs-api-reference ## Build documentation locally.
+	mkdocs build --strict
+
+.PHONY: docs-serve
+docs-serve: docs-api-reference ## Serve documentation locally.
+	mkdocs serve
+
+.PHONY: docs-api-reference
+docs-api-reference: crddoc ## Generate API reference documentation.
+	mkdir -p docs/api-reference
+	$(CRDDOC) document crds --output docs/api-reference/v1alpha1.md ./controller/api/v1alpha1
 
 .PHONY: build-webhookcertjob-bin
 build-webhookcertjob-bin: ## Build the webhook cert job binary for Tilt.
@@ -166,8 +181,14 @@ $(LOCALBIN):
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 
+.PHONY: crddoc
+crddoc: $(CRDDOC) ## Download crddoc locally if necessary.
+
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+
+$(CRDDOC): $(LOCALBIN)
+	$(call go-install-tool,$(CRDDOC),github.com/theunrepentantgeek/crddoc,$(CRDDOC_VERSION))
 
 define go-install-tool
 @[ -f "$(1)-$(3)" ] || { \
