@@ -41,6 +41,7 @@ nav:
   - Resources:
     - VPC: resources/vpc.md
     - Subnet: resources/subnet.md
+    - IPLease: resources/iplease.md
     - NetworkInterface: resources/networkinterface.md
     - NetworkEndpoint: resources/networkendpoint.md
   - API Reference: api-reference/v1alpha1.md
