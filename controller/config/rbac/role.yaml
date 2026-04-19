@@ -29,6 +29,8 @@ rules:
   - juneau.loutres.me
   resources:
   - addresspools
+  - allocationclaims
+  - allocationpools
   - bgpadvertisements
   - bgppeers
   - elasticipattachments
@@ -52,6 +54,8 @@ rules:
   - juneau.loutres.me
   resources:
   - addresspools/finalizers
+  - allocationclaims/finalizers
+  - allocationpools/finalizers
   - bgpadvertisements/finalizers
   - bgppeers/finalizers
   - elasticipattachments/finalizers
@@ -69,6 +73,8 @@ rules:
   - juneau.loutres.me
   resources:
   - addresspools/status
+  - allocationclaims/status
+  - allocationpools/status
   - bgpadvertisements/status
   - bgppeers/status
   - elasticipattachments/status

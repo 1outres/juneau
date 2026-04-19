@@ -101,6 +101,14 @@ var _ = BeforeSuite(func() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr)).To(Succeed())
+	Expect((&AllocationPoolReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr)).To(Succeed())
+	Expect((&AllocationClaimReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr)).To(Succeed())
 	Expect((&SubnetReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
@@ -126,6 +134,13 @@ var _ = BeforeSuite(func() {
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
+
+	Eventually(func(g Gomega) {
+		var subnetPool juneauloutresmev1alpha1.AllocationPool
+		g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: allocationPoolSubnetVNI}, &subnetPool)).To(Succeed())
+		var routeTablePool juneauloutresmev1alpha1.AllocationPool
+		g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: allocationPoolRouteTableID}, &routeTablePool)).To(Succeed())
+	}).Should(Succeed())
 })
 
 var _ = AfterSuite(func() {

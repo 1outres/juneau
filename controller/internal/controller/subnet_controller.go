@@ -22,14 +22,16 @@ import (
 	"fmt"
 	"net"
 	"reflect"
-	"strconv"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -41,6 +43,7 @@ const (
 	subnetReasonDeleting           = "Deleting"
 	subnetReasonVpcNotFound        = "VpcNotFound"
 	subnetReasonVpcNotReady        = "VpcNotReady"
+	subnetReasonNotReady           = "NotReady"
 	subnetReasonReconcileFailed    = "ReconcileFailed"
 	subnetReasonNotImplemented     = "NotImplemented"
 	subnetReasonReconcileSucceeded = "ReconcileSucceeded"
@@ -55,6 +58,8 @@ type SubnetReconciler struct {
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=subnets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=subnets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=subnets/finalizers,verbs=update
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=allocationclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=allocationclaims/status,verbs=get;update;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -114,30 +119,26 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if updated.Name == "default" {
 		updated.Status.VNI = 1
 	} else if updated.Status.VNI == 0 {
-		var vni uint32 = 1
-		for {
-			vni++
-
-			if vni > 0xFFFFFF {
-				if err := r.updateStatus(ctx, &resource, resource.Status.VNI, resource.Status.Gateway, resource.Status.GatewayMAC, metav1.ConditionFalse, subnetReasonNotImplemented, "VNI limit reached"); err != nil {
-					return ctrl.Result{}, err
-				}
-				return ctrl.Result{}, nil
+		claim, err := r.ensureNumberClaim(ctx, &resource, allocationPoolSubnetVNI, schema.GroupVersionKind{Group: juneauv1alpha1.GroupVersion.Group, Version: juneauv1alpha1.GroupVersion.Version, Kind: "Subnet"}, "status.vni")
+		if err != nil {
+			if updateErr := r.updateStatus(ctx, &resource, resource.Status.VNI, resource.Status.Gateway, resource.Status.GatewayMAC, metav1.ConditionFalse, subnetReasonReconcileFailed, fmt.Sprintf("failed to ensure VNI allocation claim: %v", err)); updateErr != nil {
+				return ctrl.Result{}, updateErr
 			}
-
-			var subnetList juneauv1alpha1.SubnetList
-			if err := r.List(ctx, &subnetList, client.MatchingFields{"status.vni": strconv.FormatUint(uint64(vni), 10)}); err != nil {
-				if updateErr := r.updateStatus(ctx, &resource, resource.Status.VNI, resource.Status.Gateway, resource.Status.GatewayMAC, metav1.ConditionFalse, subnetReasonReconcileFailed, "failed to list existing subnets for VNI allocation"); updateErr != nil {
-					return ctrl.Result{}, updateErr
-				}
+			return ctrl.Result{}, err
+		}
+		if claim.Status.Phase != juneauv1alpha1.AllocationClaimPhaseAllocated || claim.Status.Value.Number == 0 {
+			if err := r.updateStatus(ctx, &resource, resource.Status.VNI, resource.Status.Gateway, resource.Status.GatewayMAC, metav1.ConditionFalse, subnetReasonNotReady, "waiting for VNI allocation"); err != nil {
 				return ctrl.Result{}, err
 			}
-
-			if len(subnetList.Items) == 0 {
-				break
-			}
+			return ctrl.Result{RequeueAfter: 100 * time.Millisecond}, nil
 		}
-		updated.Status.VNI = vni
+		if claim.Status.Value.Number > 0xFFFFFF {
+			if err := r.updateStatus(ctx, &resource, resource.Status.VNI, resource.Status.Gateway, resource.Status.GatewayMAC, metav1.ConditionFalse, subnetReasonNotImplemented, fmt.Sprintf("allocated VNI %d exceeds supported range", claim.Status.Value.Number)); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
+		updated.Status.VNI = uint32(claim.Status.Value.Number)
 	}
 
 	_, cidr, err := net.ParseCIDR(updated.Spec.CIDR)
@@ -185,26 +186,24 @@ func (r *SubnetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	); err != nil {
 		return fmt.Errorf("failed to set up field indexer for Subnet.spec.vpc: %w", err)
 	}
-	if err := mgr.GetFieldIndexer().IndexField(
-		context.Background(),
-		&juneauv1alpha1.Subnet{},
-		"status.vni",
-		func(obj client.Object) []string {
-			subnet := obj.(*juneauv1alpha1.Subnet)
-			if subnet.Status.VNI == 0 {
-				return nil
-			}
-			return []string{strconv.FormatUint(uint64(subnet.Status.VNI), 10)}
-		},
-	); err != nil {
-		return fmt.Errorf("failed to set up field indexer for Subnet.status.vni: %w", err)
-	}
-
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&juneauv1alpha1.Subnet{}).
 		Watches(&juneauv1alpha1.Vpc{}, handler.EnqueueRequestsFromMapFunc(r.mapVpcToSubnets)).
+		Watches(&juneauv1alpha1.AllocationClaim{}, handler.EnqueueRequestsFromMapFunc(r.mapClaimToSubnets)).
 		Named("subnet").
 		Complete(r)
+}
+
+func (r *SubnetReconciler) ensureNumberClaim(ctx context.Context, subnet *juneauv1alpha1.Subnet, poolName string, gvk schema.GroupVersionKind, attribute string) (*juneauv1alpha1.AllocationClaim, error) {
+	claim := newAllocationClaim(poolName, gvk, subnet.Name, attribute)
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, claim, func() error {
+		claim.Spec = newAllocationClaim(poolName, gvk, subnet.Name, attribute).Spec
+		return controllerutil.SetControllerReference(subnet, claim, r.Scheme)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return claim, nil
 }
 
 func (r *SubnetReconciler) mapVpcToSubnets(ctx context.Context, obj client.Object) []reconcile.Request {
@@ -223,6 +222,15 @@ func (r *SubnetReconciler) mapVpcToSubnets(ctx context.Context, obj client.Objec
 		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: subnet.Name}})
 	}
 	return requests
+}
+
+func (r *SubnetReconciler) mapClaimToSubnets(ctx context.Context, obj client.Object) []reconcile.Request {
+	_ = ctx
+	claim, ok := obj.(*juneauv1alpha1.AllocationClaim)
+	if !ok || claim.Spec.ResourceRef.Kind != "Subnet" || claim.Spec.ResourceRef.Name == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: claim.Spec.ResourceRef.Name}}}
 }
 
 func (r *SubnetReconciler) updateStatus(ctx context.Context, subnet *juneauv1alpha1.Subnet, vni uint32, gateway, gatewayMAC string, status metav1.ConditionStatus, reason, message string) error {

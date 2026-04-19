@@ -19,10 +19,9 @@ package controller
 import (
 	"context"
 	"fmt"
-	"math"
 	"reflect"
 	"slices"
-	"strconv"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -31,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -54,6 +54,8 @@ type RouteTableReconciler struct {
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=routetables,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=routetables/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=routetables/finalizers,verbs=update
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=allocationclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=allocationclaims/status,verbs=get;update;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -137,30 +139,27 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 	tableID := resource.Status.TableID
 	if tableID == 0 {
-		var id uint32 = 1
-		for {
-			if id == math.MaxUint32 {
-				if err := r.updateStatus(ctx, &resource, statusRoutes, tableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, "route table ID limit reached"); err != nil {
-					return ctrl.Result{}, err
-				}
-				return ctrl.Result{}, nil
+		claim, err := r.ensureNumberClaim(ctx, &resource, allocationPoolRouteTableID, schema.GroupVersionKind{Group: juneauloutresmev1alpha1.GroupVersion.Group, Version: juneauloutresmev1alpha1.GroupVersion.Version, Kind: "RouteTable"}, "status.tableID")
+		if err != nil {
+			if updateErr := r.updateStatus(ctx, &resource, statusRoutes, tableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, fmt.Sprintf("failed to ensure table ID allocation claim: %v", err)); updateErr != nil {
+				return ctrl.Result{}, updateErr
 			}
-			id++
-
-			var tableList juneauloutresmev1alpha1.RouteTableList
-			if err := r.List(ctx, &tableList, client.MatchingFields{"status.tableID": strconv.FormatUint(uint64(id), 10)}); err != nil {
-				if updateErr := r.updateStatus(ctx, &resource, statusRoutes, tableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, "failed to list existing route tables"); updateErr != nil {
-					return ctrl.Result{}, updateErr
-				}
+			return ctrl.Result{}, err
+		}
+		if claim.Status.Phase != juneauloutresmev1alpha1.AllocationClaimPhaseAllocated || claim.Status.Value.Number == 0 {
+			if err := r.updateStatus(ctx, &resource, statusRoutes, tableID, metav1.ConditionFalse, routeTableReasonNotReady, "waiting for table ID allocation"); err != nil {
 				return ctrl.Result{}, err
 			}
-
-			if len(tableList.Items) == 0 {
-				break
+			return ctrl.Result{RequeueAfter: 100 * time.Millisecond}, nil
+		}
+		if claim.Status.Value.Number > uint64(^uint32(0)) {
+			if err := r.updateStatus(ctx, &resource, statusRoutes, tableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, fmt.Sprintf("allocated table ID %d exceeds supported range", claim.Status.Value.Number)); err != nil {
+				return ctrl.Result{}, err
 			}
+			return ctrl.Result{}, nil
 		}
 
-		tableID = id
+		tableID = uint32(claim.Status.Value.Number)
 	}
 
 	if err := r.updateStatus(ctx, &resource, statusRoutes, tableID, metav1.ConditionTrue, routeTableReasonReconcileSucceeded, ""); err != nil {
@@ -228,27 +227,25 @@ func (r *RouteTableReconciler) getNetworkEndpoint(ctx context.Context, name stri
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *RouteTableReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	if err := mgr.GetFieldIndexer().IndexField(
-		context.Background(),
-		&juneauloutresmev1alpha1.RouteTable{},
-		"status.tableID",
-		func(obj client.Object) []string {
-			table := obj.(*juneauloutresmev1alpha1.RouteTable)
-			if table.Status.TableID == 0 {
-				return nil
-			}
-			return []string{strconv.FormatUint(uint64(table.Status.TableID), 10)}
-		},
-	); err != nil {
-		return fmt.Errorf("failed to set up field indexer for RouteTable.status.tableID: %w", err)
-	}
-
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&juneauloutresmev1alpha1.RouteTable{}).
 		Watches(&juneauloutresmev1alpha1.Subnet{}, handler.EnqueueRequestsFromMapFunc(r.mapSubnetToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.NetworkEndpoint{}, handler.EnqueueRequestsFromMapFunc(r.mapNetworkEndpointToRouteTables)).
+		Watches(&juneauloutresmev1alpha1.AllocationClaim{}, handler.EnqueueRequestsFromMapFunc(r.mapClaimToRouteTables)).
 		Named("routetable").
 		Complete(r)
+}
+
+func (r *RouteTableReconciler) ensureNumberClaim(ctx context.Context, resource *juneauloutresmev1alpha1.RouteTable, poolName string, gvk schema.GroupVersionKind, attribute string) (*juneauloutresmev1alpha1.AllocationClaim, error) {
+	claim := newAllocationClaim(poolName, gvk, resource.Name, attribute)
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, claim, func() error {
+		claim.Spec = newAllocationClaim(poolName, gvk, resource.Name, attribute).Spec
+		return controllerutil.SetControllerReference(resource, claim, r.Scheme)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return claim, nil
 }
 
 func (r *RouteTableReconciler) mapSubnetToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
@@ -271,6 +268,15 @@ func (r *RouteTableReconciler) mapSubnetToRouteTables(ctx context.Context, obj c
 	}
 
 	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: routeTableName}}}
+}
+
+func (r *RouteTableReconciler) mapClaimToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
+	_ = ctx
+	claim, ok := obj.(*juneauloutresmev1alpha1.AllocationClaim)
+	if !ok || claim.Spec.ResourceRef.Kind != "RouteTable" || claim.Spec.ResourceRef.Name == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: claim.Spec.ResourceRef.Name}}}
 }
 
 func (r *RouteTableReconciler) mapNetworkEndpointToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {

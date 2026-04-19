@@ -30,6 +30,46 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /mutate-juneau-loutres-me-v1alpha1-allocationclaim
+  failurePolicy: Fail
+  name: mallocationclaim-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - allocationclaims
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-juneau-loutres-me-v1alpha1-allocationpool
+  failurePolicy: Fail
+  name: mallocationpool-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - allocationpools
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /mutate-juneau-loutres-me-v1alpha1-bgpadvertisement
   failurePolicy: Fail
   name: mbgpadvertisement-v1alpha1.kb.io
@@ -269,6 +309,46 @@ webhooks:
     - UPDATE
     resources:
     - addresspools
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-juneau-loutres-me-v1alpha1-allocationclaim
+  failurePolicy: Fail
+  name: vallocationclaim-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - allocationclaims
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-juneau-loutres-me-v1alpha1-allocationpool
+  failurePolicy: Fail
+  name: vallocationpool-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - allocationpools
   sideEffects: None
 - admissionReviewVersions:
   - v1
