@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -81,23 +82,37 @@ func (r *AllocationPoolReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 }
 
 func (r *AllocationPoolReconciler) updateStatus(ctx context.Context, resource *juneauloutresmev1alpha1.AllocationPool, ready metav1.ConditionStatus, reason, message string) error {
-	updated := resource.DeepCopy()
-	updated.Status.AllocationVersion = resource.Status.AllocationVersion
-	updated.Status.LastAllocatedNumber = resource.Status.LastAllocatedNumber
-	updated.Status.ObservedGeneration = updated.Generation
-	meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
-		Type:    juneauloutresmev1alpha1.AllocationPoolStatusReady,
-		Status:  ready,
-		Reason:  reason,
-		Message: message,
-	})
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var fresh juneauloutresmev1alpha1.AllocationPool
+		if err := r.Get(ctx, client.ObjectKeyFromObject(resource), &fresh); err != nil {
+			return err
+		}
 
-	if updated.Status.ObservedGeneration == resource.Status.ObservedGeneration && updated.Status.AllocationVersion == resource.Status.AllocationVersion && updated.Status.LastAllocatedNumber == resource.Status.LastAllocatedNumber && reflect.DeepEqual(updated.Status.Conditions, resource.Status.Conditions) {
+		updated := fresh.DeepCopy()
+		updated.Status.AllocationVersion = fresh.Status.AllocationVersion
+		updated.Status.LastAllocatedNumber = fresh.Status.LastAllocatedNumber
+		updated.Status.ObservedGeneration = updated.Generation
+		meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
+			Type:               juneauloutresmev1alpha1.AllocationPoolStatusReady,
+			Status:             ready,
+			Reason:             reason,
+			Message:            message,
+			ObservedGeneration: updated.Generation,
+		})
+
+		if updated.Status.ObservedGeneration == fresh.Status.ObservedGeneration && updated.Status.AllocationVersion == fresh.Status.AllocationVersion && updated.Status.LastAllocatedNumber == fresh.Status.LastAllocatedNumber && reflect.DeepEqual(updated.Status.Conditions, fresh.Status.Conditions) {
+			resource.Status = updated.Status
+			return nil
+		}
+
+		fresh.Status = updated.Status
+		if err := r.Status().Update(ctx, &fresh); err != nil {
+			return err
+		}
+		resource.Status = fresh.Status
+		resource.ObjectMeta.ResourceVersion = fresh.ObjectMeta.ResourceVersion
 		return nil
-	}
-
-	resource.Status = updated.Status
-	return r.Status().Update(ctx, resource)
+	})
 }
 
 // SetupWithManager sets up the controller with the Manager.

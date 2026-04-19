@@ -67,7 +67,7 @@ func (r *AllocationClaimReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	if resource.Status.Phase == juneauloutresmev1alpha1.AllocationClaimPhaseAllocated && resource.Status.Value.Number != 0 {
+	if allocationClaimReady(resource) {
 		return ctrl.Result{}, nil
 	}
 
@@ -193,23 +193,53 @@ func (r *AllocationClaimReconciler) reader() client.Reader {
 }
 
 func (r *AllocationClaimReconciler) updateStatus(ctx context.Context, resource *juneauloutresmev1alpha1.AllocationClaim, phase juneauloutresmev1alpha1.AllocationClaimPhase, number uint64, ready metav1.ConditionStatus, reason, message string) error {
-	updated := resource.DeepCopy()
-	updated.Status.ObservedGeneration = updated.Generation
-	updated.Status.Phase = phase
-	updated.Status.Value.Number = number
-	meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
-		Type:    juneauloutresmev1alpha1.AllocationClaimStatusReady,
-		Status:  ready,
-		Reason:  reason,
-		Message: message,
-	})
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var fresh juneauloutresmev1alpha1.AllocationClaim
+		if err := r.Get(ctx, client.ObjectKeyFromObject(resource), &fresh); err != nil {
+			return err
+		}
 
-	if updated.Status.ObservedGeneration == resource.Status.ObservedGeneration && updated.Status.Phase == resource.Status.Phase && updated.Status.Value.Number == resource.Status.Value.Number && reflect.DeepEqual(updated.Status.Conditions, resource.Status.Conditions) {
+		if allocationClaimReady(fresh) && phase != juneauloutresmev1alpha1.AllocationClaimPhaseAllocated {
+			resource.Status = fresh.Status
+			return nil
+		}
+
+		updated := fresh.DeepCopy()
+		updated.Status.ObservedGeneration = updated.Generation
+		updated.Status.Phase = phase
+		updated.Status.Value.Number = number
+		meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
+			Type:               juneauloutresmev1alpha1.AllocationClaimStatusReady,
+			Status:             ready,
+			Reason:             reason,
+			Message:            message,
+			ObservedGeneration: updated.Generation,
+		})
+
+		if updated.Status.ObservedGeneration == fresh.Status.ObservedGeneration && updated.Status.Phase == fresh.Status.Phase && updated.Status.Value.Number == fresh.Status.Value.Number && reflect.DeepEqual(updated.Status.Conditions, fresh.Status.Conditions) {
+			resource.Status = updated.Status
+			return nil
+		}
+
+		fresh.Status = updated.Status
+		if err := r.Status().Update(ctx, &fresh); err != nil {
+			return err
+		}
+		resource.Status = fresh.Status
+		resource.ObjectMeta.ResourceVersion = fresh.ObjectMeta.ResourceVersion
 		return nil
-	}
+	})
+}
 
-	resource.Status = updated.Status
-	return r.Status().Update(ctx, resource)
+func allocationClaimReady(resource juneauloutresmev1alpha1.AllocationClaim) bool {
+	if resource.Status.Phase != juneauloutresmev1alpha1.AllocationClaimPhaseAllocated || resource.Status.Value.Number == 0 {
+		return false
+	}
+	ready := meta.FindStatusCondition(resource.Status.Conditions, juneauloutresmev1alpha1.AllocationClaimStatusReady)
+	if ready == nil {
+		return false
+	}
+	return ready.Status == metav1.ConditionTrue && ready.ObservedGeneration == resource.Generation
 }
 
 // SetupWithManager sets up the controller with the Manager.
