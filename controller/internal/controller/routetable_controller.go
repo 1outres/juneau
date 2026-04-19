@@ -175,10 +175,11 @@ func (r *RouteTableReconciler) updateStatus(ctx context.Context, resource *junea
 	updated.Status.Routes = routes
 	updated.Status.TableID = tableID
 	meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
-		Type:    juneauloutresmev1alpha1.RouteTableStatusReady,
-		Status:  ready,
-		Reason:  reason,
-		Message: message,
+		Type:               juneauloutresmev1alpha1.RouteTableStatusReady,
+		Status:             ready,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: updated.Generation,
 	})
 
 	if updated.Status.ObservedGeneration == resource.Status.ObservedGeneration &&

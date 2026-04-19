@@ -150,10 +150,11 @@ func (r *VpcReconciler) updateStatus(ctx context.Context, vpc *juneauv1alpha1.Vp
 	updated.Status.ObservedGeneration = updated.Generation
 	updated.Status.MainRouteTable = mainRouteTable
 	meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
-		Type:    juneauv1alpha1.VpcStatusReady,
-		Status:  status,
-		Reason:  reason,
-		Message: message,
+		Type:               juneauv1alpha1.VpcStatusReady,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: updated.Generation,
 	})
 
 	if updated.Status.ObservedGeneration == vpc.Status.ObservedGeneration &&

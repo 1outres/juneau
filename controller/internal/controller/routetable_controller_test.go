@@ -74,6 +74,7 @@ var _ = Describe("RouteTable controller", func() {
 			ready := meta.FindStatusCondition(routeTable.Status.Conditions, juneauv1alpha1.RouteTableStatusReady)
 			g.Expect(ready).NotTo(BeNil())
 			g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(ready.ObservedGeneration).To(Equal(routeTable.Generation))
 			g.Expect(routeTable.Status.Routes).To(ContainElement(juneauv1alpha1.Route{
 				Dst:    subnet.Spec.CIDR,
 				Subnet: subnet.Name,
@@ -126,6 +127,7 @@ var _ = Describe("RouteTable controller", func() {
 			ready := meta.FindStatusCondition(routeTable.Status.Conditions, juneauv1alpha1.RouteTableStatusReady)
 			g.Expect(ready).NotTo(BeNil())
 			g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(ready.ObservedGeneration).To(Equal(routeTable.Generation))
 			g.Expect(ready.Message).To(ContainSubstring("outside VPC"))
 		}).Should(Succeed())
 	})
@@ -157,6 +159,7 @@ func createControllerVpc() string {
 		ready := meta.FindStatusCondition(vpc.Status.Conditions, juneauv1alpha1.VpcStatusReady)
 		g.Expect(ready).NotTo(BeNil())
 		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(ready.ObservedGeneration).To(Equal(vpc.Generation))
 	}).Should(Succeed())
 
 	return name
@@ -178,6 +181,7 @@ func createControllerSubnet(vpcName, subnetName, cidr string) *juneauv1alpha1.Su
 		ready := meta.FindStatusCondition(current.Status.Conditions, juneauv1alpha1.SubnetStatusReady)
 		g.Expect(ready).NotTo(BeNil())
 		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(ready.ObservedGeneration).To(Equal(current.Generation))
 	}).Should(Succeed())
 
 	return subnet
