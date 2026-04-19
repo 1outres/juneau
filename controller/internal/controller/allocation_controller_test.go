@@ -72,6 +72,10 @@ var _ = Describe("Allocation controllers", func() {
 		Expect(claimB.Status.Phase).To(Equal(juneauv1alpha1.AllocationClaimPhaseAllocated))
 		Expect(claimA.Status.Value.Number).To(Equal(uint64(2)))
 		Expect(claimB.Status.Value.Number).To(Equal(uint64(3)))
+		Expect(meta.FindStatusCondition(claimA.Status.Conditions, juneauv1alpha1.AllocationClaimStatusReady)).NotTo(BeNil())
+		Expect(meta.FindStatusCondition(claimA.Status.Conditions, juneauv1alpha1.AllocationClaimStatusReady).ObservedGeneration).To(Equal(claimA.Generation))
+		Expect(meta.FindStatusCondition(claimB.Status.Conditions, juneauv1alpha1.AllocationClaimStatusReady)).NotTo(BeNil())
+		Expect(meta.FindStatusCondition(claimB.Status.Conditions, juneauv1alpha1.AllocationClaimStatusReady).ObservedGeneration).To(Equal(claimB.Generation))
 	})
 
 	It("honors a requested number when available", func() {
@@ -110,6 +114,8 @@ var _ = Describe("Allocation controllers", func() {
 
 		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: claim.Name}, claim)).To(Succeed())
 		Expect(claim.Status.Value.Number).To(Equal(requested))
+		Expect(meta.FindStatusCondition(claim.Status.Conditions, juneauv1alpha1.AllocationClaimStatusReady)).NotTo(BeNil())
+		Expect(meta.FindStatusCondition(claim.Status.Conditions, juneauv1alpha1.AllocationClaimStatusReady).ObservedGeneration).To(Equal(claim.Generation))
 	})
 
 	It("allocates unique VNIs and route table IDs under concurrent VPC and subnet creation", func() {
