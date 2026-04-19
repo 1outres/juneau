@@ -36,6 +36,7 @@ var _ = Describe("Vpc/Subnet controllers", func() {
 			ready := meta.FindStatusCondition(vpc.Status.Conditions, juneauv1alpha1.VpcStatusReady)
 			g.Expect(ready).NotTo(BeNil())
 			g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(ready.ObservedGeneration).To(Equal(vpc.Generation))
 		}).Should(Succeed())
 	})
 
@@ -79,6 +80,7 @@ var _ = Describe("Vpc/Subnet controllers", func() {
 			ready := meta.FindStatusCondition(subnet.Status.Conditions, juneauv1alpha1.SubnetStatusReady)
 			g.Expect(ready).NotTo(BeNil())
 			g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(ready.ObservedGeneration).To(Equal(subnet.Generation))
 			g.Expect(subnet.Status.VNI).NotTo(BeZero())
 			g.Expect(subnet.Status.Gateway).NotTo(BeEmpty())
 			g.Expect(subnet.Status.GatewayMAC).NotTo(BeEmpty())

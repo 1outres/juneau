@@ -240,10 +240,11 @@ func (r *SubnetReconciler) updateStatus(ctx context.Context, subnet *juneauv1alp
 	updated.Status.Gateway = gateway
 	updated.Status.GatewayMAC = gatewayMAC
 	meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
-		Type:    juneauv1alpha1.SubnetStatusReady,
-		Status:  status,
-		Reason:  reason,
-		Message: message,
+		Type:               juneauv1alpha1.SubnetStatusReady,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: updated.Generation,
 	})
 
 	if updated.Status.ObservedGeneration == subnet.Status.ObservedGeneration &&

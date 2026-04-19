@@ -358,10 +358,11 @@ func (r *NetworkInterfaceReconciler) updateAllocatedStatus(ctx context.Context, 
 	updated.Status.Address = address.String()
 	updated.Status.Routes = buildDefaultRoutes(gateway)
 	meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
-		Type:    juneauv1alpha1.NetworkInterfaceStatusAllocated,
-		Status:  metav1.ConditionTrue,
-		Reason:  conditionReasonAllocationSucceeded,
-		Message: "IP allocated successfully: " + address.String(),
+		Type:               juneauv1alpha1.NetworkInterfaceStatusAllocated,
+		Status:             metav1.ConditionTrue,
+		Reason:             conditionReasonAllocationSucceeded,
+		Message:            "IP allocated successfully: " + address.String(),
+		ObservedGeneration: updated.Generation,
 	})
 
 	var nwepList juneauv1alpha1.NetworkEndpointList
@@ -372,16 +373,18 @@ func (r *NetworkInterfaceReconciler) updateAllocatedStatus(ctx context.Context, 
 	}); err != nil {
 		_ = r.updateStatus(ctx, resource, juneauv1alpha1.NetworkInterfacePhaseAllocated,
 			metav1.Condition{
-				Type:    juneauv1alpha1.NetworkInterfaceStatusAllocated,
-				Status:  metav1.ConditionTrue,
-				Reason:  conditionReasonAllocationSucceeded,
-				Message: "IP allocated successfully: " + address.String(),
+				Type:               juneauv1alpha1.NetworkInterfaceStatusAllocated,
+				Status:             metav1.ConditionTrue,
+				Reason:             conditionReasonAllocationSucceeded,
+				Message:            "IP allocated successfully: " + address.String(),
+				ObservedGeneration: resource.Generation,
 			},
 			metav1.Condition{
-				Type:    juneauv1alpha1.NetworkInterfaceStatusReady,
-				Status:  metav1.ConditionFalse,
-				Reason:  conditionReasonAllocationFailed,
-				Message: err.Error(),
+				Type:               juneauv1alpha1.NetworkInterfaceStatusReady,
+				Status:             metav1.ConditionFalse,
+				Reason:             conditionReasonAllocationFailed,
+				Message:            err.Error(),
+				ObservedGeneration: resource.Generation,
 			},
 		)
 		return err
@@ -390,18 +393,20 @@ func (r *NetworkInterfaceReconciler) updateAllocatedStatus(ctx context.Context, 
 	if len(nwepList.Items) > 0 {
 		updated.Status.Phase = juneauv1alpha1.NetworkInterfacePhaseReady
 		meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
-			Type:    juneauv1alpha1.NetworkInterfaceStatusReady,
-			Status:  metav1.ConditionTrue,
-			Reason:  conditionReasonWaitingForIface,
-			Message: "Interface is ready",
+			Type:               juneauv1alpha1.NetworkInterfaceStatusReady,
+			Status:             metav1.ConditionTrue,
+			Reason:             conditionReasonWaitingForIface,
+			Message:            "Interface is ready",
+			ObservedGeneration: updated.Generation,
 		})
 	} else {
 		updated.Status.Phase = juneauv1alpha1.NetworkInterfacePhaseAllocated
 		meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
-			Type:    juneauv1alpha1.NetworkInterfaceStatusReady,
-			Status:  metav1.ConditionFalse,
-			Reason:  conditionReasonWaitingForIface,
-			Message: "Waiting for interface",
+			Type:               juneauv1alpha1.NetworkInterfaceStatusReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             conditionReasonWaitingForIface,
+			Message:            "Waiting for interface",
+			ObservedGeneration: updated.Generation,
 		})
 	}
 
@@ -430,6 +435,7 @@ func (r *NetworkInterfaceReconciler) updateStatus(
 	updated.Status.ObservedGeneration = updated.Generation
 	updated.Status.Phase = phase
 	for _, condition := range conditions {
+		condition.ObservedGeneration = updated.Generation
 		meta.SetStatusCondition(&updated.Status.Conditions, condition)
 	}
 	return r.commitStatus(ctx, resource, updated.Status)

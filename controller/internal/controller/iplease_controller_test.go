@@ -6,6 +6,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -28,10 +29,12 @@ var _ = Describe("IPLease controller", func() {
 		bound := meta.FindStatusCondition(lease.Status.Conditions, juneauv1alpha1.IPLeaseStatusBound)
 		Expect(bound).NotTo(BeNil())
 		Expect(bound.Status).To(Equal(metav1.ConditionTrue))
+		Expect(bound.ObservedGeneration).To(Equal(lease.Generation))
 
 		expired := meta.FindStatusCondition(lease.Status.Conditions, juneauv1alpha1.IPLeaseStatusExpired)
 		Expect(expired).NotTo(BeNil())
 		Expect(expired.Status).To(Equal(metav1.ConditionFalse))
+		Expect(expired.ObservedGeneration).To(Equal(lease.Generation))
 	})
 
 	It("sets phase Released while waiting for expiry", func() {
@@ -49,10 +52,12 @@ var _ = Describe("IPLease controller", func() {
 		bound := meta.FindStatusCondition(lease.Status.Conditions, juneauv1alpha1.IPLeaseStatusBound)
 		Expect(bound).NotTo(BeNil())
 		Expect(bound.Status).To(Equal(metav1.ConditionFalse))
+		Expect(bound.ObservedGeneration).To(Equal(lease.Generation))
 
 		expired := meta.FindStatusCondition(lease.Status.Conditions, juneauv1alpha1.IPLeaseStatusExpired)
 		Expect(expired).NotTo(BeNil())
 		Expect(expired.Status).To(Equal(metav1.ConditionFalse))
+		Expect(expired.ObservedGeneration).To(Equal(lease.Generation))
 	})
 
 	It("sets phase Expired after the TTL has passed", func() {
@@ -69,10 +74,51 @@ var _ = Describe("IPLease controller", func() {
 		bound := meta.FindStatusCondition(lease.Status.Conditions, juneauv1alpha1.IPLeaseStatusBound)
 		Expect(bound).NotTo(BeNil())
 		Expect(bound.Status).To(Equal(metav1.ConditionFalse))
+		Expect(bound.ObservedGeneration).To(Equal(lease.Generation))
 
 		expired := meta.FindStatusCondition(lease.Status.Conditions, juneauv1alpha1.IPLeaseStatusExpired)
 		Expect(expired).NotTo(BeNil())
 		Expect(expired.Status).To(Equal(metav1.ConditionTrue))
+		Expect(expired.ObservedGeneration).To(Equal(lease.Generation))
+	})
+
+	It("recomputes expiry from spec instead of stale status", func() {
+		name := uniqueTestName("iplease")
+		ttl := int32(60)
+		ownerDeletionTimestamp := metav1.NewTime(time.Now())
+		lease := newControllerIPLease(name, &ownerDeletionTimestamp, &ttl)
+		Expect(k8sClient.Create(context.Background(), lease)).To(Succeed())
+
+		lease.Status.ExpiresAt = &metav1.Time{Time: time.Now().Add(-time.Minute)}
+		lease.Status.Phase = juneauv1alpha1.IPLeasePhaseExpired
+		Expect(k8sClient.Status().Update(context.Background(), lease)).To(Succeed())
+
+		Expect(reconcileIPLease(name)).To(Succeed())
+
+		current := getControllerIPLease(name)
+		Expect(current.Status.Phase).To(Equal(juneauv1alpha1.IPLeasePhaseReleased))
+		Expect(current.Status.ExpiresAt).NotTo(BeNil())
+		Expect(current.Status.ExpiresAt.Time).To(BeTemporally(">", ownerDeletionTimestamp.Time))
+
+		expired := meta.FindStatusCondition(current.Status.Conditions, juneauv1alpha1.IPLeaseStatusExpired)
+		Expect(expired).NotTo(BeNil())
+		Expect(expired.Status).To(Equal(metav1.ConditionFalse))
+	})
+
+	It("deletes itself after spec-derived expiry is observed", func() {
+		name := uniqueTestName("iplease")
+		ttl := int32(1)
+		ownerDeletionTimestamp := metav1.NewTime(time.Now().Add(-2 * time.Second))
+		Expect(k8sClient.Create(context.Background(), newControllerIPLease(name, &ownerDeletionTimestamp, &ttl))).To(Succeed())
+
+		Expect(reconcileIPLease(name)).To(Succeed())
+		Expect(reconcileIPLease(name)).To(Succeed())
+
+		Eventually(func() bool {
+			var lease juneauv1alpha1.IPLease
+			err := k8sClient.Get(context.Background(), client.ObjectKey{Name: name}, &lease)
+			return apierrors.IsNotFound(err)
+		}).Should(BeTrue())
 	})
 })
 
