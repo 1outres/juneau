@@ -41,6 +41,7 @@ nav:
   - Resources:
     - VPC: resources/vpc.md
     - Subnet: resources/subnet.md
+    - ElasticIP: resources/elasticip.md
     - IPLease: resources/iplease.md
     - NetworkInterface: resources/networkinterface.md
     - NetworkEndpoint: resources/networkendpoint.md

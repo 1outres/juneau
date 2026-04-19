@@ -407,6 +407,7 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
+    - DELETE
     resources:
     - elasticips
   sideEffects: None

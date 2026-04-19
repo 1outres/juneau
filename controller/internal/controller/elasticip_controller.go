@@ -21,6 +21,7 @@ import (
 	stderrors "errors"
 	"fmt"
 	"net"
+	"reflect"
 	"strings"
 	"time"
 
@@ -255,13 +256,16 @@ func (r *ElasticIPReconciler) resolveAddress(ctx context.Context, resource *june
 
 func (r *ElasticIPReconciler) listUsedAddressesByExternalNetwork(ctx context.Context, externalNetworkName, selfNamespace, selfName string) (map[string]struct{}, error) {
 	var list juneauv1alpha1.ElasticIPList
-	if err := r.List(ctx, &list, client.MatchingFields{"spec.externalNetwork": externalNetworkName}); err != nil {
+	if err := r.List(ctx, &list); err != nil {
 		return nil, err
 	}
 
 	used := make(map[string]struct{}, len(list.Items))
 	for i := range list.Items {
 		item := &list.Items[i]
+		if item.Spec.ExternalNetwork != externalNetworkName {
+			continue
+		}
 		if item.Name == selfName && item.Namespace == selfNamespace {
 			continue
 		}
@@ -276,16 +280,16 @@ func (r *ElasticIPReconciler) listUsedAddressesByExternalNetwork(ctx context.Con
 
 func (r *ElasticIPReconciler) listActiveAttachments(ctx context.Context, resource *juneauv1alpha1.ElasticIP) ([]juneauv1alpha1.ElasticIPAttachment, error) {
 	var attachments juneauv1alpha1.ElasticIPAttachmentList
-	if err := r.List(ctx, &attachments,
-		client.InNamespace(resource.Namespace),
-		client.MatchingFields{"spec.elasticIPRef.name": resource.Name},
-	); err != nil {
+	if err := r.List(ctx, &attachments, client.InNamespace(resource.Namespace)); err != nil {
 		return nil, err
 	}
 
 	active := make([]juneauv1alpha1.ElasticIPAttachment, 0, len(attachments.Items))
 	for i := range attachments.Items {
 		attachment := attachments.Items[i]
+		if attachment.Spec.ElasticIPRef.Name != resource.Name {
+			continue
+		}
 		if attachment.DeletionTimestamp != nil {
 			continue
 		}
@@ -320,15 +324,22 @@ func (r *ElasticIPReconciler) updateStatus(
 	attachmentName string,
 	conditions ...metav1.Condition,
 ) error {
-	resource.Status.ObservedGeneration = resource.Generation
-	resource.Status.Phase = phase
-	resource.Status.Address = address
-	resource.Status.AttachmentName = attachmentName
+	updated := resource.Status
+	updated.ObservedGeneration = resource.Generation
+	updated.Phase = phase
+	updated.Address = address
+	updated.AttachmentName = attachmentName
 
 	for _, condition := range conditions {
-		meta.SetStatusCondition(&resource.Status.Conditions, condition)
+		condition.ObservedGeneration = resource.Generation
+		meta.SetStatusCondition(&updated.Conditions, condition)
 	}
 
+	if reflect.DeepEqual(resource.Status, updated) {
+		return nil
+	}
+
+	resource.Status = updated
 	return r.Status().Update(ctx, resource)
 }
 

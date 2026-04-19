@@ -1,0 +1,13 @@
+# ElasticIP
+
+ElasticIPは、外部から到達可能なIPアドレスを表すリソースです。
+
+`spec.externalNetwork`で参照したExternalNetworkに紐づくAddressPoolから1つのアドレスが選ばれます。
+ElasticIPで利用されるAddressPoolは`spec.advertiseMode=bgp`である必要があります。
+
+## Phase
+
+- Pending:参照先ExternalNetworkとAddressPoolは解決できたが、利用可能なアドレスがまだ選ばれていない状態
+- Available:アドレスは選ばれているが、まだElasticIPAttachmentで関連付けられていない状態
+- Attached:アドレスが選ばれ、1つのElasticIPAttachmentで関連付けられている状態
+- Error:依存リソースの不整合や複数のElasticIPAttachment参照などで正常に扱えない状態
