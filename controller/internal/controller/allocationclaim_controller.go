@@ -36,7 +36,8 @@ import (
 // AllocationClaimReconciler reconciles a AllocationClaim object
 type AllocationClaimReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
 }
 
 const (
@@ -71,7 +72,7 @@ func (r *AllocationClaimReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	var pool juneauloutresmev1alpha1.AllocationPool
-	if err := r.Get(ctx, client.ObjectKey{Name: resource.Spec.PoolRef.Name}, &pool); err != nil {
+	if err := r.reader().Get(ctx, client.ObjectKey{Name: resource.Spec.PoolRef.Name}, &pool); err != nil {
 		if err := r.updateStatus(ctx, &resource, juneauloutresmev1alpha1.AllocationClaimPhasePending, 0, metav1.ConditionFalse, allocationClaimReasonPending, fmt.Sprintf("pool %q not found", resource.Spec.PoolRef.Name)); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -94,16 +95,26 @@ func (r *AllocationClaimReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var fresh juneauloutresmev1alpha1.AllocationClaim
-		if err := r.Get(ctx, req.NamespacedName, &fresh); err != nil {
+		if err := r.reader().Get(ctx, req.NamespacedName, &fresh); err != nil {
 			return err
 		}
 		if fresh.Status.Phase == juneauloutresmev1alpha1.AllocationClaimPhaseAllocated && fresh.Status.Value.Number != 0 {
 			return nil
 		}
 
-		allocatedNumber, err := r.allocateNumber(ctx, &pool, &fresh)
+		var freshPool juneauloutresmev1alpha1.AllocationPool
+		if err := r.reader().Get(ctx, client.ObjectKey{Name: fresh.Spec.PoolRef.Name}, &freshPool); err != nil {
+			return err
+		}
+
+		allocatedNumber, err := r.allocateNumber(ctx, &freshPool, &fresh)
 		if err != nil {
 			return r.updateStatus(ctx, &fresh, juneauloutresmev1alpha1.AllocationClaimPhasePending, 0, metav1.ConditionFalse, allocationClaimReasonFailed, err.Error())
+		}
+		freshPool.Status.AllocationVersion++
+		freshPool.Status.LastAllocatedNumber = allocatedNumber
+		if err := r.Status().Update(ctx, &freshPool); err != nil {
+			return err
 		}
 
 		return r.updateStatus(ctx, &fresh, juneauloutresmev1alpha1.AllocationClaimPhaseAllocated, allocatedNumber, metav1.ConditionTrue, allocationClaimReasonAllocated, "")
@@ -117,12 +128,15 @@ func (r *AllocationClaimReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 func (r *AllocationClaimReconciler) allocateNumber(ctx context.Context, pool *juneauloutresmev1alpha1.AllocationPool, claim *juneauloutresmev1alpha1.AllocationClaim) (uint64, error) {
 	var claims juneauloutresmev1alpha1.AllocationClaimList
-	if err := r.List(ctx, &claims, client.MatchingFields{"spec.poolRef.name": pool.Name}); err != nil {
+	if err := r.reader().List(ctx, &claims); err != nil {
 		return 0, fmt.Errorf("failed to list claims for pool %q: %w", pool.Name, err)
 	}
 
 	used := map[uint64]string{}
 	for _, existing := range claims.Items {
+		if existing.Spec.PoolRef.Name != pool.Name {
+			continue
+		}
 		if existing.Name == claim.Name {
 			continue
 		}
@@ -165,10 +179,17 @@ func (r *AllocationClaimReconciler) ensureOwnerExists(ctx context.Context, claim
 		return fmt.Errorf("owner type %s does not implement client.Object", claim.Spec.ResourceRef.Kind)
 	}
 	owner.SetName(claim.Spec.ResourceRef.Name)
-	if err := r.Get(ctx, client.ObjectKey{Name: claim.Spec.ResourceRef.Name}, owner); err != nil {
+	if err := r.reader().Get(ctx, client.ObjectKey{Name: claim.Spec.ResourceRef.Name}, owner); err != nil {
 		return fmt.Errorf("owner %s %q not found", claim.Spec.ResourceRef.Kind, claim.Spec.ResourceRef.Name)
 	}
 	return nil
+}
+
+func (r *AllocationClaimReconciler) reader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
 }
 
 func (r *AllocationClaimReconciler) updateStatus(ctx context.Context, resource *juneauloutresmev1alpha1.AllocationClaim, phase juneauloutresmev1alpha1.AllocationClaimPhase, number uint64, ready metav1.ConditionStatus, reason, message string) error {
@@ -193,6 +214,7 @@ func (r *AllocationClaimReconciler) updateStatus(ctx context.Context, resource *
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *AllocationClaimReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.APIReader = mgr.GetAPIReader()
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
 		&juneauloutresmev1alpha1.AllocationClaim{},

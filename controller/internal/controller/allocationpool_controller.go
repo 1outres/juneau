@@ -82,6 +82,8 @@ func (r *AllocationPoolReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 func (r *AllocationPoolReconciler) updateStatus(ctx context.Context, resource *juneauloutresmev1alpha1.AllocationPool, ready metav1.ConditionStatus, reason, message string) error {
 	updated := resource.DeepCopy()
+	updated.Status.AllocationVersion = resource.Status.AllocationVersion
+	updated.Status.LastAllocatedNumber = resource.Status.LastAllocatedNumber
 	updated.Status.ObservedGeneration = updated.Generation
 	meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
 		Type:    juneauloutresmev1alpha1.AllocationPoolStatusReady,
@@ -90,7 +92,7 @@ func (r *AllocationPoolReconciler) updateStatus(ctx context.Context, resource *j
 		Message: message,
 	})
 
-	if updated.Status.ObservedGeneration == resource.Status.ObservedGeneration && reflect.DeepEqual(updated.Status.Conditions, resource.Status.Conditions) {
+	if updated.Status.ObservedGeneration == resource.Status.ObservedGeneration && updated.Status.AllocationVersion == resource.Status.AllocationVersion && updated.Status.LastAllocatedNumber == resource.Status.LastAllocatedNumber && reflect.DeepEqual(updated.Status.Conditions, resource.Status.Conditions) {
 		return nil
 	}
 

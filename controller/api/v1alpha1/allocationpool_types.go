@@ -56,8 +56,10 @@ type AllocationPoolNumberSpec struct {
 
 // AllocationPoolStatus defines the observed state of AllocationPool.
 type AllocationPoolStatus struct {
-	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
-	Conditions         []metav1.Condition `json:"conditions,omitempty"`
+	ObservedGeneration  int64              `json:"observedGeneration,omitempty"`
+	AllocationVersion   uint64             `json:"allocationVersion,omitempty"`
+	LastAllocatedNumber uint64             `json:"lastAllocatedNumber,omitempty"`
+	Conditions          []metav1.Condition `json:"conditions,omitempty"`
 }
 
 const (

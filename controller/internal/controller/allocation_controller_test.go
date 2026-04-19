@@ -2,9 +2,12 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -57,7 +60,7 @@ var _ = Describe("Allocation controllers", func() {
 			_ = k8sClient.Delete(ctx, pool)
 		})
 
-		reconciler := &AllocationClaimReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		reconciler := &AllocationClaimReconciler{Client: k8sClient, APIReader: k8sClient, Scheme: k8sClient.Scheme()}
 		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: claimA.Name}})
 		Expect(err).NotTo(HaveOccurred())
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: claimB.Name}})
@@ -101,11 +104,130 @@ var _ = Describe("Allocation controllers", func() {
 			_ = k8sClient.Delete(ctx, pool)
 		})
 
-		reconciler := &AllocationClaimReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		reconciler := &AllocationClaimReconciler{Client: k8sClient, APIReader: k8sClient, Scheme: k8sClient.Scheme()}
 		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: claim.Name}})
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: claim.Name}, claim)).To(Succeed())
 		Expect(claim.Status.Value.Number).To(Equal(requested))
+	})
+
+	It("allocates unique VNIs and route table IDs under concurrent VPC and subnet creation", func() {
+		const vpcCount = 20
+
+		vpcNames := make([]string, 0, vpcCount)
+		subnetNames := make([]string, 0, vpcCount*2)
+
+		for i := 0; i < vpcCount; i++ {
+			vpcName := uniqueTestName(fmt.Sprintf("alloc-vpc-%02d", i))
+			vpcNames = append(vpcNames, vpcName)
+			subnetNames = append(subnetNames, uniqueTestName(fmt.Sprintf("alloc-subnet-a-%02d", i)))
+			subnetNames = append(subnetNames, uniqueTestName(fmt.Sprintf("alloc-subnet-b-%02d", i)))
+		}
+
+		DeferCleanup(func() {
+			for _, subnetName := range subnetNames {
+				_ = k8sClient.Delete(ctx, &juneauv1alpha1.Subnet{ObjectMeta: metav1.ObjectMeta{Name: subnetName}})
+			}
+			for _, vpcName := range vpcNames {
+				_ = k8sClient.Delete(ctx, &juneauv1alpha1.RouteTable{ObjectMeta: metav1.ObjectMeta{Name: vpcName}})
+				_ = k8sClient.Delete(ctx, &juneauv1alpha1.Vpc{ObjectMeta: metav1.ObjectMeta{Name: vpcName}})
+			}
+		})
+
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		var createErrs []error
+
+		for i, vpcName := range vpcNames {
+			subnetA := subnetNames[i*2]
+			subnetB := subnetNames[i*2+1]
+			cidrBase := 20 + i*2
+
+			wg.Add(1)
+			go func(vpcName, subnetA, subnetB string, cidrBase int) {
+				defer GinkgoRecover()
+				defer wg.Done()
+
+				resources := []client.Object{
+					&juneauv1alpha1.Vpc{ObjectMeta: metav1.ObjectMeta{Name: vpcName}},
+					&juneauv1alpha1.Subnet{
+						ObjectMeta: metav1.ObjectMeta{Name: subnetA},
+						Spec:       juneauv1alpha1.SubnetSpec{Vpc: vpcName, CIDR: fmt.Sprintf("10.%d.0.0/24", cidrBase)},
+					},
+					&juneauv1alpha1.Subnet{
+						ObjectMeta: metav1.ObjectMeta{Name: subnetB},
+						Spec:       juneauv1alpha1.SubnetSpec{Vpc: vpcName, CIDR: fmt.Sprintf("10.%d.0.0/24", cidrBase+1)},
+					},
+				}
+
+				for _, resource := range resources {
+					if err := k8sClient.Create(ctx, resource); err != nil {
+						mu.Lock()
+						createErrs = append(createErrs, err)
+						mu.Unlock()
+					}
+				}
+			}(vpcName, subnetA, subnetB, cidrBase)
+		}
+
+		wg.Wait()
+		Expect(createErrs).To(BeEmpty())
+
+		Eventually(func(g Gomega) {
+			var subnets juneauv1alpha1.SubnetList
+			g.Expect(k8sClient.List(ctx, &subnets)).To(Succeed())
+
+			vniOwners := map[uint32]string{}
+			readySubnets := 0
+			for _, subnetName := range subnetNames {
+				var found *juneauv1alpha1.Subnet
+				for i := range subnets.Items {
+					if subnets.Items[i].Name == subnetName {
+						found = &subnets.Items[i]
+						break
+					}
+				}
+				g.Expect(found).NotTo(BeNil(), "missing subnet %s", subnetName)
+				ready := meta.FindStatusCondition(found.Status.Conditions, juneauv1alpha1.SubnetStatusReady)
+				g.Expect(ready).NotTo(BeNil(), "missing Ready condition for subnet %s", subnetName)
+				g.Expect(ready.Status).To(Equal(metav1.ConditionTrue), "subnet %s not ready", subnetName)
+				g.Expect(found.Status.VNI).NotTo(BeZero(), "subnet %s missing VNI", subnetName)
+				if owner, exists := vniOwners[found.Status.VNI]; exists {
+					g.Expect(found.Name).To(Equal(owner), "duplicate VNI %d for subnets %s and %s", found.Status.VNI, owner, found.Name)
+				} else {
+					vniOwners[found.Status.VNI] = found.Name
+				}
+				readySubnets++
+			}
+			g.Expect(readySubnets).To(Equal(len(subnetNames)))
+
+			var routeTables juneauv1alpha1.RouteTableList
+			g.Expect(k8sClient.List(ctx, &routeTables)).To(Succeed())
+
+			tableOwners := map[uint32]string{}
+			readyTables := 0
+			for _, vpcName := range vpcNames {
+				var found *juneauv1alpha1.RouteTable
+				for i := range routeTables.Items {
+					if routeTables.Items[i].Name == vpcName {
+						found = &routeTables.Items[i]
+						break
+					}
+				}
+				g.Expect(found).NotTo(BeNil(), "missing route table %s", vpcName)
+				ready := meta.FindStatusCondition(found.Status.Conditions, juneauv1alpha1.RouteTableStatusReady)
+				g.Expect(ready).NotTo(BeNil(), "missing Ready condition for route table %s", vpcName)
+				g.Expect(ready.Status).To(Equal(metav1.ConditionTrue), "route table %s not ready", vpcName)
+				g.Expect(found.Status.TableID).NotTo(BeZero(), "route table %s missing tableID", vpcName)
+				if owner, exists := tableOwners[found.Status.TableID]; exists {
+					g.Expect(found.Name).To(Equal(owner), "duplicate tableID %d for route tables %s and %s", found.Status.TableID, owner, found.Name)
+				} else {
+					tableOwners[found.Status.TableID] = found.Name
+				}
+				readyTables++
+			}
+			g.Expect(readyTables).To(Equal(len(vpcNames)))
+		}).Should(Succeed())
 	})
 })
