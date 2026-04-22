@@ -41,6 +41,7 @@ nav:
   - Resources:
     - VPC: resources/vpc.md
     - Subnet: resources/subnet.md
+    - ExternalNetwork: resources/externalnetwork.md
     - ElasticIP: resources/elasticip.md
     - ElasticIPAttachment: resources/elasticipattachment.md
     - IPLease: resources/iplease.md
