@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -39,12 +40,10 @@ var allocationpoollog = logf.Log.WithName("allocationpool-resource")
 // SetupAllocationPoolWebhookWithManager registers the webhook for AllocationPool in the manager.
 func SetupAllocationPoolWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&juneauloutresmev1alpha1.AllocationPool{}).
-		WithValidator(&AllocationPoolCustomValidator{}).
+		WithValidator(&AllocationPoolCustomValidator{Client: mgr.GetClient()}).
 		WithDefaulter(&AllocationPoolCustomDefaulter{}).
 		Complete()
 }
-
-// TODO(user): EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 
 // +kubebuilder:webhook:path=/mutate-juneau-loutres-me-v1alpha1-allocationpool,mutating=true,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=allocationpools,verbs=create;update,versions=v1alpha1,name=mallocationpool-v1alpha1.kb.io,admissionReviewVersions=v1
 
@@ -53,15 +52,13 @@ func SetupAllocationPoolWebhookWithManager(mgr ctrl.Manager) error {
 //
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
 // as it is used only for temporary operations and does not need to be deeply copied.
-type AllocationPoolCustomDefaulter struct {
-}
+type AllocationPoolCustomDefaulter struct{}
 
 var _ webhook.CustomDefaulter = &AllocationPoolCustomDefaulter{}
 
 // Default implements webhook.CustomDefaulter so a webhook will be registered for the Kind AllocationPool.
-func (d *AllocationPoolCustomDefaulter) Default(ctx context.Context, obj runtime.Object) error {
+func (d *AllocationPoolCustomDefaulter) Default(_ context.Context, obj runtime.Object) error {
 	allocationpool, ok := obj.(*juneauloutresmev1alpha1.AllocationPool)
-
 	if !ok {
 		return fmt.Errorf("expected an AllocationPool object but got %T", obj)
 	}
@@ -77,10 +74,9 @@ func (d *AllocationPoolCustomDefaulter) Default(ctx context.Context, obj runtime
 	return nil
 }
 
-// TODO(user): change verbs to "verbs=create;update;delete" if you want to enable deletion validation.
 // NOTE: The 'path' attribute must follow a specific pattern and should not be modified directly here.
 // Modifying the path for an invalid path can cause API server errors; failing to locate the webhook.
-// +kubebuilder:webhook:path=/validate-juneau-loutres-me-v1alpha1-allocationpool,mutating=false,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=allocationpools,verbs=create;update,versions=v1alpha1,name=vallocationpool-v1alpha1.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-juneau-loutres-me-v1alpha1-allocationpool,mutating=false,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=allocationpools,verbs=create;update;delete,versions=v1alpha1,name=vallocationpool-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // AllocationPoolCustomValidator struct is responsible for validating the AllocationPool resource
 // when it is created, updated, or deleted.
@@ -88,6 +84,7 @@ func (d *AllocationPoolCustomDefaulter) Default(ctx context.Context, obj runtime
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
 // as this struct is used only for temporary operations and does not need to be deeply copied.
 type AllocationPoolCustomValidator struct {
+	client.Client
 }
 
 var _ webhook.CustomValidator = &AllocationPoolCustomValidator{}
@@ -155,6 +152,24 @@ func (v *AllocationPoolCustomValidator) ValidateDelete(ctx context.Context, obj 
 		return nil, fmt.Errorf("expected a AllocationPool object but got %T", obj)
 	}
 	allocationpoollog.Info("Validation for AllocationPool upon deletion", "name", allocationpool.GetName())
+
+	var claims juneauloutresmev1alpha1.AllocationClaimList
+	if err := v.List(ctx, &claims); err != nil {
+		return nil, err
+	}
+	for _, claim := range claims.Items {
+		if claim.DeletionTimestamp != nil {
+			continue
+		}
+		if claim.Spec.PoolRef.Name != allocationpool.Name {
+			continue
+		}
+		return nil, apierrors.NewForbidden(
+			schema.GroupResource{Group: juneauloutresmev1alpha1.GroupVersion.Group, Resource: "allocationpools"},
+			allocationpool.Name,
+			fmt.Errorf("AllocationPool is referenced by AllocationClaim %q", claim.Name),
+		)
+	}
 
 	return nil, nil
 }

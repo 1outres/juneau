@@ -348,6 +348,7 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
+    - DELETE
     resources:
     - allocationpools
   sideEffects: None

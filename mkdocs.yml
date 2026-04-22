@@ -51,4 +51,6 @@ nav:
     - BGPAdvertisement: resources/bgpadvertisement.md
     - BGPPeer: resources/bgppeer.md
     - BGPNodeState: resources/bgpnodestate.md
+    - AllocationPool: resources/allocationpool.md
+    - AllocationClaim: resources/allocationclaim.md
   - API Reference: api-reference/v1alpha1.md
