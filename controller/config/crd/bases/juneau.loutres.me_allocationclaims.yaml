@@ -56,24 +56,30 @@ spec:
                 description: |-
                   Attribute identifies the target field on the owning resource, for example
                   status.vni or status.tableID.
+                minLength: 1
                 type: string
               poolRef:
                 properties:
                   name:
+                    minLength: 1
                     type: string
                 required:
                 - name
                 type: object
               requestedNumber:
                 format: int64
+                minimum: 1
                 type: integer
               resourceRef:
                 properties:
                   apiVersion:
+                    minLength: 1
                     type: string
                   kind:
+                    minLength: 1
                     type: string
                   name:
+                    minLength: 1
                     type: string
                 required:
                 - apiVersion

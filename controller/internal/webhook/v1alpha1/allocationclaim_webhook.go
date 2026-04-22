@@ -44,8 +44,6 @@ func SetupAllocationClaimWebhookWithManager(mgr ctrl.Manager) error {
 		Complete()
 }
 
-// TODO(user): EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-
 // +kubebuilder:webhook:path=/mutate-juneau-loutres-me-v1alpha1-allocationclaim,mutating=true,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=allocationclaims,verbs=create;update,versions=v1alpha1,name=mallocationclaim-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // AllocationClaimCustomDefaulter struct is responsible for setting default values on the custom resource of the
@@ -53,24 +51,20 @@ func SetupAllocationClaimWebhookWithManager(mgr ctrl.Manager) error {
 //
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
 // as it is used only for temporary operations and does not need to be deeply copied.
-type AllocationClaimCustomDefaulter struct {
-}
+type AllocationClaimCustomDefaulter struct{}
 
 var _ webhook.CustomDefaulter = &AllocationClaimCustomDefaulter{}
 
 // Default implements webhook.CustomDefaulter so a webhook will be registered for the Kind AllocationClaim.
-func (d *AllocationClaimCustomDefaulter) Default(ctx context.Context, obj runtime.Object) error {
+func (d *AllocationClaimCustomDefaulter) Default(_ context.Context, obj runtime.Object) error {
 	allocationclaim, ok := obj.(*juneauloutresmev1alpha1.AllocationClaim)
-
 	if !ok {
 		return fmt.Errorf("expected an AllocationClaim object but got %T", obj)
 	}
 	allocationclaimlog.Info("Defaulting for AllocationClaim", "name", allocationclaim.GetName())
-
 	return nil
 }
 
-// TODO(user): change verbs to "verbs=create;update;delete" if you want to enable deletion validation.
 // NOTE: The 'path' attribute must follow a specific pattern and should not be modified directly here.
 // Modifying the path for an invalid path can cause API server errors; failing to locate the webhook.
 // +kubebuilder:webhook:path=/validate-juneau-loutres-me-v1alpha1-allocationclaim,mutating=false,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=allocationclaims,verbs=create;update,versions=v1alpha1,name=vallocationclaim-v1alpha1.kb.io,admissionReviewVersions=v1
@@ -80,8 +74,7 @@ func (d *AllocationClaimCustomDefaulter) Default(ctx context.Context, obj runtim
 //
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
 // as this struct is used only for temporary operations and does not need to be deeply copied.
-type AllocationClaimCustomValidator struct {
-}
+type AllocationClaimCustomValidator struct{}
 
 var _ webhook.CustomValidator = &AllocationClaimCustomValidator{}
 
@@ -93,7 +86,7 @@ func (v *AllocationClaimCustomValidator) ValidateCreate(ctx context.Context, obj
 	}
 	allocationclaimlog.Info("Validation for AllocationClaim upon creation", "name", allocationclaim.GetName())
 
-	return nil, validateAllocationClaim(allocationclaim)
+	return nil, nil
 }
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type AllocationClaim.
@@ -125,7 +118,6 @@ func (v *AllocationClaimCustomValidator) ValidateUpdate(ctx context.Context, old
 	} else if allocationclaim.Spec.RequestedNumber != nil && oldClaim.Spec.RequestedNumber != nil && *allocationclaim.Spec.RequestedNumber != *oldClaim.Spec.RequestedNumber {
 		errs = append(errs, field.Invalid(specPath.Child("requestedNumber"), *allocationclaim.Spec.RequestedNumber, "spec.requestedNumber is immutable"))
 	}
-	validateAllocationClaimFields(allocationclaim, &errs)
 	if len(errs) > 0 {
 		err := apierrors.NewInvalid(schema.GroupKind{Group: juneauloutresmev1alpha1.GroupVersion.Group, Kind: "AllocationClaim"}, allocationclaim.Name, errs)
 		allocationclaimlog.Info("Validation failed for AllocationClaim", "name", allocationclaim.GetName(), "error", err)
@@ -144,32 +136,4 @@ func (v *AllocationClaimCustomValidator) ValidateDelete(ctx context.Context, obj
 	allocationclaimlog.Info("Validation for AllocationClaim upon deletion", "name", allocationclaim.GetName())
 
 	return nil, nil
-}
-
-func validateAllocationClaim(claim *juneauloutresmev1alpha1.AllocationClaim) error {
-	var errs field.ErrorList
-	validateAllocationClaimFields(claim, &errs)
-	if len(errs) == 0 {
-		return nil
-	}
-	return apierrors.NewInvalid(schema.GroupKind{Group: juneauloutresmev1alpha1.GroupVersion.Group, Kind: "AllocationClaim"}, claim.Name, errs)
-}
-
-func validateAllocationClaimFields(claim *juneauloutresmev1alpha1.AllocationClaim, errs *field.ErrorList) {
-	specPath := field.NewPath("spec")
-	if claim.Spec.PoolRef.Name == "" {
-		*errs = append(*errs, field.Required(specPath.Child("poolRef", "name"), "spec.poolRef.name is required"))
-	}
-	if claim.Spec.ResourceRef.APIVersion == "" {
-		*errs = append(*errs, field.Required(specPath.Child("resourceRef", "apiVersion"), "spec.resourceRef.apiVersion is required"))
-	}
-	if claim.Spec.ResourceRef.Kind == "" {
-		*errs = append(*errs, field.Required(specPath.Child("resourceRef", "kind"), "spec.resourceRef.kind is required"))
-	}
-	if claim.Spec.ResourceRef.Name == "" {
-		*errs = append(*errs, field.Required(specPath.Child("resourceRef", "name"), "spec.resourceRef.name is required"))
-	}
-	if claim.Spec.Attribute == "" {
-		*errs = append(*errs, field.Required(specPath.Child("attribute"), "spec.attribute is required"))
-	}
 }

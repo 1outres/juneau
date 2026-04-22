@@ -22,25 +22,38 @@ import (
 
 // AllocationClaimSpec defines the desired state of AllocationClaim.
 type AllocationClaimSpec struct {
+	// +required
 	PoolRef AllocationPoolReference `json:"poolRef"`
 
+	// +required
 	ResourceRef AllocationResourceReference `json:"resourceRef"`
 
 	// Attribute identifies the target field on the owning resource, for example
 	// status.vni or status.tableID.
+	// +required
+	// +kubebuilder:validation:MinLength=1
 	Attribute string `json:"attribute"`
 
+	// +kubebuilder:validation:Minimum=1
 	RequestedNumber *uint64 `json:"requestedNumber,omitempty"`
 }
 
 type AllocationPoolReference struct {
+	// +required
+	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 }
 
 type AllocationResourceReference struct {
+	// +required
+	// +kubebuilder:validation:MinLength=1
 	APIVersion string `json:"apiVersion"`
-	Kind       string `json:"kind"`
-	Name       string `json:"name"`
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	Kind string `json:"kind"`
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
 }
 
 type AllocationClaimPhase string
