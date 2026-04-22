@@ -22,10 +22,21 @@ import (
 
 // BGPPeerSpec defines the desired state of BGPPeer.
 type BGPPeerSpec struct {
-	MyASN       uint32 `json:"myASN"`
-	PeerASN     uint32 `json:"peerASN"`
+	// +required
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=4294967294
+	MyASN uint32 `json:"myASN"`
+
+	// +required
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=4294967294
+	PeerASN uint32 `json:"peerASN"`
+
+	// +required
+	// +kubebuilder:validation:MinLength=1
 	PeerAddress string `json:"peerAddress"`
-	PeerPort    uint16 `json:"peerPort,omitempty"`
+
+	PeerPort uint16 `json:"peerPort,omitempty"`
 }
 
 // BGPPeerStatus defines the observed state of BGPPeer.
