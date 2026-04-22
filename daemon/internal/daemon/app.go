@@ -12,7 +12,7 @@ import (
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	"github.com/1outres/juneau/daemon/internal/daemon/bootstrap"
-	"github.com/1outres/juneau/daemon/internal/daemon/bpf"
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane"
 	"github.com/1outres/juneau/daemon/internal/daemon/grpc"
 	"github.com/urfave/cli/v3"
 	"go.uber.org/zap"
@@ -322,7 +322,7 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("lookup node ingress iface %q: %w", masqueradeIface, err)
 			}
 
-			bpfManager := bpf.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, bpfPinPath, hostIfaceInfo.MAC)
+			bpfManager := dataplane.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, bpfPinPath, hostIfaceInfo.MAC)
 			if err := bpfManager.Start(ctx); err != nil {
 				return fmt.Errorf("initialize BPF manager: %w", err)
 			}
