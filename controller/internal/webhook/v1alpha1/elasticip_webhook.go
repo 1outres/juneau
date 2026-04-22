@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/api/errors"
+	apivalidation "k8s.io/apimachinery/pkg/api/validation"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -74,10 +75,9 @@ func (d *ElasticIPCustomDefaulter) Default(ctx context.Context, obj runtime.Obje
 	return nil
 }
 
-// TODO(user): change verbs to "verbs=create;update;delete" if you want to enable deletion validation.
 // NOTE: The 'path' attribute must follow a specific pattern and should not be modified directly here.
 // Modifying the path for an invalid path can cause API server errors; failing to locate the webhook.
-// +kubebuilder:webhook:path=/validate-juneau-loutres-me-v1alpha1-elasticip,mutating=false,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=elasticips,verbs=create;update,versions=v1alpha1,name=velasticip-v1alpha1.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-juneau-loutres-me-v1alpha1-elasticip,mutating=false,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=elasticips,verbs=create;update;delete,versions=v1alpha1,name=velasticip-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // ElasticIPCustomValidator struct is responsible for validating the ElasticIP resource
 // when it is created, updated, or deleted.
@@ -125,14 +125,14 @@ func (v *ElasticIPCustomValidator) ValidateDelete(ctx context.Context, obj runti
 	elasticiplog.Info("Validation for ElasticIP upon deletion", "name", elasticip.GetName())
 
 	var attachments juneauloutresmev1alpha1.ElasticIPAttachmentList
-	if err := v.List(ctx, &attachments,
-		client.InNamespace(elasticip.Namespace),
-		client.MatchingFields{"spec.elasticIPRef.name": elasticip.Name},
-	); err != nil {
+	if err := v.List(ctx, &attachments, client.InNamespace(elasticip.Namespace)); err != nil {
 		return nil, err
 	}
 
 	for _, attachment := range attachments.Items {
+		if attachment.Spec.ElasticIPRef.Name != elasticip.Name {
+			continue
+		}
 		if attachment.DeletionTimestamp != nil {
 			continue
 		}
@@ -148,24 +148,23 @@ func (v *ElasticIPCustomValidator) ValidateDelete(ctx context.Context, obj runti
 
 func (v *ElasticIPCustomValidator) validate(ctx context.Context, obj *juneauloutresmev1alpha1.ElasticIP, oldObj *juneauloutresmev1alpha1.ElasticIP) (admission.Warnings, error) {
 	var errs field.ErrorList
+	externalNetworkPath := field.NewPath("spec", "externalNetwork")
 
-	if obj.Spec.ExternalNetwork == "" {
-		errs = append(errs, field.Required(field.NewPath("spec", "externalNetwork"), "externalNetwork is required"))
-	} else {
+	if len(apivalidation.NameIsDNSSubdomain(obj.Spec.ExternalNetwork, false)) == 0 {
 		var externalNetwork juneauloutresmev1alpha1.ExternalNetwork
 		if err := v.Get(ctx, client.ObjectKey{Name: obj.Spec.ExternalNetwork}, &externalNetwork); err != nil {
 			if errors.IsNotFound(err) {
-				errs = append(errs, field.Invalid(field.NewPath("spec", "externalNetwork"), obj.Spec.ExternalNetwork, "referenced ExternalNetwork does not exist"))
+				errs = append(errs, field.Invalid(externalNetworkPath, obj.Spec.ExternalNetwork, "referenced ExternalNetwork does not exist"))
 			} else {
 				return nil, err
 			}
 		} else if externalNetwork.Spec.Type != juneauloutresmev1alpha1.ExternalNetworkTypeBGP {
-			errs = append(errs, field.Invalid(field.NewPath("spec", "externalNetwork"), obj.Spec.ExternalNetwork, "referenced ExternalNetwork must have type=bgp"))
+			errs = append(errs, field.Invalid(externalNetworkPath, obj.Spec.ExternalNetwork, "referenced ExternalNetwork must have type=bgp"))
 		}
 	}
 
 	if oldObj != nil && obj.Spec.ExternalNetwork != oldObj.Spec.ExternalNetwork {
-		errs = append(errs, field.Invalid(field.NewPath("spec", "externalNetwork"), obj.Spec.ExternalNetwork, "externalNetwork is immutable"))
+		errs = append(errs, field.Invalid(externalNetworkPath, obj.Spec.ExternalNetwork, "externalNetwork is immutable"))
 	}
 
 	if len(errs) > 0 {

@@ -19,7 +19,6 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
-	"sort"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -46,8 +45,6 @@ func SetupExternalNetworkWebhookWithManager(mgr ctrl.Manager) error {
 		Complete()
 }
 
-// TODO(user): EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-
 // +kubebuilder:webhook:path=/mutate-juneau-loutres-me-v1alpha1-externalnetwork,mutating=true,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=externalnetworks,verbs=create;update,versions=v1alpha1,name=mexternalnetwork-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // ExternalNetworkCustomDefaulter struct is responsible for setting default values on the custom resource of the
@@ -55,30 +52,23 @@ func SetupExternalNetworkWebhookWithManager(mgr ctrl.Manager) error {
 //
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
 // as it is used only for temporary operations and does not need to be deeply copied.
-type ExternalNetworkCustomDefaulter struct {
-	// TODO(user): Add more fields as needed for defaulting
-}
+type ExternalNetworkCustomDefaulter struct{}
 
 var _ webhook.CustomDefaulter = &ExternalNetworkCustomDefaulter{}
 
 // Default implements webhook.CustomDefaulter so a webhook will be registered for the Kind ExternalNetwork.
-func (d *ExternalNetworkCustomDefaulter) Default(ctx context.Context, obj runtime.Object) error {
+func (d *ExternalNetworkCustomDefaulter) Default(_ context.Context, obj runtime.Object) error {
 	externalnetwork, ok := obj.(*juneauloutresmev1alpha1.ExternalNetwork)
-
 	if !ok {
 		return fmt.Errorf("expected an ExternalNetwork object but got %T", obj)
 	}
 	externalnetworklog.Info("Defaulting for ExternalNetwork", "name", externalnetwork.GetName())
-
-	// TODO(user): fill in your defaulting logic.
-
 	return nil
 }
 
-// TODO(user): change verbs to "verbs=create;update;delete" if you want to enable deletion validation.
 // NOTE: The 'path' attribute must follow a specific pattern and should not be modified directly here.
 // Modifying the path for an invalid path can cause API server errors; failing to locate the webhook.
-// +kubebuilder:webhook:path=/validate-juneau-loutres-me-v1alpha1-externalnetwork,mutating=false,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=externalnetworks,verbs=create;update,versions=v1alpha1,name=vexternalnetwork-v1alpha1.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-juneau-loutres-me-v1alpha1-externalnetwork,mutating=false,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=externalnetworks,verbs=create;update;delete,versions=v1alpha1,name=vexternalnetwork-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // ExternalNetworkCustomValidator struct is responsible for validating the ExternalNetwork resource
 // when it is created, updated, or deleted.
@@ -108,12 +98,11 @@ func (v *ExternalNetworkCustomValidator) ValidateUpdate(ctx context.Context, old
 	if !ok {
 		return nil, fmt.Errorf("expected a ExternalNetwork object for the newObj but got %T", newObj)
 	}
-	externalnetworklog.Info("Validation for ExternalNetwork upon update", "name", externalnetwork.GetName())
-
 	oldNetwork, ok := oldObj.(*juneauloutresmev1alpha1.ExternalNetwork)
 	if !ok {
 		return nil, fmt.Errorf("expected a ExternalNetwork object for the oldObj but got %T", oldObj)
 	}
+	externalnetworklog.Info("Validation for ExternalNetwork upon update", "name", externalnetwork.GetName())
 
 	return v.validate(ctx, externalnetwork, oldNetwork)
 }
@@ -126,7 +115,24 @@ func (v *ExternalNetworkCustomValidator) ValidateDelete(ctx context.Context, obj
 	}
 	externalnetworklog.Info("Validation for ExternalNetwork upon deletion", "name", externalnetwork.GetName())
 
-	// TODO(user): fill in your validation logic upon object deletion.
+	var elasticIPs juneauloutresmev1alpha1.ElasticIPList
+	if err := v.List(ctx, &elasticIPs); err != nil {
+		return nil, err
+	}
+
+	for _, elasticIP := range elasticIPs.Items {
+		if elasticIP.Spec.ExternalNetwork != externalnetwork.Name {
+			continue
+		}
+		if elasticIP.DeletionTimestamp != nil {
+			continue
+		}
+		return nil, errors.NewForbidden(
+			schema.GroupResource{Group: juneauloutresmev1alpha1.GroupVersion.Group, Resource: "externalnetworks"},
+			externalnetwork.Name,
+			fmt.Errorf("ExternalNetwork is referenced by ElasticIP %q", elasticIP.Name),
+		)
+	}
 
 	return nil, nil
 }
@@ -134,21 +140,19 @@ func (v *ExternalNetworkCustomValidator) ValidateDelete(ctx context.Context, obj
 func (v *ExternalNetworkCustomValidator) validate(ctx context.Context, obj *juneauloutresmev1alpha1.ExternalNetwork, oldObj *juneauloutresmev1alpha1.ExternalNetwork) (admission.Warnings, error) {
 	var errs field.ErrorList
 
-	if obj.Spec.Type == "" {
-		errs = append(errs, field.Required(field.NewPath("spec", "type"), "type is required"))
+	if oldObj != nil && obj.Spec.Type != oldObj.Spec.Type {
+		errs = append(errs, field.Invalid(field.NewPath("spec", "type"), obj.Spec.Type, "type is immutable"))
 	}
 
-	if len(obj.Spec.AddressPools) == 0 {
-		errs = append(errs, field.Required(field.NewPath("spec", "addressPools"), "at least one addressPool is required"))
-	}
-
-	// uniqueness
-	sorted := append([]string{}, obj.Spec.AddressPools...)
-	sort.Strings(sorted)
-	for i := 1; i < len(sorted); i++ {
-		if sorted[i] == sorted[i-1] {
-			errs = append(errs, field.Invalid(field.NewPath("spec", "addressPools"), obj.Spec.AddressPools, "addressPools must be unique"))
-			break
+	if oldObj != nil {
+		newPools := make(map[string]struct{}, len(obj.Spec.AddressPools))
+		for _, pool := range obj.Spec.AddressPools {
+			newPools[pool] = struct{}{}
+		}
+		for _, pool := range oldObj.Spec.AddressPools {
+			if _, ok := newPools[pool]; !ok {
+				errs = append(errs, field.Invalid(field.NewPath("spec", "addressPools"), obj.Spec.AddressPools, fmt.Sprintf("addressPool %q cannot be removed; addressPools are append-only", pool)))
+			}
 		}
 	}
 
@@ -157,10 +161,9 @@ func (v *ExternalNetworkCustomValidator) validate(ctx context.Context, obj *june
 		if err := v.Get(ctx, client.ObjectKey{Name: pool}, &ap); err != nil {
 			if errors.IsNotFound(err) {
 				errs = append(errs, field.Invalid(field.NewPath("spec", "addressPools").Index(i), pool, "referenced AddressPool does not exist"))
-			} else {
-				return nil, err
+				continue
 			}
-			continue
+			return nil, err
 		}
 		switch obj.Spec.Type {
 		case juneauloutresmev1alpha1.ExternalNetworkTypeBGP:
@@ -171,15 +174,7 @@ func (v *ExternalNetworkCustomValidator) validate(ctx context.Context, obj *june
 			if ap.Spec.AdvertiseMode != juneauloutresmev1alpha1.AddressPoolAdvertiseModeARP {
 				errs = append(errs, field.Invalid(field.NewPath("spec", "addressPools").Index(i), pool, "type=arp requires AddressPool advertiseMode=arp"))
 			}
-		default:
-			if obj.Spec.Type != "" {
-				errs = append(errs, field.NotSupported(field.NewPath("spec", "type"), obj.Spec.Type, []string{string(juneauloutresmev1alpha1.ExternalNetworkTypeBGP), string(juneauloutresmev1alpha1.ExternalNetworkTypeARP)}))
-			}
 		}
-	}
-
-	if oldObj != nil && obj.Spec.Type != oldObj.Spec.Type {
-		errs = append(errs, field.Invalid(field.NewPath("spec", "type"), obj.Spec.Type, "type is immutable"))
 	}
 
 	if len(errs) > 0 {

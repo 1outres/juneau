@@ -57,6 +57,8 @@ var _ webhook.CustomDefaulter = &SubnetCustomDefaulter{}
 
 // Default implements webhook.CustomDefaulter so a webhook will be registered for the Kind Subnet.
 func (d *SubnetCustomDefaulter) Default(ctx context.Context, obj runtime.Object) error {
+	_ = ctx
+
 	subnet, ok := obj.(*juneauv1alpha1.Subnet)
 
 	if !ok {
@@ -92,33 +94,18 @@ func (v *SubnetCustomValidator) ValidateCreate(ctx context.Context, obj runtime.
 
 	var errs field.ErrorList
 
-	var vpc juneauv1alpha1.Vpc
-	if err := v.Get(ctx, client.ObjectKey{Name: subnet.Spec.Vpc}, &vpc); err != nil {
-		if errors.IsNotFound(err) {
-			errs = append(errs, field.Invalid(field.NewPath("spec").Child("vpc"), subnet.Spec.Vpc, "referenced Vpc does not exist"))
-		} else {
-			return nil, err
-		}
-	}
-	if subnet.Name == "default" && subnet.Spec.Vpc != "default" {
-		errs = append(errs, field.Invalid(field.NewPath("spec").Child("vpc"), subnet.Spec.Vpc, "the default Subnet must reference the default Vpc"))
-	}
-	if subnet.Spec.Vpc == "default" && subnet.Name != "default" {
-		errs = append(errs, field.Invalid(field.NewPath("spec").Child("vpc"), subnet.Spec.Vpc, "only the default Subnet can reference the default Vpc"))
-	}
-
-	_, ipnet, err := net.ParseCIDR(subnet.Spec.CIDR)
+	errPath := field.NewPath("spec")
+	vpcErrs, err := validateSubnetVpcReference(ctx, v.Client, subnet, errPath)
 	if err != nil {
-		errs = append(errs, field.Invalid(field.NewPath("spec").Child("cidr"), subnet.Spec.CIDR, "invalid CIDR format"))
+		return nil, err
 	}
-
-	if ipnet.IP.To4() == nil {
-		errs = append(errs, field.Invalid(field.NewPath("spec").Child("cidr"), subnet.Spec.CIDR, "only IPv4 CIDR blocks are supported"))
-	} else if ones, _ := ipnet.Mask.Size(); ones > 28 {
-		errs = append(errs, field.Invalid(field.NewPath("spec").Child("cidr"), subnet.Spec.CIDR, "CIDR block must allow for at least 14 usable IP addresses (/28 or larger)"))
-	} else if ones, _ := ipnet.Mask.Size(); ones < 16 {
-		errs = append(errs, field.Invalid(field.NewPath("spec").Child("cidr"), subnet.Spec.CIDR, "CIDR block must be /16 or larger"))
+	errs = append(errs, vpcErrs...)
+	errs = append(errs, validateSubnetCIDR(subnet.Spec.CIDR, errPath.Child("cidr"))...)
+	overlapErrs, err := validateSubnetCIDROverlap(ctx, v.Client, subnet, errPath.Child("cidr"))
+	if err != nil {
+		return nil, err
 	}
+	errs = append(errs, overlapErrs...)
 
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "Subnet"}, subnet.Name, errs)
@@ -142,13 +129,14 @@ func (v *SubnetCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newO
 	subnetlog.Info("Validation for Subnet upon update", "name", subnet.GetName())
 
 	var errs field.ErrorList
+	errPath := field.NewPath("spec")
 
 	if subnet.Spec.Vpc != oldSubnet.Spec.Vpc {
-		errs = append(errs, field.Invalid(field.NewPath("spec").Child("vpc"), subnet.Spec.Vpc, "changing the Vpc of a Subnet is not allowed"))
+		errs = append(errs, field.Invalid(errPath.Child("vpc"), subnet.Spec.Vpc, "spec.vpc is immutable"))
 	}
 
 	if subnet.Spec.CIDR != oldSubnet.Spec.CIDR {
-		errs = append(errs, field.Invalid(field.NewPath("spec").Child("cidr"), subnet.Spec.CIDR, "changing the CIDR of a Subnet is not allowed"))
+		errs = append(errs, field.Invalid(errPath.Child("cidr"), subnet.Spec.CIDR, "spec.cidr is immutable"))
 	}
 
 	if len(errs) > 0 {
@@ -162,6 +150,8 @@ func (v *SubnetCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newO
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type Subnet.
 func (v *SubnetCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	_ = ctx
+
 	subnet, ok := obj.(*juneauv1alpha1.Subnet)
 	if !ok {
 		return nil, fmt.Errorf("expected a Subnet object but got %T", obj)
@@ -173,4 +163,79 @@ func (v *SubnetCustomValidator) ValidateDelete(ctx context.Context, obj runtime.
 	}
 
 	return nil, nil
+}
+
+func validateSubnetVpcReference(ctx context.Context, c client.Client, subnet *juneauv1alpha1.Subnet, path *field.Path) (field.ErrorList, error) {
+	var errs field.ErrorList
+
+	var vpc juneauv1alpha1.Vpc
+	if err := c.Get(ctx, client.ObjectKey{Name: subnet.Spec.Vpc}, &vpc); err != nil {
+		if errors.IsNotFound(err) {
+			errs = append(errs, field.Invalid(path.Child("vpc"), subnet.Spec.Vpc, "referenced Vpc does not exist"))
+			return errs, nil
+		}
+		return nil, err
+	}
+
+	if subnet.Name == "default" && subnet.Spec.Vpc != "default" {
+		errs = append(errs, field.Invalid(path.Child("vpc"), subnet.Spec.Vpc, "the default Subnet must reference the default Vpc"))
+	}
+	if subnet.Spec.Vpc == "default" && subnet.Name != "default" {
+		errs = append(errs, field.Invalid(path.Child("vpc"), subnet.Spec.Vpc, "only the default Subnet can reference the default Vpc"))
+	}
+
+	return errs, nil
+}
+
+func validateSubnetCIDR(cidr string, path *field.Path) field.ErrorList {
+	var errs field.ErrorList
+
+	_, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return field.ErrorList{field.Invalid(path, cidr, "must be a valid IPv4 CIDR")}
+	}
+
+	if ipnet.IP.To4() == nil {
+		return field.ErrorList{field.Invalid(path, cidr, "only IPv4 CIDR blocks are supported")}
+	}
+
+	ones, _ := ipnet.Mask.Size()
+	if ones < 16 || ones > 28 {
+		errs = append(errs, field.Invalid(path, cidr, "CIDR prefix length must be between /16 and /28"))
+	}
+
+	return errs
+}
+
+func validateSubnetCIDROverlap(ctx context.Context, c client.Client, subnet *juneauv1alpha1.Subnet, path *field.Path) (field.ErrorList, error) {
+	_, subnetCIDR, err := net.ParseCIDR(subnet.Spec.CIDR)
+	if err != nil {
+		return nil, nil
+	}
+
+	var subnetList juneauv1alpha1.SubnetList
+	if err := c.List(ctx, &subnetList); err != nil {
+		return nil, err
+	}
+
+	for _, existingSubnet := range subnetList.Items {
+		if existingSubnet.Spec.Vpc != subnet.Spec.Vpc {
+			continue
+		}
+
+		_, existingCIDR, err := net.ParseCIDR(existingSubnet.Spec.CIDR)
+		if err != nil {
+			continue
+		}
+
+		if cidrsOverlap(subnetCIDR, existingCIDR) {
+			return field.ErrorList{field.Invalid(path, subnet.Spec.CIDR, fmt.Sprintf("overlaps with existing Subnet %q CIDR %q in Vpc %q", existingSubnet.Name, existingSubnet.Spec.CIDR, subnet.Spec.Vpc))}, nil
+		}
+	}
+
+	return nil, nil
+}
+
+func cidrsOverlap(a, b *net.IPNet) bool {
+	return a.Contains(b.IP) || b.Contains(a.IP)
 }

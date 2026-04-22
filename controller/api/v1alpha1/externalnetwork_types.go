@@ -22,9 +22,14 @@ import (
 
 // ExternalNetworkSpec defines the desired state of ExternalNetwork.
 type ExternalNetworkSpec struct {
-	Type ExternalNetworkType `json:"type,omitempty"`
+	// +required
+	// +kubebuilder:validation:Enum=bgp;arp
+	Type ExternalNetworkType `json:"type"`
 
-	AddressPools []string `json:"addressPools,omitempty"`
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:items:MinLength=1
+	// +listType=set
+	AddressPools []string `json:"addressPools"`
 }
 
 // ExternalNetworkStatus defines the observed state of ExternalNetwork.

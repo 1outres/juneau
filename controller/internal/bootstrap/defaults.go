@@ -12,8 +12,10 @@ import (
 )
 
 const (
-	defaultVpcName    = "default"
-	defaultSubnetName = "default"
+	defaultVpcName            = "default"
+	defaultSubnetName         = "default"
+	defaultSubnetVNIPoolName  = "subnet-vni"
+	defaultRouteTablePoolName = "route-table-id"
 )
 
 // EnsureDefaults creates default VPC and Subnet if they don't already exist.
@@ -24,6 +26,52 @@ func EnsureDefaults(ctx context.Context, c client.Client, logger logr.Logger, de
 
 	if err := ensureDefaultSubnet(ctx, c, logger, defaultSubnetCIDR); err != nil {
 		return err
+	}
+
+	if err := ensureDefaultAllocationPools(ctx, c, logger); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func ensureDefaultAllocationPools(ctx context.Context, c client.Client, logger logr.Logger) error {
+	pools := []juneauv1alpha1.AllocationPool{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: defaultSubnetVNIPoolName},
+			Spec: juneauv1alpha1.AllocationPoolSpec{
+				Type:     juneauv1alpha1.AllocationTypeNumber,
+				Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+				Number: &juneauv1alpha1.AllocationPoolNumberSpec{
+					Min: 2,
+					Max: 0xFFFFFF,
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: defaultRouteTablePoolName},
+			Spec: juneauv1alpha1.AllocationPoolSpec{
+				Type:     juneauv1alpha1.AllocationTypeNumber,
+				Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+				Number: &juneauv1alpha1.AllocationPoolNumberSpec{
+					Min: 2,
+					Max: uint64(^uint32(0)),
+				},
+			},
+		},
+	}
+
+	for _, pool := range pools {
+		var existing juneauv1alpha1.AllocationPool
+		if err := c.Get(ctx, client.ObjectKey{Name: pool.Name}, &existing); err != nil {
+			if !errors.IsNotFound(err) {
+				return err
+			}
+			logger.Info("creating default AllocationPool", "name", pool.Name)
+			if err := c.Create(ctx, &pool); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil

@@ -39,6 +39,36 @@ var elasticipattachmentlog = logf.Log.WithName("elasticipattachment-resource")
 
 // SetupElasticIPAttachmentWebhookWithManager registers the webhook for ElasticIPAttachment in the manager.
 func SetupElasticIPAttachmentWebhookWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&juneauloutresmev1alpha1.ElasticIPAttachment{},
+		"spec.elasticIPRef.name",
+		func(obj client.Object) []string {
+			attachment := obj.(*juneauloutresmev1alpha1.ElasticIPAttachment)
+			if attachment.Spec.ElasticIPRef.Name == "" {
+				return nil
+			}
+			return []string{attachment.Spec.ElasticIPRef.Name}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to set up field indexer for ElasticIPAttachment.spec.elasticIPRef.name: %w", err)
+	}
+
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&juneauloutresmev1alpha1.ElasticIPAttachment{},
+		"spec.targetRef.networkInterfaceName",
+		func(obj client.Object) []string {
+			attachment := obj.(*juneauloutresmev1alpha1.ElasticIPAttachment)
+			if attachment.Spec.TargetRef.NetworkInterfaceName == "" {
+				return nil
+			}
+			return []string{attachment.Spec.TargetRef.NetworkInterfaceName}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to set up field indexer for ElasticIPAttachment.spec.targetRef.networkInterfaceName: %w", err)
+	}
+
 	return ctrl.NewWebhookManagedBy(mgr).For(&juneauloutresmev1alpha1.ElasticIPAttachment{}).
 		WithValidator(&ElasticIPAttachmentCustomValidator{Client: mgr.GetClient()}).
 		WithDefaulter(&ElasticIPAttachmentCustomDefaulter{}).
@@ -131,9 +161,7 @@ func (v *ElasticIPAttachmentCustomValidator) validate(ctx context.Context, obj *
 	var errs field.ErrorList
 
 	elasticIPName := obj.Spec.ElasticIPRef.Name
-	if elasticIPName == "" {
-		errs = append(errs, field.Required(field.NewPath("spec", "elasticIPRef", "name"), "elasticIPRef.name is required"))
-	} else {
+	if elasticIPName != "" {
 		var elasticIP juneauloutresmev1alpha1.ElasticIP
 		if err := v.Get(ctx, client.ObjectKey{Name: elasticIPName, Namespace: obj.Namespace}, &elasticIP); err != nil {
 			if errors.IsNotFound(err) {
@@ -147,9 +175,7 @@ func (v *ElasticIPAttachmentCustomValidator) validate(ctx context.Context, obj *
 	}
 
 	networkInterfaceName := obj.Spec.TargetRef.NetworkInterfaceName
-	if networkInterfaceName == "" {
-		errs = append(errs, field.Required(field.NewPath("spec", "targetRef", "networkInterfaceName"), "targetRef.networkInterfaceName is required"))
-	} else {
+	if networkInterfaceName != "" {
 		var networkInterface juneauloutresmev1alpha1.NetworkInterface
 		if err := v.Get(ctx, client.ObjectKey{Name: networkInterfaceName, Namespace: obj.Namespace}, &networkInterface); err != nil {
 			if errors.IsNotFound(err) {

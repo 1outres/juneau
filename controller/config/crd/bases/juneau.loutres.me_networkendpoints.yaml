@@ -46,18 +46,23 @@ spec:
               hostMACAddress:
                 type: string
               ifindex:
+                minimum: 1
                 type: integer
               macAddress:
                 type: string
               nodeName:
+                minLength: 1
                 type: string
               podRef:
                 properties:
                   interface:
+                    minLength: 1
                     type: string
                   name:
+                    minLength: 1
                     type: string
                   uid:
+                    minLength: 1
                     type: string
                 required:
                 - interface
@@ -65,6 +70,7 @@ spec:
                 - uid
                 type: object
               subnet:
+                minLength: 1
                 type: string
             required:
             - nodeName

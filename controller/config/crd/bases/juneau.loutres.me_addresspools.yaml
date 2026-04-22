@@ -41,14 +41,19 @@ spec:
             properties:
               addresses:
                 items:
+                  minLength: 1
                   type: string
                 minItems: 1
                 type: array
+                x-kubernetes-list-type: set
               advertiseMode:
                 enum:
                 - bgp
                 - arp
                 type: string
+            required:
+            - addresses
+            - advertiseMode
             type: object
           status:
             description: AddressPoolStatus defines the observed state of AddressPool.

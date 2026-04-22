@@ -1,0 +1,203 @@
+/*
+Copyright 2025.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package v1alpha1
+
+import (
+	"context"
+	"fmt"
+
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+)
+
+// nolint:unused
+// log is for logging in this package.
+var routetablelog = logf.Log.WithName("routetable-resource")
+
+// SetupRouteTableWebhookWithManager registers the webhook for RouteTable in the manager.
+func SetupRouteTableWebhookWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewWebhookManagedBy(mgr).For(&juneauv1alpha1.RouteTable{}).
+		WithValidator(&RouteTableCustomValidator{Client: mgr.GetClient()}).
+		WithDefaulter(&RouteTableCustomDefaulter{}).
+		Complete()
+}
+
+// +kubebuilder:webhook:path=/mutate-juneau-loutres-me-v1alpha1-routetable,mutating=true,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=routetables,verbs=create;update,versions=v1alpha1,name=mroutetable-v1alpha1.kb.io,admissionReviewVersions=v1
+
+// RouteTableCustomDefaulter sets defaults for RouteTable.
+type RouteTableCustomDefaulter struct{}
+
+var _ webhook.CustomDefaulter = &RouteTableCustomDefaulter{}
+
+func (d *RouteTableCustomDefaulter) Default(ctx context.Context, obj runtime.Object) error {
+	_ = ctx
+
+	if _, ok := obj.(*juneauv1alpha1.RouteTable); !ok {
+		return fmt.Errorf("expected a RouteTable object but got %T", obj)
+	}
+
+	return nil
+}
+
+// +kubebuilder:webhook:path=/validate-juneau-loutres-me-v1alpha1-routetable,mutating=false,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=routetables,verbs=create;update,versions=v1alpha1,name=vroutetable-v1alpha1.kb.io,admissionReviewVersions=v1
+
+// RouteTableCustomValidator validates RouteTable resources.
+type RouteTableCustomValidator struct {
+	client.Client
+}
+
+var _ webhook.CustomValidator = &RouteTableCustomValidator{}
+
+func (v *RouteTableCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	routeTable, ok := obj.(*juneauv1alpha1.RouteTable)
+	if !ok {
+		return nil, fmt.Errorf("expected a RouteTable object but got %T", obj)
+	}
+	routetablelog.Info("Validation for RouteTable upon creation", "name", routeTable.GetName())
+
+	err := v.validateRouteTable(ctx, routeTable)
+	if err != nil {
+		routetablelog.Info("Validation failed for RouteTable", "name", routeTable.GetName(), "error", err)
+		return nil, err
+	}
+
+	return nil, nil
+}
+
+func (v *RouteTableCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+	routeTable, ok := newObj.(*juneauv1alpha1.RouteTable)
+	if !ok {
+		return nil, fmt.Errorf("expected a RouteTable object for the newObj but got %T", newObj)
+	}
+	oldRouteTable, ok := oldObj.(*juneauv1alpha1.RouteTable)
+	if !ok {
+		return nil, fmt.Errorf("expected a RouteTable object for the oldObj but got %T", oldObj)
+	}
+	routetablelog.Info("Validation for RouteTable upon update", "name", routeTable.GetName())
+
+	var errs field.ErrorList
+	specPath := field.NewPath("spec")
+	if routeTable.Spec.Vpc != oldRouteTable.Spec.Vpc {
+		errs = append(errs, field.Invalid(specPath.Child("vpc"), routeTable.Spec.Vpc, "spec.vpc is immutable"))
+	}
+	errList, err := v.validateRouteTableSpec(ctx, &routeTable.Spec, specPath)
+	if err != nil {
+		return nil, err
+	}
+	errs = append(errs, errList...)
+
+	if len(errs) > 0 {
+		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "RouteTable"}, routeTable.Name, errs)
+		routetablelog.Info("Validation failed for RouteTable", "name", routeTable.GetName(), "error", err)
+		return nil, err
+	}
+
+	return nil, nil
+}
+
+func (v *RouteTableCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	_ = ctx
+
+	if _, ok := obj.(*juneauv1alpha1.RouteTable); !ok {
+		return nil, fmt.Errorf("expected a RouteTable object but got %T", obj)
+	}
+
+	return nil, nil
+}
+
+func (v *RouteTableCustomValidator) validateRouteTable(ctx context.Context, routeTable *juneauv1alpha1.RouteTable) error {
+	specPath := field.NewPath("spec")
+	errList, err := v.validateRouteTableSpec(ctx, &routeTable.Spec, specPath)
+	if err != nil {
+		return err
+	}
+	if len(errList) == 0 {
+		return nil
+	}
+
+	return errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "RouteTable"}, routeTable.Name, errList)
+}
+
+func (v *RouteTableCustomValidator) validateRouteTableSpec(ctx context.Context, spec *juneauv1alpha1.RouteTableSpec, specPath *field.Path) (field.ErrorList, error) {
+	var errs field.ErrorList
+
+	if spec.Vpc == "" {
+		errs = append(errs, field.Required(specPath.Child("vpc"), "spec.vpc is required"))
+	}
+
+	connectedRoutes, err := v.listConnectedRoutes(ctx, spec.Vpc)
+	if err != nil {
+		return nil, err
+	}
+
+	seenDst := map[string]struct{}{}
+	for i, route := range spec.Routes {
+		routePath := specPath.Child("routes").Index(i)
+		switch route.Via.Type {
+		case juneauv1alpha1.ViaEndpoint:
+			if route.Via.Endpoint == "" {
+				errs = append(errs, field.Required(routePath.Child("via", "endpointName"), "spec.routes[].via.endpointName is required when via.type is endpoint"))
+			}
+		case juneauv1alpha1.ViaConnected, juneauv1alpha1.ViaInternetGateway:
+			if route.Via.Endpoint != "" {
+				errs = append(errs, field.Invalid(routePath.Child("via", "endpointName"), route.Via.Endpoint, fmt.Sprintf("spec.routes[].via.endpointName must be empty when via.type is %q", route.Via.Type)))
+			}
+		}
+
+		if _, ok := seenDst[route.Dst]; ok {
+			errs = append(errs, field.Duplicate(routePath.Child("dst"), route.Dst))
+			continue
+		}
+		seenDst[route.Dst] = struct{}{}
+
+		if subnetName, ok := connectedRoutes[route.Dst]; ok {
+			errs = append(errs, field.Invalid(routePath.Child("dst"), route.Dst, fmt.Sprintf("duplicates connected route for Subnet %q in Vpc %q", subnetName, spec.Vpc)))
+		}
+	}
+
+	return errs, nil
+}
+
+func (v *RouteTableCustomValidator) listConnectedRoutes(ctx context.Context, vpcName string) (map[string]string, error) {
+	connectedRoutes := map[string]string{}
+	if vpcName == "" {
+		return connectedRoutes, nil
+	}
+
+	var subnetList juneauv1alpha1.SubnetList
+	if err := v.List(ctx, &subnetList); err != nil {
+		return nil, err
+	}
+
+	for _, subnet := range subnetList.Items {
+		if subnet.Spec.Vpc != vpcName {
+			continue
+		}
+		connectedRoutes[subnet.Spec.CIDR] = subnet.Name
+	}
+
+	return connectedRoutes, nil
+}

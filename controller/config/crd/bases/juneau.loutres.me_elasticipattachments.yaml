@@ -65,6 +65,7 @@ spec:
               elasticIPRef:
                 properties:
                   name:
+                    minLength: 1
                     type: string
                 required:
                 - name
@@ -72,6 +73,7 @@ spec:
               targetRef:
                 properties:
                   networkInterfaceName:
+                    minLength: 1
                     type: string
                 required:
                 - networkInterfaceName

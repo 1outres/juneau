@@ -1,0 +1,13 @@
+# NetworkEndpoint
+
+NetworkEndpointは、daemonやCNIがPod側の接続事実を書き込むためのリソースです。
+
+通常はユーザーが直接作成するものではありません。
+
+## NetworkInterfaceとの関係
+
+NetworkInterfaceは、Podに必要な論理NICの要求と割り当て状態を表します。
+
+それに対してNetworkEndpointは、実際にノード上で接続が作られた際に作成され、ifindexやmacアドレスといった情報を表します。
+
+そのため、NetworkInterfaceがReadyになるには、対応するNetworkEndpointが作成されている必要があります。

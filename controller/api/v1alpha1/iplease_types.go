@@ -22,13 +22,23 @@ import (
 
 // IPLeaseSpec defines the desired state of IPLease.
 type IPLeaseSpec struct {
+	// +kubebuilder:validation:Required
 	PodRef IPLeasePodReference `json:"podRef"`
 
-	Vpc     string `json:"vpc"`
-	Subnet  string `json:"subnet"`
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Vpc string `json:"vpc"`
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Subnet string `json:"subnet"`
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
 	Address string `json:"address"`
 
-	TTLSeconds             *int32       `json:"ttlSeconds,omitempty"`
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=1
+	TTLSeconds *int32 `json:"ttlSeconds,omitempty"`
+	// +kubebuilder:validation:Optional
 	OwnerDeletionTimeStamp *metav1.Time `json:"ownerDeletionTimestamp,omitempty"`
 }
 
@@ -44,8 +54,14 @@ type IPLeaseStatus struct {
 }
 
 type IPLeasePodReference struct {
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
 	Namespace string `json:"namespace"`
-	Name      string `json:"name"`
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
 	Interface string `json:"interface"`
 }
 
@@ -74,7 +90,6 @@ const (
 	IPLeasePhaseActive   IPLeasePhase = "Active"
 	IPLeasePhaseReleased IPLeasePhase = "Released"
 	IPLeasePhaseExpired  IPLeasePhase = "Expired"
-	IPLeasePhaseDeleting IPLeasePhase = "Deleting"
 )
 
 // +kubebuilder:object:root=true

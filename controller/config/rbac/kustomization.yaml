@@ -22,6 +22,12 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the {{ .ProjectName }} itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
+- allocationclaim_admin_role.yaml
+- allocationclaim_editor_role.yaml
+- allocationclaim_viewer_role.yaml
+- allocationpool_admin_role.yaml
+- allocationpool_editor_role.yaml
+- allocationpool_viewer_role.yaml
 - elasticipattachment_admin_role.yaml
 - elasticipattachment_editor_role.yaml
 - elasticipattachment_viewer_role.yaml

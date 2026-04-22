@@ -767,7 +767,7 @@ func (m *Manager) UpsertRouteTable(ctx context.Context, rt *juneauv1alpha1.Route
 
 		var val PodEgressFibVal
 		switch route.Via.Type {
-		case juneauv1alpha1.ViaConnnected:
+		case juneauv1alpha1.ViaConnected:
 			var subnet juneauv1alpha1.Subnet
 			if err := m.client.Get(ctx, client.ObjectKey{Name: route.Subnet}, &subnet); err != nil {
 				return err

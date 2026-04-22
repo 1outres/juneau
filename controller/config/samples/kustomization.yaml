@@ -8,4 +8,6 @@ resources:
 - v1alpha1_bgpnodestate.yaml
 - v1alpha1_elasticip.yaml
 - v1alpha1_elasticipattachment.yaml
+- v1alpha1_allocationpool.yaml
+- v1alpha1_allocationclaim.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

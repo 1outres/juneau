@@ -52,6 +52,7 @@ spec:
             description: IPLeaseSpec defines the desired state of IPLease.
             properties:
               address:
+                minLength: 1
                 type: string
               ownerDeletionTimestamp:
                 format: date-time
@@ -59,10 +60,13 @@ spec:
               podRef:
                 properties:
                   interface:
+                    minLength: 1
                     type: string
                   name:
+                    minLength: 1
                     type: string
                   namespace:
+                    minLength: 1
                     type: string
                 required:
                 - interface
@@ -70,11 +74,14 @@ spec:
                 - namespace
                 type: object
               subnet:
+                minLength: 1
                 type: string
               ttlSeconds:
                 format: int32
+                minimum: 1
                 type: integer
               vpc:
+                minLength: 1
                 type: string
             required:
             - address

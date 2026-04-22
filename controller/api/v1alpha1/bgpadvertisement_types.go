@@ -22,7 +22,11 @@ import (
 
 // BGPAdvertisementSpec defines the desired state of BGPAdvertisement.
 type BGPAdvertisementSpec struct {
-	AddressPools []string `json:"addressPools,omitempty"`
+	// +required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:items:MinLength=1
+	// +listType=set
+	AddressPools []string `json:"addressPools"`
 }
 
 // BGPAdvertisementStatus defines the observed state of BGPAdvertisement.

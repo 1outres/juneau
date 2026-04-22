@@ -22,6 +22,8 @@ import (
 
 // ElasticIPSpec defines the desired state of ElasticIP.
 type ElasticIPSpec struct {
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
 	ExternalNetwork string `json:"externalNetwork"`
 }
 

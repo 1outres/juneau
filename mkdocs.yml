@@ -38,4 +38,19 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Resources:
+    - VPC: resources/vpc.md
+    - Subnet: resources/subnet.md
+    - ExternalNetwork: resources/externalnetwork.md
+    - AddressPool: resources/addresspool.md
+    - ElasticIP: resources/elasticip.md
+    - ElasticIPAttachment: resources/elasticipattachment.md
+    - IPLease: resources/iplease.md
+    - NetworkInterface: resources/networkinterface.md
+    - NetworkEndpoint: resources/networkendpoint.md
+    - BGPAdvertisement: resources/bgpadvertisement.md
+    - BGPPeer: resources/bgppeer.md
+    - BGPNodeState: resources/bgpnodestate.md
+    - AllocationPool: resources/allocationpool.md
+    - AllocationClaim: resources/allocationclaim.md
   - API Reference: api-reference/v1alpha1.md
