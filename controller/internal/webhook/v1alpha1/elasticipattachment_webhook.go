@@ -161,9 +161,7 @@ func (v *ElasticIPAttachmentCustomValidator) validate(ctx context.Context, obj *
 	var errs field.ErrorList
 
 	elasticIPName := obj.Spec.ElasticIPRef.Name
-	if elasticIPName == "" {
-		errs = append(errs, field.Required(field.NewPath("spec", "elasticIPRef", "name"), "elasticIPRef.name is required"))
-	} else {
+	if elasticIPName != "" {
 		var elasticIP juneauloutresmev1alpha1.ElasticIP
 		if err := v.Get(ctx, client.ObjectKey{Name: elasticIPName, Namespace: obj.Namespace}, &elasticIP); err != nil {
 			if errors.IsNotFound(err) {
@@ -177,9 +175,7 @@ func (v *ElasticIPAttachmentCustomValidator) validate(ctx context.Context, obj *
 	}
 
 	networkInterfaceName := obj.Spec.TargetRef.NetworkInterfaceName
-	if networkInterfaceName == "" {
-		errs = append(errs, field.Required(field.NewPath("spec", "targetRef", "networkInterfaceName"), "targetRef.networkInterfaceName is required"))
-	} else {
+	if networkInterfaceName != "" {
 		var networkInterface juneauloutresmev1alpha1.NetworkInterface
 		if err := v.Get(ctx, client.ObjectKey{Name: networkInterfaceName, Namespace: obj.Namespace}, &networkInterface); err != nil {
 			if errors.IsNotFound(err) {
