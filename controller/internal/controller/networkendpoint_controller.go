@@ -71,6 +71,10 @@ func (r *NetworkEndpointReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}
 	}
 
+	if resource.Status.NodeIP == address {
+		return ctrl.Result{}, nil
+	}
+
 	resource.Status.NodeIP = address
 
 	if err := r.Status().Update(ctx, &resource); err != nil {

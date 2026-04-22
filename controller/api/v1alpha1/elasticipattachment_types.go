@@ -27,10 +27,14 @@ type ElasticIPAttachmentSpec struct {
 }
 
 type ElasticIPAttachmentElasticIPRef struct {
+	// +required
+	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 }
 
 type ElasticIPAttachmentTargetRef struct {
+	// +required
+	// +kubebuilder:validation:MinLength=1
 	NetworkInterfaceName string `json:"networkInterfaceName"`
 }
 

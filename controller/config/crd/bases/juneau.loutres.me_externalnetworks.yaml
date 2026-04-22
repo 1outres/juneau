@@ -41,10 +41,19 @@ spec:
             properties:
               addressPools:
                 items:
+                  minLength: 1
                   type: string
+                minItems: 1
                 type: array
+                x-kubernetes-list-type: set
               type:
+                enum:
+                - bgp
+                - arp
                 type: string
+            required:
+            - addressPools
+            - type
             type: object
           status:
             description: ExternalNetworkStatus defines the observed state of ExternalNetwork.

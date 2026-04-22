@@ -20,7 +20,10 @@ import (
 	"context"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -88,7 +91,44 @@ func (v *IPLeaseCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 	if !ok {
 		return nil, fmt.Errorf("expected a IPLease object for the newObj but got %T", newObj)
 	}
+	oldIPLease, ok := oldObj.(*juneauv1alpha1.IPLease)
+	if !ok {
+		return nil, fmt.Errorf("expected a IPLease object for the oldObj but got %T", oldObj)
+	}
 	ipleaselog.Info("Validation for IPLease upon update", "name", iplease.GetName())
+
+	var errs field.ErrorList
+	specPath := field.NewPath("spec")
+	podRefPath := specPath.Child("podRef")
+
+	if iplease.Spec.PodRef.Namespace != oldIPLease.Spec.PodRef.Namespace {
+		errs = append(errs, field.Invalid(podRefPath.Child("namespace"), iplease.Spec.PodRef.Namespace, "spec.podRef.namespace is immutable"))
+	}
+	if iplease.Spec.PodRef.Name != oldIPLease.Spec.PodRef.Name {
+		errs = append(errs, field.Invalid(podRefPath.Child("name"), iplease.Spec.PodRef.Name, "spec.podRef.name is immutable"))
+	}
+	if iplease.Spec.PodRef.Interface != oldIPLease.Spec.PodRef.Interface {
+		errs = append(errs, field.Invalid(podRefPath.Child("interface"), iplease.Spec.PodRef.Interface, "spec.podRef.interface is immutable"))
+	}
+	if iplease.Spec.Vpc != oldIPLease.Spec.Vpc {
+		errs = append(errs, field.Invalid(specPath.Child("vpc"), iplease.Spec.Vpc, "spec.vpc is immutable"))
+	}
+	if iplease.Spec.Subnet != oldIPLease.Spec.Subnet {
+		errs = append(errs, field.Invalid(specPath.Child("subnet"), iplease.Spec.Subnet, "spec.subnet is immutable"))
+	}
+	if iplease.Spec.Address != oldIPLease.Spec.Address {
+		errs = append(errs, field.Invalid(specPath.Child("address"), iplease.Spec.Address, "spec.address is immutable"))
+	}
+	if (iplease.Spec.TTLSeconds == nil) != (oldIPLease.Spec.TTLSeconds == nil) ||
+		(iplease.Spec.TTLSeconds != nil && oldIPLease.Spec.TTLSeconds != nil && *iplease.Spec.TTLSeconds != *oldIPLease.Spec.TTLSeconds) {
+		errs = append(errs, field.Invalid(specPath.Child("ttlSeconds"), iplease.Spec.TTLSeconds, "spec.ttlSeconds is immutable"))
+	}
+
+	if len(errs) > 0 {
+		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "IPLease"}, iplease.Name, errs)
+		ipleaselog.Info("Validation failed for IPLease", "name", iplease.GetName(), "error", err)
+		return nil, err
+	}
 
 	return nil, nil
 }

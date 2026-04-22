@@ -22,17 +22,27 @@ import (
 
 // NetworkEndpointSpec defines the desired state of NetworkEndpoint.
 type NetworkEndpointSpec struct {
+	// +required
 	PodRef NetworkEndpointPodReference `json:"podRef"`
 
+	// +required
+	// +kubebuilder:validation:MinLength=1
 	NodeName string `json:"nodeName"`
 
+	// +required
+	// +kubebuilder:validation:MinLength=1
 	Subnet string `json:"subnet"`
 
+	// +optional
 	Address string `json:"address,omitempty"`
 
-	MACAddress     string `json:"macAddress,omitempty"`
+	// +optional
+	MACAddress string `json:"macAddress,omitempty"`
+	// +optional
 	HostMACAddress string `json:"hostMACAddress,omitempty"`
-	Ifindex        int    `json:"ifindex,omitempty"`
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	Ifindex int `json:"ifindex,omitempty"`
 }
 
 // NetworkEndpointStatus defines the observed state of NetworkEndpoint.
@@ -41,9 +51,15 @@ type NetworkEndpointStatus struct {
 }
 
 type NetworkEndpointPodReference struct {
-	Name      string `json:"name"`
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// +required
+	// +kubebuilder:validation:MinLength=1
 	Interface string `json:"interface"`
-	UID       string `json:"uid"`
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	UID string `json:"uid"`
 }
 
 // +kubebuilder:object:root=true

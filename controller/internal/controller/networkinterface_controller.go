@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"net"
+	"reflect"
 	"strings"
 	"time"
 
@@ -44,6 +45,7 @@ const (
 	conditionReasonInvalidRequestedIP  = "InvalidRequestedIP"
 	conditionReasonRequestedIPInUse    = "RequestedIPInUse"
 	conditionReasonSubnetExhausted     = "SubnetExhausted"
+	conditionReasonDeleting            = "Deleting"
 )
 
 // NetworkInterfaceReconciler reconciles a NetworkInterface object
@@ -89,9 +91,7 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	_, cidr, err := net.ParseCIDR(subnet.Spec.CIDR)
 	if err != nil {
-		if err := r.updateStatus(ctx, &resource, juneauv1alpha1.NetworkInterfacePhasePending,
-			conditionReasonAllocationFailed, metav1.ConditionFalse, "Failed to allocate IP",
-			conditionReasonInvalidSubnetCIDR, metav1.ConditionFalse, err.Error()); err != nil {
+		if err := r.updateAllocationFailureStatus(ctx, &resource, conditionReasonInvalidSubnetCIDR, err.Error()); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
@@ -120,6 +120,23 @@ func (r *NetworkInterfaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 func (r *NetworkInterfaceReconciler) handleDeletion(ctx context.Context, resource *juneauv1alpha1.NetworkInterface, finalizer string) (bool, error) {
 	if resource.ObjectMeta.DeletionTimestamp.IsZero() {
 		return false, nil
+	}
+
+	if err := r.updateStatus(ctx, resource, juneauv1alpha1.NetworkInterfacePhasePending,
+		metav1.Condition{
+			Type:    juneauv1alpha1.NetworkInterfaceStatusReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  conditionReasonDeleting,
+			Message: "NetworkInterface is being deleted",
+		},
+		metav1.Condition{
+			Type:    juneauv1alpha1.NetworkInterfaceStatusAllocated,
+			Status:  metav1.ConditionFalse,
+			Reason:  conditionReasonDeleting,
+			Message: "NetworkInterface is being deleted",
+		},
+	); err != nil {
+		return true, err
 	}
 
 	if controllerutil.ContainsFinalizer(resource, finalizer) {
@@ -154,12 +171,28 @@ func (r *NetworkInterfaceReconciler) ensureFinalizer(ctx context.Context, resour
 func (r *NetworkInterfaceReconciler) fetchSubnet(ctx context.Context, resource *juneauv1alpha1.NetworkInterface) (*juneauv1alpha1.Subnet, error) {
 	var subnet juneauv1alpha1.Subnet
 	if err := r.Get(ctx, client.ObjectKey{Name: resource.Spec.Subnet}, &subnet); err != nil {
-		if err := r.updateStatus(ctx, resource, juneauv1alpha1.NetworkInterfacePhasePending,
-			conditionReasonAllocationFailed, metav1.ConditionFalse, "Failed to allocate IP",
-			conditionReasonSubnetNotFound, metav1.ConditionFalse, err.Error()); err != nil {
-			return nil, err
+		if errors.IsNotFound(err) {
+			if err := r.updateStatus(ctx, resource, juneauv1alpha1.NetworkInterfacePhasePending,
+				metav1.Condition{
+					Type:    juneauv1alpha1.NetworkInterfaceStatusReady,
+					Status:  metav1.ConditionFalse,
+					Reason:  conditionReasonAllocationFailed,
+					Message: "Failed to allocate IP",
+				},
+				metav1.Condition{
+					Type:    juneauv1alpha1.NetworkInterfaceStatusAllocated,
+					Status:  metav1.ConditionFalse,
+					Reason:  conditionReasonSubnetNotFound,
+					Message: err.Error(),
+				},
+			); err != nil {
+				return nil, err
+			}
+			return nil, nil
 		}
-		return nil, nil
+
+		_ = r.updateAllocationFailureStatus(ctx, resource, conditionReasonSubnetNotFound, err.Error())
+		return nil, err
 	}
 
 	return &subnet, nil
@@ -174,6 +207,7 @@ func (r *NetworkInterfaceReconciler) reuseExistingLease(ctx context.Context, log
 		"spec.podRef.interface": resource.Spec.PodRef.Interface,
 	}); err != nil {
 		logger.Error(err, "unable to list IPLeases for NetworkInterface", "name", resource.Name)
+		_ = r.updateAllocationFailureStatus(ctx, resource, conditionReasonAllocationFailed, err.Error())
 		return false, err
 	}
 
@@ -208,10 +242,8 @@ func (r *NetworkInterfaceReconciler) allocateRequestedIP(
 	}
 
 	requestedIP := net.ParseIP(resource.Spec.Address)
-	if requestedIP == nil || !cidr.Contains(requestedIP) {
-		if err := r.updateStatus(ctx, resource, juneauv1alpha1.NetworkInterfacePhasePending,
-			conditionReasonAllocationFailed, metav1.ConditionFalse, "Failed to allocate IP",
-			conditionReasonInvalidRequestedIP, metav1.ConditionFalse, "Requested IP is not a valid IPv4 address in subnet"); err != nil {
+	if requestedIP == nil || requestedIP.To4() == nil || !cidr.Contains(requestedIP) {
+		if err := r.updateAllocationFailureStatus(ctx, resource, conditionReasonInvalidRequestedIP, "Requested IP is not a valid IPv4 address in subnet"); err != nil {
 			return true, err
 		}
 		return true, nil
@@ -223,13 +255,12 @@ func (r *NetworkInterfaceReconciler) allocateRequestedIP(
 		"spec.address": requestedIP.String(),
 	}); err != nil {
 		logger.Error(err, "unable to list IPLeases for requested IP", "address", requestedIP.String())
+		_ = r.updateAllocationFailureStatus(ctx, resource, conditionReasonAllocationFailed, err.Error())
 		return true, err
 	}
 
 	if len(requestedLeases.Items) > 0 {
-		if err := r.updateStatus(ctx, resource, juneauv1alpha1.NetworkInterfacePhasePending,
-			conditionReasonAllocationFailed, metav1.ConditionFalse, "Failed to allocate IP",
-			conditionReasonRequestedIPInUse, metav1.ConditionFalse, "Requested IP already allocated: "+requestedIP.String()); err != nil {
+		if err := r.updateAllocationFailureStatus(ctx, resource, conditionReasonRequestedIPInUse, "Requested IP already allocated: "+requestedIP.String()); err != nil {
 			return true, err
 		}
 		return true, nil
@@ -238,6 +269,7 @@ func (r *NetworkInterfaceReconciler) allocateRequestedIP(
 	ipLease := r.buildIPLease(resource, subnet, requestedIP.String())
 	if err := r.Create(ctx, &ipLease); err != nil {
 		logger.Error(err, "unable to create IPLease for NetworkInterface", "name", resource.Name)
+		_ = r.updateAllocationFailureStatus(ctx, resource, conditionReasonAllocationFailed, err.Error())
 		return true, err
 	}
 
@@ -265,9 +297,7 @@ func (r *NetworkInterfaceReconciler) allocateNextAvailableIP(
 
 	for {
 		if ip.Equal(broadcast) {
-			if err := r.updateStatus(ctx, resource, juneauv1alpha1.NetworkInterfacePhasePending,
-				conditionReasonAllocationFailed, metav1.ConditionFalse, "Failed to allocate IP",
-				conditionReasonSubnetExhausted, metav1.ConditionFalse, "No available IPs in subnet"); err != nil {
+			if err := r.updateAllocationFailureStatus(ctx, resource, conditionReasonSubnetExhausted, "No available IPs in subnet"); err != nil {
 				return ctrl.Result{}, err
 			}
 			return ctrl.Result{}, nil
@@ -279,6 +309,7 @@ func (r *NetworkInterfaceReconciler) allocateNextAvailableIP(
 			"spec.address": ip.String(),
 		}); err != nil {
 			logger.Error(err, "unable to list IPLeases for IP", "address", ip.String())
+			_ = r.updateAllocationFailureStatus(ctx, resource, conditionReasonAllocationFailed, err.Error())
 			return ctrl.Result{}, err
 		}
 
@@ -290,6 +321,7 @@ func (r *NetworkInterfaceReconciler) allocateNextAvailableIP(
 		ipLease := r.buildIPLease(resource, subnet, ip.String())
 		if err := r.Create(ctx, &ipLease); err != nil {
 			logger.Error(err, "unable to create IPLease for NetworkInterface", "name", resource.Name)
+			_ = r.updateAllocationFailureStatus(ctx, resource, conditionReasonAllocationFailed, err.Error())
 			return ctrl.Result{}, err
 		}
 
@@ -320,15 +352,17 @@ func (r *NetworkInterfaceReconciler) buildIPLease(resource *juneauv1alpha1.Netwo
 }
 
 func (r *NetworkInterfaceReconciler) updateAllocatedStatus(ctx context.Context, resource *juneauv1alpha1.NetworkInterface, ipLeaseName string, address *net.IPNet, gateway string) error {
-	resource.Status.ObservedGeneration = resource.Generation
-	resource.Status.IPLease = ipLeaseName
-	resource.Status.Address = address.String()
-	resource.Status.Routes = buildDefaultRoutes(gateway)
-	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-		Type:    juneauv1alpha1.NetworkInterfaceStatusAllocated,
-		Status:  metav1.ConditionTrue,
-		Reason:  conditionReasonAllocationSucceeded,
-		Message: "IP allocated successfully: " + address.String(),
+	updated := resource.DeepCopy()
+	updated.Status.ObservedGeneration = updated.Generation
+	updated.Status.IPLease = ipLeaseName
+	updated.Status.Address = address.String()
+	updated.Status.Routes = buildDefaultRoutes(gateway)
+	meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
+		Type:               juneauv1alpha1.NetworkInterfaceStatusAllocated,
+		Status:             metav1.ConditionTrue,
+		Reason:             conditionReasonAllocationSucceeded,
+		Message:            "IP allocated successfully: " + address.String(),
+		ObservedGeneration: updated.Generation,
 	})
 
 	var nwepList juneauv1alpha1.NetworkEndpointList
@@ -337,28 +371,46 @@ func (r *NetworkInterfaceReconciler) updateAllocatedStatus(ctx context.Context, 
 		"spec.podRef.name":      resource.Spec.PodRef.Name,
 		"spec.podRef.uid":       resource.Spec.PodRef.UID,
 	}); err != nil {
+		_ = r.updateStatus(ctx, resource, juneauv1alpha1.NetworkInterfacePhaseAllocated,
+			metav1.Condition{
+				Type:               juneauv1alpha1.NetworkInterfaceStatusAllocated,
+				Status:             metav1.ConditionTrue,
+				Reason:             conditionReasonAllocationSucceeded,
+				Message:            "IP allocated successfully: " + address.String(),
+				ObservedGeneration: resource.Generation,
+			},
+			metav1.Condition{
+				Type:               juneauv1alpha1.NetworkInterfaceStatusReady,
+				Status:             metav1.ConditionFalse,
+				Reason:             conditionReasonAllocationFailed,
+				Message:            err.Error(),
+				ObservedGeneration: resource.Generation,
+			},
+		)
 		return err
 	}
 
 	if len(nwepList.Items) > 0 {
-		resource.Status.Phase = juneauv1alpha1.NetworkInterfacePhaseReady
-		meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-			Type:    juneauv1alpha1.NetworkInterfaceStatusReady,
-			Status:  metav1.ConditionTrue,
-			Reason:  conditionReasonWaitingForIface,
-			Message: "Interface is ready",
+		updated.Status.Phase = juneauv1alpha1.NetworkInterfacePhaseReady
+		meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
+			Type:               juneauv1alpha1.NetworkInterfaceStatusReady,
+			Status:             metav1.ConditionTrue,
+			Reason:             conditionReasonWaitingForIface,
+			Message:            "Interface is ready",
+			ObservedGeneration: updated.Generation,
 		})
 	} else {
-		resource.Status.Phase = juneauv1alpha1.NetworkInterfacePhaseAllocated
-		meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-			Type:    juneauv1alpha1.NetworkInterfaceStatusReady,
-			Status:  metav1.ConditionFalse,
-			Reason:  conditionReasonWaitingForIface,
-			Message: "Waiting for interface",
+		updated.Status.Phase = juneauv1alpha1.NetworkInterfacePhaseAllocated
+		meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
+			Type:               juneauv1alpha1.NetworkInterfaceStatusReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             conditionReasonWaitingForIface,
+			Message:            "Waiting for interface",
+			ObservedGeneration: updated.Generation,
 		})
 	}
 
-	return r.Status().Update(ctx, resource)
+	return r.commitStatus(ctx, resource, updated.Status)
 }
 
 func buildDefaultRoutes(gateway string) []juneauv1alpha1.NetworkRoute {
@@ -377,27 +429,46 @@ func (r *NetworkInterfaceReconciler) updateStatus(
 	ctx context.Context,
 	resource *juneauv1alpha1.NetworkInterface,
 	phase juneauv1alpha1.NetworkInterfacePhase,
-	readyReason string,
-	readyStatus metav1.ConditionStatus,
-	readyMessage string,
-	allocatedReason string,
-	allocatedStatus metav1.ConditionStatus,
-	allocatedMessage string,
+	conditions ...metav1.Condition,
 ) error {
-	resource.Status.ObservedGeneration = resource.Generation
-	resource.Status.Phase = phase
-	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-		Type:    juneauv1alpha1.NetworkInterfaceStatusReady,
-		Status:  readyStatus,
-		Reason:  readyReason,
-		Message: readyMessage,
-	})
-	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-		Type:    juneauv1alpha1.NetworkInterfaceStatusAllocated,
-		Status:  allocatedStatus,
-		Reason:  allocatedReason,
-		Message: allocatedMessage,
-	})
+	updated := resource.DeepCopy()
+	updated.Status.ObservedGeneration = updated.Generation
+	updated.Status.Phase = phase
+	for _, condition := range conditions {
+		condition.ObservedGeneration = updated.Generation
+		meta.SetStatusCondition(&updated.Status.Conditions, condition)
+	}
+	return r.commitStatus(ctx, resource, updated.Status)
+}
+
+func (r *NetworkInterfaceReconciler) updateAllocationFailureStatus(ctx context.Context, resource *juneauv1alpha1.NetworkInterface, allocatedReason, allocatedMessage string) error {
+	return r.updateStatus(ctx, resource, juneauv1alpha1.NetworkInterfacePhaseFailed,
+		metav1.Condition{
+			Type:    juneauv1alpha1.NetworkInterfaceStatusReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  conditionReasonAllocationFailed,
+			Message: "Failed to allocate IP",
+		},
+		metav1.Condition{
+			Type:    juneauv1alpha1.NetworkInterfaceStatusAllocated,
+			Status:  metav1.ConditionFalse,
+			Reason:  allocatedReason,
+			Message: allocatedMessage,
+		},
+	)
+}
+
+func (r *NetworkInterfaceReconciler) commitStatus(ctx context.Context, resource *juneauv1alpha1.NetworkInterface, status juneauv1alpha1.NetworkInterfaceStatus) error {
+	if resource.Status.ObservedGeneration == status.ObservedGeneration &&
+		resource.Status.Phase == status.Phase &&
+		resource.Status.IPLease == status.IPLease &&
+		resource.Status.Address == status.Address &&
+		reflect.DeepEqual(resource.Status.Routes, status.Routes) &&
+		reflect.DeepEqual(resource.Status.Conditions, status.Conditions) {
+		return nil
+	}
+
+	resource.Status = status
 	return r.Status().Update(ctx, resource)
 }
 

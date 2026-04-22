@@ -22,23 +22,30 @@ import (
 
 // RouteTableSpec defines the desired state of RouteTable.
 type RouteTableSpec struct {
+	// +required
+	// +kubebuilder:validation:MinLength=1
 	Vpc    string  `json:"vpc"`
 	Routes []Route `json:"routes,omitempty"`
 }
 
 // RouteTableStatus defines the observed state of RouteTable.
 type RouteTableStatus struct {
+	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
+	Conditions         []metav1.Condition `json:"conditions,omitempty"`
+
 	Routes  []Route `json:"routes,omitempty"`
 	TableID uint32  `json:"tableID,omitempty"`
 }
 
 type Route struct {
+	// +kubebuilder:validation:MinLength=1
 	Dst    string   `json:"dst"`
 	Via    RouteVia `json:"via"`
 	Subnet string   `json:"subnet,omitempty"`
 }
 
 type RouteVia struct {
+	// +kubebuilder:validation:Enum=connected;endpoint;internetGateway
 	Type     RouteViaType `json:"type"`
 	Endpoint string       `json:"endpointName,omitempty"`
 }
@@ -46,7 +53,7 @@ type RouteVia struct {
 type RouteViaType string
 
 const (
-	ViaConnnected      RouteViaType = "connected"
+	ViaConnected       RouteViaType = "connected"
 	ViaEndpoint        RouteViaType = "endpoint"
 	ViaInternetGateway RouteViaType = "internetGateway"
 )
@@ -54,6 +61,7 @@ const (
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
+// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type==\"Ready\")].status"
 
 // RouteTable is the Schema for the routetables API.
 type RouteTable struct {
@@ -63,6 +71,10 @@ type RouteTable struct {
 	Spec   RouteTableSpec   `json:"spec,omitempty"`
 	Status RouteTableStatus `json:"status,omitempty"`
 }
+
+const (
+	RouteTableStatusReady string = "Ready"
+)
 
 // +kubebuilder:object:root=true
 

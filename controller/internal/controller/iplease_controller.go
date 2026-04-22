@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -75,14 +76,6 @@ func (r *IPLeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	if !resource.Status.ExpiresAt.IsZero() && now.After(resource.Status.ExpiresAt.Time) {
-		if err := r.Delete(ctx, &resource); err != nil {
-			return ctrl.Result{}, err
-		}
-		logger.Info("deleted expired IPLease", "name", req.NamespacedName)
-		return ctrl.Result{}, nil
-	}
-
 	resource.Status.PodDisplayName = resource.Spec.PodRef.Interface + "." + resource.Spec.PodRef.Name + "." + resource.Spec.PodRef.Namespace
 
 	if resource.Spec.OwnerDeletionTimeStamp.IsZero() {
@@ -112,6 +105,21 @@ func (r *IPLeaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		expiresAt := metav1.NewTime(expirationTime)
 
 		if now.After(expirationTime) {
+			if resource.Status.Phase == juneauv1alpha1.IPLeasePhaseExpired && resource.Status.ExpiresAt != nil && resource.Status.ExpiresAt.Equal(&expiresAt) {
+				uid := resource.UID
+				if err := r.Delete(ctx, &resource, &client.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}}); err != nil {
+					if errors.IsNotFound(err) {
+						return ctrl.Result{}, nil
+					}
+					if errors.IsConflict(err) {
+						return ctrl.Result{Requeue: true}, nil
+					}
+					return ctrl.Result{}, err
+				}
+				logger.Info("deleted expired IPLease", "name", req.NamespacedName)
+				return ctrl.Result{}, nil
+			}
+
 			if err := r.updateStatus(ctx, &resource, juneauv1alpha1.IPLeasePhaseExpired, &expiresAt,
 				metav1.Condition{
 					Type:   ipLeaseConditionBound,
@@ -249,10 +257,19 @@ func (r *IPLeaseReconciler) updateStatus(
 	boundCondition metav1.Condition,
 	expiredCondition metav1.Condition,
 ) error {
-	resource.Status.ObservedGeneration = resource.Generation
-	resource.Status.ExpiresAt = expiresAt
-	resource.Status.Phase = phase
-	meta.SetStatusCondition(&resource.Status.Conditions, boundCondition)
-	meta.SetStatusCondition(&resource.Status.Conditions, expiredCondition)
+	updated := resource.Status
+	updated.ObservedGeneration = resource.Generation
+	updated.ExpiresAt = expiresAt
+	updated.Phase = phase
+	boundCondition.ObservedGeneration = resource.Generation
+	expiredCondition.ObservedGeneration = resource.Generation
+	meta.SetStatusCondition(&updated.Conditions, boundCondition)
+	meta.SetStatusCondition(&updated.Conditions, expiredCondition)
+
+	if reflect.DeepEqual(resource.Status, updated) {
+		return nil
+	}
+
+	resource.Status = updated
 	return r.Status().Update(ctx, resource)
 }

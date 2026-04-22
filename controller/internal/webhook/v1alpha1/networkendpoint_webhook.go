@@ -20,7 +20,10 @@ import (
 	"context"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -88,7 +91,49 @@ func (v *NetworkEndpointCustomValidator) ValidateUpdate(ctx context.Context, old
 	if !ok {
 		return nil, fmt.Errorf("expected a NetworkEndpoint object for the newObj but got %T", newObj)
 	}
+	oldNetworkEndpoint, ok := oldObj.(*juneauv1alpha1.NetworkEndpoint)
+	if !ok {
+		return nil, fmt.Errorf("expected a NetworkEndpoint object for the oldObj but got %T", oldObj)
+	}
 	networkendpointlog.Info("Validation for NetworkEndpoint upon update", "name", networkendpoint.GetName())
+
+	var errs field.ErrorList
+	specPath := field.NewPath("spec")
+	podRefPath := specPath.Child("podRef")
+
+	if networkendpoint.Spec.NodeName != oldNetworkEndpoint.Spec.NodeName {
+		errs = append(errs, field.Invalid(specPath.Child("nodeName"), networkendpoint.Spec.NodeName, "spec.nodeName is immutable"))
+	}
+	if networkendpoint.Spec.Subnet != oldNetworkEndpoint.Spec.Subnet {
+		errs = append(errs, field.Invalid(specPath.Child("subnet"), networkendpoint.Spec.Subnet, "spec.subnet is immutable"))
+	}
+	if networkendpoint.Spec.Address != oldNetworkEndpoint.Spec.Address {
+		errs = append(errs, field.Invalid(specPath.Child("address"), networkendpoint.Spec.Address, "spec.address is immutable"))
+	}
+	if networkendpoint.Spec.MACAddress != oldNetworkEndpoint.Spec.MACAddress {
+		errs = append(errs, field.Invalid(specPath.Child("macAddress"), networkendpoint.Spec.MACAddress, "spec.macAddress is immutable"))
+	}
+	if networkendpoint.Spec.HostMACAddress != oldNetworkEndpoint.Spec.HostMACAddress {
+		errs = append(errs, field.Invalid(specPath.Child("hostMACAddress"), networkendpoint.Spec.HostMACAddress, "spec.hostMACAddress is immutable"))
+	}
+	if networkendpoint.Spec.Ifindex != oldNetworkEndpoint.Spec.Ifindex {
+		errs = append(errs, field.Invalid(specPath.Child("ifindex"), networkendpoint.Spec.Ifindex, "spec.ifindex is immutable"))
+	}
+	if networkendpoint.Spec.PodRef.UID != oldNetworkEndpoint.Spec.PodRef.UID {
+		errs = append(errs, field.Invalid(podRefPath.Child("uid"), networkendpoint.Spec.PodRef.UID, "spec.podRef.uid is immutable"))
+	}
+	if networkendpoint.Spec.PodRef.Name != oldNetworkEndpoint.Spec.PodRef.Name {
+		errs = append(errs, field.Invalid(podRefPath.Child("name"), networkendpoint.Spec.PodRef.Name, "spec.podRef.name is immutable"))
+	}
+	if networkendpoint.Spec.PodRef.Interface != oldNetworkEndpoint.Spec.PodRef.Interface {
+		errs = append(errs, field.Invalid(podRefPath.Child("interface"), networkendpoint.Spec.PodRef.Interface, "spec.podRef.interface is immutable"))
+	}
+
+	if len(errs) > 0 {
+		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "NetworkEndpoint"}, networkendpoint.Name, errs)
+		networkendpointlog.Info("Validation failed for NetworkEndpoint", "name", networkendpoint.GetName(), "error", err)
+		return nil, err
+	}
 
 	return nil, nil
 }

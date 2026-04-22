@@ -33,6 +33,9 @@ import (
 	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
+// bgpPeerDefaultPort is the BGP well-known TCP port used when spec.peerPort is not specified.
+const bgpPeerDefaultPort uint16 = 179
+
 // nolint:unused
 // log is for logging in this package.
 var bgppeerlog = logf.Log.WithName("bgppeer-resource")
@@ -45,8 +48,6 @@ func SetupBGPPeerWebhookWithManager(mgr ctrl.Manager) error {
 		Complete()
 }
 
-// TODO(user): EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-
 // +kubebuilder:webhook:path=/mutate-juneau-loutres-me-v1alpha1-bgppeer,mutating=true,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=bgppeers,verbs=create;update,versions=v1alpha1,name=mbgppeer-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // BGPPeerCustomDefaulter struct is responsible for setting default values on the custom resource of the
@@ -54,27 +55,25 @@ func SetupBGPPeerWebhookWithManager(mgr ctrl.Manager) error {
 //
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
 // as it is used only for temporary operations and does not need to be deeply copied.
-type BGPPeerCustomDefaulter struct {
-	// TODO(user): Add more fields as needed for defaulting
-}
+type BGPPeerCustomDefaulter struct{}
 
 var _ webhook.CustomDefaulter = &BGPPeerCustomDefaulter{}
 
 // Default implements webhook.CustomDefaulter so a webhook will be registered for the Kind BGPPeer.
-func (d *BGPPeerCustomDefaulter) Default(ctx context.Context, obj runtime.Object) error {
+func (d *BGPPeerCustomDefaulter) Default(_ context.Context, obj runtime.Object) error {
 	bgppeer, ok := obj.(*juneauloutresmev1alpha1.BGPPeer)
-
 	if !ok {
 		return fmt.Errorf("expected an BGPPeer object but got %T", obj)
 	}
 	bgppeerlog.Info("Defaulting for BGPPeer", "name", bgppeer.GetName())
 
-	// TODO(user): fill in your defaulting logic.
+	if bgppeer.Spec.PeerPort == 0 {
+		bgppeer.Spec.PeerPort = bgpPeerDefaultPort
+	}
 
 	return nil
 }
 
-// TODO(user): change verbs to "verbs=create;update;delete" if you want to enable deletion validation.
 // NOTE: The 'path' attribute must follow a specific pattern and should not be modified directly here.
 // Modifying the path for an invalid path can cause API server errors; failing to locate the webhook.
 // +kubebuilder:webhook:path=/validate-juneau-loutres-me-v1alpha1-bgppeer,mutating=false,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=bgppeers,verbs=create;update,versions=v1alpha1,name=vbgppeer-v1alpha1.kb.io,admissionReviewVersions=v1
@@ -84,64 +83,48 @@ func (d *BGPPeerCustomDefaulter) Default(ctx context.Context, obj runtime.Object
 //
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
 // as this struct is used only for temporary operations and does not need to be deeply copied.
-type BGPPeerCustomValidator struct {
-	// TODO(user): Add more fields as needed for validation
-}
+type BGPPeerCustomValidator struct{}
 
 var _ webhook.CustomValidator = &BGPPeerCustomValidator{}
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type BGPPeer.
-func (v *BGPPeerCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (v *BGPPeerCustomValidator) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
 	bgppeer, ok := obj.(*juneauloutresmev1alpha1.BGPPeer)
 	if !ok {
 		return nil, fmt.Errorf("expected a BGPPeer object but got %T", obj)
 	}
 	bgppeerlog.Info("Validation for BGPPeer upon creation", "name", bgppeer.GetName())
 
-	return v.validate(bgppeer, nil)
+	return v.validate(bgppeer)
 }
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type BGPPeer.
-func (v *BGPPeerCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+func (v *BGPPeerCustomValidator) ValidateUpdate(_ context.Context, _, newObj runtime.Object) (admission.Warnings, error) {
 	bgppeer, ok := newObj.(*juneauloutresmev1alpha1.BGPPeer)
 	if !ok {
 		return nil, fmt.Errorf("expected a BGPPeer object for the newObj but got %T", newObj)
 	}
 	bgppeerlog.Info("Validation for BGPPeer upon update", "name", bgppeer.GetName())
 
-	return v.validate(bgppeer, nil)
+	return v.validate(bgppeer)
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type BGPPeer.
-func (v *BGPPeerCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (v *BGPPeerCustomValidator) ValidateDelete(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
 	bgppeer, ok := obj.(*juneauloutresmev1alpha1.BGPPeer)
 	if !ok {
 		return nil, fmt.Errorf("expected a BGPPeer object but got %T", obj)
 	}
 	bgppeerlog.Info("Validation for BGPPeer upon deletion", "name", bgppeer.GetName())
-
-	// TODO(user): fill in your validation logic upon object deletion.
-
 	return nil, nil
 }
 
-func (v *BGPPeerCustomValidator) validate(newObj *juneauloutresmev1alpha1.BGPPeer, oldObj *juneauloutresmev1alpha1.BGPPeer) (admission.Warnings, error) {
+func (v *BGPPeerCustomValidator) validate(newObj *juneauloutresmev1alpha1.BGPPeer) (admission.Warnings, error) {
 	var errs field.ErrorList
-
-	checkASN := func(path *field.Path, asn uint32) {
-		if asn < 1 || asn > 4294967294 {
-			errs = append(errs, field.Invalid(path, asn, "ASN must be in 1-4294967294"))
-		}
-	}
-
-	checkASN(field.NewPath("spec", "myASN"), newObj.Spec.MyASN)
-	checkASN(field.NewPath("spec", "peerASN"), newObj.Spec.PeerASN)
 
 	if ip := net.ParseIP(newObj.Spec.PeerAddress); ip == nil || ip.To4() == nil {
 		errs = append(errs, field.Invalid(field.NewPath("spec", "peerAddress"), newObj.Spec.PeerAddress, "peerAddress must be a valid IPv4"))
 	}
-
-	_ = oldObj
 
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauloutresmev1alpha1.GroupVersion.Group, Kind: "BGPPeer"}, newObj.Name, errs)
