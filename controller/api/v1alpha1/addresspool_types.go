@@ -22,11 +22,15 @@ import (
 
 // AddressPoolSpec defines the desired state of AddressPool.
 type AddressPoolSpec struct {
+	// +required
 	// +kubebuilder:validation:Enum=bgp;arp
-	AdvertiseMode AddressPoolAdvertiseMode `json:"advertiseMode,omitempty"`
+	AdvertiseMode AddressPoolAdvertiseMode `json:"advertiseMode"`
 
+	// +required
 	// +kubebuilder:validation:MinItems=1
-	Addresses []string `json:"addresses,omitempty"`
+	// +kubebuilder:validation:items:MinLength=1
+	// +listType=set
+	Addresses []string `json:"addresses"`
 }
 
 // AddressPoolStatus defines the observed state of AddressPool.

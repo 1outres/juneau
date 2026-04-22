@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -27,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -41,7 +43,7 @@ var addresspoollog = logf.Log.WithName("addresspool-resource")
 // SetupAddressPoolWebhookWithManager registers the webhook for AddressPool in the manager.
 func SetupAddressPoolWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&juneauloutresmev1alpha1.AddressPool{}).
-		WithValidator(&AddressPoolCustomValidator{}).
+		WithValidator(&AddressPoolCustomValidator{Client: mgr.GetClient()}).
 		WithDefaulter(&AddressPoolCustomDefaulter{}).
 		Complete()
 }
@@ -50,28 +52,34 @@ func SetupAddressPoolWebhookWithManager(mgr ctrl.Manager) error {
 
 // AddressPoolCustomDefaulter struct is responsible for setting default values on the custom resource of the
 // Kind AddressPool when those are created or updated.
-type AddressPoolCustomDefaulter struct {
-}
+//
+// NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
+// as it is used only for temporary operations and does not need to be deeply copied.
+type AddressPoolCustomDefaulter struct{}
 
 var _ webhook.CustomDefaulter = &AddressPoolCustomDefaulter{}
 
 // Default implements webhook.CustomDefaulter so a webhook will be registered for the Kind AddressPool.
-func (d *AddressPoolCustomDefaulter) Default(ctx context.Context, obj runtime.Object) error {
+func (d *AddressPoolCustomDefaulter) Default(_ context.Context, obj runtime.Object) error {
 	addresspool, ok := obj.(*juneauloutresmev1alpha1.AddressPool)
-
 	if !ok {
 		return fmt.Errorf("expected an AddressPool object but got %T", obj)
 	}
 	addresspoollog.Info("Defaulting for AddressPool", "name", addresspool.GetName())
-
 	return nil
 }
 
-// +kubebuilder:webhook:path=/validate-juneau-loutres-me-v1alpha1-addresspool,mutating=false,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=addresspools,verbs=create;update,versions=v1alpha1,name=vaddresspool-v1alpha1.kb.io,admissionReviewVersions=v1
+// NOTE: The 'path' attribute must follow a specific pattern and should not be modified directly here.
+// Modifying the path for an invalid path can cause API server errors; failing to locate the webhook.
+// +kubebuilder:webhook:path=/validate-juneau-loutres-me-v1alpha1-addresspool,mutating=false,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=addresspools,verbs=create;update;delete,versions=v1alpha1,name=vaddresspool-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // AddressPoolCustomValidator struct is responsible for validating the AddressPool resource
 // when it is created, updated, or deleted.
+//
+// NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
+// as this struct is used only for temporary operations and does not need to be deeply copied.
 type AddressPoolCustomValidator struct {
+	client.Client
 }
 
 var _ webhook.CustomValidator = &AddressPoolCustomValidator{}
@@ -93,12 +101,11 @@ func (v *AddressPoolCustomValidator) ValidateUpdate(ctx context.Context, oldObj,
 	if !ok {
 		return nil, fmt.Errorf("expected a AddressPool object for the newObj but got %T", newObj)
 	}
-	addresspoollog.Info("Validation for AddressPool upon update", "name", addresspool.GetName())
-
 	oldAddressPool, ok := oldObj.(*juneauloutresmev1alpha1.AddressPool)
 	if !ok {
 		return nil, fmt.Errorf("expected a AddressPool object for the oldObj but got %T", oldObj)
 	}
+	addresspoollog.Info("Validation for AddressPool upon update", "name", addresspool.GetName())
 
 	return v.validate(addresspool, oldAddressPool)
 }
@@ -111,19 +118,45 @@ func (v *AddressPoolCustomValidator) ValidateDelete(ctx context.Context, obj run
 	}
 	addresspoollog.Info("Validation for AddressPool upon deletion", "name", addresspool.GetName())
 
+	var externalNetworks juneauloutresmev1alpha1.ExternalNetworkList
+	if err := v.List(ctx, &externalNetworks); err != nil {
+		return nil, err
+	}
+	for _, externalNetwork := range externalNetworks.Items {
+		if externalNetwork.DeletionTimestamp != nil {
+			continue
+		}
+		if slices.Contains(externalNetwork.Spec.AddressPools, addresspool.Name) {
+			return nil, errors.NewForbidden(
+				schema.GroupResource{Group: juneauloutresmev1alpha1.GroupVersion.Group, Resource: "addresspools"},
+				addresspool.Name,
+				fmt.Errorf("AddressPool is referenced by ExternalNetwork %q", externalNetwork.Name),
+			)
+		}
+	}
+
+	var bgpAdvertisements juneauloutresmev1alpha1.BGPAdvertisementList
+	if err := v.List(ctx, &bgpAdvertisements); err != nil {
+		return nil, err
+	}
+	for _, bgpAdvertisement := range bgpAdvertisements.Items {
+		if bgpAdvertisement.DeletionTimestamp != nil {
+			continue
+		}
+		if slices.Contains(bgpAdvertisement.Spec.AddressPools, addresspool.Name) {
+			return nil, errors.NewForbidden(
+				schema.GroupResource{Group: juneauloutresmev1alpha1.GroupVersion.Group, Resource: "addresspools"},
+				addresspool.Name,
+				fmt.Errorf("AddressPool is referenced by BGPAdvertisement %q", bgpAdvertisement.Name),
+			)
+		}
+	}
+
 	return nil, nil
 }
 
 func (v *AddressPoolCustomValidator) validate(newObj *juneauloutresmev1alpha1.AddressPool, oldObj *juneauloutresmev1alpha1.AddressPool) (admission.Warnings, error) {
 	var errs field.ErrorList
-
-	if newObj.Spec.AdvertiseMode == "" {
-		errs = append(errs, field.Required(field.NewPath("spec", "advertiseMode"), "advertiseMode is required"))
-	}
-
-	if len(newObj.Spec.Addresses) == 0 {
-		errs = append(errs, field.Required(field.NewPath("spec", "addresses"), "at least one address is required"))
-	}
 
 	switch newObj.Spec.AdvertiseMode {
 	case juneauloutresmev1alpha1.AddressPoolAdvertiseModeBGP:
@@ -159,23 +192,19 @@ func (v *AddressPoolCustomValidator) validate(newObj *juneauloutresmev1alpha1.Ad
 				errs = append(errs, field.Invalid(field.NewPath("spec", "addresses").Index(i), a, "range start must be <= end"))
 			}
 		}
-	default:
-		if newObj.Spec.AdvertiseMode != "" {
-			errs = append(errs, field.NotSupported(field.NewPath("spec", "advertiseMode"), newObj.Spec.AdvertiseMode, []string{string(juneauloutresmev1alpha1.AddressPoolAdvertiseModeBGP), string(juneauloutresmev1alpha1.AddressPoolAdvertiseModeARP)}))
-		}
 	}
 
 	if oldObj != nil {
 		if newObj.Spec.AdvertiseMode != oldObj.Spec.AdvertiseMode {
 			errs = append(errs, field.Invalid(field.NewPath("spec", "advertiseMode"), newObj.Spec.AdvertiseMode, "advertiseMode is immutable"))
 		}
-		oldSet := make(map[string]struct{}, len(oldObj.Spec.Addresses))
-		for _, a := range oldObj.Spec.Addresses {
-			oldSet[a] = struct{}{}
+		newSet := make(map[string]struct{}, len(newObj.Spec.Addresses))
+		for _, a := range newObj.Spec.Addresses {
+			newSet[a] = struct{}{}
 		}
-		for a := range oldSet {
-			if !contains(newObj.Spec.Addresses, a) {
-				errs = append(errs, field.Invalid(field.NewPath("spec", "addresses"), newObj.Spec.Addresses, fmt.Sprintf("address %s cannot be removed", a)))
+		for _, a := range oldObj.Spec.Addresses {
+			if _, ok := newSet[a]; !ok {
+				errs = append(errs, field.Invalid(field.NewPath("spec", "addresses"), newObj.Spec.Addresses, fmt.Sprintf("address %q cannot be removed; addresses are append-only", a)))
 			}
 		}
 	}
@@ -206,13 +235,4 @@ func bytesCompare(a, b net.IP) int {
 		return -1
 	}
 	return 1
-}
-
-func contains(list []string, target string) bool {
-	for _, v := range list {
-		if v == target {
-			return true
-		}
-	}
-	return false
 }
