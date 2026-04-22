@@ -41,11 +41,16 @@ spec:
             properties:
               myASN:
                 format: int32
+                maximum: 4294967294
+                minimum: 1
                 type: integer
               peerASN:
                 format: int32
+                maximum: 4294967294
+                minimum: 1
                 type: integer
               peerAddress:
+                minLength: 1
                 type: string
               peerPort:
                 type: integer

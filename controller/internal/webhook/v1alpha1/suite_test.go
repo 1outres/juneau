@@ -97,6 +97,8 @@ var _ = BeforeSuite(func() {
 	Expect(SetupRouteTableWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupAllocationPoolWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupAllocationClaimWebhookWithManager(mgr)).To(Succeed())
+	Expect(SetupBGPAdvertisementWebhookWithManager(mgr)).To(Succeed())
+	Expect(SetupBGPPeerWebhookWithManager(mgr)).To(Succeed())
 
 	webhookMgrDone = make(chan error, 1)
 	go func() {
