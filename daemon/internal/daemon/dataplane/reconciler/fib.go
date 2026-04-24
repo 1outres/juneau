@@ -16,7 +16,6 @@ import (
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	bpf "github.com/1outres/juneau/daemon/internal/daemon/bpf"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/convert"
-	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/gateway"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/program"
 )
 
@@ -34,9 +33,8 @@ const (
 // NetworkEndpoints, so Subnet/NWEP events fan out to re-enqueue every
 // RouteTable via FanOutAllRouteTables.
 type Fib struct {
-	client          client.Client
-	podEgress       *program.PodEgress
-	externalGateway *gateway.Info
+	client    client.Client
+	podEgress *program.PodEgress
 
 	mu        sync.Mutex
 	snapshots map[string]fibSnapshot // rt name -> current inner map
@@ -47,12 +45,11 @@ type fibSnapshot struct {
 	fib     *ebpf.Map
 }
 
-func NewFib(cl client.Client, podEgress *program.PodEgress, externalGateway *gateway.Info) *Fib {
+func NewFib(cl client.Client, podEgress *program.PodEgress) *Fib {
 	return &Fib{
-		client:          cl,
-		podEgress:       podEgress,
-		externalGateway: externalGateway,
-		snapshots:       make(map[string]fibSnapshot),
+		client:    cl,
+		podEgress: podEgress,
+		snapshots: make(map[string]fibSnapshot),
 	}
 }
 
@@ -194,7 +191,7 @@ func (r *Fib) buildFibVal(ctx context.Context, route *juneauv1alpha1.Route) (bpf
 		return val, false, err
 
 	case juneauv1alpha1.ViaInternetGateway:
-		val, err := buildInternetGatewayFibVal(r.externalGateway)
+		val, err := buildInternetGatewayFibVal()
 		return val, false, err
 
 	default:
@@ -243,23 +240,12 @@ func buildEndpointFibVal(subnet *juneauv1alpha1.Subnet, nwep *juneauv1alpha1.Net
 	}, nil
 }
 
-func buildInternetGatewayFibVal(gw *gateway.Info) (bpf.PodEgressFibVal, error) {
-	if gw == nil {
-		return bpf.PodEgressFibVal{}, fmt.Errorf("internet gateway info is not initialized")
-	}
-	smac, err := convert.HardwareAddrToUint8Array(gw.SourceMAC)
-	if err != nil {
-		return bpf.PodEgressFibVal{}, err
-	}
-	dmac, err := convert.HardwareAddrToUint8Array(gw.NextHopMAC)
-	if err != nil {
-		return bpf.PodEgressFibVal{}, err
-	}
+// buildInternetGatewayFibVal builds a FIB value for the internet-gateway
+// route type. Only the type is meaningful here; the BPF side resolves smac,
+// dmac, and oif at runtime via bpf_fib_lookup.
+func buildInternetGatewayFibVal() (bpf.PodEgressFibVal, error) {
 	return bpf.PodEgressFibVal{
 		Type: fibRouteTypeInternetGateway,
-		Dmac: dmac,
-		Smac: smac,
-		Oif:  uint32(gw.Ifindex),
 	}, nil
 }
 

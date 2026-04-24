@@ -3,6 +3,7 @@ package e2e
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -83,15 +84,17 @@ var _ = Describe("BGP e2e", Ordered, func() {
 		waitBirdRouteOnRouter(bgpRouter, bgpExternalCIDR, len(workerNodes))
 	})
 
-	// S3 exercises the control plane up to the point where the daemon has
-	// wired DNAT for the EIP. End-to-end curl from the opposing router is
-	// intentionally NOT exercised in kind: the BGP peer container sits on
-	// the same docker bridge as the workers, so the daemon's SNAT-egress
-	// path (which rewrites the dst MAC to the default gateway MAC) loops
-	// back through the bridge's L3 path and breaks the return path. In a
-	// production topology where the peer is off-link via a real router the
-	// same config works; here we stop once the controller/daemon state has
-	// converged, which is the regression surface we actually want to guard.
+	// S3 exercises the full external egress path end-to-end:
+	//   peer (BGP-learned ECMP) → worker eth0 → node_ingress DNAT → Pod →
+	//   pod_egress SNAT (bpf_fib_lookup resolves the real next-hop MAC) →
+	//   back out worker eth0 → peer.
+	// kind places the peer and workers on the same docker bridge. With
+	// bridge-nf-call-iptables=1 the host's netfilter pipeline inspects every
+	// bridged frame; distributions that ship iptables strict RPF (e.g. NixOS
+	// via xt_rpfilter) drop the SNAT'd response at mangle/PREROUTING because
+	// the source IP has no route in the host netns. ensureBGPRouter installs
+	// a host route for the advertised CIDR via the kind bridge so RPF has a
+	// valid reverse path; that is the minimum workaround required for kind.
 	DescribeTable("S3: wires ElasticIP attachment for a Pod",
 		func(workerIndex int) {
 			Expect(workerNodes).To(HaveLen(2))
@@ -113,7 +116,18 @@ metadata:
 spec:
   vpc: %s
   cidr: %s
-`, bgpVpcName, bgpSubnetName, bgpVpcName, bgpSubnetCIDR))).To(Succeed())
+---
+apiVersion: juneau.loutres.me/v1alpha1
+kind: RouteTable
+metadata:
+  name: %s
+spec:
+  vpc: %s
+  routes:
+    - dst: 0.0.0.0/0
+      via:
+        type: internetGateway
+`, bgpVpcName, bgpSubnetName, bgpVpcName, bgpSubnetCIDR, bgpVpcName, bgpVpcName))).To(Succeed())
 			waitSubnetReady(bgpSubnetName)
 
 			suffix := sanitizeName(fmt.Sprintf("worker%d", workerIndex))
@@ -162,6 +176,13 @@ spec:
 			podIP, err := kubectlJSONPath(repoRoot, `{.status.podIP}`, "-n", namespace, "get", "elasticipattachment", attachmentName)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(strings.TrimSpace(podIP)).To(HavePrefix("10.200.0."), "Pod IP should be in %s", bgpSubnetCIDR)
+
+			By(fmt.Sprintf("curling http://%s/ from the opposing router", eipAddress))
+			Eventually(func(g Gomega) {
+				out, err := bgpRouter.Exec("curl", "-sS", "--max-time", "3", fmt.Sprintf("http://%s/", eipAddress))
+				g.Expect(err).NotTo(HaveOccurred(), "curl output: %s", out)
+				g.Expect(out).To(ContainSubstring("Welcome to nginx"), "curl body: %s", out)
+			}, 90*time.Second, 3*time.Second).Should(Succeed())
 		},
 		Entry("Pod on worker[0]", 0),
 		Entry("Pod on worker[1]", 1),

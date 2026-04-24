@@ -41,6 +41,9 @@ func ensureBGPRouter(nodes []string) (*bgpRouterInstance, error) {
 	if err != nil {
 		return nil, fmt.Errorf("discover worker IPs: %w", err)
 	}
+	if err := applyKindBridgeHostRPFWorkaround(bgpExternalCIDR); err != nil {
+		return nil, fmt.Errorf("apply kind bridge RPF workaround: %w", err)
+	}
 	inst := &bgpRouterInstance{
 		name:      bgpRouterContainerName,
 		ip:        routerIP,
@@ -91,6 +94,54 @@ func teardownBGPRouter() {
 		return
 	}
 	runBestEffort(repoRoot, "docker", "rm", "-f", bgpRouterContainerName)
+	cleanupKindBridgeHostRPFWorkaround(bgpExternalCIDR)
+}
+
+// applyKindBridgeHostRPFWorkaround installs a host-side route pointing the
+// advertised CIDR at the kind docker bridge. kind places the BGP peer and
+// workers on the same L2 bridge, so SNAT'd responses from a worker carry a
+// source IP that has no route in the host netns. NixOS (and any distro that
+// enables iptables strict RPF via xt_rpfilter) drops those frames at
+// mangle/PREROUTING before FORWARD is even consulted. Adding the route
+// gives RPF a valid reverse path via the bridge interface. send_redirects is
+// disabled so the bridge does not ICMP-redirect the peer away from its BGP
+// next-hop.
+func applyKindBridgeHostRPFWorkaround(cidr string) error {
+	bridge, err := kindBridgeName()
+	if err != nil {
+		return err
+	}
+	script := fmt.Sprintf(`set -eu
+ip route replace %s dev %s
+sysctl -wq net.ipv4.conf.%s.send_redirects=0
+`, cidr, bridge, bridge)
+	return run(repoRoot, "docker", "run", "--rm", "--privileged", "--network", "host",
+		bgpRouterImage, "sh", "-c", script)
+}
+
+func cleanupKindBridgeHostRPFWorkaround(cidr string) {
+	bridge, err := kindBridgeName()
+	if err != nil {
+		return
+	}
+	script := fmt.Sprintf(`ip route del %s dev %s 2>/dev/null
+sysctl -wq net.ipv4.conf.%s.send_redirects=1 2>/dev/null
+true
+`, cidr, bridge, bridge)
+	runBestEffort(repoRoot, "docker", "run", "--rm", "--privileged", "--network", "host",
+		bgpRouterImage, "sh", "-c", script)
+}
+
+func kindBridgeName() (string, error) {
+	out, err := dockerOutput("network", "inspect", kindDockerNetwork, "-f", "{{.Id}}")
+	if err != nil {
+		return "", err
+	}
+	id := strings.TrimSpace(out)
+	if len(id) < 12 {
+		return "", fmt.Errorf("unexpected kind network id %q", id)
+	}
+	return "br-" + id[:12], nil
 }
 
 func chooseBGPRouterIP() (string, error) {

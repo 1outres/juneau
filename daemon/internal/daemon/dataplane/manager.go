@@ -12,7 +12,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/convert"
-	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/gateway"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/runner"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/link"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/program"
@@ -52,7 +51,6 @@ type Manager struct {
 	nodeIngressIfindex int
 	pinPath            string
 	hostMac            net.HardwareAddr
-	externalGateway    *gateway.Info
 
 	podEgress    *program.PodEgress
 	hostEgress   *program.HostEgress
@@ -61,12 +59,6 @@ type Manager struct {
 }
 
 func (m *Manager) Start(ctx context.Context) error {
-	if gw, err := gateway.Resolve(m.nodeIngressIfindex); err != nil {
-		zap.S().Warnf("failed to resolve internet gateway info: %v", err)
-	} else {
-		m.externalGateway = gw
-	}
-
 	if err := os.RemoveAll(m.pinPath); err != nil {
 		return fmt.Errorf("failed to remove BPF pin path: %w", err)
 	}
@@ -140,7 +132,7 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	}
 	m.podAttacherRunner.Start(ctx, 1)
 
-	m.fib = reconciler.NewFib(m.client, m.podEgress, m.externalGateway)
+	m.fib = reconciler.NewFib(m.client, m.podEgress)
 	m.fibRunner = runner.New(m.fib)
 	if err := m.fibRunner.Watch(m.rtInformer, runner.MetaNamespaceKey); err != nil {
 		return fmt.Errorf("watch RouteTable: %w", err)
