@@ -38,6 +38,8 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - User Guide:
+    - BGP + ExternalNetwork: guides/external-network-bgp.md
   - Resources:
     - VPC: resources/vpc.md
     - Subnet: resources/subnet.md
