@@ -14,7 +14,24 @@ spec:
     singular: bgpnodestate
   scope: Cluster
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="BirdRunning")].status
+      name: Bird
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="BMPConnected")].status
+      name: BMP
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    - jsonPath: .status.heartbeat
+      name: Heartbeat
+      priority: 1
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: BGPNodeState is the Schema for the bgpnodestates API.
