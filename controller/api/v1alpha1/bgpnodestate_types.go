@@ -66,6 +66,11 @@ type BGPNodeStateError struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Bird",type=string,JSONPath=`.status.conditions[?(@.type=="BirdRunning")].status`
+// +kubebuilder:printcolumn:name="BMP",type=string,JSONPath=`.status.conditions[?(@.type=="BMPConnected")].status`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:printcolumn:name="Heartbeat",type=date,JSONPath=`.status.heartbeat`,priority=1
 
 // BGPNodeState is the Schema for the bgpnodestates API.
 type BGPNodeState struct {
