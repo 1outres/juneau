@@ -6,6 +6,7 @@ Juneauでは、Podに外部到達可能なIPアドレス（ElasticIP）を割り
 
 - 外部へ広報するアドレス範囲 `10.225.51.0/24` を持つAddressPool
 - 外部ルータ (AS 65002, `10.225.32.1`) とのBGPピアリング
+- EIP対象Pod用の専用Vpc/Subnet (`10.60.0.0/24`) とInternetGateway経路
 - ElasticIPをnginx Podに割り当て、クラスター外から `curl http://<elasticIP>/` で到達確認
 
 ## 前提条件
@@ -119,7 +120,47 @@ spec:
 
 `type: bgp`の場合、参照するAddressPoolは`advertiseMode: bgp`である必要があります。詳細は[ExternalNetwork](../resources/externalnetwork.md)を参照してください。
 
-### 6. ElasticIPを作成
+### 6. EIP対象Pod用のVpc/Subnetを作成
+
+ElasticIPを付与するPodは、**default以外のSubnetに配置する必要があります**。専用Vpcとそこに属するSubnetを用意します。
+
+```yaml
+apiVersion: juneau.loutres.me/v1alpha1
+kind: Vpc
+metadata:
+  name: ext-vpc
+---
+apiVersion: juneau.loutres.me/v1alpha1
+kind: Subnet
+metadata:
+  name: ext-subnet
+spec:
+  vpc: ext-vpc
+  cidr: 10.60.0.0/24
+```
+
+詳細は[Vpc](../resources/vpc.md) / [Subnet](../resources/subnet.md)を参照してください。
+
+### 7. RouteTableにInternetGatewayルートを追加
+
+VpcのメインRouteTableは自動生成されますが、EIP egress (Pod → 外部) に必要な**InternetGateway向けデフォルトルートはデフォルトでは含まれません**。手動で追記します。
+
+```yaml
+apiVersion: juneau.loutres.me/v1alpha1
+kind: RouteTable
+metadata:
+  name: ext-vpc
+spec:
+  vpc: ext-vpc
+  routes:
+    - dst: 0.0.0.0/0
+      via:
+        type: internetGateway
+```
+
+RouteTableのメタ名はVpc名と同じです。このルートがないと、Podから外部への通信経路が成立しません。詳細は[RouteTable](../resources/routetable.md)を参照してください。
+
+### 8. ElasticIPを作成
 
 ExternalNetworkから1つのアドレスを払い出します。
 
@@ -140,9 +181,9 @@ nginx-eip   ext-net           10.225.51.5                 Available   True      
 
 `PHASE: Available`で`ADDRESS`が埋まればアドレス確保完了です。この時点ではまだどのPodにもひもづいていません。
 
-### 7. Podをデプロイ
+### 9. Podをデプロイ
 
-対象のPodを通常どおりデプロイします。JuneauのCNIがPod作成時にNetworkInterfaceリソースを自動生成します。
+対象のPodを、手順6で作ったSubnetに配置します。`juneau.loutres.me/subnet` annotationで明示します。
 
 ```yaml
 apiVersion: v1
@@ -151,6 +192,8 @@ metadata:
   name: nginx
   labels:
     app: nginx
+  annotations:
+    juneau.loutres.me/subnet: ext-subnet
 spec:
   containers:
     - name: nginx
@@ -165,7 +208,7 @@ nginx.eth0   ...
 
 NetworkInterface名はデフォルトで `<Pod名>.eth0` です。
 
-### 8. ElasticIPAttachmentでひもづけ
+### 10. ElasticIPAttachmentでひもづけ
 
 ElasticIPをPodのNetworkInterfaceに関連付けます。
 
@@ -187,9 +230,9 @@ NAME               ELASTICIP    NETWORKINTERFACE   EIP            PODIP        N
 nginx-eip-attach   nginx-eip    nginx.eth0         10.225.51.5    10.16.0.12   worker-1   Attached   True
 ```
 
-`PHASE: Attached`かつ`READY: True`になれば、該当NodeのjuneauデータプレーンがDNATを仕込み終わっています。詳細は[ElasticIPAttachment](../resources/elasticipattachment.md)を参照してください。
+`PHASE: Attached`かつ`READY: True`になれば、該当Node上でElasticIPがPodに関連付けられた状態です。詳細は[ElasticIPAttachment](../resources/elasticipattachment.md)を参照してください。
 
-### 9. 外部からの疎通を確認
+### 11. 外部からの疎通を確認
 
 上流ルータ側、または上流ルータから到達可能な任意のホストから：
 
@@ -200,7 +243,7 @@ $ curl -sS http://10.225.51.5/
 <h1>Welcome to nginx!</h1>
 ```
 
-レスポンスが返れば、BGP広報 → 上流ルータの経路学習 → Nodeへの転送 → eBPFのDNAT → Pod、の経路が通っています。
+レスポンスが返れば、BGP広報 → 上流ルータの経路学習 → Nodeへの転送 → Pod、の経路が通っています。
 
 ## うまくいかないとき
 
@@ -215,8 +258,10 @@ $ curl -sS http://10.225.51.5/
     - 参照先AddressPoolの`spec.advertiseMode: bgp`か
     - `status.errors[]`にreconcile時の不整合が記録されていないか
 4. **BGPは張れているのにcurlが通らない**
-    - `elasticipattachment.status.conditions[?(@.type=="Ready")].status`が`True`になっているか。データプレーンがまだDNATを仕込んでいない可能性
+    - `elasticipattachment.status.conditions[?(@.type=="Ready")].status`が`True`になっているか。関連付けがまだ完了していない可能性
     - 上流ルータで経路が学習されているか（`show ip route 10.225.51.0/24`）
+    - 対象Podが**default以外のSubnet**に属しているか。default SubnetのPodはElasticIPの対象にできません
+    - Podが属するVpcのRouteTableに`type: internetGateway`のルートがあるか。無いと外部疎通が成立しません
     - NodeとPodの間はクラスター内通信と同じ経路なので、通常のPod到達性テストで切り分け可能
 
 ## 参照
