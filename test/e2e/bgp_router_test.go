@@ -3,7 +3,6 @@ package e2e
 import (
 	"bytes"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,10 +32,6 @@ type bgpRouterInstance struct {
 }
 
 func ensureBGPRouter(nodes []string) (*bgpRouterInstance, error) {
-	routerIP, err := chooseBGPRouterIP()
-	if err != nil {
-		return nil, fmt.Errorf("choose router IP: %w", err)
-	}
 	workerIPs, err := discoverWorkerInternalIPs(nodes)
 	if err != nil {
 		return nil, fmt.Errorf("discover worker IPs: %w", err)
@@ -46,12 +41,43 @@ func ensureBGPRouter(nodes []string) (*bgpRouterInstance, error) {
 	}
 	inst := &bgpRouterInstance{
 		name:      bgpRouterContainerName,
-		ip:        routerIP,
 		asn:       bgpRouterAS,
 		workerIPs: workerIPs,
 	}
 
 	runBestEffort(repoRoot, "docker", "rm", "-f", inst.name)
+
+	// Create without --ip: docker engines on some hosts (e.g. GitHub Actions
+	// with docker >= 25) reject a user-specified IP against an
+	// auto-allocated subnet with "user specified IP address is supported
+	// only when connecting to networks with user configured subnets". The
+	// entrypoint waits for /etc/bird.conf so we can render the config after
+	// the container has an IP assigned.
+	// L4 multipath hash policy ensures successive curls hash to different
+	// next-hops even when the src/dst IP pair is fixed, so the test reaches
+	// the node that actually hosts the target Pod within Eventually retries.
+	entrypoint := "apk add --no-cache bird curl iproute2 >/dev/null && " +
+		"until [ -f /etc/bird.conf ]; do sleep 0.5; done && " +
+		"exec bird -f -c /etc/bird.conf"
+	if err := run(repoRoot, "docker", "create",
+		"--name", inst.name,
+		"--network", kindDockerNetwork,
+		"--cap-add", "NET_ADMIN",
+		"--sysctl", "net.ipv4.fib_multipath_hash_policy=1",
+		"--entrypoint", "sh",
+		bgpRouterImage,
+		"-c", entrypoint,
+	); err != nil {
+		return nil, fmt.Errorf("create router container: %w", err)
+	}
+	if err := run(repoRoot, "docker", "start", inst.name); err != nil {
+		return nil, fmt.Errorf("start router container: %w", err)
+	}
+	ip, err := discoverRouterIP(inst.name)
+	if err != nil {
+		return nil, fmt.Errorf("discover router IP: %w", err)
+	}
+	inst.ip = ip
 
 	cfg, err := inst.renderConfig()
 	if err != nil {
@@ -61,32 +87,26 @@ func ensureBGPRouter(nodes []string) (*bgpRouterInstance, error) {
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
 		return nil, fmt.Errorf("write bird.conf: %w", err)
 	}
-
-	// L4 multipath hash policy ensures successive curls hash to different
-	// next-hops even when the src/dst IP pair is fixed, so the test reaches
-	// the node that actually hosts the target Pod within Eventually retries.
-	if err := run(repoRoot, "docker", "create",
-		"--name", inst.name,
-		"--network", kindDockerNetwork,
-		"--ip", inst.ip,
-		"--cap-add", "NET_ADMIN",
-		"--sysctl", "net.ipv4.fib_multipath_hash_policy=1",
-		"--entrypoint", "sh",
-		bgpRouterImage,
-		"-c", "apk add --no-cache bird curl iproute2 && exec bird -f -c /etc/bird.conf",
-	); err != nil {
-		return nil, fmt.Errorf("create router container: %w", err)
-	}
 	if err := run(repoRoot, "docker", "cp", cfgPath, inst.name+":/etc/bird.conf"); err != nil {
 		return nil, fmt.Errorf("copy bird.conf: %w", err)
-	}
-	if err := run(repoRoot, "docker", "start", inst.name); err != nil {
-		return nil, fmt.Errorf("start router container: %w", err)
 	}
 	if err := inst.waitReady(bgpRouterReadyTimeout); err != nil {
 		return nil, fmt.Errorf("wait bird ready: %w", err)
 	}
 	return inst, nil
+}
+
+func discoverRouterIP(name string) (string, error) {
+	out, err := dockerOutput("inspect", "-f",
+		fmt.Sprintf("{{(index .NetworkSettings.Networks %q).IPAddress}}", kindDockerNetwork), name)
+	if err != nil {
+		return "", err
+	}
+	ip := strings.TrimSpace(out)
+	if ip == "" {
+		return "", fmt.Errorf("container %s has no IPv4 on docker network %q", name, kindDockerNetwork)
+	}
+	return ip, nil
 }
 
 func teardownBGPRouter() {
@@ -142,36 +162,6 @@ func kindBridgeName() (string, error) {
 		return "", fmt.Errorf("unexpected kind network id %q", id)
 	}
 	return "br-" + id[:12], nil
-}
-
-func chooseBGPRouterIP() (string, error) {
-	if v := strings.TrimSpace(os.Getenv("E2E_BGP_PEER_IP")); v != "" {
-		return v, nil
-	}
-	out, err := dockerOutput("network", "inspect", kindDockerNetwork, "-f", "{{range .IPAM.Config}}{{.Subnet}}\n{{end}}")
-	if err != nil {
-		return "", err
-	}
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		_, network, err := net.ParseCIDR(line)
-		if err != nil {
-			continue
-		}
-		base := network.IP.To4()
-		if base == nil {
-			continue
-		}
-		candidate := net.IPv4(base[0], base[1], base[2], 200)
-		if !network.Contains(candidate) {
-			return "", fmt.Errorf("kind network %s does not contain %s", network, candidate)
-		}
-		return candidate.String(), nil
-	}
-	return "", fmt.Errorf("no IPv4 subnet for docker network %q", kindDockerNetwork)
 }
 
 func discoverWorkerInternalIPs(nodes []string) (map[string]string, error) {
