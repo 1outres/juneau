@@ -65,12 +65,25 @@ func defaultGatewayRoute(link netlink.Link) (*netlink.Route, error) {
 
 	for i := range routes {
 		route := &routes[i]
-		if route.Dst == nil && route.Gw != nil {
+		if route.Gw == nil {
+			continue
+		}
+		// The kernel may return the default route with Dst == nil or as
+		// an explicit 0.0.0.0/0 IPNet depending on netlink attributes.
+		if route.Dst == nil || isDefaultDst(route.Dst) {
 			return route, nil
 		}
 	}
 
 	return nil, fmt.Errorf("no default route with gateway found on ifindex %d", link.Attrs().Index)
+}
+
+func isDefaultDst(dst *net.IPNet) bool {
+	if dst == nil || !dst.IP.IsUnspecified() {
+		return false
+	}
+	ones, bits := dst.Mask.Size()
+	return ones == 0 && bits != 0
 }
 
 func lookupNeighborMAC(ifindex int, gw net.IP) (net.HardwareAddr, bool, error) {

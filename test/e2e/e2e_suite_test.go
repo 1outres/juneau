@@ -20,8 +20,10 @@ const (
 	controllerImage     = "example.com/controller:v0.0.1"
 	webhookCertJobImage = "example.com/webhookcertjob:v0.0.1"
 	daemonImage         = "daemon:latest"
+	bgpSpeakerImage     = "bgp-speaker:latest"
 	controllerNamespace = "juneau-system"
 	daemonNamespace     = "kube-system"
+	bgpSpeakerNamespace = "kube-system"
 	defaultVpcName      = "default"
 	defaultSubnetName   = "default"
 	kindKubectlTimeout  = 5 * time.Minute
@@ -53,8 +55,9 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	mustRun(root, "make", "image-controller", fmt.Sprintf("CONTROLLER_IMAGE=%s", controllerImage))
 	mustRun(root, "make", "image-webhookcertjob", fmt.Sprintf("WEBHOOKCERTJOB_IMAGE=%s", webhookCertJobImage))
 	mustRun(root, "make", "image-daemon", fmt.Sprintf("DAEMON_IMAGE=%s", daemonImage))
+	mustRun(root, "make", "image-bgp-speaker", fmt.Sprintf("BGP_SPEAKER_IMAGE=%s", bgpSpeakerImage))
 
-	for _, image := range []string{controllerImage, webhookCertJobImage, daemonImage} {
+	for _, image := range []string{controllerImage, webhookCertJobImage, daemonImage, bgpSpeakerImage} {
 		mustRun(root, "kind", "load", "docker-image", image, "--name", clusterName)
 	}
 
@@ -62,6 +65,9 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	mustRun(filepath.Join(root, "controller"), "make", "deploy", fmt.Sprintf("IMG=%s", controllerImage))
 	mustRun(root, "kubectl", "label", "--overwrite", "namespace", controllerNamespace, "pod-security.kubernetes.io/enforce=privileged")
 	mustRun(root, "kubectl", "label", "--overwrite", "namespace", daemonNamespace, "pod-security.kubernetes.io/enforce=privileged")
+	// The daemon installs the CNI binary on each node; without it, nodes
+	// stay NotReady and the webhook-cert bootstrap job cannot schedule,
+	// which in turn blocks the controller deployment. Apply it first.
 	mustRun(root, "kubectl", "apply", "-k", filepath.Join(root, "daemon", "config", "default"))
 	runBestEffort(root, "kubectl", "taint", "nodes", "--all", "node-role.kubernetes.io/control-plane-")
 
@@ -89,6 +95,14 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 		g.Expect(strings.TrimSpace(ready)).To(Equal("True"))
 	}).Should(Succeed())
 
+	// bgp-speaker is applied after the cluster has stabilized so its
+	// DaemonSet pods don't compete with the CNI daemon during bootstrap.
+	mustRun(root, "kubectl", "apply", "-k", filepath.Join(root, "bgp-speaker", "config", "default"))
+
+	Eventually(func(g Gomega) {
+		g.Expect(run(root, "kubectl", "rollout", "status", "daemonset/juneau-bgp-speaker", "-n", bgpSpeakerNamespace, "--timeout=30s")).To(Succeed())
+	}).Should(Succeed())
+
 	nodes, err := discoverWorkerNodes(root)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(nodes).To(HaveLen(2))
@@ -106,6 +120,7 @@ var _ = SynchronizedAfterSuite(func() {
 	if strings.EqualFold(os.Getenv("E2E_KEEP_CLUSTER"), "true") {
 		return
 	}
+	teardownBGPRouter()
 	Expect(run(repoRoot, "kind", "delete", "cluster", "--name", clusterName)).To(Succeed())
 }, func() {})
 
@@ -133,6 +148,7 @@ var _ = AfterEach(func() {
 	}
 	dumpLogs(controllerNamespace, "deployment/juneau-controller-manager")
 	dumpLogs(daemonNamespace, "daemonset/juneau-cni-daemon")
+	dumpLogs(bgpSpeakerNamespace, "daemonset/juneau-bgp-speaker")
 	dumpNodeRuntime()
 	dumpNodeState()
 })
