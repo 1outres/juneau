@@ -17,6 +17,8 @@
 #define TC_ACT_OK 0
 #define TC_ACT_SHOT 2
 
+#define AF_INET 2
+
 struct arp_payload {
   __u8 sha[ETH_ALEN];
   __be32 spa;
@@ -69,8 +71,7 @@ static __always_inline int update_l4_csum(struct __sk_buff *skb,
 }
 
 static __always_inline int handle_snat(struct __sk_buff *skb,
-                                       struct ethhdr *eth, struct iphdr *iph,
-                                       const struct fib_val *fv) {
+                                       struct ethhdr *eth, struct iphdr *iph) {
   void *data;
   void *data_end;
 
@@ -89,11 +90,6 @@ static __always_inline int handle_snat(struct __sk_buff *skb,
   const struct nat_outside *nv = bpf_map_lookup_elem(&nat_snat_map, &nk);
   if (!nv)
     return TC_ACT_SHOT;
-
-  __u8 dst_mac[ETH_ALEN];
-  __u8 src_mac[ETH_ALEN];
-  __builtin_memcpy(dst_mac, fv->dmac, ETH_ALEN);
-  __builtin_memcpy(src_mac, fv->smac, ETH_ALEN);
 
   __be32 old_addr = iph->saddr;
   __be32 new_addr = bpf_htonl(nv->addr);
@@ -136,14 +132,6 @@ static __always_inline int handle_snat(struct __sk_buff *skb,
                           &new_addr, sizeof(new_addr), 0) < 0)
     return TC_ACT_SHOT;
 
-  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_dest),
-                          dst_mac, ETH_ALEN, 0) < 0)
-    return TC_ACT_SHOT;
-
-  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_source),
-                          src_mac, ETH_ALEN, 0) < 0)
-    return TC_ACT_SHOT;
-
   data = (void *)(long)skb->data;
   data_end = (void *)(long)skb->data_end;
 
@@ -155,7 +143,36 @@ static __always_inline int handle_snat(struct __sk_buff *skb,
   if ((void *)(iph + 1) > data_end)
     return TC_ACT_SHOT;
 
-  return bpf_redirect(fv->oif, 0);
+  // Resolve next-hop at runtime via kernel FIB + neighbor table. Fixing the
+  // MAC to the default gateway at daemon start breaks paths where the actual
+  // next-hop differs (BGP-learned peers, multi-uplink, L2-adjacent peers).
+  //
+  // Use an ingress-style lookup (no BPF_FIB_LOOKUP_OUTPUT): the OUTPUT flag
+  // would pin oif to our pod-veth ifindex, against which no route exists.
+  // Ingress-style lets the kernel pick the right egress iface from the FIB.
+  struct bpf_fib_lookup fib_params = {};
+  fib_params.family = AF_INET;
+  fib_params.l4_protocol = iph->protocol;
+  fib_params.ipv4_dst = iph->daddr;
+  fib_params.ifindex = skb->ifindex;
+
+  long rc = bpf_fib_lookup(skb, &fib_params, sizeof(fib_params), 0);
+  if (rc == BPF_FIB_LKUP_RET_NO_NEIGH) {
+    // Neighbor not yet resolved: hand off to kernel to trigger ARP.
+    return TC_ACT_OK;
+  }
+  if (rc != BPF_FIB_LKUP_RET_SUCCESS)
+    return TC_ACT_SHOT;
+
+  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_dest),
+                          fib_params.dmac, ETH_ALEN, 0) < 0)
+    return TC_ACT_SHOT;
+
+  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_source),
+                          fib_params.smac, ETH_ALEN, 0) < 0)
+    return TC_ACT_SHOT;
+
+  return bpf_redirect(fib_params.ifindex, 0);
 }
 
 static __always_inline int handle_arp(struct __sk_buff *skb, void *data_end,
@@ -294,7 +311,7 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
   }
 
   if (fv->type == FIB_ROUTE_TYPE_INTERNET_GATEWAY)
-    return handle_snat(skb, eth, iph, fv);
+    return handle_snat(skb, eth, iph);
 
   return TC_ACT_SHOT;
 }
