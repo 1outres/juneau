@@ -15,28 +15,71 @@ import (
 	"time"
 
 	"github.com/1outres/juneau/bgp-speaker/internal/bird"
+	"github.com/1outres/juneau/bgp-speaker/internal/nodestate"
+	"github.com/1outres/juneau/bgp-speaker/internal/peerindex"
 	bgptypes "github.com/1outres/juneau/bgp-speaker/internal/types"
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	"go.uber.org/zap"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-type Reconciler struct {
-	nodeName string
-	client   client.Client
-	builder  bird.ConfigBuilder
-	process  *bird.ProcessManager
-
-	mu       sync.Mutex
-	lastHash []byte
+// ReconcileResult bundles everything produced by a single pass over the
+// BGP-related custom resources: the bird desired config, the advertisement
+// intent, the PeerAddress→BGPPeer name index, and spec-level errors.
+type ReconcileResult struct {
+	Desired            *bgptypes.DesiredConfig
+	Advertisements     []nodestate.Advertisement
+	PeerNamesByAddress map[string]string
+	Errors             []nodestate.ResourceError
+	// Warnings is the Errors list rendered as human-readable strings for logs.
+	Warnings []string
 }
 
-func NewReconciler(nodeName string, cl client.Client, builder bird.ConfigBuilder, process *bird.ProcessManager) *Reconciler {
+type Reconciler struct {
+	nodeName  string
+	client    client.Client
+	builder   bird.ConfigBuilder
+	process   *bird.ProcessManager
+	peerIndex *peerindex.PeerIndex
+
+	mu         sync.Mutex
+	lastHash   []byte
+	lastSync   time.Time
+	lastAdvs   []nodestate.Advertisement
+	lastErrors []nodestate.ResourceError
+	nowFn      func() time.Time
+}
+
+func NewReconciler(nodeName string, cl client.Client, builder bird.ConfigBuilder, process *bird.ProcessManager, index *peerindex.PeerIndex) *Reconciler {
 	return &Reconciler{
-		nodeName: nodeName,
-		client:   cl,
-		builder:  builder,
-		process:  process,
+		nodeName:  nodeName,
+		client:    cl,
+		builder:   builder,
+		process:   process,
+		peerIndex: index,
+		nowFn:     time.Now,
+	}
+}
+
+// StatusInputs returns a snapshot of the Reconciler's observed state suitable
+// for nodestate.Builder. It blends intent (advertisements/errors from the most
+// recent successful reconcile) with runtime observation (bird process state).
+func (r *Reconciler) StatusInputs() nodestate.Inputs {
+	r.mu.Lock()
+	ads := append([]nodestate.Advertisement(nil), r.lastAdvs...)
+	errs := append([]nodestate.ResourceError(nil), r.lastErrors...)
+	lastSync := r.lastSync
+	r.mu.Unlock()
+
+	if !lastSync.IsZero() {
+		for i := range ads {
+			ads[i].LastSyncedAt = lastSync
+		}
+	}
+	return nodestate.Inputs{
+		BirdRunning:    r.process.IsRunning(),
+		Advertisements: ads,
+		Errors:         errs,
 	}
 }
 
@@ -59,7 +102,9 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 		return fmt.Errorf("list BGPPeer: %w", err)
 	}
 
-	desired, warnings := buildDesiredConfig(r.nodeName, &pools, &advs, &peers)
+	result := buildReconcileResult(r.nodeName, &pools, &advs, &peers)
+	desired := result.Desired
+	warnings := result.Warnings
 	for _, w := range warnings {
 		zap.S().Warnw("ignored invalid bgp resource/config", "nodeName", r.nodeName, "warning", w)
 	}
@@ -126,6 +171,19 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 		r.mu.Unlock()
 	}
 
+	// Publish status intent from this successful reconcile.
+	now := r.nowFn()
+	r.mu.Lock()
+	r.lastSync = now
+	r.lastAdvs = result.Advertisements
+	r.lastErrors = result.Errors
+	for i := range r.lastErrors {
+		t := now
+		r.lastErrors[i].LastSeen = t
+	}
+	r.mu.Unlock()
+	r.peerIndex.Set(result.PeerNamesByAddress)
+
 	return nil
 }
 
@@ -170,15 +228,24 @@ func desiredConfigForLog(cfg *bgptypes.DesiredConfig) desiredConfigLog {
 	return out
 }
 
-func buildDesiredConfig(
+func buildReconcileResult(
 	nodeName string,
 	pools *juneauv1alpha1.AddressPoolList,
 	advs *juneauv1alpha1.BGPAdvertisementList,
 	peers *juneauv1alpha1.BGPPeerList,
-) (*bgptypes.DesiredConfig, []string) {
+) ReconcileResult {
 	_ = nodeName
 
 	var warnings []string
+	var errs []nodestate.ResourceError
+	addErr := func(kind, name, msg string) {
+		errs = append(errs, nodestate.ResourceError{
+			ResourceKind: kind,
+			ResourceName: name,
+			Message:      msg,
+		})
+		warnings = append(warnings, fmt.Sprintf("%s/%s: %s", kind, name, msg))
+	}
 
 	poolsByName := make(map[string]*juneauv1alpha1.AddressPool, len(pools.Items))
 	for i := range pools.Items {
@@ -198,24 +265,24 @@ func buildDesiredConfig(
 		}
 	}
 
-	prefixes, prefixWarnings := buildPrefixes(poolsByName, referencedPools)
-	warnings = append(warnings, prefixWarnings...)
+	prefixes := buildPrefixes(poolsByName, referencedPools, addErr)
 
 	desiredPeers := make([]*bgptypes.Peer, 0, len(peers.Items))
+	peerIndex := map[string]string{}
 	for i := range peers.Items {
 		p := &peers.Items[i]
 
 		remoteIP := strings.TrimSpace(p.Spec.PeerAddress)
 		if remoteIP == "" {
-			warnings = append(warnings, fmt.Sprintf("BGPPeer/%s: spec.peerAddress is empty", p.Name))
+			addErr("BGPPeer", p.Name, "spec.peerAddress is empty")
 			continue
 		}
 		if p.Spec.MyASN == 0 {
-			warnings = append(warnings, fmt.Sprintf("BGPPeer/%s: spec.myASN is 0", p.Name))
+			addErr("BGPPeer", p.Name, "spec.myASN is 0")
 			continue
 		}
 		if p.Spec.PeerASN == 0 {
-			warnings = append(warnings, fmt.Sprintf("BGPPeer/%s: spec.peerASN is 0", p.Name))
+			addErr("BGPPeer", p.Name, "spec.peerASN is 0")
 			continue
 		}
 
@@ -226,6 +293,7 @@ func buildDesiredConfig(
 			Prefixes:  append([]*net.IPNet(nil), prefixes...),
 		}
 		desiredPeers = append(desiredPeers, peer)
+		peerIndex[remoteIP] = p.Name
 	}
 
 	sort.Slice(desiredPeers, func(i, j int) bool {
@@ -238,15 +306,60 @@ func buildDesiredConfig(
 		return desiredPeers[i].LocalASN < desiredPeers[j].LocalASN
 	})
 
-	return &bgptypes.DesiredConfig{Peers: desiredPeers}, warnings
+	return ReconcileResult{
+		Desired:            &bgptypes.DesiredConfig{Peers: desiredPeers},
+		Advertisements:     buildAdvertisementsIntent(poolsByName, referencedPools),
+		PeerNamesByAddress: peerIndex,
+		Errors:             errs,
+		Warnings:           warnings,
+	}
+}
+
+// buildAdvertisementsIntent projects the set of referenced BGP AddressPools
+// into the shape consumed by BGPNodeState.advertisements: one entry per pool,
+// prefix count = number of distinct CIDRs in spec.addresses.
+func buildAdvertisementsIntent(
+	poolsByName map[string]*juneauv1alpha1.AddressPool,
+	referencedPools map[string]struct{},
+) []nodestate.Advertisement {
+	out := make([]nodestate.Advertisement, 0, len(referencedPools))
+	for name := range referencedPools {
+		pool, ok := poolsByName[name]
+		if !ok {
+			continue
+		}
+		if pool.Spec.AdvertiseMode != juneauv1alpha1.AddressPoolAdvertiseModeBGP {
+			continue
+		}
+		unique := map[string]struct{}{}
+		for _, raw := range pool.Spec.Addresses {
+			raw = strings.TrimSpace(raw)
+			if raw == "" {
+				continue
+			}
+			if ipnet, err := parsePrefix(raw); err == nil {
+				unique[ipnet.String()] = struct{}{}
+			}
+		}
+		prefixes := make([]string, 0, len(unique))
+		for p := range unique {
+			prefixes = append(prefixes, p)
+		}
+		sort.Strings(prefixes)
+		out = append(out, nodestate.Advertisement{
+			AddressPool: name,
+			Prefixes:    prefixes,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].AddressPool < out[j].AddressPool })
+	return out
 }
 
 func buildPrefixes(
 	poolsByName map[string]*juneauv1alpha1.AddressPool,
 	referencedPools map[string]struct{},
-) ([]*net.IPNet, []string) {
-	var warnings []string
-
+	addErr func(kind, name, msg string),
+) []*net.IPNet {
 	var poolNames []string
 	for name := range referencedPools {
 		poolNames = append(poolNames, name)
@@ -258,11 +371,11 @@ func buildPrefixes(
 	for _, poolName := range poolNames {
 		pool, ok := poolsByName[poolName]
 		if !ok {
-			warnings = append(warnings, fmt.Sprintf("BGPAdvertisement references missing AddressPool/%s", poolName))
+			addErr("AddressPool", poolName, "referenced by BGPAdvertisement but not found")
 			continue
 		}
 		if pool.Spec.AdvertiseMode != juneauv1alpha1.AddressPoolAdvertiseModeBGP {
-			warnings = append(warnings, fmt.Sprintf("AddressPool/%s: spec.advertiseMode=%q is not bgp", pool.Name, pool.Spec.AdvertiseMode))
+			addErr("AddressPool", pool.Name, fmt.Sprintf("spec.advertiseMode=%q is not bgp", pool.Spec.AdvertiseMode))
 			continue
 		}
 
@@ -274,7 +387,7 @@ func buildPrefixes(
 
 			ipnet, err := parsePrefix(raw)
 			if err != nil {
-				warnings = append(warnings, fmt.Sprintf("AddressPool/%s: invalid address %q: %v", pool.Name, raw, err))
+				addErr("AddressPool", pool.Name, fmt.Sprintf("invalid address %q: %v", raw, err))
 				continue
 			}
 
@@ -293,7 +406,7 @@ func buildPrefixes(
 	for _, k := range keys {
 		out = append(out, unique[k])
 	}
-	return out, warnings
+	return out
 }
 
 func parsePrefix(s string) (*net.IPNet, error) {

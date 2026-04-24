@@ -51,8 +51,14 @@ spec:
                       format: date-time
                       type: string
                     prefixes:
-                      format: int32
-                      type: integer
+                      description: |-
+                        Prefixes is the set of CIDRs that bgp-speaker intends to advertise from
+                        this AddressPool. Derived from AddressPool.spec.addresses at reconcile
+                        time, not observed on the wire (BIRD BMP does not expose adj-RIB-out).
+                      items:
+                        type: string
+                      type: array
+                      x-kubernetes-list-type: set
                   type: object
                 type: array
               bgpSessions:
@@ -60,7 +66,16 @@ spec:
                   properties:
                     lastError:
                       type: string
-                    peer:
+                    peerAddress:
+                      description: |-
+                        PeerAddress is the BGP peer's IP address as observed on the wire via BMP.
+                        Always set.
+                      type: string
+                    peerName:
+                      description: |-
+                        PeerName is the BGPPeer resource name that configured this session.
+                        Empty when the BGPPeer resource could not be resolved (e.g. deleted
+                        but session still active, or bird.conf not yet reloaded).
                       type: string
                     state:
                       type: string

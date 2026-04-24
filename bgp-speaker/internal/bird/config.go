@@ -17,20 +17,39 @@ type ConfigBuilder interface {
 }
 
 type PlaceholderBuilder struct {
-	nodeName string
-	nodeIP   string
+	nodeName   string
+	nodeIP     string
+	bmpStation *BMPStation
 }
 
-func NewPlaceholderBuilder(nodeName string, nodeIP string) *PlaceholderBuilder {
-	return &PlaceholderBuilder{
-		nodeName: nodeName,
-		nodeIP:   nodeIP,
+type BMPStation struct {
+	Address string
+	Port    uint16
+}
+
+type BuilderOption func(*PlaceholderBuilder)
+
+func WithBMPStation(address string, port uint16) BuilderOption {
+	return func(b *PlaceholderBuilder) {
+		b.bmpStation = &BMPStation{Address: address, Port: port}
 	}
 }
 
+func NewPlaceholderBuilder(nodeName string, nodeIP string, opts ...BuilderOption) *PlaceholderBuilder {
+	b := &PlaceholderBuilder{
+		nodeName: nodeName,
+		nodeIP:   nodeIP,
+	}
+	for _, o := range opts {
+		o(b)
+	}
+	return b
+}
+
 type templateParams struct {
-	NodeIP string
-	Peers  []templateParamsPeer
+	NodeIP     string
+	Peers      []templateParamsPeer
+	BMPStation *BMPStation
 }
 
 type templateParamsPeer struct {
@@ -61,6 +80,8 @@ protocol bgp peer_{{ $peer.ID }} {
   neighbor {{ $peer.RemoteIP }} as {{ $peer.RemoteASN }};
   ipv4 {
     table bgp_{{ $peer.ID }};
+    import table on;
+    import keep filtered on;
     import filter {
       reject;
     };
@@ -68,6 +89,13 @@ protocol bgp peer_{{ $peer.ID }} {
       accept;
     };
   };
+}
+{{ end }}
+{{ with .BMPStation }}
+protocol bmp mon {
+  station address ip {{ .Address }} port {{ .Port }};
+  monitoring rib in pre_policy;
+  monitoring rib in post_policy;
 }
 {{ end }}
 `
@@ -78,7 +106,8 @@ func (b *PlaceholderBuilder) Build(cfg *bgptypes.DesiredConfig) (string, error) 
 	}
 
 	params := templateParams{
-		NodeIP: b.nodeIP,
+		NodeIP:     b.nodeIP,
+		BMPStation: b.bmpStation,
 	}
 
 	if cfg != nil {
