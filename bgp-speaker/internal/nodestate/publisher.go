@@ -8,6 +8,7 @@ import (
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	"go.uber.org/zap"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -72,8 +73,6 @@ func (p *Publisher) Run(ctx context.Context) error {
 // ApplyOnce builds and server-side-applies the status once.
 // Returns nil if the BGPNodeState resource does not yet exist.
 func (p *Publisher) ApplyOnce(ctx context.Context) error {
-	status := p.builder.Build(p.inputsFn())
-
 	var current juneauv1alpha1.BGPNodeState
 	if err := p.client.Get(ctx, types.NamespacedName{Name: p.nodeName}, &current); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -81,6 +80,9 @@ func (p *Publisher) ApplyOnce(ctx context.Context) error {
 		}
 		return fmt.Errorf("get BGPNodeState/%s: %w", p.nodeName, err)
 	}
+
+	status := p.builder.Build(p.inputsFn())
+	status.Conditions = MergeConditions(current.Status.Conditions, status.Conditions)
 
 	apply := &juneauv1alpha1.BGPNodeState{
 		TypeMeta: metav1.TypeMeta{
@@ -98,4 +100,15 @@ func (p *Publisher) ApplyOnce(ctx context.Context) error {
 		return fmt.Errorf("apply BGPNodeState/%s status: %w", p.nodeName, err)
 	}
 	return nil
+}
+
+// MergeConditions folds desired conditions into existing, preserving
+// LastTransitionTime for types whose Status did not change. Desired entries'
+// LastTransitionTime is used only when the Status actually transitions.
+func MergeConditions(existing, desired []metav1.Condition) []metav1.Condition {
+	merged := append([]metav1.Condition(nil), existing...)
+	for _, c := range desired {
+		meta.SetStatusCondition(&merged, c)
+	}
+	return merged
 }
