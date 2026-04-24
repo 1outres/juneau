@@ -1,6 +1,7 @@
 resources:
 - daemonset.yaml
 - rbac.yaml
+- bgpnodestate_writer_role.yaml
 
 namespace: kube-system
 

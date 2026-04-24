@@ -18,11 +18,13 @@ COPY bgp-speaker/ bgp-speaker/
 
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -C bgp-speaker -a -o /workspace/bgpspeaker ./cmd/bgpspeaker
 
-FROM docker.io/debian:bookworm-slim
+FROM docker.io/alpine:3.23
 
 WORKDIR /
 
-RUN apt-get update && apt-get install -y --no-install-recommends bird2 && rm -rf /var/lib/apt/lists/*
+# alpine 3.23 ships BIRD 3.1.6 (with BMP + adj-rib-in pre/post policy monitoring).
+# The package is called `bird` (not `bird2`) since the merge in 3.23.
+RUN apk add --no-cache bird
 
 COPY --from=builder /workspace/bgpspeaker /bgpspeaker
 
