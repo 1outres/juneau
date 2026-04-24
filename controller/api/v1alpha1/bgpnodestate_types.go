@@ -34,15 +34,25 @@ type BGPNodeStateStatus struct {
 }
 
 type BGPNodeStateSession struct {
-	Peer      string       `json:"peer,omitempty"`
+	// PeerAddress is the BGP peer's IP address as observed on the wire via BMP.
+	// Always set.
+	PeerAddress string `json:"peerAddress,omitempty"`
+	// PeerName is the BGPPeer resource name that configured this session.
+	// Empty when the BGPPeer resource could not be resolved (e.g. deleted
+	// but session still active, or bird.conf not yet reloaded).
+	PeerName  string       `json:"peerName,omitempty"`
 	State     string       `json:"state,omitempty"`
 	UpSince   *metav1.Time `json:"upSince,omitempty"`
 	LastError string       `json:"lastError,omitempty"`
 }
 
 type BGPNodeStateAdvertisement struct {
-	AddressPool  string       `json:"addressPool,omitempty"`
-	Prefixes     int32        `json:"prefixes,omitempty"`
+	AddressPool string `json:"addressPool,omitempty"`
+	// Prefixes is the set of CIDRs that bgp-speaker intends to advertise from
+	// this AddressPool. Derived from AddressPool.spec.addresses at reconcile
+	// time, not observed on the wire (BIRD BMP does not expose adj-RIB-out).
+	// +listType=set
+	Prefixes     []string     `json:"prefixes,omitempty"`
 	LastSyncedAt *metav1.Time `json:"lastSyncedAt,omitempty"`
 }
 
@@ -56,6 +66,11 @@ type BGPNodeStateError struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Bird",type=string,JSONPath=`.status.conditions[?(@.type=="BirdRunning")].status`
+// +kubebuilder:printcolumn:name="BMP",type=string,JSONPath=`.status.conditions[?(@.type=="BMPConnected")].status`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:printcolumn:name="Heartbeat",type=date,JSONPath=`.status.heartbeat`,priority=1
 
 // BGPNodeState is the Schema for the bgpnodestates API.
 type BGPNodeState struct {

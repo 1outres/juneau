@@ -1,0 +1,29 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: bgp-speaker-bgpnodestate-writer-role
+rules:
+  # bgp-speaker needs to read BGPNodeState to perform the Get-before-Apply
+  # pattern (and skip when controller has not created the resource yet).
+  - apiGroups: ["juneau.loutres.me"]
+    resources: ["bgpnodestates"]
+    verbs: ["get", "list", "watch"]
+  # Write Status via server-side apply from the "bgp-speaker" field manager.
+  # Cluster-wide patch is accepted here; restricting by resourceName would
+  # require per-node Role generation and is deferred.
+  - apiGroups: ["juneau.loutres.me"]
+    resources: ["bgpnodestates/status"]
+    verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: bgp-speaker-bgpnodestate-writer-binding
+subjects:
+  - kind: ServiceAccount
+    name: bgp-speaker
+    namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: bgp-speaker-bgpnodestate-writer-role
+  apiGroup: rbac.authorization.k8s.io

@@ -73,8 +73,8 @@ watch_file('./daemon/config/')
 k8s_yaml(kustomize('./daemon/config/default'))
 
 
-BGP_SPEAKER_DOCKERFILE = '''FROM golang:alpine
-RUN apk add --no-cache bird2
+BGP_SPEAKER_DOCKERFILE = '''FROM alpine:3.23
+RUN apk add --no-cache bird
 WORKDIR /
 COPY ./bin/bgpspeaker /
 CMD ["/bgpspeaker"]
