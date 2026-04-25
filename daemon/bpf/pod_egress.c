@@ -441,31 +441,15 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
                              backend_addr_be);
 }
 
-// nat_result distinguishes how apply_conntrack_nat rewrote a packet so
-// the caller can decide whether to keep using the original next-hop MAC
-// (SNAT/none) or re-route via FIB (DNAT changes the destination IP).
-enum nat_result {
-  NAT_NONE = 0,
-  NAT_DNAT,
-  NAT_SNAT,
-};
-
-// apply_conntrack_nat looks up the conntrack table for the packet's
-// 5-tuple. On hit, it applies the recorded rewrite (forward direction =
-// DNAT, reverse direction = SNAT) and returns which one was applied.
-// The result lets handle_l2 decide between L2 forwarding (SNAT/none) and
-// re-routing (DNAT).
+// apply_conntrack_dnat looks up the conntrack table for the packet's
+// 5-tuple and applies forward-direction DNAT if a matching entry exists.
 //
-// The rewrite helpers reload skb->data internally, so this function takes
-// only skb + the caller's vpc_id and returns the action via *result. The
-// caller must re-derive eth/iph/data_end from skb->data after this returns
-// (regardless of whether a hit happened — the helpers themselves only
-// touch the packet on hit, but the caller's pointers were taken before
-// any of that and may be stale).
-static __always_inline int apply_conntrack_nat(struct __sk_buff *skb,
-                                               __u32 vpc_id,
-                                               enum nat_result *result) {
-  *result = NAT_NONE;
+// pod_egress only handles forward DNAT (caller -> ClusterIP). The reverse
+// SNAT for the response leg lives in pod_ingress, where it can fire for
+// both same-node and VXLAN-delivered packets at the destination veth.
+// Returns 1 on DNAT applied, 0 on no rewrite, -1 on failure.
+static __always_inline int apply_conntrack_dnat(struct __sk_buff *skb,
+                                                __u32 vpc_id) {
   struct iphdr *iph = load_iph(skb);
   if (!iph)
     return -1;
@@ -487,32 +471,17 @@ static __always_inline int apply_conntrack_nat(struct __sk_buff *skb,
       .proto = iph->protocol,
   };
   struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &ck);
-  if (!cv)
+  if (!cv || cv->action != CT_ACTION_DNAT)
     return 0;
 
   cv->last_seen_ns = bpf_ktime_get_ns();
-
-  if (cv->action == CT_ACTION_DNAT) {
-    __be32 new_daddr = cv->new_daddr;
-    __be16 new_dport = cv->new_dport;
-    if (rewrite_ipv4_addr(skb, false, new_daddr) < 0)
-      return -1;
-    if (rewrite_l4_port(skb, false, new_dport) < 0)
-      return -1;
-    *result = NAT_DNAT;
-    return 0;
-  }
-  if (cv->action == CT_ACTION_SNAT) {
-    __be32 new_saddr = cv->new_saddr;
-    __be16 new_sport = cv->new_sport;
-    if (rewrite_ipv4_addr(skb, true, new_saddr) < 0)
-      return -1;
-    if (rewrite_l4_port(skb, true, new_sport) < 0)
-      return -1;
-    *result = NAT_SNAT;
-    return 0;
-  }
-  return 0;
+  __be32 new_daddr = cv->new_daddr;
+  __be16 new_dport = cv->new_dport;
+  if (rewrite_ipv4_addr(skb, false, new_daddr) < 0)
+    return -1;
+  if (rewrite_l4_port(skb, false, new_dport) < 0)
+    return -1;
+  return 1;
 }
 
 static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
@@ -604,14 +573,13 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
     return bpf_redirect(host->ifindex, 0);
   }
 
-  // Apply any pending Service NAT recorded in conntrack. SNAT keeps the
-  // original next-hop MAC valid (dst IP unchanged), so we fall through to
-  // the L2/L3 dispatch below. DNAT rewrites the destination IP and must
-  // re-route via FIB to find the new next-hop. Non-IPv4 traffic and flows
-  // without a CT entry pass through untouched.
+  // Apply forward DNAT recorded in conntrack for established Service
+  // flows. DNAT rewrites the destination IP and must re-route via FIB to
+  // find the new next-hop. Reverse SNAT lives in pod_ingress on the
+  // destination veth, so this program does nothing for non-DNAT packets.
   if (h_proto == ETH_P_IP) {
-    enum nat_result nat_rc;
-    if (apply_conntrack_nat(skb, subnet->vpc_id, &nat_rc) < 0)
+    int rc = apply_conntrack_dnat(skb, subnet->vpc_id);
+    if (rc < 0)
       return TC_ACT_SHOT;
 
     // The helper reloaded skb->data internally, so refresh our local
@@ -620,9 +588,9 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
     if (!iph)
       return TC_ACT_SHOT;
     eth = (struct ethhdr *)((void *)iph - sizeof(struct ethhdr));
-    data_end = (void *)(long)skb->data_end;
+    data_end = skb_data_end(skb);
 
-    if (nat_rc == NAT_DNAT)
+    if (rc == 1)
       return dispatch_after_dnat(skb, eth, iph, subnet->table_id, iph->daddr);
   }
 
