@@ -111,7 +111,7 @@ func (m *Manager) Start(ctx context.Context) error {
 }
 
 func (m *Manager) startReconcilers(ctx context.Context) error {
-	subnetReconciler := reconciler.NewSubnet(m.client, m.hostEgress, m.hostMac)
+	subnetReconciler := reconciler.NewSubnet(m.client, m.hostEgress)
 	m.subnetRunner = runner.New(subnetReconciler)
 	if err := m.subnetRunner.Watch(m.subnetInformer, runner.MetaNamespaceKey); err != nil {
 		return fmt.Errorf("watch Subnet: %w", err)

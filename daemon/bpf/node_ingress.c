@@ -103,9 +103,6 @@ static __always_inline int handle_dnat(struct __sk_buff *skb, struct ethhdr *eth
   __be32 old_addr = iph->daddr;
   __be32 new_addr = bpf_htonl(nat->addr);
 
-  if (nat->subnet_id == 1)
-    return TC_ACT_SHOT;
-
   struct arp_table_key ak = {
       .subnet_id = nat->subnet_id,
       .ipaddr = nat->addr,

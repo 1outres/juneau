@@ -23,21 +23,12 @@ static __always_inline int tc_vxlan_ingress(struct __sk_buff *skb) {
     return TC_ACT_SHOT;
 
   __u32 subnet_id = tkey.tunnel_id & 0xFFFFFF;
-  if (subnet_id == 1) {
-    __u32 host_key = 0;
-    const struct host_iface_val *host =
-        bpf_map_lookup_elem(&host_iface, &host_key);
-    if (!host)
-      return TC_ACT_SHOT;
-
-    __builtin_memcpy(eth->h_dest, host->mac, ETH_ALEN);
-
-    return bpf_redirect(host->ifindex, 0);
-  }
 
   // Service reverse SNAT lives in pod_ingress, attached to the
   // destination Pod's veth egress. vxlan_ingress just decapsulates and
-  // hands the packet to fdb-driven forwarding.
+  // hands the packet to fdb-driven forwarding. The default Subnet (VNI
+  // 1) is no longer special-cased: its gw_mac is a cluster-wide LAA and
+  // its Pods participate in the standard fdb path like any other Subnet.
   struct fdb_key fk = {};
   fk.subnet_id = subnet_id;
   __builtin_memcpy(fk.mac, eth->h_dest, ETH_ALEN);

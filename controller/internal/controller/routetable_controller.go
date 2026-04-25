@@ -130,10 +130,26 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		})
 	}
 
+	// The default VPC's main RouteTable carries an additional default
+	// route that delegates internet egress to the host network stack
+	// via cni_host (and the host's iptables MASQUERADE). This is a
+	// transitional path until proper in-eBPF NAPT is implemented; only
+	// the "default" VPC's main RouteTable receives it.
+	if resource.Name == defaultVpcName && resource.Spec.Vpc == defaultVpcName {
+		statusRoutes = append(statusRoutes, juneauloutresmev1alpha1.Route{
+			Dst: "0.0.0.0/0",
+			Via: juneauloutresmev1alpha1.RouteVia{
+				Type: juneauloutresmev1alpha1.ViaHostGateway,
+			},
+		})
+	}
+
 	for _, route := range resource.Spec.Routes {
 		if rt := getRoute(statusRoutes, route.Dst); rt == nil {
 			var subnet string
-			if route.Via.Type == juneauloutresmev1alpha1.ViaConnected || route.Via.Type == juneauloutresmev1alpha1.ViaService {
+			if route.Via.Type == juneauloutresmev1alpha1.ViaConnected ||
+				route.Via.Type == juneauloutresmev1alpha1.ViaService ||
+				route.Via.Type == juneauloutresmev1alpha1.ViaHostGateway {
 				continue
 			} else if route.Via.Type == juneauloutresmev1alpha1.ViaEndpoint {
 				nwep, err := r.getNetworkEndpoint(ctx, route.Via.Endpoint)
