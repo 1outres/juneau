@@ -58,6 +58,14 @@
 #define CT_ACTION_DNAT 1
 #define CT_ACTION_SNAT 2
 
+// ct_state values mirror daemon/internal/daemon/dataplane/ctstate. Keep
+// them in sync: user-space GC reads ct_val.state and assumes these
+// numbers.
+#define CT_STATE_NEW 0
+#define CT_STATE_ESTABLISHED 1
+#define CT_STATE_FIN_WAIT 2
+#define CT_STATE_CLOSED 3
+
 struct ifindex_subnet_key {
   __u32 ifindex;
 };
@@ -313,7 +321,9 @@ struct ct_val {
   __u16 new_dport;
   __u32 backend_subnet_id; // VNI of the backend Pod's Subnet (for forward direction; 0 for reverse)
   __u8 action;             // CT_ACTION_DNAT or CT_ACTION_SNAT
-  __u8 _pad[3];
+  __u8 state;              // CT_STATE_*: latest state derived from observed TCP flags
+  __u8 flags_seen;         // OR-accumulated FIN|SYN|RST|ACK seen on this entry's direction
+  __u8 _pad;
   __u64 last_seen_ns;
 };
 
