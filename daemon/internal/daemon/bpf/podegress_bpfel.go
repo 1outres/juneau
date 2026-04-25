@@ -66,7 +66,9 @@ type PodEgressCtVal struct {
 	NewDport        uint16
 	BackendSubnetId uint32
 	Action          uint8
-	Pad             [3]uint8
+	State           uint8
+	FlagsSeen       uint8
+	Pad             uint8
 	_               [4]byte
 	LastSeenNs      uint64
 }

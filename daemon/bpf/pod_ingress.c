@@ -10,6 +10,7 @@
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 #include <stdbool.h>
+#include "ct.h"
 #include "maps.h"
 #include "nat.h"
 
@@ -55,10 +56,20 @@ static __always_inline int apply_reverse_snat(struct __sk_buff *skb,
   __be32 new_saddr = cv->new_saddr;
   __be16 new_sport = cv->new_sport;
 
+  __u8 tcp_flags = 0;
+  bool have_tcp_flags = false;
+  if (iph->protocol == IPPROTO_TCP) {
+    if (ct_read_tcp_flags(iph, data_end, &tcp_flags) == 0)
+      have_tcp_flags = true;
+  }
+
   if (nat_rewrite_ipv4_addr(skb, true, new_saddr) < 0)
     return -1;
   if (nat_rewrite_l4_port(skb, true, new_sport) < 0)
     return -1;
+
+  if (have_tcp_flags)
+    ct_observe_tcp(&ck, cv, tcp_flags);
   return 0;
 }
 

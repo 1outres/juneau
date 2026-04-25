@@ -4,6 +4,7 @@
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 #include <stdbool.h>
+#include "ct.h"
 #include "maps.h"
 #include "nat.h"
 
@@ -379,6 +380,19 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
 
   __u64 now = bpf_ktime_get_ns();
 
+  // Seed state from the SYN flag of the packet that triggers entry
+  // creation. Mid-flow installs (no SYN) jump directly to ESTABLISHED to
+  // avoid sitting in NEW until GC reaps them.
+  __u8 init_flags = 0;
+  __u8 init_state = CT_STATE_ESTABLISHED;
+  if (iph->protocol == IPPROTO_TCP) {
+    __u8 f;
+    if (ct_read_tcp_flags(iph, data_end, &f) == 0) {
+      init_flags = f & TCP_FLAG_TRACKED;
+      init_state = ct_initial_state_for_syn(f);
+    }
+  }
+
   // Forward CT entry: caller -> ClusterIP keyed tuple, action=DNAT.
   struct ct_key fwd_key = {
       .vpc_id = subnet->vpc_id,
@@ -395,6 +409,8 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
       .new_dport = backend_port_be,
       .backend_subnet_id = bv->backend_subnet_id,
       .action = CT_ACTION_DNAT,
+      .state = init_state,
+      .flags_seen = init_flags,
       .last_seen_ns = now,
   };
   bpf_map_update_elem(&ct_map, &fwd_key, &fwd_val, BPF_ANY);
@@ -416,6 +432,8 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
       .new_dport = sport,
       .backend_subnet_id = 0,
       .action = CT_ACTION_SNAT,
+      .state = init_state,
+      .flags_seen = 0,
       .last_seen_ns = now,
   };
   bpf_map_update_elem(&ct_map, &rev_key, &rev_val, BPF_ANY);
@@ -473,10 +491,24 @@ static __always_inline int apply_conntrack_dnat(struct __sk_buff *skb,
   cv->last_seen_ns = bpf_ktime_get_ns();
   __be32 new_daddr = cv->new_daddr;
   __be16 new_dport = cv->new_dport;
+
+  // Read TCP flags before rewriting L4 ports — the rewrite touches bytes
+  // adjacent to the flags byte and forces an skb reload. Reading first
+  // keeps the verifier happy.
+  __u8 tcp_flags = 0;
+  bool have_tcp_flags = false;
+  if (iph->protocol == IPPROTO_TCP) {
+    if (ct_read_tcp_flags(iph, data_end, &tcp_flags) == 0)
+      have_tcp_flags = true;
+  }
+
   if (rewrite_ipv4_addr(skb, false, new_daddr) < 0)
     return -1;
   if (rewrite_l4_port(skb, false, new_dport) < 0)
     return -1;
+
+  if (have_tcp_flags)
+    ct_observe_tcp(&ck, cv, tcp_flags);
   return 1;
 }
 
