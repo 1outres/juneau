@@ -106,6 +106,7 @@ func (r *Subnet) upsert(ctx context.Context, subnet *juneauv1alpha1.Subnet) erro
 		&bpf.HostEgressSubnetKey{SubnetId: subnet.Status.VNI},
 		&bpf.HostEgressSubnetVal{
 			TableId: mainTable.Status.TableID,
+			VpcId:   vpc.Status.VpcID,
 			GwMac:   gwmac,
 			GwAddr:  gwaddr,
 			Mask:    mask,

@@ -144,6 +144,8 @@ var _ = BeforeSuite(func() {
 		g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: allocationPoolSubnetVNI}, &subnetPool)).To(Succeed())
 		var routeTablePool juneauloutresmev1alpha1.AllocationPool
 		g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: allocationPoolRouteTableID}, &routeTablePool)).To(Succeed())
+		var vpcIDPool juneauloutresmev1alpha1.AllocationPool
+		g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: allocationPoolVpcID}, &vpcIDPool)).To(Succeed())
 	}).Should(Succeed())
 })
 

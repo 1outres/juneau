@@ -19,6 +19,7 @@ var _ = Describe("Vpc/Subnet controllers", func() {
 		Eventually(func(g Gomega) {
 			var vpc juneauv1alpha1.Vpc
 			g.Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: "default"}, &vpc)).To(Succeed())
+			g.Expect(vpc.Status.VpcID).To(Equal(uint32(1)))
 		}).Should(Succeed())
 	})
 
@@ -32,6 +33,8 @@ var _ = Describe("Vpc/Subnet controllers", func() {
 			var vpc juneauv1alpha1.Vpc
 			g.Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: name}, &vpc)).To(Succeed())
 			g.Expect(vpc.Status.MainRouteTable).To(Equal(name))
+			g.Expect(vpc.Status.VpcID).NotTo(BeZero())
+			g.Expect(vpc.Status.VpcID).NotTo(Equal(uint32(1)))
 
 			ready := meta.FindStatusCondition(vpc.Status.Conditions, juneauv1alpha1.VpcStatusReady)
 			g.Expect(ready).NotTo(BeNil())

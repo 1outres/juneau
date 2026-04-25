@@ -79,6 +79,7 @@ struct subnet_key {
 
 struct subnet_val {
   __u32 table_id;
+  __u32 vpc_id;
   __u8 gw_mac[6];
   __u32 gw_addr;
   __u32 mask;
