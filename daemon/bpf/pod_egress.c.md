@@ -42,17 +42,38 @@
 ## handle_l3
 
 1. IPヘッダーのパースを行う
-2. fib_mapをlongest matchで引く(table_idはifindex_subnet mapにあるやつ、宛先ipaddr)
-3. 見つからなかったらドロップ
-4. fib_val.type が CONNECTED の場合、宛先ipaddrのarp mapを引く(ここのsubnet_idは、mapを引いたvalのsubnet_idを使う)
-5. arp mapに見つからなかったらドロップ
-6. パケットのdmacをarp mapの結果で書き換える
-7. パケットのsmacをfib_val.smacで書き換える
-8. forward_l2にfib_val.subnet_idを渡す
-9. fib_val.type が ENDPOINT の場合、パケットのdmacをfib_val.dmacで書き換える
-10. パケットのsmacをfib_val.smacで書き換える
-11. forward_l2にfib_val.subnet_idを渡す
-12. fib_val.type が INTERNET_GATEWAY の場合、handle_snatに渡す
+2. TCP/UDPの場合、ct_mapをパケットの5-tupleで引く(vpc_idはsubnet->vpc_id)
+3. ct_mapにヒットしたら、cv->actionに従ってDNAT(forward)もしくはSNAT(reverse)を適用し、dispatch_after_dnatに渡す
+4. ct_mapにヒットしない場合、fib_mapをlongest matchで引く(table_idはifindex_subnet mapにあるやつ、宛先ipaddr)
+5. 見つからなかったらドロップ
+6. fib_val.type が CONNECTED の場合、宛先ipaddrのarp mapを引く(ここのsubnet_idは、mapを引いたvalのsubnet_idを使う)
+7. arp mapに見つからなかったらドロップ
+8. パケットのdmacをarp mapの結果で書き換える
+9. パケットのsmacをfib_val.smacで書き換える
+10. forward_l2にfib_val.subnet_idを渡す
+11. fib_val.type が ENDPOINT の場合、パケットのdmacをfib_val.dmacで書き換える
+12. パケットのsmacをfib_val.smacで書き換える
+13. forward_l2にfib_val.subnet_idを渡す
+14. fib_val.type が INTERNET_GATEWAY の場合、handle_snatに渡す
+15. fib_val.type が SERVICE の場合、handle_serviceに渡す
+
+## handle_service
+
+1. パケットからsport/dportを読む
+2. service_mapを (cluster_ip=daddr, port=dport, proto) で引く
+3. 見つからない、もしくは sv->owner_vpc_id != caller_vpc_id ならドロップ
+4. backend_count が 0 ならドロップ
+5. 5-tupleからhashを計算し、idx = hash % backend_count を求める
+6. backend_mapを (cluster_ip, port, proto, idx) で引く
+7. 見つからなかったらドロップ
+8. ct_mapに forward(=DNAT) と reverse(=SNAT) のエントリを登録する
+9. パケットの宛先IP/portをbackendに書き換える
+10. dispatch_after_dnatに渡す(table_idは subnet->table_id、宛先IPはbackendのIP)
+
+## dispatch_after_dnat
+
+1. fib_mapをbackend宛先で再lookup
+2. fv->type に応じて CONNECTED / ENDPOINT / INTERNET_GATEWAY の処理を行う(SERVICEヒットはドロップ)
 
 ## handle_snat
 

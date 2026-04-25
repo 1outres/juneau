@@ -37,9 +37,25 @@
 #define MAX_NAT_MAP 131072
 #endif
 
+#ifndef MAX_SERVICE_MAP
+#define MAX_SERVICE_MAP 16384
+#endif
+
+#ifndef MAX_BACKEND_MAP
+#define MAX_BACKEND_MAP 65536
+#endif
+
+#ifndef MAX_CT_MAP
+#define MAX_CT_MAP 131072
+#endif
+
 #define FIB_ROUTE_TYPE_CONNECTED 1
 #define FIB_ROUTE_TYPE_ENDPOINT 2
 #define FIB_ROUTE_TYPE_INTERNET_GATEWAY 3
+#define FIB_ROUTE_TYPE_SERVICE 4
+
+#define CT_ACTION_DNAT 1
+#define CT_ACTION_SNAT 2
 
 struct ifindex_subnet_key {
   __u32 ifindex;
@@ -219,5 +235,93 @@ struct {
   __type(value, struct nat_inside);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } nat_dnat_map SEC(".maps");
+
+// service_map maps a Kubernetes Service tuple (cluster IP + L4 port +
+// proto) to the metadata that describes which backends it dispatches to
+// and which Vpc owns the Service. Cluster IPs are unique cluster-wide
+// (allocated by the apiserver), so this map is not keyed by Vpc.
+struct service_key {
+  __u32 cluster_ip;
+  __u16 port;
+  __u8 proto;
+  __u8 _pad;
+};
+
+struct service_val {
+  __u32 owner_vpc_id;   // Vpc that owns the Service; checked against caller_vpc_id
+  __u32 backend_count;
+  __u32 affinity_sec;
+  __u32 _pad;
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_SERVICE_MAP);
+  __type(key, struct service_key);
+  __type(value, struct service_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} service_map SEC(".maps");
+
+// backend_map enumerates the actual backend Pods for a Service. The
+// index is selected by hashing the client tuple (with affinity) modulo
+// service_val.backend_count. backend_subnet_id (=VNI) lets the data
+// plane VXLAN-encapsulate to the right L2 segment.
+struct backend_key {
+  __u32 cluster_ip;
+  __u16 port;
+  __u8 proto;
+  __u8 _pad;
+  __u32 index;
+};
+
+struct backend_val {
+  __u32 backend_ip;
+  __u16 backend_port;
+  __u8 _pad[2];
+  __u32 backend_subnet_id;
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_BACKEND_MAP);
+  __type(key, struct backend_key);
+  __type(value, struct backend_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} backend_map SEC(".maps");
+
+// ct_map is the conntrack table for Service-related flows. Both
+// directions of a flow are stored as separate entries: forward (caller
+// to ClusterIP) carries a DNAT action, reverse (backend to caller)
+// carries a SNAT action. Backed by an LRU hash so old entries evict
+// gracefully under pressure; user space additionally GC's expired
+// entries.
+struct ct_key {
+  __u32 vpc_id;
+  __u32 saddr;
+  __u32 daddr;
+  __u16 sport;
+  __u16 dport;
+  __u8 proto;
+  __u8 _pad[3];
+};
+
+struct ct_val {
+  __u32 new_saddr;
+  __u32 new_daddr;
+  __u16 new_sport;
+  __u16 new_dport;
+  __u32 backend_subnet_id; // VNI of the backend Pod's Subnet (for forward direction; 0 for reverse)
+  __u8 action;             // CT_ACTION_DNAT or CT_ACTION_SNAT
+  __u8 _pad[3];
+  __u64 last_seen_ns;
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_LRU_HASH);
+  __uint(max_entries, MAX_CT_MAP);
+  __type(key, struct ct_key);
+  __type(value, struct ct_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} ct_map SEC(".maps");
 
 #endif // JUNEAU_BPF_MAPS_H

@@ -24,10 +24,51 @@ type PodEgressArpTableVal struct {
 	Mac [6]uint8
 }
 
+type PodEgressBackendKey struct {
+	_         structs.HostLayout
+	ClusterIp uint32
+	Port      uint16
+	Proto     uint8
+	Pad       uint8
+	Index     uint32
+}
+
+type PodEgressBackendVal struct {
+	_               structs.HostLayout
+	BackendIp       uint32
+	BackendPort     uint16
+	Pad             [2]uint8
+	BackendSubnetId uint32
+}
+
 type PodEgressBgpAddressPoolsKey struct {
 	_         structs.HostLayout
 	Prefixlen uint32
 	Addr      uint32
+}
+
+type PodEgressCtKey struct {
+	_     structs.HostLayout
+	VpcId uint32
+	Saddr uint32
+	Daddr uint32
+	Sport uint16
+	Dport uint16
+	Proto uint8
+	Pad   [3]uint8
+}
+
+type PodEgressCtVal struct {
+	_               structs.HostLayout
+	NewSaddr        uint32
+	NewDaddr        uint32
+	NewSport        uint16
+	NewDport        uint16
+	BackendSubnetId uint32
+	Action          uint8
+	Pad             [3]uint8
+	_               [4]byte
+	LastSeenNs      uint64
 }
 
 type PodEgressFdbKey struct {
@@ -97,6 +138,22 @@ type PodEgressNatOutside struct {
 	Addr uint32
 }
 
+type PodEgressServiceKey struct {
+	_         structs.HostLayout
+	ClusterIp uint32
+	Port      uint16
+	Proto     uint8
+	Pad       uint8
+}
+
+type PodEgressServiceVal struct {
+	_            structs.HostLayout
+	OwnerVpcId   uint32
+	BackendCount uint32
+	AffinitySec  uint32
+	Pad          uint32
+}
+
 type PodEgressSubnetKey struct {
 	_        structs.HostLayout
 	SubnetId uint32
@@ -162,7 +219,9 @@ type PodEgressProgramSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type PodEgressMapSpecs struct {
 	ArpTable        *ebpf.MapSpec `ebpf:"arp_table"`
+	BackendMap      *ebpf.MapSpec `ebpf:"backend_map"`
 	BgpAddressPools *ebpf.MapSpec `ebpf:"bgp_address_pools"`
+	CtMap           *ebpf.MapSpec `ebpf:"ct_map"`
 	Fdb             *ebpf.MapSpec `ebpf:"fdb"`
 	FibInner        *ebpf.MapSpec `ebpf:"fib_inner"`
 	FibMap          *ebpf.MapSpec `ebpf:"fib_map"`
@@ -171,6 +230,7 @@ type PodEgressMapSpecs struct {
 	IfindexSubnet   *ebpf.MapSpec `ebpf:"ifindex_subnet"`
 	NatDnatMap      *ebpf.MapSpec `ebpf:"nat_dnat_map"`
 	NatSnatMap      *ebpf.MapSpec `ebpf:"nat_snat_map"`
+	ServiceMap      *ebpf.MapSpec `ebpf:"service_map"`
 	SubnetMap       *ebpf.MapSpec `ebpf:"subnet_map"`
 	VxlanIfindex    *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
 }
@@ -202,7 +262,9 @@ func (o *PodEgressObjects) Close() error {
 // It can be passed to LoadPodEgressObjects or ebpf.CollectionSpec.LoadAndAssign.
 type PodEgressMaps struct {
 	ArpTable        *ebpf.Map `ebpf:"arp_table"`
+	BackendMap      *ebpf.Map `ebpf:"backend_map"`
 	BgpAddressPools *ebpf.Map `ebpf:"bgp_address_pools"`
+	CtMap           *ebpf.Map `ebpf:"ct_map"`
 	Fdb             *ebpf.Map `ebpf:"fdb"`
 	FibInner        *ebpf.Map `ebpf:"fib_inner"`
 	FibMap          *ebpf.Map `ebpf:"fib_map"`
@@ -211,6 +273,7 @@ type PodEgressMaps struct {
 	IfindexSubnet   *ebpf.Map `ebpf:"ifindex_subnet"`
 	NatDnatMap      *ebpf.Map `ebpf:"nat_dnat_map"`
 	NatSnatMap      *ebpf.Map `ebpf:"nat_snat_map"`
+	ServiceMap      *ebpf.Map `ebpf:"service_map"`
 	SubnetMap       *ebpf.Map `ebpf:"subnet_map"`
 	VxlanIfindex    *ebpf.Map `ebpf:"vxlan_ifindex"`
 }
@@ -218,7 +281,9 @@ type PodEgressMaps struct {
 func (m *PodEgressMaps) Close() error {
 	return _PodEgressClose(
 		m.ArpTable,
+		m.BackendMap,
 		m.BgpAddressPools,
+		m.CtMap,
 		m.Fdb,
 		m.FibInner,
 		m.FibMap,
@@ -227,6 +292,7 @@ func (m *PodEgressMaps) Close() error {
 		m.IfindexSubnet,
 		m.NatDnatMap,
 		m.NatSnatMap,
+		m.ServiceMap,
 		m.SubnetMap,
 		m.VxlanIfindex,
 	)

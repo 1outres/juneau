@@ -18,6 +18,7 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -100,6 +101,9 @@ func NewApp() *cli.Command {
 			if err := corev1.AddToScheme(scheme); err != nil {
 				return fmt.Errorf("add corev1 scheme: %w", err)
 			}
+			if err := discoveryv1.AddToScheme(scheme); err != nil {
+				return fmt.Errorf("add discoveryv1 scheme: %w", err)
+			}
 
 			cache, err := cache.New(kubecfg, cache.Options{
 				Scheme: scheme,
@@ -112,6 +116,8 @@ func NewApp() *cli.Command {
 					&juneauv1alpha1.Subnet{}:              {},
 					&juneauv1alpha1.Vpc{}:                 {},
 					&juneauv1alpha1.RouteTable{}:          {},
+					&corev1.Service{}:                     {},
+					&discoveryv1.EndpointSlice{}:          {},
 				},
 			})
 			if err != nil {
@@ -146,6 +152,16 @@ func NewApp() *cli.Command {
 			subnetInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.Subnet{})
 			if err != nil {
 				return fmt.Errorf("get Subnet informer: %w", err)
+			}
+
+			serviceInformer, err := cache.GetInformer(ctx, &corev1.Service{})
+			if err != nil {
+				return fmt.Errorf("get Service informer: %w", err)
+			}
+
+			endpointSliceInformer, err := cache.GetInformer(ctx, &discoveryv1.EndpointSlice{})
+			if err != nil {
+				return fmt.Errorf("get EndpointSlice informer: %w", err)
 			}
 
 			cl, err := client.New(kubecfg, client.Options{
@@ -322,7 +338,7 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("lookup node ingress iface %q: %w", masqueradeIface, err)
 			}
 
-			bpfManager := dataplane.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, bpfPinPath, hostIfaceInfo.MAC)
+			bpfManager := dataplane.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, serviceInformer, endpointSliceInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, bpfPinPath, hostIfaceInfo.MAC)
 			if err := bpfManager.Start(ctx); err != nil {
 				return fmt.Errorf("initialize BPF manager: %w", err)
 			}
