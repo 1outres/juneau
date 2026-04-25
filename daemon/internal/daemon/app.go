@@ -154,6 +154,11 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("get Subnet informer: %w", err)
 			}
 
+			vpcInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.Vpc{})
+			if err != nil {
+				return fmt.Errorf("get Vpc informer: %w", err)
+			}
+
 			serviceInformer, err := cache.GetInformer(ctx, &corev1.Service{})
 			if err != nil {
 				return fmt.Errorf("get Service informer: %w", err)
@@ -338,7 +343,7 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("lookup node ingress iface %q: %w", masqueradeIface, err)
 			}
 
-			bpfManager := dataplane.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, serviceInformer, endpointSliceInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, bpfPinPath, hostIfaceInfo.MAC)
+			bpfManager := dataplane.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, vpcInformer, serviceInformer, endpointSliceInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, bpfPinPath, hostIfaceInfo.MAC)
 			if err := bpfManager.Start(ctx); err != nil {
 				return fmt.Errorf("initialize BPF manager: %w", err)
 			}

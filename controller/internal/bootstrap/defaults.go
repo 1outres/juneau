@@ -101,7 +101,16 @@ func ensureDefaultVpc(ctx context.Context, c client.Client, logger logr.Logger) 
 			ObjectMeta: metav1.ObjectMeta{
 				Name: defaultVpcName,
 			},
-			Spec: juneauv1alpha1.VpcSpec{},
+			Spec: juneauv1alpha1.VpcSpec{
+				// Enable Service routing on the default VPC so
+				// Services without the juneau.loutres.me/vpc
+				// annotation (which implicitly target default)
+				// are not rejected by the webhook. While default
+				// Subnet Pods are still routed to cni_host and
+				// use kube-proxy / iptables, this keeps the
+				// CRD-level surface consistent.
+				EnableService: true,
+			},
 		})
 	}
 

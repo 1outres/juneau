@@ -32,6 +32,7 @@ type Manager struct {
 	bgpAdvertisementInformer cache.Informer
 	subnetInformer           cache.Informer
 	rtInformer               cache.Informer
+	vpcInformer              cache.Informer
 	serviceInformer          cache.Informer
 	endpointSliceInformer    cache.Informer
 
@@ -104,9 +105,15 @@ func (m *Manager) Start(ctx context.Context) error {
 }
 
 func (m *Manager) startReconcilers(ctx context.Context) error {
-	m.subnetRunner = runner.New(reconciler.NewSubnet(m.client, m.hostEgress, m.hostMac))
+	subnetReconciler := reconciler.NewSubnet(m.client, m.hostEgress, m.hostMac)
+	m.subnetRunner = runner.New(subnetReconciler)
 	if err := m.subnetRunner.Watch(m.subnetInformer, runner.MetaNamespaceKey); err != nil {
 		return fmt.Errorf("watch Subnet: %w", err)
+	}
+	if m.vpcInformer != nil {
+		if err := m.subnetRunner.WatchFanOut(m.vpcInformer, subnetReconciler.FanOutVpcToSubnets); err != nil {
+			return fmt.Errorf("watch Vpc (subnet fan-out): %w", err)
+		}
 	}
 	m.subnetRunner.Start(ctx, 1)
 
@@ -174,10 +181,17 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 		if err := m.serviceRunner.WatchFanOut(m.endpointSliceInformer, svc.FanOutEndpointSliceToService); err != nil {
 			return fmt.Errorf("watch EndpointSlice (service fan-out): %w", err)
 		}
-		// VPC enableService toggles or vpcID assignments fan out to all
-		// services so an enable/disable propagates immediately.
+		// Subnet changes can shift which Pods are valid backends (a Pod
+		// may move into/out of the Service's owning VPC).
 		if err := m.serviceRunner.WatchFanOut(m.subnetInformer, svc.FanOutAllServices); err != nil {
 			return fmt.Errorf("watch Subnet (service fan-out): %w", err)
+		}
+		// Vpc.spec.enableService toggle and VpcID allocation propagate
+		// to every Service this VPC owns.
+		if m.vpcInformer != nil {
+			if err := m.serviceRunner.WatchFanOut(m.vpcInformer, svc.FanOutAllServices); err != nil {
+				return fmt.Errorf("watch Vpc (service fan-out): %w", err)
+			}
 		}
 		m.serviceRunner.Start(ctx, 1)
 	}
@@ -255,6 +269,7 @@ func NewManager(
 	bgpAdvertisementInformer cache.Informer,
 	rtInformer cache.Informer,
 	subnetInformer cache.Informer,
+	vpcInformer cache.Informer,
 	serviceInformer cache.Informer,
 	endpointSliceInformer cache.Informer,
 	nodeName string,
@@ -272,6 +287,7 @@ func NewManager(
 		bgpAdvertisementInformer: bgpAdvertisementInformer,
 		rtInformer:               rtInformer,
 		subnetInformer:           subnetInformer,
+		vpcInformer:              vpcInformer,
 		serviceInformer:          serviceInformer,
 		endpointSliceInformer:    endpointSliceInformer,
 		nodeName:                 nodeName,

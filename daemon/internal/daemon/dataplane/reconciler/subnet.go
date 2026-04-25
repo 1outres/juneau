@@ -21,6 +21,11 @@ import (
 // Subnet keeps hostEgress.SubnetMap in sync with Subnet objects. It looks
 // up the VPC's main RouteTable to derive the table id written into the
 // map, and falls back to the host MAC for the default subnet (VNI=1).
+//
+// It also tracks the owning VPC's vpcID so that a delayed VpcID
+// allocation propagates into subnet_map.vpc_id. Without this, packets
+// from this Subnet would carry vpc_id=0 and fail the owner_vpc_id check
+// in handle_service.
 type Subnet struct {
 	client     client.Client
 	hostEgress *program.HostEgress
@@ -121,6 +126,27 @@ func (r *Subnet) upsert(ctx context.Context, subnet *juneauv1alpha1.Subnet) erro
 	r.mu.Unlock()
 
 	return nil
+}
+
+// FanOutVpcToSubnets re-enqueues every Subnet that belongs to the
+// changed Vpc. Used so that VpcID/enableService changes propagate into
+// subnet_map without waiting for an unrelated Subnet event.
+func (r *Subnet) FanOutVpcToSubnets(obj any) []string {
+	vpc, ok := obj.(*juneauv1alpha1.Vpc)
+	if !ok {
+		return nil
+	}
+
+	var subnetList juneauv1alpha1.SubnetList
+	if err := r.client.List(context.Background(), &subnetList, client.MatchingFields{"spec.vpc": vpc.Name}); err != nil {
+		zap.S().Warnf("subnet: list subnets for vpc %q fan-out: %v", vpc.Name, err)
+		return nil
+	}
+	keys := make([]string, 0, len(subnetList.Items))
+	for i := range subnetList.Items {
+		keys = append(keys, subnetList.Items[i].Name)
+	}
+	return keys
 }
 
 func (r *Subnet) delete(key string) error {

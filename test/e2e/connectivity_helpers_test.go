@@ -30,9 +30,11 @@ const (
 type networkMode string
 
 const (
-	networkDefault                networkMode = "default"
-	networkSameCustomSubnet       networkMode = "same-custom-subnet"
-	networkDifferentCustomSubnets networkMode = "different-custom-subnets"
+	networkDefault                       networkMode = "default"
+	networkSameCustomSubnet              networkMode = "same-custom-subnet"
+	networkDifferentCustomSubnets        networkMode = "different-custom-subnets"
+	networkSameCustomSubnetService       networkMode = "same-custom-subnet-service"
+	networkDifferentCustomSubnetsService networkMode = "different-custom-subnets-service"
 )
 
 type connectivityScenario struct {
@@ -67,7 +69,11 @@ func runConnectivityScenario(s connectivityScenario) {
 	createServerPod(ctx, nodes[0], fixture.serverSubnet)
 	if s.target == targetService {
 		By("creating a service for the server pod")
-		createServerService(ctx)
+		serviceVpc := ""
+		if fixture.vpcName != defaultVpcName {
+			serviceVpc = fixture.vpcName
+		}
+		createServerService(ctx, serviceVpc)
 	}
 	By(fmt.Sprintf("creating the client pod on %s", nodes[1]))
 	createClientPod(ctx, nodes[1], fixture.clientSubnet)
@@ -153,10 +159,16 @@ func ensureNetworkFixture(ctx caseContext, mode networkMode) networkFixture {
 	case networkDefault:
 		return networkFixture{vpcName: defaultVpcName}
 	case networkSameCustomSubnet:
-		createCustomNetwork(ctx, false)
+		createCustomNetwork(ctx, false, false)
 		return networkFixture{vpcName: ctx.vpcName, serverSubnet: ctx.serverSubnet, clientSubnet: ctx.serverSubnet}
 	case networkDifferentCustomSubnets:
-		createCustomNetwork(ctx, true)
+		createCustomNetwork(ctx, true, false)
+		return networkFixture{vpcName: ctx.vpcName, serverSubnet: ctx.serverSubnet, clientSubnet: ctx.clientSubnet}
+	case networkSameCustomSubnetService:
+		createCustomNetwork(ctx, false, true)
+		return networkFixture{vpcName: ctx.vpcName, serverSubnet: ctx.serverSubnet, clientSubnet: ctx.serverSubnet}
+	case networkDifferentCustomSubnetsService:
+		createCustomNetwork(ctx, true, true)
 		return networkFixture{vpcName: ctx.vpcName, serverSubnet: ctx.serverSubnet, clientSubnet: ctx.clientSubnet}
 	default:
 		Fail(fmt.Sprintf("unknown network mode: %s", mode))
@@ -164,12 +176,16 @@ func ensureNetworkFixture(ctx caseContext, mode networkMode) networkFixture {
 	}
 }
 
-func createCustomNetwork(ctx caseContext, createClientSubnet bool) {
+func createCustomNetwork(ctx caseContext, createClientSubnet bool, enableService bool) {
 	By("creating a dedicated VPC and subnet resources")
+	enableServiceLine := ""
+	if enableService {
+		enableServiceLine = "\nspec:\n  enableService: true"
+	}
 	manifest := fmt.Sprintf(`apiVersion: juneau.loutres.me/v1alpha1
 kind: Vpc
 metadata:
-  name: %s
+  name: %s%s
 ---
 apiVersion: juneau.loutres.me/v1alpha1
 kind: Subnet
@@ -178,7 +194,7 @@ metadata:
 spec:
   vpc: %s
   cidr: %s
-`, ctx.vpcName, ctx.serverSubnet, ctx.vpcName, ctx.serverCIDR)
+`, ctx.vpcName, enableServiceLine, ctx.serverSubnet, ctx.vpcName, ctx.serverCIDR)
 
 	if createClientSubnet {
 		manifest += fmt.Sprintf(`---
@@ -247,19 +263,23 @@ metadata:
 `, namespace, name, name, annotation, nodeName, container)
 }
 
-func createServerService(ctx caseContext) {
+func createServerService(ctx caseContext, vpcAnnotation string) {
+	annotation := ""
+	if vpcAnnotation != "" {
+		annotation = fmt.Sprintf("  annotations:\n    juneau.loutres.me/vpc: %s\n", vpcAnnotation)
+	}
 	manifest := fmt.Sprintf(`apiVersion: v1
 kind: Service
 metadata:
   namespace: %s
   name: %s
-spec:
+%sspec:
   selector:
     app: %s
   ports:
     - port: 80
       targetPort: 80
-`, ctx.namespace, ctx.serviceName, serverPodName)
+`, ctx.namespace, ctx.serviceName, annotation, serverPodName)
 	Expect(applyManifest(manifest)).To(Succeed())
 }
 
