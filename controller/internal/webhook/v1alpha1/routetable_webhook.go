@@ -165,6 +165,8 @@ func (v *RouteTableCustomValidator) validateRouteTableSpec(ctx context.Context, 
 			if route.Via.Endpoint != "" {
 				errs = append(errs, field.Invalid(routePath.Child("via", "endpointName"), route.Via.Endpoint, fmt.Sprintf("spec.routes[].via.endpointName must be empty when via.type is %q", route.Via.Type)))
 			}
+		case juneauv1alpha1.ViaService:
+			errs = append(errs, field.Forbidden(routePath.Child("via", "type"), "spec.routes[].via.type=service is managed by the controller and cannot be specified manually; set spec.enableService on the Vpc instead"))
 		}
 
 		if _, ok := seenDst[route.Dst]; ok {

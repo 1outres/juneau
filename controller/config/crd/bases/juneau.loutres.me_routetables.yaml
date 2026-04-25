@@ -60,6 +60,7 @@ spec:
                           - connected
                           - endpoint
                           - internetGateway
+                          - service
                           type: string
                       required:
                       - type
@@ -154,6 +155,7 @@ spec:
                           - connected
                           - endpoint
                           - internetGateway
+                          - service
                           type: string
                       required:
                       - type

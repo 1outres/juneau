@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net"
 	"reflect"
 	"slices"
 	"time"
@@ -49,6 +50,12 @@ const (
 type RouteTableReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// ServiceCIDR is the cluster-wide CIDR used by Kubernetes Services.
+	// When the owning VPC has spec.enableService=true, the reconciler
+	// injects a route for this CIDR with via.type=service into the
+	// RouteTable's status.routes.
+	ServiceCIDR *net.IPNet
 }
 
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=routetables,verbs=get;list;watch;create;update;patch;delete
@@ -88,6 +95,14 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	var statusRoutes []juneauloutresmev1alpha1.Route
 	var subnetNames []string
 
+	var vpc juneauloutresmev1alpha1.Vpc
+	if err := r.Get(ctx, client.ObjectKey{Name: resource.Spec.Vpc}, &vpc); err != nil && !errors.IsNotFound(err) {
+		if updateErr := r.updateStatus(ctx, &resource, resource.Status.Routes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, "failed to fetch VPC"); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{}, err
+	}
+
 	var subnets juneauloutresmev1alpha1.SubnetList
 	if err := r.List(ctx, &subnets, client.MatchingFields{"spec.vpc": resource.Spec.Vpc}); err != nil {
 		if updateErr := r.updateStatus(ctx, &resource, resource.Status.Routes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, "failed to list subnets for VPC"); updateErr != nil {
@@ -106,10 +121,19 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		subnetNames = append(subnetNames, subnet.Name)
 	}
 
+	if vpc.Spec.EnableService && r.ServiceCIDR != nil {
+		statusRoutes = append(statusRoutes, juneauloutresmev1alpha1.Route{
+			Dst: r.ServiceCIDR.String(),
+			Via: juneauloutresmev1alpha1.RouteVia{
+				Type: juneauloutresmev1alpha1.ViaService,
+			},
+		})
+	}
+
 	for _, route := range resource.Spec.Routes {
 		if rt := getRoute(statusRoutes, route.Dst); rt == nil {
 			var subnet string
-			if route.Via.Type == juneauloutresmev1alpha1.ViaConnected {
+			if route.Via.Type == juneauloutresmev1alpha1.ViaConnected || route.Via.Type == juneauloutresmev1alpha1.ViaService {
 				continue
 			} else if route.Via.Type == juneauloutresmev1alpha1.ViaEndpoint {
 				nwep, err := r.getNetworkEndpoint(ctx, route.Via.Endpoint)
@@ -232,6 +256,7 @@ func (r *RouteTableReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&juneauloutresmev1alpha1.RouteTable{}).
 		Watches(&juneauloutresmev1alpha1.Subnet{}, handler.EnqueueRequestsFromMapFunc(r.mapSubnetToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.NetworkEndpoint{}, handler.EnqueueRequestsFromMapFunc(r.mapNetworkEndpointToRouteTables)).
+		Watches(&juneauloutresmev1alpha1.Vpc{}, handler.EnqueueRequestsFromMapFunc(r.mapVpcToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.AllocationClaim{}, handler.EnqueueRequestsFromMapFunc(r.mapClaimToRouteTables)).
 		Named("routetable").
 		Complete(r)
@@ -269,6 +294,27 @@ func (r *RouteTableReconciler) mapSubnetToRouteTables(ctx context.Context, obj c
 	}
 
 	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: routeTableName}}}
+}
+
+func (r *RouteTableReconciler) mapVpcToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
+	vpc, ok := obj.(*juneauloutresmev1alpha1.Vpc)
+	if !ok {
+		return nil
+	}
+
+	var routeTableList juneauloutresmev1alpha1.RouteTableList
+	if err := r.List(ctx, &routeTableList); err != nil {
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0, len(routeTableList.Items))
+	for _, rt := range routeTableList.Items {
+		if rt.Spec.Vpc != vpc.Name {
+			continue
+		}
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: rt.Name}})
+	}
+	return requests
 }
 
 func (r *RouteTableReconciler) mapClaimToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
