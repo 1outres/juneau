@@ -5,6 +5,7 @@
 #include <bpf/bpf_helpers.h>
 #include <stdbool.h>
 #include "maps.h"
+#include "nat.h"
 
 #define ETH_ALEN 6
 #define ETH_P_ARP 0x0806
@@ -266,146 +267,15 @@ static __always_inline int forward_l2(struct __sk_buff *skb, struct ethhdr *eth,
   return bpf_redirect(*vx_if, 0);
 }
 
-// Read TCP/UDP source and destination ports. Returns 0 on success, -1 on
-// malformed packet. Ports remain in network byte order.
-static __always_inline int read_l4_ports(struct iphdr *iph, void *data_end,
-                                         __be16 *sport, __be16 *dport) {
-  __u32 ihl = iph->ihl;
-  if (ihl < 5)
-    return -1;
-
-  if (iph->protocol == IPPROTO_TCP) {
-    struct tcphdr *tcp = (void *)iph + ihl * 4;
-    if ((void *)(tcp + 1) > data_end)
-      return -1;
-    *sport = tcp->source;
-    *dport = tcp->dest;
-    return 0;
-  }
-  if (iph->protocol == IPPROTO_UDP) {
-    struct udphdr *udp = (void *)iph + ihl * 4;
-    if ((void *)(udp + 1) > data_end)
-      return -1;
-    *sport = udp->source;
-    *dport = udp->dest;
-    return 0;
-  }
-  return -1;
-}
-
-// rewrite_ipv4_addr rewrites either the source or destination IPv4 address
-// in the packet, refreshes both the L3 checksum and the L4 pseudo-header
-// portion of the L4 checksum, and re-validates the eth/iphdr pointers
-// after the kernel may have reallocated the linear buffer.
-static __always_inline int rewrite_ipv4_addr(struct __sk_buff *skb,
-                                             bool is_source,
-                                             __be32 new_addr,
-                                             struct ethhdr **eth_p,
-                                             struct iphdr **iph_p,
-                                             void **data_end_p) {
-  struct iphdr *iph = *iph_p;
-  void *data_end = *data_end_p;
-
-  __be32 old_addr = is_source ? iph->saddr : iph->daddr;
-  if (old_addr == new_addr)
-    return 0;
-
-  __u32 addr_off =
-      sizeof(struct ethhdr) +
-      (is_source ? __builtin_offsetof(struct iphdr, saddr)
-                 : __builtin_offsetof(struct iphdr, daddr));
-
-  if (bpf_l3_csum_replace(skb,
-                          sizeof(struct ethhdr) +
-                              __builtin_offsetof(struct iphdr, check),
-                          old_addr, new_addr, sizeof(new_addr)) < 0)
-    return -1;
-
-  int rc = update_l4_csum(skb, iph, data_end, old_addr, new_addr);
-  if (rc != TC_ACT_OK)
-    return -1;
-
-  if (bpf_skb_store_bytes(skb, addr_off, &new_addr, sizeof(new_addr), 0) < 0)
-    return -1;
-
-  void *data = (void *)(long)skb->data;
-  *data_end_p = (void *)(long)skb->data_end;
-  *eth_p = data;
-  if ((void *)(*eth_p + 1) > *data_end_p)
-    return -1;
-  *iph_p = (struct iphdr *)((void *)(*eth_p) + sizeof(struct ethhdr));
-  if ((void *)(*iph_p + 1) > *data_end_p)
-    return -1;
-  return 0;
-}
-
-// rewrite_l4_port rewrites either the source or destination L4 port for
-// TCP/UDP packets and updates the L4 checksum. Pointers are re-validated
-// because bpf_skb_store_bytes can shift the linear buffer.
-static __always_inline int rewrite_l4_port(struct __sk_buff *skb,
-                                           bool is_source, __be16 new_port,
-                                           struct ethhdr **eth_p,
-                                           struct iphdr **iph_p,
-                                           void **data_end_p) {
-  struct iphdr *iph = *iph_p;
-  void *data_end = *data_end_p;
-
-  __u32 ihl = iph->ihl;
-  if (ihl < 5)
-    return -1;
-  __u32 l4_off = sizeof(struct ethhdr) + ihl * 4;
-
-  __be16 old_port;
-  __u32 csum_off;
-  __u32 port_off;
-
-  if (iph->protocol == IPPROTO_TCP) {
-    struct tcphdr *tcp = (void *)iph + ihl * 4;
-    if ((void *)(tcp + 1) > data_end)
-      return -1;
-    old_port = is_source ? tcp->source : tcp->dest;
-    if (old_port == new_port)
-      return 0;
-    csum_off = l4_off + __builtin_offsetof(struct tcphdr, check);
-    port_off = l4_off + (is_source
-                            ? __builtin_offsetof(struct tcphdr, source)
-                            : __builtin_offsetof(struct tcphdr, dest));
-  } else if (iph->protocol == IPPROTO_UDP) {
-    struct udphdr *udp = (void *)iph + ihl * 4;
-    if ((void *)(udp + 1) > data_end)
-      return -1;
-    old_port = is_source ? udp->source : udp->dest;
-    if (old_port == new_port)
-      return 0;
-    csum_off = l4_off + __builtin_offsetof(struct udphdr, check);
-    port_off = l4_off + (is_source
-                            ? __builtin_offsetof(struct udphdr, source)
-                            : __builtin_offsetof(struct udphdr, dest));
-    if (udp->check == 0)
-      csum_off = 0;
-  } else {
-    return -1;
-  }
-
-  if (csum_off != 0) {
-    if (bpf_l4_csum_replace(skb, csum_off, old_port, new_port, sizeof(new_port)) <
-        0)
-      return -1;
-  }
-
-  if (bpf_skb_store_bytes(skb, port_off, &new_port, sizeof(new_port), 0) < 0)
-    return -1;
-
-  void *data = (void *)(long)skb->data;
-  *data_end_p = (void *)(long)skb->data_end;
-  *eth_p = data;
-  if ((void *)(*eth_p + 1) > *data_end_p)
-    return -1;
-  *iph_p = (struct iphdr *)((void *)(*eth_p) + sizeof(struct ethhdr));
-  if ((void *)(*iph_p + 1) > *data_end_p)
-    return -1;
-  return 0;
-}
+// Service-related helpers (load_iph, read_l4_ports, rewrite_ipv4_addr,
+// rewrite_l4_port, update_l4_csum) live in nat.h so vxlan_ingress.c can
+// share them. The aliases below keep the local call sites in this file
+// short.
+#define load_iph nat_load_iph
+#define read_l4_ports nat_read_l4_ports
+#define rewrite_ipv4_addr nat_rewrite_ipv4_addr
+#define rewrite_l4_port nat_rewrite_l4_port
+#define skb_data_end nat_skb_data_end
 
 // hash_tuple folds a 5-tuple into a 32-bit value used to spread requests
 // evenly across backends. Mixing constants are arbitrary; the only
@@ -476,7 +346,7 @@ static __always_inline int dispatch_after_dnat(struct __sk_buff *skb,
 static __always_inline int
 handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
                const struct subnet_val *subnet) {
-  void *data_end = (void *)(long)skb->data_end;
+  void *data_end = skb_data_end(skb);
 
   __be16 sport, dport;
   if (read_l4_ports(iph, data_end, &sport, &dport) < 0)
@@ -554,77 +424,103 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
   };
   bpf_map_update_elem(&ct_map, &rev_key, &rev_val, BPF_ANY);
 
-  if (rewrite_ipv4_addr(skb, /*is_source=*/false, backend_addr_be, &eth, &iph,
-                        &data_end) < 0)
+  if (rewrite_ipv4_addr(skb, /*is_source=*/false, backend_addr_be) < 0)
     return TC_ACT_SHOT;
-  if (rewrite_l4_port(skb, /*is_source=*/false, backend_port_be, &eth, &iph,
-                      &data_end) < 0)
+  if (rewrite_l4_port(skb, /*is_source=*/false, backend_port_be) < 0)
     return TC_ACT_SHOT;
 
-  return dispatch_after_dnat(skb, eth, iph, subnet->table_id, backend_addr_be);
+  // Re-derive packet pointers after the rewrites; both helpers reload
+  // skb->data internally but our local eth/iph were captured before.
+  struct iphdr *new_iph = load_iph(skb);
+  if (!new_iph)
+    return TC_ACT_SHOT;
+  struct ethhdr *new_eth =
+      (struct ethhdr *)((void *)new_iph - sizeof(struct ethhdr));
+
+  return dispatch_after_dnat(skb, new_eth, new_iph, subnet->table_id,
+                             backend_addr_be);
 }
 
-// apply_ct rewrites packet headers based on a CT entry: forward direction
-// applies DNAT (rewrites destination), reverse direction applies SNAT
-// (rewrites source). On success returns the destination IP that should be
-// used for the subsequent FIB lookup.
-static __always_inline int apply_ct(struct __sk_buff *skb,
-                                    const struct ct_val *cv,
-                                    struct ethhdr **eth_p,
-                                    struct iphdr **iph_p, void **data_end_p,
-                                    __be32 *next_dst_be) {
+// nat_result distinguishes how apply_conntrack_nat rewrote a packet so
+// the caller can decide whether to keep using the original next-hop MAC
+// (SNAT/none) or re-route via FIB (DNAT changes the destination IP).
+enum nat_result {
+  NAT_NONE = 0,
+  NAT_DNAT,
+  NAT_SNAT,
+};
+
+// apply_conntrack_nat looks up the conntrack table for the packet's
+// 5-tuple. On hit, it applies the recorded rewrite (forward direction =
+// DNAT, reverse direction = SNAT) and returns which one was applied.
+// The result lets handle_l2 decide between L2 forwarding (SNAT/none) and
+// re-routing (DNAT).
+//
+// The rewrite helpers reload skb->data internally, so this function takes
+// only skb + the caller's vpc_id and returns the action via *result. The
+// caller must re-derive eth/iph/data_end from skb->data after this returns
+// (regardless of whether a hit happened — the helpers themselves only
+// touch the packet on hit, but the caller's pointers were taken before
+// any of that and may be stale).
+static __always_inline int apply_conntrack_nat(struct __sk_buff *skb,
+                                               __u32 vpc_id,
+                                               enum nat_result *result) {
+  *result = NAT_NONE;
+  struct iphdr *iph = load_iph(skb);
+  if (!iph)
+    return -1;
+  void *data_end = skb_data_end(skb);
+
+  if (iph->protocol != IPPROTO_TCP && iph->protocol != IPPROTO_UDP)
+    return 0;
+
+  __be16 sport, dport;
+  if (read_l4_ports(iph, data_end, &sport, &dport) < 0)
+    return 0;
+
+  struct ct_key ck = {
+      .vpc_id = vpc_id,
+      .saddr = iph->saddr,
+      .daddr = iph->daddr,
+      .sport = sport,
+      .dport = dport,
+      .proto = iph->protocol,
+  };
+  struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &ck);
+  if (!cv)
+    return 0;
+
+  cv->last_seen_ns = bpf_ktime_get_ns();
+
   if (cv->action == CT_ACTION_DNAT) {
-    if (rewrite_ipv4_addr(skb, false, cv->new_daddr, eth_p, iph_p, data_end_p) < 0)
+    __be32 new_daddr = cv->new_daddr;
+    __be16 new_dport = cv->new_dport;
+    if (rewrite_ipv4_addr(skb, false, new_daddr) < 0)
       return -1;
-    if (rewrite_l4_port(skb, false, cv->new_dport, eth_p, iph_p, data_end_p) < 0)
+    if (rewrite_l4_port(skb, false, new_dport) < 0)
       return -1;
-    *next_dst_be = cv->new_daddr;
+    *result = NAT_DNAT;
     return 0;
   }
   if (cv->action == CT_ACTION_SNAT) {
-    if (rewrite_ipv4_addr(skb, true, cv->new_saddr, eth_p, iph_p, data_end_p) < 0)
+    __be32 new_saddr = cv->new_saddr;
+    __be16 new_sport = cv->new_sport;
+    if (rewrite_ipv4_addr(skb, true, new_saddr) < 0)
       return -1;
-    if (rewrite_l4_port(skb, true, cv->new_sport, eth_p, iph_p, data_end_p) < 0)
+    if (rewrite_l4_port(skb, true, new_sport) < 0)
       return -1;
-    *next_dst_be = (*iph_p)->daddr;
+    *result = NAT_SNAT;
     return 0;
   }
-  return -1;
+  return 0;
 }
 
 static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
                                      const struct subnet_val *subnet) {
-  void *data_end = (void *)(long)skb->data_end;
+  void *data_end = skb_data_end(skb);
   struct iphdr *iph = (void *)(eth + 1);
   if ((void *)(iph + 1) > data_end)
     return TC_ACT_SHOT;
-
-  // Always probe ct_map first. A hit means we are either continuing an
-  // established Service flow (forward/DNAT) or carrying a backend's
-  // response (reverse/SNAT); both pre-empt the regular FIB path so the
-  // packet leaves with addresses the peer already negotiated.
-  __be16 sport_pkt = 0, dport_pkt = 0;
-  if (iph->protocol == IPPROTO_TCP || iph->protocol == IPPROTO_UDP) {
-    if (read_l4_ports(iph, data_end, &sport_pkt, &dport_pkt) == 0) {
-      struct ct_key ck = {
-          .vpc_id = subnet->vpc_id,
-          .saddr = iph->saddr,
-          .daddr = iph->daddr,
-          .sport = sport_pkt,
-          .dport = dport_pkt,
-          .proto = iph->protocol,
-      };
-      struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &ck);
-      if (cv) {
-        cv->last_seen_ns = bpf_ktime_get_ns();
-        __be32 next_dst_be = iph->daddr;
-        if (apply_ct(skb, cv, &eth, &iph, &data_end, &next_dst_be) < 0)
-          return TC_ACT_SHOT;
-        return dispatch_after_dnat(skb, eth, iph, subnet->table_id,
-                                   next_dst_be);
-      }
-    }
-  }
 
   __u32 dst_be = iph->daddr; // keep network order for LPM trie
 
@@ -674,7 +570,7 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
 
 static __always_inline int handle_l2(struct __sk_buff *skb) {
   void *data = (void *)(long)skb->data;
-  void *data_end = (void *)(long)skb->data_end;
+  void *data_end = skb_data_end(skb);
 
   struct ethhdr *eth = data;
   if ((void *)(eth + 1) > data_end)
@@ -706,6 +602,28 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
     if (!host)
       return TC_ACT_SHOT;
     return bpf_redirect(host->ifindex, 0);
+  }
+
+  // Apply any pending Service NAT recorded in conntrack. SNAT keeps the
+  // original next-hop MAC valid (dst IP unchanged), so we fall through to
+  // the L2/L3 dispatch below. DNAT rewrites the destination IP and must
+  // re-route via FIB to find the new next-hop. Non-IPv4 traffic and flows
+  // without a CT entry pass through untouched.
+  if (h_proto == ETH_P_IP) {
+    enum nat_result nat_rc;
+    if (apply_conntrack_nat(skb, subnet->vpc_id, &nat_rc) < 0)
+      return TC_ACT_SHOT;
+
+    // The helper reloaded skb->data internally, so refresh our local
+    // eth/iph/data_end from skb before continuing with the dispatch.
+    struct iphdr *iph = load_iph(skb);
+    if (!iph)
+      return TC_ACT_SHOT;
+    eth = (struct ethhdr *)((void *)iph - sizeof(struct ethhdr));
+    data_end = (void *)(long)skb->data_end;
+
+    if (nat_rc == NAT_DNAT)
+      return dispatch_after_dnat(skb, eth, iph, subnet->table_id, iph->daddr);
   }
 
   // subnet_id != 1

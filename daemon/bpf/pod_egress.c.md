@@ -15,8 +15,21 @@
 3. subnet_mapを引く
 4. ARPリクエストの場合、handle_arp関数を呼び出し、その関数の返り値を返す（handle_arp関数にはsubnet_idとsubnet_mapのvalも渡す）
 5. subnet_idが1の場合、host_iface mapを引いて、ifindexにbpf_redirectする
-6. subnet_idが1以外の場合、もし対象がgw_macだったらhandle_l3関数を呼び出し、その関数の返り値を返す(subnet_idとsubnet_mapのvalも渡す)
-7. そうじゃなかったらforward_l2関数を呼び出し、その返り値を返す(subnet_idとsubnet_mapのvalも渡す)
+6. subnet_idが1以外、IPv4の場合、apply_conntrack_natを呼び出す
+   - DNATが適用されたらdispatch_after_dnatに渡して終了(dst IPが書き換わったのでFIB再lookup必要)
+   - SNATまたはCT miss → fall through
+7. もし対象がgw_macだったらhandle_l3関数を呼び出し、その関数の返り値を返す(subnet_idとsubnet_mapのvalも渡す)
+8. そうじゃなかったらforward_l2関数を呼び出し、その返り値を返す(subnet_idとsubnet_mapのvalも渡す)
+
+## apply_conntrack_nat
+
+L4 stateful NATをL2/L3 dispatchから独立した phase として実行する。CT lookupはhandle_l3ではなくhandle_l2で行う。これにより同一Subnet内のbackend応答パケット(dst MAC = caller MAC, gw_mac経由しない)でも正しくSNATが適用される。
+
+1. TCP/UDP以外はNAT_NONEを返す
+2. ct_mapをパケットの5-tuple (vpc_id=subnet->vpc_id, saddr, daddr, sport, dport, proto) で引く
+3. miss → NAT_NONEを返す
+4. cv->action == DNAT → dst IPとdst portを書き換え、NAT_DNATを返す
+5. cv->action == SNAT → src IPとsrc portを書き換え、NAT_SNATを返す
 
 ## forward_l2
 
@@ -42,20 +55,18 @@
 ## handle_l3
 
 1. IPヘッダーのパースを行う
-2. TCP/UDPの場合、ct_mapをパケットの5-tupleで引く(vpc_idはsubnet->vpc_id)
-3. ct_mapにヒットしたら、cv->actionに従ってDNAT(forward)もしくはSNAT(reverse)を適用し、dispatch_after_dnatに渡す
-4. ct_mapにヒットしない場合、fib_mapをlongest matchで引く(table_idはifindex_subnet mapにあるやつ、宛先ipaddr)
-5. 見つからなかったらドロップ
-6. fib_val.type が CONNECTED の場合、宛先ipaddrのarp mapを引く(ここのsubnet_idは、mapを引いたvalのsubnet_idを使う)
-7. arp mapに見つからなかったらドロップ
-8. パケットのdmacをarp mapの結果で書き換える
-9. パケットのsmacをfib_val.smacで書き換える
-10. forward_l2にfib_val.subnet_idを渡す
-11. fib_val.type が ENDPOINT の場合、パケットのdmacをfib_val.dmacで書き換える
-12. パケットのsmacをfib_val.smacで書き換える
-13. forward_l2にfib_val.subnet_idを渡す
-14. fib_val.type が INTERNET_GATEWAY の場合、handle_snatに渡す
-15. fib_val.type が SERVICE の場合、handle_serviceに渡す
+2. fib_mapをlongest matchで引く(table_idはifindex_subnet mapにあるやつ、宛先ipaddr)
+3. 見つからなかったらドロップ
+4. fib_val.type が CONNECTED の場合、宛先ipaddrのarp mapを引く(ここのsubnet_idは、mapを引いたvalのsubnet_idを使う)
+5. arp mapに見つからなかったらドロップ
+6. パケットのdmacをarp mapの結果で書き換える
+7. パケットのsmacをfib_val.smacで書き換える
+8. forward_l2にfib_val.subnet_idを渡す
+9. fib_val.type が ENDPOINT の場合、パケットのdmacをfib_val.dmacで書き換える
+10. パケットのsmacをfib_val.smacで書き換える
+11. forward_l2にfib_val.subnet_idを渡す
+12. fib_val.type が INTERNET_GATEWAY の場合、handle_snatに渡す
+13. fib_val.type が SERVICE の場合、handle_serviceに渡す
 
 ## handle_service
 
