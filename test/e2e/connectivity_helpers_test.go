@@ -140,7 +140,7 @@ func cidrForScenario(base string, offset int) string {
 }
 
 func chooseNodes(mode placementMode) [2]string {
-	Expect(workerNodes).To(HaveLen(2))
+	Expect(len(workerNodes)).To(BeNumerically(">=", 2), "cross-node tests need at least 2 worker nodes")
 	if mode == placementDifferentNodes {
 		return [2]string{workerNodes[0], workerNodes[1]}
 	}
