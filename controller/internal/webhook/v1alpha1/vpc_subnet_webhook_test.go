@@ -126,10 +126,71 @@ var _ = Describe("Vpc/Subnet webhooks", func() {
 	})
 })
 
+var _ = Describe("Service-related Vpc/Subnet webhooks", func() {
+	It("rejects enabling Service when an existing Subnet overlaps the Service CIDR", func() {
+		vpcName := createWebhookVpc()
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Subnet{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("subnet")},
+			Spec: juneauv1alpha1.SubnetSpec{
+				Vpc:  vpcName,
+				CIDR: "10.96.0.0/24",
+			},
+		})).To(Succeed())
+
+		var vpc juneauv1alpha1.Vpc
+		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Name: vpcName}, &vpc)).To(Succeed())
+		vpc.Spec.EnableService = true
+		err := webhookK8sClient.Update(context.Background(), &vpc)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("overlaps with Service CIDR"))
+	})
+
+	It("rejects creating a Subnet that overlaps the Service CIDR when the VPC has enableService=true", func() {
+		vpcName := createWebhookServiceEnabledVpc()
+
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Subnet{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("subnet")},
+			Spec: juneauv1alpha1.SubnetSpec{
+				Vpc:  vpcName,
+				CIDR: "10.96.0.0/24",
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("overlaps with Service CIDR"))
+	})
+})
+
+var _ = Describe("RouteTable webhook", func() {
+	It("rejects routes with via.type=service from spec", func() {
+		vpcName := createWebhookVpc()
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("routetable")},
+			Spec: juneauv1alpha1.RouteTableSpec{
+				Vpc: vpcName,
+				Routes: []juneauv1alpha1.Route{{
+					Dst: "10.96.0.0/12",
+					Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
+				}},
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("managed by the controller"))
+	})
+})
+
 func createWebhookVpc() string {
 	name := webhookUniqueTestName("vpc")
 	Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Vpc{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
+	})).To(Succeed())
+	return name
+}
+
+func createWebhookServiceEnabledVpc() string {
+	name := webhookUniqueTestName("vpc")
+	Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Vpc{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec:       juneauv1alpha1.VpcSpec{EnableService: true},
 	})).To(Succeed())
 	return name
 }

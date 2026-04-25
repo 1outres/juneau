@@ -39,9 +39,9 @@ import (
 var subnetlog = logf.Log.WithName("subnet-resource")
 
 // SetupSubnetWebhookWithManager registers the webhook for Subnet in the manager.
-func SetupSubnetWebhookWithManager(mgr ctrl.Manager) error {
+func SetupSubnetWebhookWithManager(mgr ctrl.Manager, serviceCIDR *net.IPNet) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&juneauv1alpha1.Subnet{}).
-		WithValidator(&SubnetCustomValidator{Client: mgr.GetClient()}).
+		WithValidator(&SubnetCustomValidator{Client: mgr.GetClient(), ServiceCIDR: serviceCIDR}).
 		WithDefaulter(&SubnetCustomDefaulter{}).
 		Complete()
 }
@@ -80,6 +80,7 @@ func (d *SubnetCustomDefaulter) Default(ctx context.Context, obj runtime.Object)
 // when it is created, updated, or deleted.
 type SubnetCustomValidator struct {
 	client.Client
+	ServiceCIDR *net.IPNet
 }
 
 var _ webhook.CustomValidator = &SubnetCustomValidator{}
@@ -106,6 +107,11 @@ func (v *SubnetCustomValidator) ValidateCreate(ctx context.Context, obj runtime.
 		return nil, err
 	}
 	errs = append(errs, overlapErrs...)
+	serviceErrs, err := validateSubnetServiceCIDROverlap(ctx, v.Client, subnet, v.ServiceCIDR, errPath.Child("cidr"))
+	if err != nil {
+		return nil, err
+	}
+	errs = append(errs, serviceErrs...)
 
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "Subnet"}, subnet.Name, errs)
@@ -238,4 +244,37 @@ func validateSubnetCIDROverlap(ctx context.Context, c client.Client, subnet *jun
 
 func cidrsOverlap(a, b *net.IPNet) bool {
 	return a.Contains(b.IP) || b.Contains(a.IP)
+}
+
+// validateSubnetServiceCIDROverlap rejects creating a Subnet whose CIDR
+// overlaps with the cluster Service CIDR when the owning VPC has Service
+// routing enabled. Without this check, Pod IPs could collide with
+// ClusterIPs and the data plane would not be able to disambiguate.
+func validateSubnetServiceCIDROverlap(ctx context.Context, c client.Client, subnet *juneauv1alpha1.Subnet, serviceCIDR *net.IPNet, path *field.Path) (field.ErrorList, error) {
+	if serviceCIDR == nil {
+		return nil, nil
+	}
+
+	_, subnetCIDR, err := net.ParseCIDR(subnet.Spec.CIDR)
+	if err != nil {
+		return nil, nil
+	}
+
+	var vpc juneauv1alpha1.Vpc
+	if err := c.Get(ctx, client.ObjectKey{Name: subnet.Spec.Vpc}, &vpc); err != nil {
+		if errors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	if !vpc.Spec.EnableService {
+		return nil, nil
+	}
+
+	if cidrsOverlap(subnetCIDR, serviceCIDR) {
+		return field.ErrorList{field.Invalid(path, subnet.Spec.CIDR, fmt.Sprintf("overlaps with Service CIDR %q while Vpc %q has spec.enableService=true", serviceCIDR.String(), subnet.Spec.Vpc))}, nil
+	}
+
+	return nil, nil
 }

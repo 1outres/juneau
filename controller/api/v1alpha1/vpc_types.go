@@ -22,6 +22,11 @@ import (
 
 // VpcSpec defines the desired state of Vpc.
 type VpcSpec struct {
+	// EnableService enables Service routing within this VPC. When true,
+	// the controller injects a Service-typed route into every RouteTable
+	// belonging to this VPC, so Pods in the VPC can reach Services in it.
+	// +optional
+	EnableService bool `json:"enableService,omitempty"`
 }
 
 // VpcStatus defines the observed state of Vpc.

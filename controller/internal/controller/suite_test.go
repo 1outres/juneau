@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -41,6 +42,8 @@ import (
 	"github.com/1outres/juneau/controller/internal/bootstrap"
 	// +kubebuilder:scaffold:imports
 )
+
+var testServiceCIDR *net.IPNet
 
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
@@ -113,9 +116,12 @@ var _ = BeforeSuite(func() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr)).To(Succeed())
+	_, testServiceCIDR, err = net.ParseCIDR("10.96.0.0/12")
+	Expect(err).NotTo(HaveOccurred())
 	Expect((&RouteTableReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		ServiceCIDR: testServiceCIDR,
 	}).SetupWithManager(mgr)).To(Succeed())
 	Expect((&ElasticIPReconciler{
 		Client: mgr.GetClient(),

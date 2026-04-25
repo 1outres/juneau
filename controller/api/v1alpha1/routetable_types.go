@@ -45,7 +45,7 @@ type Route struct {
 }
 
 type RouteVia struct {
-	// +kubebuilder:validation:Enum=connected;endpoint;internetGateway
+	// +kubebuilder:validation:Enum=connected;endpoint;internetGateway;service
 	Type     RouteViaType `json:"type"`
 	Endpoint string       `json:"endpointName,omitempty"`
 }
@@ -56,6 +56,7 @@ const (
 	ViaConnected       RouteViaType = "connected"
 	ViaEndpoint        RouteViaType = "endpoint"
 	ViaInternetGateway RouteViaType = "internetGateway"
+	ViaService         RouteViaType = "service"
 )
 
 // +kubebuilder:object:root=true
