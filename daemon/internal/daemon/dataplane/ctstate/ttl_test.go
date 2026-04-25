@@ -1,0 +1,55 @@
+package ctstate
+
+import (
+	"testing"
+	"time"
+)
+
+const (
+	protoTCP uint8 = 6
+	protoUDP uint8 = 17
+)
+
+func TestShouldEvict(t *testing.T) {
+	const now uint64 = 1_000_000_000_000 // 1000s in ns
+
+	cases := []struct {
+		name       string
+		state      uint8
+		proto      uint8
+		ageBeforeNow time.Duration
+		want       bool
+	}{
+		{"NEW within TTL stays", StateNew, protoTCP, 29 * time.Second, false},
+		{"NEW at TTL stays", StateNew, protoTCP, TTLNew, false},
+		{"NEW past TTL evicts", StateNew, protoTCP, TTLNew + time.Second, true},
+
+		{"ESTABLISHED within TTL stays", StateEstablished, protoTCP, 4 * time.Minute, false},
+		{"ESTABLISHED at TTL stays", StateEstablished, protoTCP, TTLEstablished, false},
+		{"ESTABLISHED past TTL evicts", StateEstablished, protoTCP, TTLEstablished + time.Second, true},
+
+		{"FIN_WAIT within TTL stays", StateFinWait, protoTCP, 30 * time.Second, false},
+		{"FIN_WAIT at TTL stays", StateFinWait, protoTCP, TTLFinWait, false},
+		{"FIN_WAIT past TTL evicts", StateFinWait, protoTCP, TTLFinWait + time.Second, true},
+
+		{"CLOSED is always evicted regardless of age", StateClosed, protoTCP, 0, true},
+		{"CLOSED with stale timestamp evicts", StateClosed, protoTCP, time.Hour, true},
+
+		{"UDP under TTL stays even if state ESTABLISHED", StateEstablished, protoUDP, 29 * time.Second, false},
+		{"UDP at TTL stays", StateEstablished, protoUDP, TTLUDP, false},
+		{"UDP past TTL evicts", StateEstablished, protoUDP, TTLUDP + time.Second, true},
+		{"UDP NEW past UDP TTL evicts (state is irrelevant for UDP)", StateNew, protoUDP, TTLUDP + time.Second, true},
+
+		{"future last_seen treated as now (not evicted)", StateEstablished, protoTCP, -time.Second, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lastSeen := now - uint64(tc.ageBeforeNow.Nanoseconds())
+			got := ShouldEvict(tc.state, tc.proto, lastSeen, now)
+			if got != tc.want {
+				t.Fatalf("ShouldEvict(state=%d proto=%d age=%s) = %v; want %v",
+					tc.state, tc.proto, tc.ageBeforeNow, got, tc.want)
+			}
+		})
+	}
+}
