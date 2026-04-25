@@ -16,6 +16,7 @@ var allocationNameSanitizer = regexp.MustCompile(`[^a-z0-9.-]+`)
 const (
 	allocationPoolSubnetVNI    = "subnet-vni"
 	allocationPoolRouteTableID = "route-table-id"
+	allocationPoolVpcID        = "vpc-id"
 )
 
 func allocationClaimName(poolName string, gvk schema.GroupVersionKind, resourceName, attribute string) string {

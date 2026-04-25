@@ -105,6 +105,7 @@ type NodeIngressSubnetKey struct {
 type NodeIngressSubnetVal struct {
 	_       structs.HostLayout
 	TableId uint32
+	VpcId   uint32
 	GwMac   [6]uint8
 	_       [2]byte
 	GwAddr  uint32

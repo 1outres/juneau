@@ -16,6 +16,7 @@ const (
 	defaultSubnetName         = "default"
 	defaultSubnetVNIPoolName  = "subnet-vni"
 	defaultRouteTablePoolName = "route-table-id"
+	defaultVpcIDPoolName      = "vpc-id"
 )
 
 // EnsureDefaults creates default VPC and Subnet if they don't already exist.
@@ -50,6 +51,17 @@ func ensureDefaultAllocationPools(ctx context.Context, c client.Client, logger l
 		},
 		{
 			ObjectMeta: metav1.ObjectMeta{Name: defaultRouteTablePoolName},
+			Spec: juneauv1alpha1.AllocationPoolSpec{
+				Type:     juneauv1alpha1.AllocationTypeNumber,
+				Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+				Number: &juneauv1alpha1.AllocationPoolNumberSpec{
+					Min: 2,
+					Max: uint64(^uint32(0)),
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: defaultVpcIDPoolName},
 			Spec: juneauv1alpha1.AllocationPoolSpec{
 				Type:     juneauv1alpha1.AllocationTypeNumber,
 				Strategy: juneauv1alpha1.AllocationStrategyFirstFit,

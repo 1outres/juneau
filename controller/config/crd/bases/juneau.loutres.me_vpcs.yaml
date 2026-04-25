@@ -107,6 +107,9 @@ spec:
               observedGeneration:
                 format: int64
                 type: integer
+              vpcID:
+                format: int32
+                type: integer
             type: object
         type: object
     served: true

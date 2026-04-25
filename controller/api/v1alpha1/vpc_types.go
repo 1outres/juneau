@@ -30,6 +30,7 @@ type VpcStatus struct {
 	Conditions         []metav1.Condition `json:"conditions,omitempty"`
 
 	MainRouteTable string `json:"mainRouteTable,omitempty"`
+	VpcID          uint32 `json:"vpcID,omitempty"`
 }
 
 // +kubebuilder:object:root=true

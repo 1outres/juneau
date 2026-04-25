@@ -20,11 +20,13 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -39,8 +41,11 @@ const (
 	vpcReasonDeleting           = "Deleting"
 	vpcReasonRouteTableNotReady = "MainRouteTableNotReady"
 	vpcReasonRouteTableMissing  = "MainRouteTableMissing"
+	vpcReasonNotReady           = "NotReady"
 	vpcReasonReconcileFailed    = "ReconcileFailed"
 	vpcReasonReconcileSucceeded = "ReconcileSucceeded"
+
+	defaultVpcName = "default"
 )
 
 // VpcReconciler reconciles a Vpc object
@@ -68,10 +73,36 @@ func (r *VpcReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	if !resource.ObjectMeta.DeletionTimestamp.IsZero() {
-		if err := r.updateStatus(ctx, &resource, resource.Status.MainRouteTable, metav1.ConditionFalse, vpcReasonDeleting, "VPC is being deleted"); err != nil {
+		if err := r.updateStatus(ctx, &resource, resource.Status.MainRouteTable, resource.Status.VpcID, metav1.ConditionFalse, vpcReasonDeleting, "VPC is being deleted"); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
+	}
+
+	vpcID := resource.Status.VpcID
+	if resource.Name == defaultVpcName {
+		vpcID = 1
+	} else if vpcID == 0 {
+		claim, err := r.ensureNumberClaim(ctx, &resource, allocationPoolVpcID, schema.GroupVersionKind{Group: juneauv1alpha1.GroupVersion.Group, Version: juneauv1alpha1.GroupVersion.Version, Kind: "Vpc"}, "status.vpcID")
+		if err != nil {
+			if updateErr := r.updateStatus(ctx, &resource, resource.Status.MainRouteTable, vpcID, metav1.ConditionFalse, vpcReasonReconcileFailed, fmt.Sprintf("failed to ensure VPC ID allocation claim: %v", err)); updateErr != nil {
+				return ctrl.Result{}, updateErr
+			}
+			return ctrl.Result{}, err
+		}
+		if claim.Status.Phase != juneauv1alpha1.AllocationClaimPhaseAllocated || claim.Status.Value.Number == 0 {
+			if err := r.updateStatus(ctx, &resource, resource.Status.MainRouteTable, vpcID, metav1.ConditionFalse, vpcReasonNotReady, "waiting for VPC ID allocation"); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{RequeueAfter: 100 * time.Millisecond}, nil
+		}
+		if claim.Status.Value.Number > uint64(^uint32(0)) {
+			if err := r.updateStatus(ctx, &resource, resource.Status.MainRouteTable, vpcID, metav1.ConditionFalse, vpcReasonReconcileFailed, fmt.Sprintf("allocated VPC ID %d exceeds supported range", claim.Status.Value.Number)); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
+		vpcID = uint32(claim.Status.Value.Number)
 	}
 
 	routeTable := &juneauv1alpha1.RouteTable{}
@@ -82,14 +113,14 @@ func (r *VpcReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return nil
 	})
 	if err != nil {
-		if updateErr := r.updateStatus(ctx, &resource, resource.Status.MainRouteTable, metav1.ConditionFalse, vpcReasonReconcileFailed, "failed to reconcile main route table"); updateErr != nil {
+		if updateErr := r.updateStatus(ctx, &resource, resource.Status.MainRouteTable, vpcID, metav1.ConditionFalse, vpcReasonReconcileFailed, "failed to reconcile main route table"); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
 		return ctrl.Result{}, err
 	}
 
 	mainRouteTableName := routeTable.Name
-	if err := r.updateMainRouteTableStatus(ctx, &resource, mainRouteTableName); err != nil {
+	if err := r.updateMainRouteTableStatus(ctx, &resource, mainRouteTableName, vpcID); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -100,12 +131,12 @@ func (r *VpcReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	var mainRouteTable juneauv1alpha1.RouteTable
 	if err := r.Get(ctx, client.ObjectKey{Name: mainRouteTableName}, &mainRouteTable); err != nil {
 		if errors.IsNotFound(err) {
-			if updateErr := r.updateStatus(ctx, &resource, mainRouteTableName, metav1.ConditionFalse, vpcReasonRouteTableMissing, fmt.Sprintf("main route table %q not found", mainRouteTableName)); updateErr != nil {
+			if updateErr := r.updateStatus(ctx, &resource, mainRouteTableName, vpcID, metav1.ConditionFalse, vpcReasonRouteTableMissing, fmt.Sprintf("main route table %q not found", mainRouteTableName)); updateErr != nil {
 				return ctrl.Result{}, updateErr
 			}
 			return ctrl.Result{}, nil
 		}
-		if updateErr := r.updateStatus(ctx, &resource, mainRouteTableName, metav1.ConditionFalse, vpcReasonReconcileFailed, "failed to fetch main route table"); updateErr != nil {
+		if updateErr := r.updateStatus(ctx, &resource, mainRouteTableName, vpcID, metav1.ConditionFalse, vpcReasonReconcileFailed, "failed to fetch main route table"); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
 		return ctrl.Result{}, err
@@ -113,7 +144,7 @@ func (r *VpcReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	mainRouteTableReady := meta.FindStatusCondition(mainRouteTable.Status.Conditions, juneauv1alpha1.RouteTableStatusReady)
 	if mainRouteTableReady == nil {
-		if err := r.updateStatus(ctx, &resource, mainRouteTableName, metav1.ConditionFalse, vpcReasonRouteTableNotReady, fmt.Sprintf("main route table %q has no Ready condition", mainRouteTableName)); err != nil {
+		if err := r.updateStatus(ctx, &resource, mainRouteTableName, vpcID, metav1.ConditionFalse, vpcReasonRouteTableNotReady, fmt.Sprintf("main route table %q has no Ready condition", mainRouteTableName)); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
@@ -123,13 +154,13 @@ func (r *VpcReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		if message == "" {
 			message = fmt.Sprintf("reason=%s status=%s", mainRouteTableReady.Reason, mainRouteTableReady.Status)
 		}
-		if err := r.updateStatus(ctx, &resource, mainRouteTableName, metav1.ConditionFalse, vpcReasonRouteTableNotReady, fmt.Sprintf("main route table %q is not ready: %s", mainRouteTableName, message)); err != nil {
+		if err := r.updateStatus(ctx, &resource, mainRouteTableName, vpcID, metav1.ConditionFalse, vpcReasonRouteTableNotReady, fmt.Sprintf("main route table %q is not ready: %s", mainRouteTableName, message)); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
 	}
 
-	if err := r.updateStatus(ctx, &resource, mainRouteTableName, metav1.ConditionTrue, vpcReasonReconcileSucceeded, ""); err != nil {
+	if err := r.updateStatus(ctx, &resource, mainRouteTableName, vpcID, metav1.ConditionTrue, vpcReasonReconcileSucceeded, ""); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -141,14 +172,28 @@ func (r *VpcReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&juneauv1alpha1.Vpc{}).
 		Watches(&juneauv1alpha1.RouteTable{}, handler.EnqueueRequestsFromMapFunc(r.mapRouteTableToVpcs)).
+		Watches(&juneauv1alpha1.AllocationClaim{}, handler.EnqueueRequestsFromMapFunc(r.mapClaimToVpcs)).
 		Named("vpc").
 		Complete(r)
 }
 
-func (r *VpcReconciler) updateStatus(ctx context.Context, vpc *juneauv1alpha1.Vpc, mainRouteTable string, status metav1.ConditionStatus, reason, message string) error {
+func (r *VpcReconciler) ensureNumberClaim(ctx context.Context, vpc *juneauv1alpha1.Vpc, poolName string, gvk schema.GroupVersionKind, attribute string) (*juneauv1alpha1.AllocationClaim, error) {
+	claim := newAllocationClaim(poolName, gvk, vpc.Name, attribute)
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, claim, func() error {
+		claim.Spec = newAllocationClaim(poolName, gvk, vpc.Name, attribute).Spec
+		return controllerutil.SetControllerReference(vpc, claim, r.Scheme)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return claim, nil
+}
+
+func (r *VpcReconciler) updateStatus(ctx context.Context, vpc *juneauv1alpha1.Vpc, mainRouteTable string, vpcID uint32, status metav1.ConditionStatus, reason, message string) error {
 	updated := vpc.DeepCopy()
 	updated.Status.ObservedGeneration = updated.Generation
 	updated.Status.MainRouteTable = mainRouteTable
+	updated.Status.VpcID = vpcID
 	meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
 		Type:               juneauv1alpha1.VpcStatusReady,
 		Status:             status,
@@ -159,6 +204,7 @@ func (r *VpcReconciler) updateStatus(ctx context.Context, vpc *juneauv1alpha1.Vp
 
 	if updated.Status.ObservedGeneration == vpc.Status.ObservedGeneration &&
 		updated.Status.MainRouteTable == vpc.Status.MainRouteTable &&
+		updated.Status.VpcID == vpc.Status.VpcID &&
 		reflect.DeepEqual(updated.Status.Conditions, vpc.Status.Conditions) {
 		return nil
 	}
@@ -167,17 +213,19 @@ func (r *VpcReconciler) updateStatus(ctx context.Context, vpc *juneauv1alpha1.Vp
 	return r.Status().Update(ctx, vpc)
 }
 
-func (r *VpcReconciler) updateMainRouteTableStatus(ctx context.Context, vpc *juneauv1alpha1.Vpc, mainRouteTable string) error {
-	if vpc.Status.MainRouteTable == mainRouteTable {
+func (r *VpcReconciler) updateMainRouteTableStatus(ctx context.Context, vpc *juneauv1alpha1.Vpc, mainRouteTable string, vpcID uint32) error {
+	if vpc.Status.MainRouteTable == mainRouteTable && vpc.Status.VpcID == vpcID {
 		return nil
 	}
 
 	updated := vpc.DeepCopy()
 	updated.Status.ObservedGeneration = updated.Generation
 	updated.Status.MainRouteTable = mainRouteTable
+	updated.Status.VpcID = vpcID
 
 	if updated.Status.ObservedGeneration == vpc.Status.ObservedGeneration &&
 		updated.Status.MainRouteTable == vpc.Status.MainRouteTable &&
+		updated.Status.VpcID == vpc.Status.VpcID &&
 		reflect.DeepEqual(updated.Status.Conditions, vpc.Status.Conditions) {
 		return nil
 	}
@@ -193,4 +241,13 @@ func (r *VpcReconciler) mapRouteTableToVpcs(ctx context.Context, obj client.Obje
 	}
 
 	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: routeTable.Spec.Vpc}}}
+}
+
+func (r *VpcReconciler) mapClaimToVpcs(ctx context.Context, obj client.Object) []reconcile.Request {
+	_ = ctx
+	claim, ok := obj.(*juneauv1alpha1.AllocationClaim)
+	if !ok || claim.Spec.ResourceRef.Kind != "Vpc" || claim.Spec.ResourceRef.Name == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: claim.Spec.ResourceRef.Name}}}
 }
