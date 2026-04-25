@@ -46,6 +46,9 @@ type Manager struct {
 	bgpPoolRunner     *runner.Runner
 	serviceRunner     *runner.Runner
 
+	conntrackCancel context.CancelFunc
+	conntrackDone   chan struct{}
+
 	podAttacher *link.PodAttacher
 	fib         *reconciler.Fib
 
@@ -202,12 +205,34 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 		m.serviceRunner.Start(ctx, 1)
 	}
 
+	m.startConntrackGC(ctx)
+
 	return nil
+}
+
+// startConntrackGC spawns the periodic ct_map garbage collector. It is
+// not informer-driven (no resource events to react to), so it lives
+// outside the Runner abstraction as a plain goroutine.
+func (m *Manager) startConntrackGC(ctx context.Context) {
+	gc := reconciler.NewConntrack(m.podEgress.Objs.CtMap, reconciler.ConntrackGCInterval)
+	cctx, cancel := context.WithCancel(ctx)
+	m.conntrackCancel = cancel
+	m.conntrackDone = make(chan struct{})
+	go func() {
+		defer close(m.conntrackDone)
+		gc.Run(cctx)
+	}()
 }
 
 func (m *Manager) Stop() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if m.conntrackCancel != nil {
+		m.conntrackCancel()
+		<-m.conntrackDone
+		m.conntrackCancel = nil
+	}
 
 	if m.podAttacher != nil {
 		if err := m.podAttacher.CloseAll(); err != nil {
