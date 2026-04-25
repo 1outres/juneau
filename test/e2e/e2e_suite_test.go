@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,28 @@ var repoRoot string
 var workerNodes []string
 var currentCase *caseContext
 
+const (
+	defaultWorkerNodeCount = 2
+)
+
+// envWorkerNodeCount returns the desired number of kind worker nodes.
+// Defaults to defaultWorkerNodeCount; override with E2E_WORKER_NODES.
+func envWorkerNodeCount() int {
+	raw := strings.TrimSpace(os.Getenv("E2E_WORKER_NODES"))
+	if raw == "" {
+		return defaultWorkerNodeCount
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return defaultWorkerNodeCount
+	}
+	return n
+}
+
+func envBool(name string) bool {
+	return strings.EqualFold(os.Getenv(name), "true")
+}
+
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
 	SetDefaultEventuallyTimeout(kindKubectlTimeout)
@@ -46,16 +69,34 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	Expect(err).NotTo(HaveOccurred())
 	repoRoot = root
 
+	numWorkers := envWorkerNodeCount()
+	skipBuild := envBool("E2E_SKIP_BUILD")
+	startBGPRouter := envBool("E2E_BGP_ROUTER")
+
 	runBestEffort(root, "kind", "delete", "cluster", "--name", clusterName)
 
-	configFile, err := writeKindConfig(root)
+	configFile, err := writeKindConfig(root, numWorkers)
 	Expect(err).NotTo(HaveOccurred())
 
 	mustRun(root, "kind", "create", "cluster", "--name", clusterName, "--config", configFile)
-	mustRun(root, "make", "image-controller", fmt.Sprintf("CONTROLLER_IMAGE=%s", controllerImage))
-	mustRun(root, "make", "image-webhookcertjob", fmt.Sprintf("WEBHOOKCERTJOB_IMAGE=%s", webhookCertJobImage))
-	mustRun(root, "make", "image-daemon", fmt.Sprintf("DAEMON_IMAGE=%s", daemonImage))
-	mustRun(root, "make", "image-bgp-speaker", fmt.Sprintf("BGP_SPEAKER_IMAGE=%s", bgpSpeakerImage))
+
+	imageTargets := []struct {
+		makeTarget string
+		envVar     string
+		image      string
+	}{
+		{"image-controller", "CONTROLLER_IMAGE", controllerImage},
+		{"image-webhookcertjob", "WEBHOOKCERTJOB_IMAGE", webhookCertJobImage},
+		{"image-daemon", "DAEMON_IMAGE", daemonImage},
+		{"image-bgp-speaker", "BGP_SPEAKER_IMAGE", bgpSpeakerImage},
+	}
+	for _, t := range imageTargets {
+		if skipBuild && dockerImageExists(t.image) {
+			_, _ = fmt.Fprintf(GinkgoWriter, "skipping build for %s (already present)\n", t.image)
+			continue
+		}
+		mustRun(root, "make", t.makeTarget, fmt.Sprintf("%s=%s", t.envVar, t.image))
+	}
 
 	for _, image := range []string{controllerImage, webhookCertJobImage, daemonImage, bgpSpeakerImage} {
 		mustRun(root, "kind", "load", "docker-image", image, "--name", clusterName)
@@ -105,8 +146,14 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 
 	nodes, err := discoverWorkerNodes(root)
 	Expect(err).NotTo(HaveOccurred())
-	Expect(nodes).To(HaveLen(2))
+	Expect(nodes).To(HaveLen(numWorkers))
 	workerNodes = nodes
+
+	if startBGPRouter {
+		router, err := ensureBGPRouter(workerNodes)
+		Expect(err).NotTo(HaveOccurred())
+		bgpRouter = router
+	}
 
 	return []byte(root)
 }, func(data []byte) {
@@ -161,26 +208,35 @@ func findRepoRoot() (string, error) {
 	return filepath.Clean(filepath.Join(wd, "..", "..")), nil
 }
 
-func writeKindConfig(root string) (string, error) {
-	config := `kind: Cluster
+func writeKindConfig(root string, numWorkers int) (string, error) {
+	if numWorkers < 1 {
+		return "", fmt.Errorf("numWorkers must be >= 1, got %d", numWorkers)
+	}
+	var b strings.Builder
+	b.WriteString(`kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 networking:
   disableDefaultCNI: true
   podSubnet: "10.16.0.0/16"
 nodes:
   - role: control-plane
-    image: ` + kindNodeImage + `
-  - role: worker
-    image: ` + kindNodeImage + `
-  - role: worker
-    image: ` + kindNodeImage + `
-`
+    image: ` + kindNodeImage + "\n")
+	for range numWorkers {
+		b.WriteString("  - role: worker\n    image: " + kindNodeImage + "\n")
+	}
 
 	path := filepath.Join(root, "test", "e2e", ".kind-config.yaml")
-	if err := os.WriteFile(path, []byte(config), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
 		return "", err
 	}
 	return path, nil
+}
+
+func dockerImageExists(image string) bool {
+	cmd := exec.Command("docker", "image", "inspect", image)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	return cmd.Run() == nil
 }
 
 func discoverWorkerNodes(dir string) ([]string, error) {
