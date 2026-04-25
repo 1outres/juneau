@@ -20,26 +20,22 @@ import (
 
 // Subnet keeps hostEgress.SubnetMap in sync with Subnet objects. It looks
 // up the VPC's main RouteTable to derive the table id written into the
-// map, and falls back to the host MAC for the default subnet (VNI=1).
-//
-// It also tracks the owning VPC's vpcID so that a delayed VpcID
-// allocation propagates into subnet_map.vpc_id. Without this, packets
+// map. The owning VPC's vpcID is also tracked so that a delayed VpcID
+// allocation propagates into subnet_map.vpc_id; without that, packets
 // from this Subnet would carry vpc_id=0 and fail the owner_vpc_id check
 // in handle_service.
 type Subnet struct {
 	client     client.Client
 	hostEgress *program.HostEgress
-	hostMac    net.HardwareAddr
 
 	mu        sync.Mutex
 	snapshots map[string]uint32 // subnet name -> VNI used at last write
 }
 
-func NewSubnet(cl client.Client, hostEgress *program.HostEgress, hostMac net.HardwareAddr) *Subnet {
+func NewSubnet(cl client.Client, hostEgress *program.HostEgress) *Subnet {
 	return &Subnet{
 		client:     cl,
 		hostEgress: hostEgress,
-		hostMac:    hostMac,
 		snapshots:  make(map[string]uint32),
 	}
 }
@@ -71,15 +67,9 @@ func (r *Subnet) upsert(ctx context.Context, subnet *juneauv1alpha1.Subnet) erro
 		return err
 	}
 
-	var netgwmac net.HardwareAddr
-	if subnet.Status.VNI == 1 {
-		netgwmac = r.hostMac
-	} else {
-		var err error
-		netgwmac, err = net.ParseMAC(subnet.Status.GatewayMAC)
-		if err != nil {
-			return err
-		}
+	netgwmac, err := net.ParseMAC(subnet.Status.GatewayMAC)
+	if err != nil {
+		return err
 	}
 
 	gwmac, err := convert.HardwareAddrToUint8Array(netgwmac)

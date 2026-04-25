@@ -26,12 +26,11 @@
 ## handle_dnat
 1. subnet_mapを引く
 2. 宛先IPアドレスを結果のaddrに書き換える
-3. subnet_idが1の場合、TC_ACT_SHOT
-4. 1以外の場合、arp_table mapを引く
-5. エントリが見つからなかった場合はTC_ACT_SHOT
-6. 宛先MACアドレスを結果のmacに書き換える
-7. 送信元MACアドレスをgw_macで書き換える
-8. forward_l2に渡す
+3. arp_table mapを引く
+4. エントリが見つからなかった場合はTC_ACT_SHOT
+5. 宛先MACアドレスを結果のmacに書き換える
+6. 送信元MACアドレスをgw_macで書き換える
+7. forward_l2に渡す
 
 ## forward_l2
 

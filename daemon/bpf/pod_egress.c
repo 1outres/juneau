@@ -204,21 +204,17 @@ static __always_inline int handle_arp(struct __sk_buff *skb, void *data_end,
     return TC_ACT_SHOT;
 
   __u8 responder_mac[ETH_ALEN];
-  if (subnet_id == 1) {
+  if (tpa == gw_addr) {
     __builtin_memcpy(responder_mac, subnet->gw_mac, ETH_ALEN);
   } else {
-    if (tpa == gw_addr) {
-      __builtin_memcpy(responder_mac, subnet->gw_mac, ETH_ALEN);
-    } else {
-      struct arp_table_key ak = {
-          .subnet_id = subnet_id,
-          .ipaddr = tpa,
-      };
-      const struct arp_table_val *av = bpf_map_lookup_elem(&arp_table, &ak);
-      if (!av)
-        return TC_ACT_SHOT;
-      __builtin_memcpy(responder_mac, av->mac, ETH_ALEN);
-    }
+    struct arp_table_key ak = {
+        .subnet_id = subnet_id,
+        .ipaddr = tpa,
+    };
+    const struct arp_table_val *av = bpf_map_lookup_elem(&arp_table, &ak);
+    if (!av)
+      return TC_ACT_SHOT;
+    __builtin_memcpy(responder_mac, av->mac, ETH_ALEN);
   }
 
   __u8 requester_mac[ETH_ALEN];
@@ -534,6 +530,23 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
   if (fv->type == FIB_ROUTE_TYPE_SERVICE)
     return handle_service(skb, eth, iph, subnet);
 
+  if (fv->type == FIB_ROUTE_TYPE_HOST_GATEWAY) {
+    // Hand the packet to the host network stack via cni_host (the
+    // veth peer attached to default's gateway IP). The host's iptables
+    // MASQUERADE rule SNATs outbound traffic; return packets traverse
+    // host_egress on cni_net to reach the actual Pod veth. dst_mac is
+    // rewritten to cni_host's MAC because cni_host is created with a
+    // random MAC per node, while gw_mac is a cluster-wide LAA — without
+    // the rewrite the kernel would drop the packet as PACKET_OTHERHOST.
+    __u32 host_key = 0;
+    const struct host_iface_val *host =
+        bpf_map_lookup_elem(&host_iface, &host_key);
+    if (!host)
+      return TC_ACT_SHOT;
+    __builtin_memcpy(eth->h_dest, host->mac, ETH_ALEN);
+    return bpf_redirect(host->ifindex, 0);
+  }
+
   return TC_ACT_SHOT;
 }
 
@@ -564,15 +577,6 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
   if (h_proto == ETH_P_ARP)
     return handle_arp(skb, data_end, eth, val->subnet_id, subnet);
 
-  if (val->subnet_id == 1) {
-    __u32 host_key = 0;
-    const struct host_iface_val *host =
-        bpf_map_lookup_elem(&host_iface, &host_key);
-    if (!host)
-      return TC_ACT_SHOT;
-    return bpf_redirect(host->ifindex, 0);
-  }
-
   // Apply forward DNAT recorded in conntrack for established Service
   // flows. DNAT rewrites the destination IP and must re-route via FIB to
   // find the new next-hop. Reverse SNAT lives in pod_ingress on the
@@ -594,7 +598,6 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
       return dispatch_after_dnat(skb, eth, iph, subnet->table_id, iph->daddr);
   }
 
-  // subnet_id != 1
   bool is_gw = true;
 #pragma unroll
   for (int i = 0; i < ETH_ALEN; i++) {

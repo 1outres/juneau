@@ -45,7 +45,7 @@ type Route struct {
 }
 
 type RouteVia struct {
-	// +kubebuilder:validation:Enum=connected;endpoint;internetGateway;service
+	// +kubebuilder:validation:Enum=connected;endpoint;internetGateway;service;hostGateway
 	Type     RouteViaType `json:"type"`
 	Endpoint string       `json:"endpointName,omitempty"`
 }
@@ -57,6 +57,13 @@ const (
 	ViaEndpoint        RouteViaType = "endpoint"
 	ViaInternetGateway RouteViaType = "internetGateway"
 	ViaService         RouteViaType = "service"
+	// ViaHostGateway delegates the matching destination to the host's
+	// network stack via the default VPC's cni_host iface. It exists as a
+	// transitional path so default-Subnet Pods can reach the internet
+	// through the kernel's iptables MASQUERADE while a proper in-eBPF
+	// NAPT implementation is being designed. Like ViaService, this type
+	// is controller-managed and rejected when set manually.
+	ViaHostGateway RouteViaType = "hostGateway"
 )
 
 // +kubebuilder:object:root=true

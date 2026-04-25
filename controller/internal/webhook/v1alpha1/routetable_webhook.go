@@ -167,6 +167,8 @@ func (v *RouteTableCustomValidator) validateRouteTableSpec(ctx context.Context, 
 			}
 		case juneauv1alpha1.ViaService:
 			errs = append(errs, field.Forbidden(routePath.Child("via", "type"), "spec.routes[].via.type=service is managed by the controller and cannot be specified manually; set spec.enableService on the Vpc instead"))
+		case juneauv1alpha1.ViaHostGateway:
+			errs = append(errs, field.Forbidden(routePath.Child("via", "type"), "spec.routes[].via.type=hostGateway is managed by the controller and cannot be specified manually"))
 		}
 
 		if _, ok := seenDst[route.Dst]; ok {

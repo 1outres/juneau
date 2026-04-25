@@ -151,7 +151,7 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	updated.Status.Gateway = nextGateway(cidr)
 
-	if updated.Name != "default" && updated.Status.GatewayMAC == "" {
+	if updated.Status.GatewayMAC == "" {
 		randMac, err := newLAA()
 		if err != nil {
 			if updateErr := r.updateStatus(ctx, &resource, resource.Status.VNI, resource.Status.Gateway, resource.Status.GatewayMAC, metav1.ConditionFalse, subnetReasonReconcileFailed, "failed to generate gateway MAC address"); updateErr != nil {

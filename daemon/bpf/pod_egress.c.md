@@ -14,12 +14,11 @@
 2. ifindex_subnet mapを引く(key: skb->ifindex)
 3. subnet_mapを引く
 4. ARPリクエストの場合、handle_arp関数を呼び出し、その関数の返り値を返す（handle_arp関数にはsubnet_idとsubnet_mapのvalも渡す）
-5. subnet_idが1の場合、host_iface mapを引いて、ifindexにbpf_redirectする
-6. subnet_idが1以外、IPv4の場合、apply_conntrack_dnatを呼び出す
+5. IPv4の場合、apply_conntrack_dnatを呼び出す
    - DNATが適用されたらdispatch_after_dnatに渡して終了(dst IPが書き換わったのでFIB再lookup必要)
    - DNAT非該当(CT miss、もしくはCT actionがDNAT以外) → fall through
-7. もし対象がgw_macだったらhandle_l3関数を呼び出し、その関数の返り値を返す(subnet_idとsubnet_mapのvalも渡す)
-8. そうじゃなかったらforward_l2関数を呼び出し、その返り値を返す(subnet_idとsubnet_mapのvalも渡す)
+6. もし対象がgw_macだったらhandle_l3関数を呼び出し、その関数の返り値を返す(subnet_idとsubnet_mapのvalも渡す)
+7. そうじゃなかったらforward_l2関数を呼び出し、その返り値を返す(subnet_idとsubnet_mapのvalも渡す)
 
 ## apply_conntrack_dnat
 
@@ -44,13 +43,10 @@ forward方向(caller→ClusterIP)のDNATのみを担当する。reverse SNATはp
 
 1. ARPペイロードのパースを行う
 2. 対象のIPアドレスが範囲内かどうか、gw_addrとmaskを使って範囲判定する。範囲外の場合ドロップする。
-3. subnet_idが1の場合、gw_macをARPレスポンスとして返す(bpf_redirectを使う)
-  - dst macをrequester mac, source macをgw_mac
-  - thaをrequester mac, tpaをrequester ip, shaをgw_mac, spaを元のtpa
-4. subnet_idが1以外の場合、もし対象がgw_addrだったらgw_macをARPレスポンスとして返す(bpf_redirectを使う)
-5. そうじゃなかったらarp_table mapを引く
-6. arp_tableに見つからない場合ドロップ
-7. エントリが見つかった場合、ARPレスポンスとして返す(bpf_redirectを使う)
+3. もし対象がgw_addrだったらsubnet->gw_macをARPレスポンスとして返す(bpf_redirectを使う)
+4. そうじゃなかったらarp_table mapを引く
+5. arp_tableに見つからない場合ドロップ
+6. エントリが見つかった場合、ARPレスポンスとして返す(bpf_redirectを使う)
 
 ## handle_l3
 
@@ -67,6 +63,7 @@ forward方向(caller→ClusterIP)のDNATのみを担当する。reverse SNATはp
 11. forward_l2にfib_val.subnet_idを渡す
 12. fib_val.type が INTERNET_GATEWAY の場合、handle_snatに渡す
 13. fib_val.type が SERVICE の場合、handle_serviceに渡す
+14. fib_val.type が HOST_GATEWAY の場合、host_iface mapからcni_hostのMAC/ifindexを取得し、dst_macを書き換えてbpf_redirect(host->ifindex)する。host network stackの routing + iptables MASQUERADEに委譲する経路（default VPCの外部疎通用、暫定的な仕様）
 
 ## handle_service
 
