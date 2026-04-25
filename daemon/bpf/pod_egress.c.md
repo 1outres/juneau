@@ -15,21 +15,21 @@
 3. subnet_mapを引く
 4. ARPリクエストの場合、handle_arp関数を呼び出し、その関数の返り値を返す（handle_arp関数にはsubnet_idとsubnet_mapのvalも渡す）
 5. subnet_idが1の場合、host_iface mapを引いて、ifindexにbpf_redirectする
-6. subnet_idが1以外、IPv4の場合、apply_conntrack_natを呼び出す
+6. subnet_idが1以外、IPv4の場合、apply_conntrack_dnatを呼び出す
    - DNATが適用されたらdispatch_after_dnatに渡して終了(dst IPが書き換わったのでFIB再lookup必要)
-   - SNATまたはCT miss → fall through
+   - DNAT非該当(CT miss、もしくはCT actionがDNAT以外) → fall through
 7. もし対象がgw_macだったらhandle_l3関数を呼び出し、その関数の返り値を返す(subnet_idとsubnet_mapのvalも渡す)
 8. そうじゃなかったらforward_l2関数を呼び出し、その返り値を返す(subnet_idとsubnet_mapのvalも渡す)
 
-## apply_conntrack_nat
+## apply_conntrack_dnat
 
-L4 stateful NATをL2/L3 dispatchから独立した phase として実行する。CT lookupはhandle_l3ではなくhandle_l2で行う。これにより同一Subnet内のbackend応答パケット(dst MAC = caller MAC, gw_mac経由しない)でも正しくSNATが適用される。
+forward方向(caller→ClusterIP)のDNATのみを担当する。reverse SNATはpod_ingress側で行う(同一node・別nodeを問わず宛先veth上で発火)。
 
-1. TCP/UDP以外はNAT_NONEを返す
+1. TCP/UDP以外は0を返す(rewriteしない)
 2. ct_mapをパケットの5-tuple (vpc_id=subnet->vpc_id, saddr, daddr, sport, dport, proto) で引く
-3. miss → NAT_NONEを返す
-4. cv->action == DNAT → dst IPとdst portを書き換え、NAT_DNATを返す
-5. cv->action == SNAT → src IPとsrc portを書き換え、NAT_SNATを返す
+3. miss、もしくは action != DNAT → 0
+4. cv->last_seen_ns更新、dst IPとdst portを書き換え、1を返す
+5. rewrite失敗で-1を返す
 
 ## forward_l2
 

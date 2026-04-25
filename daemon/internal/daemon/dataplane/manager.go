@@ -57,6 +57,7 @@ type Manager struct {
 	hostMac            net.HardwareAddr
 
 	podEgress    *program.PodEgress
+	podIngress   *program.PodIngress
 	hostEgress   *program.HostEgress
 	vxlanIngress *program.VxlanIngress
 	nodeIngress  *program.NodeIngress
@@ -78,6 +79,11 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.podEgress, err = program.NewPodEgress(m.pinPath, m.hostIfindex, hostMac)
 	if err != nil {
 		return fmt.Errorf("load pod egress program: %w", err)
+	}
+
+	m.podIngress, err = program.NewPodIngress(m.pinPath)
+	if err != nil {
+		return fmt.Errorf("load pod ingress program: %w", err)
 	}
 
 	m.hostEgress, err = program.NewHostEgress(m.pinPath, m.hostIfindex, m.vxlanIfindex)
@@ -135,7 +141,7 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	}
 	m.podIfaceRunner.Start(ctx, 1)
 
-	m.podAttacher = link.NewPodAttacher(m.client, m.podEgress, m.nodeName)
+	m.podAttacher = link.NewPodAttacher(m.client, m.podEgress, m.podIngress, m.nodeName)
 	m.podAttacherRunner = runner.New(m.podAttacher)
 	if err := m.podAttacherRunner.Watch(m.nwepInformer, runner.MetaNamespaceKey); err != nil {
 		return fmt.Errorf("watch NWEP (pod-attacher): %w", err)
@@ -216,6 +222,11 @@ func (m *Manager) Stop() error {
 
 	if m.podEgress != nil {
 		if err := m.podEgress.Close(); err != nil {
+			return err
+		}
+	}
+	if m.podIngress != nil {
+		if err := m.podIngress.Close(); err != nil {
 			return err
 		}
 	}
