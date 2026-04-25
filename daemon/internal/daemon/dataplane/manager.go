@@ -32,6 +32,8 @@ type Manager struct {
 	bgpAdvertisementInformer cache.Informer
 	subnetInformer           cache.Informer
 	rtInformer               cache.Informer
+	serviceInformer          cache.Informer
+	endpointSliceInformer    cache.Informer
 
 	subnetRunner      *runner.Runner
 	arpRunner         *runner.Runner
@@ -41,6 +43,7 @@ type Manager struct {
 	fibRunner         *runner.Runner
 	natRunner         *runner.Runner
 	bgpPoolRunner     *runner.Runner
+	serviceRunner     *runner.Runner
 
 	podAttacher *link.PodAttacher
 	fib         *reconciler.Fib
@@ -162,6 +165,23 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	m.bgpPoolRunner.Enqueue(runner.SingletonKey)
 	m.bgpPoolRunner.Start(ctx, 1)
 
+	if m.serviceInformer != nil && m.endpointSliceInformer != nil {
+		svc := reconciler.NewService(m.client, m.podEgress)
+		m.serviceRunner = runner.New(svc)
+		if err := m.serviceRunner.Watch(m.serviceInformer, runner.MetaNamespaceKey); err != nil {
+			return fmt.Errorf("watch Service: %w", err)
+		}
+		if err := m.serviceRunner.WatchFanOut(m.endpointSliceInformer, svc.FanOutEndpointSliceToService); err != nil {
+			return fmt.Errorf("watch EndpointSlice (service fan-out): %w", err)
+		}
+		// VPC enableService toggles or vpcID assignments fan out to all
+		// services so an enable/disable propagates immediately.
+		if err := m.serviceRunner.WatchFanOut(m.subnetInformer, svc.FanOutAllServices); err != nil {
+			return fmt.Errorf("watch Subnet (service fan-out): %w", err)
+		}
+		m.serviceRunner.Start(ctx, 1)
+	}
+
 	return nil
 }
 
@@ -195,6 +215,7 @@ func (m *Manager) Stop() error {
 		m.fibRunner,
 		m.natRunner,
 		m.bgpPoolRunner,
+		m.serviceRunner,
 	}
 	for _, rn := range runners {
 		if rn == nil {
@@ -234,6 +255,8 @@ func NewManager(
 	bgpAdvertisementInformer cache.Informer,
 	rtInformer cache.Informer,
 	subnetInformer cache.Informer,
+	serviceInformer cache.Informer,
+	endpointSliceInformer cache.Informer,
 	nodeName string,
 	vxlanIfindex int,
 	hostIfindex int,
@@ -249,6 +272,8 @@ func NewManager(
 		bgpAdvertisementInformer: bgpAdvertisementInformer,
 		rtInformer:               rtInformer,
 		subnetInformer:           subnetInformer,
+		serviceInformer:          serviceInformer,
+		endpointSliceInformer:    endpointSliceInformer,
 		nodeName:                 nodeName,
 		vxlanIfindex:             vxlanIfindex,
 		hostIfindex:              hostIfindex,

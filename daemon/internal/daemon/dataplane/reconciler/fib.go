@@ -23,6 +23,7 @@ const (
 	fibRouteTypeConnected       = 1
 	fibRouteTypeEndpoint        = 2
 	fibRouteTypeInternetGateway = 3
+	fibRouteTypeService         = 4
 )
 
 // Fib keeps podEgress.FibMap in sync with RouteTable objects. Each
@@ -194,6 +195,9 @@ func (r *Fib) buildFibVal(ctx context.Context, route *juneauv1alpha1.Route) (bpf
 		val, err := buildInternetGatewayFibVal()
 		return val, false, err
 
+	case juneauv1alpha1.ViaService:
+		return buildServiceFibVal(), false, nil
+
 	default:
 		return bpf.PodEgressFibVal{}, true, fmt.Errorf("unsupported route type %q", route.Via.Type)
 	}
@@ -247,6 +251,15 @@ func buildInternetGatewayFibVal() (bpf.PodEgressFibVal, error) {
 	return bpf.PodEgressFibVal{
 		Type: fibRouteTypeInternetGateway,
 	}, nil
+}
+
+// buildServiceFibVal builds a FIB value for the service route type. Only
+// the type is meaningful — the BPF side dispatches to handle_service which
+// uses service_map / backend_map / ct_map for the actual rewrite.
+func buildServiceFibVal() bpf.PodEgressFibVal {
+	return bpf.PodEgressFibVal{
+		Type: fibRouteTypeService,
+	}
 }
 
 // CloseAll closes every retained inner FIB map. Called by Manager on shutdown.
