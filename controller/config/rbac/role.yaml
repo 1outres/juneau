@@ -37,6 +37,7 @@ rules:
   - elasticipattachments
   - elasticips
   - externalnetworks
+  - natgateways
   - networkendpoints
   - networkinterfaces
   - routetables
@@ -62,6 +63,7 @@ rules:
   - elasticipattachments/finalizers
   - elasticips/finalizers
   - externalnetworks/finalizers
+  - natgateways/finalizers
   - networkendpoints/finalizers
   - networkinterfaces/finalizers
   - routetables/finalizers
@@ -81,6 +83,7 @@ rules:
   - elasticipattachments/status
   - elasticips/status
   - externalnetworks/status
+  - natgateways/status
   - networkendpoints/status
   - networkinterfaces/status
   - routetables/status

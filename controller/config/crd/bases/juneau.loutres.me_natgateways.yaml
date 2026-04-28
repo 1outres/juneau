@@ -4,24 +4,33 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.2
-  name: routetables.juneau.loutres.me
+  name: natgateways.juneau.loutres.me
 spec:
   group: juneau.loutres.me
   names:
-    kind: RouteTable
-    listKind: RouteTableList
-    plural: routetables
-    singular: routetable
+    kind: NATGateway
+    listKind: NATGatewayList
+    plural: natgateways
+    singular: natgateway
   scope: Cluster
   versions:
   - additionalPrinterColumns:
+    - jsonPath: .spec.vpc
+      name: VPC
+      type: string
+    - jsonPath: .spec.externalNetwork
+      name: ExternalNetwork
+      type: string
+    - jsonPath: .status.gatewayID
+      name: GatewayID
+      type: integer
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: RouteTable is the Schema for the routetables API.
+        description: NATGateway is the Schema for the natgateways API.
         properties:
           apiVersion:
             description: |-
@@ -41,53 +50,20 @@ spec:
           metadata:
             type: object
           spec:
-            description: RouteTableSpec defines the desired state of RouteTable.
+            description: NATGatewaySpec defines the desired state of NATGateway.
             properties:
-              routes:
-                items:
-                  properties:
-                    dst:
-                      minLength: 1
-                      type: string
-                    subnet:
-                      type: string
-                    via:
-                      properties:
-                        endpointName:
-                          description: |-
-                            Endpoint is required when type=endpoint. Refers to a
-                            NetworkEndpoint by name.
-                          type: string
-                        natGateway:
-                          description: |-
-                            NATGateway is required when type=natGateway. Refers to a
-                            NATGateway by name (cluster-scoped).
-                          type: string
-                        type:
-                          enum:
-                          - connected
-                          - endpoint
-                          - internetGateway
-                          - service
-                          - hostGateway
-                          - natGateway
-                          type: string
-                      required:
-                      - type
-                      type: object
-                  required:
-                  - dst
-                  - via
-                  type: object
-                type: array
+              externalNetwork:
+                minLength: 1
+                type: string
               vpc:
                 minLength: 1
                 type: string
             required:
+            - externalNetwork
             - vpc
             type: object
           status:
-            description: RouteTableStatus defines the observed state of RouteTable.
+            description: NATGatewayStatus defines the observed state of NATGateway.
             properties:
               conditions:
                 items:
@@ -145,48 +121,15 @@ spec:
                   - type
                   type: object
                 type: array
+              gatewayID:
+                description: |-
+                  GatewayID is the cluster-wide identifier allocated for this
+                  NATGateway. It is referenced by the data plane to look up
+                  per-(node, ExternalNetwork) NAPT source IPs.
+                format: int32
+                type: integer
               observedGeneration:
                 format: int64
-                type: integer
-              routes:
-                items:
-                  properties:
-                    dst:
-                      minLength: 1
-                      type: string
-                    subnet:
-                      type: string
-                    via:
-                      properties:
-                        endpointName:
-                          description: |-
-                            Endpoint is required when type=endpoint. Refers to a
-                            NetworkEndpoint by name.
-                          type: string
-                        natGateway:
-                          description: |-
-                            NATGateway is required when type=natGateway. Refers to a
-                            NATGateway by name (cluster-scoped).
-                          type: string
-                        type:
-                          enum:
-                          - connected
-                          - endpoint
-                          - internetGateway
-                          - service
-                          - hostGateway
-                          - natGateway
-                          type: string
-                      required:
-                      - type
-                      type: object
-                  required:
-                  - dst
-                  - via
-                  type: object
-                type: array
-              tableID:
-                format: int32
                 type: integer
             type: object
         type: object
