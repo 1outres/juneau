@@ -131,6 +131,17 @@ var _ = BeforeSuite(func() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr)).To(Succeed())
+	// NetworkEndpointReconciler is registered so that its field indexers
+	// (spec.podRef.{name,interface,uid}) are installed; the
+	// NetworkInterface reconciler relies on them when listing endpoints.
+	Expect((&NetworkEndpointReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr)).To(Succeed())
+	// NetworkInterfaceReconciler is exercised directly in
+	// networkinterface_controller_test.go rather than through the manager
+	// so that other controllers' tests can fix NetworkInterface.status
+	// without racing against an active reconcile loop.
 	Expect((&ElasticIPReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),

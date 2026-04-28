@@ -18,20 +18,22 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"reflect"
-	"strings"
 	"time"
 
-	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
@@ -46,9 +48,22 @@ const (
 	conditionReasonRequestedIPInUse    = "RequestedIPInUse"
 	conditionReasonSubnetExhausted     = "SubnetExhausted"
 	conditionReasonDeleting            = "Deleting"
+	conditionReasonAllocating          = "Allocating"
+
+	networkInterfaceFinalizer = "networkinterface.juneau.loutres.me/allocation-claim"
+
+	// networkInterfaceReleaseAfter is the grace period applied to the
+	// backing AllocationClaim. Matches the legacy IPLease behaviour so
+	// that a pod deleted and re-created with the same name keeps its IP.
+	networkInterfaceReleaseAfter = time.Hour
 )
 
-// NetworkInterfaceReconciler reconciles a NetworkInterface object
+// NetworkInterfaceReconciler reconciles a NetworkInterface object.
+//
+// IP allocation is delegated to an AllocationClaim that targets the
+// per-subnet AllocationPool maintained by the Subnet controller. The
+// reconciler owns the lifecycle of that claim and mirrors its outcome
+// into NetworkInterface.status.
 type NetworkInterfaceReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -57,11 +72,11 @@ type NetworkInterfaceReconciler struct {
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=networkinterfaces,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=networkinterfaces/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=networkinterfaces/finalizers,verbs=update
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=allocationclaims,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	finalizer := "networkinterface.juneau.loutres.me/finalizer"
 	logger := log.FromContext(ctx)
 
 	var resource juneauv1alpha1.NetworkInterface
@@ -73,12 +88,18 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	if done, err := r.handleDeletion(ctx, &resource, finalizer); done || err != nil {
-		return ctrl.Result{}, err
+	if !resource.ObjectMeta.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, r.handleDeletion(ctx, &resource)
 	}
 
-	if err := r.ensureFinalizer(ctx, &resource, finalizer); err != nil {
-		return ctrl.Result{}, err
+	if !controllerutil.ContainsFinalizer(&resource, networkInterfaceFinalizer) {
+		controllerutil.AddFinalizer(&resource, networkInterfaceFinalizer)
+		if err := r.Update(ctx, &resource); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.Get(ctx, req.NamespacedName, &resource); err != nil {
+			return ctrl.Result{}, client.IgnoreNotFound(err)
+		}
 	}
 
 	subnet, err := r.fetchSubnet(ctx, &resource)
@@ -91,37 +112,33 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	_, cidr, err := net.ParseCIDR(subnet.Spec.CIDR)
 	if err != nil {
-		if err := r.updateAllocationFailureStatus(ctx, &resource, conditionReasonInvalidSubnetCIDR, err.Error()); err != nil {
-			return ctrl.Result{}, err
+		if updateErr := r.updateAllocationFailureStatus(ctx, &resource, conditionReasonInvalidSubnetCIDR, err.Error()); updateErr != nil {
+			return ctrl.Result{}, updateErr
 		}
 		return ctrl.Result{}, nil
 	}
 
-	if done, err := r.reuseExistingLease(ctx, logger, &resource, subnet, cidr); done || err != nil {
+	address, allocReason, allocMessage, err := r.ensureClaim(ctx, &resource, subnet)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
+	if address == "" {
+		// Claim is not yet Allocated. Surface the underlying reason so
+		// users can distinguish "still allocating" from "exhausted".
+		if updateErr := r.updateAllocationFailureStatus(ctx, &resource, allocReason, allocMessage); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{}, nil
+	}
 
-	if done, err := r.allocateRequestedIP(ctx, logger, &resource, subnet, cidr); done || err != nil {
+	addressNet := &net.IPNet{IP: net.ParseIP(address), Mask: cidr.Mask}
+	if err := r.updateAllocatedStatus(ctx, &resource, claimNameForNetworkInterface(&resource), addressNet, subnet.Status.Gateway); err != nil {
 		return ctrl.Result{}, err
 	}
-
-	return r.allocateNextAvailableIP(ctx, logger, &resource, subnet, cidr)
+	return ctrl.Result{}, nil
 }
 
-// SetupWithManager sets up the controller with the Manager.
-func (r *NetworkInterfaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&juneauv1alpha1.NetworkInterface{}).
-		Owns(&juneauv1alpha1.NetworkEndpoint{}).
-		Named("networkinterface").
-		Complete(r)
-}
-
-func (r *NetworkInterfaceReconciler) handleDeletion(ctx context.Context, resource *juneauv1alpha1.NetworkInterface, finalizer string) (bool, error) {
-	if resource.ObjectMeta.DeletionTimestamp.IsZero() {
-		return false, nil
-	}
-
+func (r *NetworkInterfaceReconciler) handleDeletion(ctx context.Context, resource *juneauv1alpha1.NetworkInterface) error {
 	if err := r.updateStatus(ctx, resource, juneauv1alpha1.NetworkInterfacePhasePending,
 		metav1.Condition{
 			Type:    juneauv1alpha1.NetworkInterfaceStatusReady,
@@ -136,35 +153,24 @@ func (r *NetworkInterfaceReconciler) handleDeletion(ctx context.Context, resourc
 			Message: "NetworkInterface is being deleted",
 		},
 	); err != nil {
-		return true, err
+		return err
 	}
 
-	if controllerutil.ContainsFinalizer(resource, finalizer) {
-		var ipLease juneauv1alpha1.IPLease
-		if err := r.Get(ctx, client.ObjectKey{Name: resource.Status.IPLease}, &ipLease); err == nil {
-			ipLease.Spec.OwnerDeletionTimeStamp = &metav1.Time{Time: time.Now()}
-			if err := r.Update(ctx, &ipLease); err != nil {
-				return true, err
-			}
-		} else if !errors.IsNotFound(err) {
-			return true, err
-		}
-
-		controllerutil.RemoveFinalizer(resource, finalizer)
-		if err := r.Update(ctx, resource); err != nil {
-			return true, err
-		}
-	}
-
-	return true, nil
-}
-
-func (r *NetworkInterfaceReconciler) ensureFinalizer(ctx context.Context, resource *juneauv1alpha1.NetworkInterface, finalizer string) error {
-	if controllerutil.ContainsFinalizer(resource, finalizer) {
+	if !controllerutil.ContainsFinalizer(resource, networkInterfaceFinalizer) {
 		return nil
 	}
 
-	controllerutil.AddFinalizer(resource, finalizer)
+	claimName := claimNameForNetworkInterface(resource)
+	var claim juneauv1alpha1.AllocationClaim
+	if err := r.Get(ctx, client.ObjectKey{Name: claimName}, &claim); err == nil {
+		if err := r.Delete(ctx, &claim); err != nil && !errors.IsNotFound(err) {
+			return err
+		}
+	} else if !errors.IsNotFound(err) {
+		return err
+	}
+
+	controllerutil.RemoveFinalizer(resource, networkInterfaceFinalizer)
 	return r.Update(ctx, resource)
 }
 
@@ -198,163 +204,82 @@ func (r *NetworkInterfaceReconciler) fetchSubnet(ctx context.Context, resource *
 	return &subnet, nil
 }
 
-func (r *NetworkInterfaceReconciler) reuseExistingLease(ctx context.Context, logger logr.Logger, resource *juneauv1alpha1.NetworkInterface, subnet *juneauv1alpha1.Subnet, cidr *net.IPNet) (bool, error) {
-	var ipLeases juneauv1alpha1.IPLeaseList
-	if err := r.List(ctx, &ipLeases, client.MatchingFields{
-		"spec.subnet":           resource.Spec.Subnet,
-		"spec.podRef.namespace": resource.Namespace,
-		"spec.podRef.name":      resource.Spec.PodRef.Name,
-		"spec.podRef.interface": resource.Spec.PodRef.Interface,
-	}); err != nil {
-		logger.Error(err, "unable to list IPLeases for NetworkInterface", "name", resource.Name)
-		_ = r.updateAllocationFailureStatus(ctx, resource, conditionReasonAllocationFailed, err.Error())
-		return false, err
-	}
+// ensureClaim creates or updates the AllocationClaim that backs this
+// NetworkInterface's IP. Returns the resolved address (empty when the
+// claim is still pending) plus a reason/message pair to surface the
+// current state on the NetworkInterface.
+func (r *NetworkInterfaceReconciler) ensureClaim(ctx context.Context, resource *juneauv1alpha1.NetworkInterface, subnet *juneauv1alpha1.Subnet) (string, string, string, error) {
+	claimName := claimNameForNetworkInterface(resource)
 
-	if len(ipLeases.Items) == 0 {
-		return false, nil
-	}
-
-	ipLease := ipLeases.Items[0]
-	if ipLease.Spec.OwnerDeletionTimeStamp != nil {
-		ipLease.Spec.OwnerDeletionTimeStamp = nil
-		if err := r.Update(ctx, &ipLease); err != nil {
-			return true, err
-		}
-	}
-
-	if err := r.updateAllocatedStatus(ctx, resource, ipLease.Name, &net.IPNet{IP: net.ParseIP(ipLease.Spec.Address), Mask: cidr.Mask}, subnet.Status.Gateway); err != nil {
-		return true, err
-	}
-
-	return true, nil
-}
-
-func (r *NetworkInterfaceReconciler) allocateRequestedIP(
-	ctx context.Context,
-	logger logr.Logger,
-	resource *juneauv1alpha1.NetworkInterface,
-	subnet *juneauv1alpha1.Subnet,
-	cidr *net.IPNet,
-) (bool, error) {
-	if resource.Spec.Address == "" {
-		return false, nil
-	}
-
-	requestedIP := net.ParseIP(resource.Spec.Address)
-	if requestedIP == nil || requestedIP.To4() == nil || !cidr.Contains(requestedIP) {
-		if err := r.updateAllocationFailureStatus(ctx, resource, conditionReasonInvalidRequestedIP, "Requested IP is not a valid IPv4 address in subnet"); err != nil {
-			return true, err
-		}
-		return true, nil
-	}
-
-	var requestedLeases juneauv1alpha1.IPLeaseList
-	if err := r.List(ctx, &requestedLeases, client.MatchingFields{
-		"spec.subnet":  resource.Spec.Subnet,
-		"spec.address": requestedIP.String(),
-	}); err != nil {
-		logger.Error(err, "unable to list IPLeases for requested IP", "address", requestedIP.String())
-		_ = r.updateAllocationFailureStatus(ctx, resource, conditionReasonAllocationFailed, err.Error())
-		return true, err
-	}
-
-	if len(requestedLeases.Items) > 0 {
-		if err := r.updateAllocationFailureStatus(ctx, resource, conditionReasonRequestedIPInUse, "Requested IP already allocated: "+requestedIP.String()); err != nil {
-			return true, err
-		}
-		return true, nil
-	}
-
-	ipLease := r.buildIPLease(resource, subnet, requestedIP.String())
-	if err := r.Create(ctx, &ipLease); err != nil {
-		logger.Error(err, "unable to create IPLease for NetworkInterface", "name", resource.Name)
-		_ = r.updateAllocationFailureStatus(ctx, resource, conditionReasonAllocationFailed, err.Error())
-		return true, err
-	}
-
-	if err := r.updateAllocatedStatus(ctx, resource, ipLease.Name, &net.IPNet{IP: requestedIP, Mask: cidr.Mask}, subnet.Status.Gateway); err != nil {
-		return true, err
-	}
-
-	return true, nil
-}
-
-func (r *NetworkInterfaceReconciler) allocateNextAvailableIP(
-	ctx context.Context,
-	logger logr.Logger,
-	resource *juneauv1alpha1.NetworkInterface,
-	subnet *juneauv1alpha1.Subnet,
-	cidr *net.IPNet,
-) (ctrl.Result, error) {
-	ip := cidr.IP.Mask(cidr.Mask).To4()
-	broadcast := broadcastIP(cidr)
-
-	incIP(&ip)
-	incIP(&ip)
-	incIP(&ip)
-	incIP(&ip)
-
-	for {
-		if ip.Equal(broadcast) {
-			if err := r.updateAllocationFailureStatus(ctx, resource, conditionReasonSubnetExhausted, "No available IPs in subnet"); err != nil {
-				return ctrl.Result{}, err
-			}
-			return ctrl.Result{}, nil
-		}
-
-		var ipLeases juneauv1alpha1.IPLeaseList
-		if err := r.List(ctx, &ipLeases, client.MatchingFields{
-			"spec.subnet":  resource.Spec.Subnet,
-			"spec.address": ip.String(),
-		}); err != nil {
-			logger.Error(err, "unable to list IPLeases for IP", "address", ip.String())
-			_ = r.updateAllocationFailureStatus(ctx, resource, conditionReasonAllocationFailed, err.Error())
-			return ctrl.Result{}, err
-		}
-
-		if len(ipLeases.Items) > 0 {
-			incIP(&ip)
-			continue
-		}
-
-		ipLease := r.buildIPLease(resource, subnet, ip.String())
-		if err := r.Create(ctx, &ipLease); err != nil {
-			logger.Error(err, "unable to create IPLease for NetworkInterface", "name", resource.Name)
-			_ = r.updateAllocationFailureStatus(ctx, resource, conditionReasonAllocationFailed, err.Error())
-			return ctrl.Result{}, err
-		}
-
-		if err := r.updateAllocatedStatus(ctx, resource, ipLease.Name, &net.IPNet{IP: ip, Mask: cidr.Mask}, subnet.Status.Gateway); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
-	}
-}
-
-func (r *NetworkInterfaceReconciler) buildIPLease(resource *juneauv1alpha1.NetworkInterface, subnet *juneauv1alpha1.Subnet, address string) juneauv1alpha1.IPLease {
-	return juneauv1alpha1.IPLease{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: resource.Spec.Subnet + "-" + strings.ReplaceAll(address, ".", "-"),
+	desiredSpec := juneauv1alpha1.AllocationClaimSpec{
+		PoolRefs: []juneauv1alpha1.AllocationPoolReference{
+			{Name: SubnetIPAllocationPoolName(subnet.Name)},
 		},
-		Spec: juneauv1alpha1.IPLeaseSpec{
-			PodRef: juneauv1alpha1.IPLeasePodReference{
-				Namespace: resource.Namespace,
-				Name:      resource.Spec.PodRef.Name,
-				Interface: resource.Spec.PodRef.Interface,
-			},
-
-			Vpc:     subnet.Spec.Vpc,
-			Subnet:  resource.Spec.Subnet,
-			Address: address,
+		ResourceRef: juneauv1alpha1.AllocationResourceReference{
+			APIVersion: juneauv1alpha1.GroupVersion.String(),
+			Kind:       "NetworkInterface",
+			Namespace:  resource.Namespace,
+			Name:       resource.Name,
 		},
+		Attribute:    "status.address",
+		ReleaseAfter: &metav1.Duration{Duration: networkInterfaceReleaseAfter},
 	}
+	if resource.Spec.Address != "" {
+		ip := resource.Spec.Address
+		desiredSpec.RequestedIP = &ip
+	}
+
+	var existing juneauv1alpha1.AllocationClaim
+	getErr := r.Get(ctx, client.ObjectKey{Name: claimName}, &existing)
+	switch {
+	case errors.IsNotFound(getErr):
+		claim := &juneauv1alpha1.AllocationClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: claimName},
+			Spec:       desiredSpec,
+		}
+		if err := r.Create(ctx, claim); err != nil && !errors.IsAlreadyExists(err) {
+			return "", conditionReasonAllocationFailed, fmt.Sprintf("create AllocationClaim: %v", err), err
+		}
+		return "", conditionReasonAllocating, "AllocationClaim is being created", nil
+	case getErr != nil:
+		return "", conditionReasonAllocationFailed, getErr.Error(), getErr
+	}
+
+	if existing.Status.Phase == juneauv1alpha1.AllocationClaimPhaseAllocated && existing.Status.Value.IP != "" {
+		return existing.Status.Value.IP, "", "", nil
+	}
+
+	// Surface a more specific reason from the underlying claim when it
+	// indicates exhaustion or an invalid requested IP.
+	ready := meta.FindStatusCondition(existing.Status.Conditions, juneauv1alpha1.AllocationClaimStatusReady)
+	switch {
+	case ready == nil:
+		return "", conditionReasonAllocating, "AllocationClaim has no Ready condition yet", nil
+	case ready.Reason == allocationClaimReasonPending:
+		return "", conditionReasonSubnetExhausted, ready.Message, nil
+	case ready.Reason == allocationClaimReasonFailed:
+		return "", conditionReasonAllocationFailed, ready.Message, nil
+	}
+	return "", conditionReasonAllocating, "Waiting for AllocationClaim to be allocated", nil
 }
 
-func (r *NetworkInterfaceReconciler) updateAllocatedStatus(ctx context.Context, resource *juneauv1alpha1.NetworkInterface, ipLeaseName string, address *net.IPNet, gateway string) error {
+// claimNameForNetworkInterface composes the deterministic AllocationClaim
+// name for a NetworkInterface. Reusing the helper keeps name generation
+// consistent with other consumers (vpc, subnet, route table, elastic IP).
+func claimNameForNetworkInterface(resource *juneauv1alpha1.NetworkInterface) string {
+	return allocationClaimName(
+		SubnetIPAllocationPoolName(resource.Spec.Subnet),
+		schema.GroupVersionKind{Group: juneauv1alpha1.GroupVersion.Group, Version: juneauv1alpha1.GroupVersion.Version, Kind: "NetworkInterface"},
+		resource.Namespace,
+		resource.Name,
+		"status.address",
+	)
+}
+
+func (r *NetworkInterfaceReconciler) updateAllocatedStatus(ctx context.Context, resource *juneauv1alpha1.NetworkInterface, claimName string, address *net.IPNet, gateway string) error {
 	updated := resource.DeepCopy()
 	updated.Status.ObservedGeneration = updated.Generation
-	updated.Status.IPLease = ipLeaseName
+	updated.Status.AllocationClaim = claimName
 	updated.Status.Address = address.String()
 	updated.Status.Routes = buildDefaultRoutes(gateway)
 	meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
@@ -366,11 +291,7 @@ func (r *NetworkInterfaceReconciler) updateAllocatedStatus(ctx context.Context, 
 	})
 
 	var nwepList juneauv1alpha1.NetworkEndpointList
-	if err := r.List(ctx, &nwepList, client.InNamespace(resource.Namespace), client.MatchingFields{
-		"spec.podRef.interface": resource.Spec.PodRef.Interface,
-		"spec.podRef.name":      resource.Spec.PodRef.Name,
-		"spec.podRef.uid":       resource.Spec.PodRef.UID,
-	}); err != nil {
+	if err := r.List(ctx, &nwepList, client.InNamespace(resource.Namespace)); err != nil {
 		_ = r.updateStatus(ctx, resource, juneauv1alpha1.NetworkInterfacePhaseAllocated,
 			metav1.Condition{
 				Type:               juneauv1alpha1.NetworkInterfaceStatusAllocated,
@@ -390,7 +311,16 @@ func (r *NetworkInterfaceReconciler) updateAllocatedStatus(ctx context.Context, 
 		return err
 	}
 
-	if len(nwepList.Items) > 0 {
+	hasMatchingEndpoint := false
+	for _, ep := range nwepList.Items {
+		if ep.Spec.PodRef.Interface == resource.Spec.PodRef.Interface &&
+			ep.Spec.PodRef.Name == resource.Spec.PodRef.Name &&
+			ep.Spec.PodRef.UID == resource.Spec.PodRef.UID {
+			hasMatchingEndpoint = true
+			break
+		}
+	}
+	if hasMatchingEndpoint {
 		updated.Status.Phase = juneauv1alpha1.NetworkInterfacePhaseReady
 		meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
 			Type:               juneauv1alpha1.NetworkInterfaceStatusReady,
@@ -461,7 +391,7 @@ func (r *NetworkInterfaceReconciler) updateAllocationFailureStatus(ctx context.C
 func (r *NetworkInterfaceReconciler) commitStatus(ctx context.Context, resource *juneauv1alpha1.NetworkInterface, status juneauv1alpha1.NetworkInterfaceStatus) error {
 	if resource.Status.ObservedGeneration == status.ObservedGeneration &&
 		resource.Status.Phase == status.Phase &&
-		resource.Status.IPLease == status.IPLease &&
+		resource.Status.AllocationClaim == status.AllocationClaim &&
 		resource.Status.Address == status.Address &&
 		reflect.DeepEqual(resource.Status.Routes, status.Routes) &&
 		reflect.DeepEqual(resource.Status.Conditions, status.Conditions) {
@@ -472,20 +402,27 @@ func (r *NetworkInterfaceReconciler) commitStatus(ctx context.Context, resource 
 	return r.Status().Update(ctx, resource)
 }
 
-func broadcastIP(n *net.IPNet) net.IP {
-	ip := append(net.IP(nil), n.IP...)
-	mask := n.Mask
-	for i := range ip {
-		ip[i] |= ^mask[i]
-	}
-	return ip
-}
-
-func incIP(ip *net.IP) {
-	for i := len(*ip) - 1; i >= 0; i-- {
-		(*ip)[i]++
-		if (*ip)[i] != 0 {
-			break
-		}
-	}
+// SetupWithManager sets up the controller with the Manager.
+func (r *NetworkInterfaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&juneauv1alpha1.NetworkInterface{}).
+		Owns(&juneauv1alpha1.NetworkEndpoint{}).
+		Watches(
+			&juneauv1alpha1.AllocationClaim{},
+			handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
+				claim, ok := obj.(*juneauv1alpha1.AllocationClaim)
+				if !ok {
+					return nil
+				}
+				ref := claim.Spec.ResourceRef
+				if ref.Kind != "NetworkInterface" || ref.Name == "" {
+					return nil
+				}
+				return []reconcile.Request{{
+					NamespacedName: client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name},
+				}}
+			}),
+		).
+		Named("networkinterface").
+		Complete(r)
 }

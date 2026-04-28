@@ -42,9 +42,12 @@ type NetworkInterfaceStatus struct {
 	ObservedGeneration int64                 `json:"observedGeneration,omitempty"`
 	Phase              NetworkInterfacePhase `json:"phase,omitempty"`
 
-	IPLease string         `json:"ipLease,omitempty"`
-	Address string         `json:"address,omitempty"`
-	Routes  []NetworkRoute `json:"routes,omitempty"`
+	// AllocationClaim names the cluster-scoped AllocationClaim that the
+	// reconciler maintains for this interface's IP reservation. Useful
+	// only for debugging — daemon/CNI consumers should rely on Address.
+	AllocationClaim string         `json:"allocationClaim,omitempty"`
+	Address         string         `json:"address,omitempty"`
+	Routes          []NetworkRoute `json:"routes,omitempty"`
 }
 
 type NetworkInterfacePodReference struct {
