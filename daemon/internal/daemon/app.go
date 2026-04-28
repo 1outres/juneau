@@ -312,9 +312,29 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("failed to sync cache")
 			}
 
-			hostIfaceInfo, err := bootstrap.SetupDefaultGatewayIface(ctx, cl)
+			juneauNodeIfaceInfo, err := bootstrap.SetupDefaultGatewayIface(ctx, cl, nodeName)
 			if err != nil {
 				return fmt.Errorf("setup default gateway iface: %w", err)
+			}
+			hostIfaceInfo := &juneauNodeIfaceInfo.HostIfaceInfo
+
+			// The node's underlay IP (its NodeInternalIP) backs cross-node
+			// fdb entries pointing at this node's juneau_node.
+			var nodeUnderlayIP net.IP
+			{
+				var node corev1.Node
+				if err := cl.Get(ctx, client.ObjectKey{Name: nodeName}, &node); err != nil {
+					return fmt.Errorf("get Node %q for underlay IP: %w", nodeName, err)
+				}
+				for _, addr := range node.Status.Addresses {
+					if addr.Type == corev1.NodeInternalIP {
+						nodeUnderlayIP = net.ParseIP(addr.Address)
+						break
+					}
+				}
+				if nodeUnderlayIP == nil {
+					return fmt.Errorf("node %q has no InternalIP", nodeName)
+				}
 			}
 
 			if vxlanParentIface == "" || masqueradeIface == "" {
@@ -353,7 +373,7 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("lookup node ingress iface %q: %w", masqueradeIface, err)
 			}
 
-			bpfManager := dataplane.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, vpcInformer, serviceInformer, endpointSliceInformer, externalNetworkAttachmentInformer, natGatewayInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, bpfPinPath, hostIfaceInfo.MAC)
+			bpfManager := dataplane.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, vpcInformer, serviceInformer, endpointSliceInformer, externalNetworkAttachmentInformer, natGatewayInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, bpfPinPath, hostIfaceInfo.MAC, juneauNodeIfaceInfo.AssignedIP, nodeUnderlayIP)
 			if err := bpfManager.Start(ctx); err != nil {
 				return fmt.Errorf("initialize BPF manager: %w", err)
 			}
