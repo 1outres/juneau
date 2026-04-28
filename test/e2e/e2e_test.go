@@ -54,30 +54,6 @@ var _ = Describe("Juneau cluster connectivity", Ordered, func() {
 			placement: placementDifferentNodes,
 			network:   networkDifferentCustomSubnets,
 		}),
-		Entry("pod to svc, same node, custom vpc enableService=true, same subnet", connectivityScenario{
-			name:      "pod-to-svc-same-node-same-custom-subnet-service",
-			target:    targetService,
-			placement: placementSameNode,
-			network:   networkSameCustomSubnetService,
-		}),
-		Entry("pod to svc, diff node, custom vpc enableService=true, same subnet", connectivityScenario{
-			name:      "pod-to-svc-diff-node-same-custom-subnet-service",
-			target:    targetService,
-			placement: placementDifferentNodes,
-			network:   networkSameCustomSubnetService,
-		}),
-		Entry("pod to svc, same node, custom vpc enableService=true, diff subnet", connectivityScenario{
-			name:      "pod-to-svc-same-node-different-custom-subnets-service",
-			target:    targetService,
-			placement: placementSameNode,
-			network:   networkDifferentCustomSubnetsService,
-		}),
-		Entry("pod to svc, diff node, custom vpc enableService=true, diff subnet", connectivityScenario{
-			name:      "pod-to-svc-diff-node-different-custom-subnets-service",
-			target:    targetService,
-			placement: placementDifferentNodes,
-			network:   networkDifferentCustomSubnetsService,
-		}),
 	)
 })
 

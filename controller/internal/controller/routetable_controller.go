@@ -394,10 +394,27 @@ func (r *RouteTableReconciler) mapNATGatewayToRouteTables(ctx context.Context, o
 	}
 
 	requests := make([]reconcile.Request, 0)
+	enqueued := map[string]bool{}
 	for _, rt := range routeTableList.Items {
 		for _, route := range rt.Spec.Routes {
 			if route.Via.Type == juneauloutresmev1alpha1.ViaNATGateway && route.Via.NATGateway == natGateway.Name {
+				if !enqueued[rt.Name] {
+					requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: rt.Name}})
+					enqueued[rt.Name] = true
+				}
+				break
+			}
+		}
+	}
+	// The default-VPC main RouteTable receives a 0/0 auto-injection
+	// when a NATGateway named "default" exists. That dependency lives
+	// only in status.routes (not spec), so the loop above never picks
+	// it up; enqueue it explicitly here.
+	if natGateway.Name == defaultVpcName {
+		for _, rt := range routeTableList.Items {
+			if rt.Name == defaultVpcName && rt.Spec.Vpc == defaultVpcName && !enqueued[rt.Name] {
 				requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: rt.Name}})
+				enqueued[rt.Name] = true
 				break
 			}
 		}
