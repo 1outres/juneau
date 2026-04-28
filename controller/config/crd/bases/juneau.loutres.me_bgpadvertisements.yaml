@@ -46,6 +46,20 @@ spec:
                 minItems: 1
                 type: array
                 x-kubernetes-list-type: set
+              nodeName:
+                description: |-
+                  NodeName, if non-empty, scopes the advertisement to a single
+                  node: only the bgp-speaker on the matching node emits the BGP
+                  route. When empty, every bgp-speaker advertises the configured
+                  prefixes.
+                type: string
+              prefix:
+                description: |-
+                  Prefix, if non-empty, restricts the advertisement to a single
+                  CIDR prefix instead of advertising every CIDR backing the
+                  referenced AddressPool(s). The prefix must be contained in one
+                  of the referenced AddressPools' CIDRs.
+                type: string
             required:
             - addressPools
             type: object
