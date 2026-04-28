@@ -17,6 +17,7 @@ resources:
 - bases/juneau.loutres.me_elasticipattachments.yaml
 - bases/juneau.loutres.me_allocationpools.yaml
 - bases/juneau.loutres.me_allocationclaims.yaml
+- bases/juneau.loutres.me_allocationleases.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

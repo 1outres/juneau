@@ -22,6 +22,9 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the {{ .ProjectName }} itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
+- allocationlease_admin_role.yaml
+- allocationlease_editor_role.yaml
+- allocationlease_viewer_role.yaml
 - allocationclaim_admin_role.yaml
 - allocationclaim_editor_role.yaml
 - allocationclaim_viewer_role.yaml
