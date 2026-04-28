@@ -85,3 +85,109 @@ func TestBuildReconcileResult_PeerNamesAndAdvertisementsAndWarnings(t *testing.T
 		t.Errorf("Warnings: want one mentioning bad-peer, got %v", res.Warnings)
 	}
 }
+
+func TestBuildReconcileResult_PerNodePrefixOverride(t *testing.T) {
+	t.Parallel()
+
+	pools := &juneauv1alpha1.AddressPoolList{Items: []juneauv1alpha1.AddressPool{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "pool-a"},
+			Spec: juneauv1alpha1.AddressPoolSpec{
+				AdvertiseMode: juneauv1alpha1.AddressPoolAdvertiseModeBGP,
+				Addresses:     []string{"10.1.0.0/24"},
+			},
+		},
+	}}
+
+	advs := &juneauv1alpha1.BGPAdvertisementList{Items: []juneauv1alpha1.BGPAdvertisement{
+		// Per-node /32 advertisement targeted at node-a.
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "adv-node-a"},
+			Spec: juneauv1alpha1.BGPAdvertisementSpec{
+				AddressPools: []string{"pool-a"},
+				NodeName:     "node-a",
+				Prefix:       "10.1.0.5/32",
+			},
+		},
+		// Per-node /32 advertisement targeted at node-b (must be ignored on node-a).
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "adv-node-b"},
+			Spec: juneauv1alpha1.BGPAdvertisementSpec{
+				AddressPools: []string{"pool-a"},
+				NodeName:     "node-b",
+				Prefix:       "10.1.0.6/32",
+			},
+		},
+	}}
+
+	peers := &juneauv1alpha1.BGPPeerList{Items: []juneauv1alpha1.BGPPeer{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "peer-x"},
+			Spec: juneauv1alpha1.BGPPeerSpec{
+				MyASN:       64512,
+				PeerASN:     64513,
+				PeerAddress: "10.0.0.2",
+			},
+		},
+	}}
+
+	res := buildReconcileResult("node-a", pools, advs, peers)
+
+	if got := len(res.Desired.Peers); got != 1 {
+		t.Fatalf("Desired.Peers: want 1, got %d", got)
+	}
+
+	prefixes := res.Desired.Peers[0].Prefixes
+	if got := len(prefixes); got != 1 {
+		t.Fatalf("Desired.Peers[0].Prefixes: want 1, got %d (%v)", got, prefixes)
+	}
+	if got := prefixes[0].String(); got != "10.1.0.5/32" {
+		t.Errorf("Desired.Peers[0].Prefixes[0]: want 10.1.0.5/32, got %s", got)
+	}
+}
+
+func TestBuildReconcileResult_NodeNameAllNodes(t *testing.T) {
+	t.Parallel()
+
+	pools := &juneauv1alpha1.AddressPoolList{Items: []juneauv1alpha1.AddressPool{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "pool-a"},
+			Spec: juneauv1alpha1.AddressPoolSpec{
+				AdvertiseMode: juneauv1alpha1.AddressPoolAdvertiseModeBGP,
+				Addresses:     []string{"10.1.0.0/24"},
+			},
+		},
+	}}
+
+	// nodeName empty: every node should advertise the pool's CIDR.
+	advs := &juneauv1alpha1.BGPAdvertisementList{Items: []juneauv1alpha1.BGPAdvertisement{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "adv-all"},
+			Spec: juneauv1alpha1.BGPAdvertisementSpec{
+				AddressPools: []string{"pool-a"},
+			},
+		},
+	}}
+
+	peers := &juneauv1alpha1.BGPPeerList{Items: []juneauv1alpha1.BGPPeer{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "peer-x"},
+			Spec: juneauv1alpha1.BGPPeerSpec{
+				MyASN:       64512,
+				PeerASN:     64513,
+				PeerAddress: "10.0.0.2",
+			},
+		},
+	}}
+
+	for _, node := range []string{"node-a", "node-b"} {
+		res := buildReconcileResult(node, pools, advs, peers)
+		if got := len(res.Desired.Peers); got != 1 {
+			t.Fatalf("[%s] Desired.Peers: want 1, got %d", node, got)
+		}
+		prefixes := res.Desired.Peers[0].Prefixes
+		if got := len(prefixes); got != 1 || prefixes[0].String() != "10.1.0.0/24" {
+			t.Errorf("[%s] Desired.Peers[0].Prefixes: want [10.1.0.0/24], got %v", node, prefixes)
+		}
+	}
+}
