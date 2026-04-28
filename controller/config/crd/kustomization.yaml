@@ -18,6 +18,7 @@ resources:
 - bases/juneau.loutres.me_allocationclaims.yaml
 - bases/juneau.loutres.me_allocationleases.yaml
 - bases/juneau.loutres.me_natgateways.yaml
+- bases/juneau.loutres.me_externalnetworkattachments.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

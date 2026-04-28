@@ -25,16 +25,17 @@ import (
 type Manager struct {
 	mu sync.Mutex
 
-	client                   client.Client
-	nwepInformer             cache.Informer
-	eipaInformer             cache.Informer
-	addressPoolInformer      cache.Informer
-	bgpAdvertisementInformer cache.Informer
-	subnetInformer           cache.Informer
-	rtInformer               cache.Informer
-	vpcInformer              cache.Informer
-	serviceInformer          cache.Informer
-	endpointSliceInformer    cache.Informer
+	client                            client.Client
+	nwepInformer                      cache.Informer
+	eipaInformer                      cache.Informer
+	addressPoolInformer               cache.Informer
+	bgpAdvertisementInformer          cache.Informer
+	subnetInformer                    cache.Informer
+	rtInformer                        cache.Informer
+	vpcInformer                       cache.Informer
+	serviceInformer                   cache.Informer
+	endpointSliceInformer             cache.Informer
+	externalNetworkAttachmentInformer cache.Informer
 
 	subnetRunner      *runner.Runner
 	arpRunner         *runner.Runner
@@ -45,6 +46,9 @@ type Manager struct {
 	natRunner         *runner.Runner
 	bgpPoolRunner     *runner.Runner
 	serviceRunner     *runner.Runner
+	naptRunner        *runner.Runner
+
+	napt *reconciler.Napt
 
 	conntrackCancel context.CancelFunc
 	conntrackDone   chan struct{}
@@ -186,6 +190,15 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	m.bgpPoolRunner.Enqueue(runner.SingletonKey)
 	m.bgpPoolRunner.Start(ctx, 1)
 
+	if m.externalNetworkAttachmentInformer != nil {
+		m.napt = reconciler.NewNapt(m.client, m.podEgress, m.nodeName)
+		m.naptRunner = runner.New(m.napt)
+		if err := m.naptRunner.Watch(m.externalNetworkAttachmentInformer, runner.MetaNamespaceKey); err != nil {
+			return fmt.Errorf("watch ExternalNetworkAttachment: %w", err)
+		}
+		m.naptRunner.Start(ctx, 1)
+	}
+
 	if m.serviceInformer != nil && m.endpointSliceInformer != nil {
 		svc := reconciler.NewService(m.client, m.podEgress)
 		m.serviceRunner = runner.New(svc)
@@ -261,6 +274,12 @@ func (m *Manager) Stop() error {
 		}
 	}
 
+	if m.napt != nil {
+		if err := m.napt.CloseAll(); err != nil {
+			return err
+		}
+	}
+
 	runners := []*runner.Runner{
 		m.subnetRunner,
 		m.arpRunner,
@@ -271,6 +290,7 @@ func (m *Manager) Stop() error {
 		m.natRunner,
 		m.bgpPoolRunner,
 		m.serviceRunner,
+		m.naptRunner,
 	}
 	for _, rn := range runners {
 		if rn == nil {
@@ -313,6 +333,7 @@ func NewManager(
 	vpcInformer cache.Informer,
 	serviceInformer cache.Informer,
 	endpointSliceInformer cache.Informer,
+	externalNetworkAttachmentInformer cache.Informer,
 	nodeName string,
 	vxlanIfindex int,
 	hostIfindex int,
@@ -321,21 +342,22 @@ func NewManager(
 	defaultGatewayMac net.HardwareAddr,
 ) *Manager {
 	return &Manager{
-		client:                   cl,
-		nwepInformer:             nwepInformer,
-		eipaInformer:             eipaInformer,
-		addressPoolInformer:      addressPoolInformer,
-		bgpAdvertisementInformer: bgpAdvertisementInformer,
-		rtInformer:               rtInformer,
-		subnetInformer:           subnetInformer,
-		vpcInformer:              vpcInformer,
-		serviceInformer:          serviceInformer,
-		endpointSliceInformer:    endpointSliceInformer,
-		nodeName:                 nodeName,
-		vxlanIfindex:             vxlanIfindex,
-		hostIfindex:              hostIfindex,
-		nodeIngressIfindex:       nodeIngressIfindex,
-		pinPath:                  pinPath,
-		hostMac:                  defaultGatewayMac,
+		client:                            cl,
+		nwepInformer:                      nwepInformer,
+		eipaInformer:                      eipaInformer,
+		addressPoolInformer:               addressPoolInformer,
+		bgpAdvertisementInformer:          bgpAdvertisementInformer,
+		rtInformer:                        rtInformer,
+		subnetInformer:                    subnetInformer,
+		vpcInformer:                       vpcInformer,
+		serviceInformer:                   serviceInformer,
+		endpointSliceInformer:             endpointSliceInformer,
+		externalNetworkAttachmentInformer: externalNetworkAttachmentInformer,
+		nodeName:                          nodeName,
+		vxlanIfindex:                      vxlanIfindex,
+		hostIfindex:                       hostIfindex,
+		nodeIngressIfindex:                nodeIngressIfindex,
+		pinPath:                           pinPath,
+		hostMac:                           defaultGatewayMac,
 	}
 }
