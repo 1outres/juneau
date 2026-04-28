@@ -124,6 +124,80 @@ var _ = Describe("Vpc/Subnet webhooks", func() {
 		// This intentionally captures currently missing overlap validation.
 		Expect(err).To(HaveOccurred(), "missing overlap validation currently allows overlapping subnets in the same VPC")
 	})
+
+	It("rejects creating a Subnet that references a nonexistent RouteTable", func() {
+		vpcName := createWebhookVpc()
+
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Subnet{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("subnet")},
+			Spec: juneauv1alpha1.SubnetSpec{
+				Vpc:        vpcName,
+				CIDR:       webhookUniqueSubnetCIDR(),
+				RouteTable: webhookUniqueTestName("missing-rt"),
+			},
+		})
+
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("referenced RouteTable does not exist"))
+	})
+
+	It("rejects creating a Subnet that references a RouteTable in a different VPC", func() {
+		vpcA := createWebhookVpc()
+		vpcB := createWebhookVpc()
+
+		altRT := webhookUniqueTestName("rt")
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
+			ObjectMeta: metav1.ObjectMeta{Name: altRT},
+			Spec:       juneauv1alpha1.RouteTableSpec{Vpc: vpcB},
+		})).To(Succeed())
+
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Subnet{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("subnet")},
+			Spec: juneauv1alpha1.SubnetSpec{
+				Vpc:        vpcA,
+				CIDR:       webhookUniqueSubnetCIDR(),
+				RouteTable: altRT,
+			},
+		})
+
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("RouteTable belongs to a different Vpc"))
+	})
+
+	It("accepts creating a Subnet that references a RouteTable in the same VPC", func() {
+		vpcName := createWebhookVpc()
+
+		altRT := webhookUniqueTestName("rt")
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
+			ObjectMeta: metav1.ObjectMeta{Name: altRT},
+			Spec:       juneauv1alpha1.RouteTableSpec{Vpc: vpcName},
+		})).To(Succeed())
+
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Subnet{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("subnet")},
+			Spec: juneauv1alpha1.SubnetSpec{
+				Vpc:        vpcName,
+				CIDR:       webhookUniqueSubnetCIDR(),
+				RouteTable: altRT,
+			},
+		})).To(Succeed())
+	})
+
+	It("rejects setting spec.routeTable on the default Subnet", func() {
+		altRT := webhookUniqueTestName("rt")
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
+			ObjectMeta: metav1.ObjectMeta{Name: altRT},
+			Spec:       juneauv1alpha1.RouteTableSpec{Vpc: "default"},
+		})).To(Succeed())
+
+		var subnet juneauv1alpha1.Subnet
+		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Name: "default"}, &subnet)).To(Succeed())
+		subnet.Spec.RouteTable = altRT
+
+		err := webhookK8sClient.Update(context.Background(), &subnet)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("default Subnet must use the Vpc's main RouteTable"))
+	})
 })
 
 var _ = Describe("Service-related Vpc/Subnet webhooks", func() {
@@ -175,6 +249,64 @@ var _ = Describe("RouteTable webhook", func() {
 		})
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("managed by the controller"))
+	})
+
+	It("rejects deleting a RouteTable that a Subnet still references", func() {
+		vpcName := createWebhookVpc()
+
+		altRT := webhookUniqueTestName("rt")
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
+			ObjectMeta: metav1.ObjectMeta{Name: altRT},
+			Spec:       juneauv1alpha1.RouteTableSpec{Vpc: vpcName},
+		})).To(Succeed())
+
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Subnet{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("subnet")},
+			Spec: juneauv1alpha1.SubnetSpec{
+				Vpc:        vpcName,
+				CIDR:       webhookUniqueSubnetCIDR(),
+				RouteTable: altRT,
+			},
+		})).To(Succeed())
+
+		var rt juneauv1alpha1.RouteTable
+		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Name: altRT}, &rt)).To(Succeed())
+		err := webhookK8sClient.Delete(context.Background(), &rt)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("Subnet"))
+		Expect(err.Error()).To(ContainSubstring("references"))
+	})
+
+	It("rejects deleting the main RouteTable of an existing Vpc", func() {
+		vpcName := createWebhookVpc()
+
+		// In production VpcReconciler creates a RouteTable named after
+		// the Vpc; controllers do not run in this webhook test suite
+		// so we mint that RT directly to drive the validation path.
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
+			ObjectMeta: metav1.ObjectMeta{Name: vpcName},
+			Spec:       juneauv1alpha1.RouteTableSpec{Vpc: vpcName},
+		})).To(Succeed())
+
+		var rt juneauv1alpha1.RouteTable
+		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Name: vpcName}, &rt)).To(Succeed())
+		err := webhookK8sClient.Delete(context.Background(), &rt)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("main RouteTable"))
+	})
+
+	It("allows deleting a RouteTable that no Subnet references", func() {
+		vpcName := createWebhookVpc()
+
+		altRT := webhookUniqueTestName("rt")
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
+			ObjectMeta: metav1.ObjectMeta{Name: altRT},
+			Spec:       juneauv1alpha1.RouteTableSpec{Vpc: vpcName},
+		})).To(Succeed())
+
+		var rt juneauv1alpha1.RouteTable
+		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Name: altRT}, &rt)).To(Succeed())
+		Expect(webhookK8sClient.Delete(context.Background(), &rt)).To(Succeed())
 	})
 })
 

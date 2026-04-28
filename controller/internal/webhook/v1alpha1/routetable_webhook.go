@@ -62,7 +62,7 @@ func (d *RouteTableCustomDefaulter) Default(ctx context.Context, obj runtime.Obj
 	return nil
 }
 
-// +kubebuilder:webhook:path=/validate-juneau-loutres-me-v1alpha1-routetable,mutating=false,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=routetables,verbs=create;update,versions=v1alpha1,name=vroutetable-v1alpha1.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-juneau-loutres-me-v1alpha1-routetable,mutating=false,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=routetables,verbs=create;update;delete,versions=v1alpha1,name=vroutetable-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // RouteTableCustomValidator validates RouteTable resources.
 type RouteTableCustomValidator struct {
@@ -119,10 +119,46 @@ func (v *RouteTableCustomValidator) ValidateUpdate(ctx context.Context, oldObj, 
 }
 
 func (v *RouteTableCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	_ = ctx
-
-	if _, ok := obj.(*juneauv1alpha1.RouteTable); !ok {
+	routeTable, ok := obj.(*juneauv1alpha1.RouteTable)
+	if !ok {
 		return nil, fmt.Errorf("expected a RouteTable object but got %T", obj)
+	}
+	routetablelog.Info("Validation for RouteTable upon deletion", "name", routeTable.GetName())
+
+	// Block deleting the Vpc's main RouteTable: the VpcReconciler would
+	// recreate it on the next reconcile anyway, but the gap leaves
+	// Subnets without a route table to resolve and triggers spurious
+	// daemon errors. Allow deletion only after the Vpc itself is gone.
+	var vpc juneauv1alpha1.Vpc
+	if err := v.Get(ctx, client.ObjectKey{Name: routeTable.Name}, &vpc); err == nil {
+		return nil, errors.NewForbidden(
+			schema.GroupResource{Group: juneauv1alpha1.GroupVersion.Group, Resource: "routetables"},
+			routeTable.Name,
+			fmt.Errorf("RouteTable %q is the main RouteTable of Vpc %q; delete the Vpc first", routeTable.Name, vpc.Name),
+		)
+	} else if !errors.IsNotFound(err) {
+		return nil, fmt.Errorf("look up Vpc %q: %w", routeTable.Name, err)
+	}
+
+	// Block deletion while any Subnet still references this RouteTable
+	// via spec.routeTable. Without this guard the daemon would lose its
+	// table_id mapping and stop programming the FIB for those Subnets.
+	var subnetList juneauv1alpha1.SubnetList
+	if err := v.List(ctx, &subnetList); err != nil {
+		return nil, fmt.Errorf("list Subnets: %w", err)
+	}
+	var refs []string
+	for _, subnet := range subnetList.Items {
+		if subnet.Spec.RouteTable == routeTable.Name {
+			refs = append(refs, subnet.Name)
+		}
+	}
+	if len(refs) > 0 {
+		return nil, errors.NewForbidden(
+			schema.GroupResource{Group: juneauv1alpha1.GroupVersion.Group, Resource: "routetables"},
+			routeTable.Name,
+			fmt.Errorf("Subnet(s) %v still references this RouteTable via spec.routeTable", refs),
+		)
 	}
 
 	return nil, nil

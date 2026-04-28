@@ -511,6 +511,7 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
+    - DELETE
     resources:
     - routetables
   sideEffects: None
