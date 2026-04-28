@@ -23,6 +23,7 @@ import (
 	"net/netip"
 	"reflect"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -30,6 +31,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
@@ -46,6 +48,8 @@ const (
 	allocationClaimReasonAllocated = "Allocated"
 	allocationClaimReasonPending   = "Pending"
 	allocationClaimReasonFailed    = "AllocationFailed"
+
+	allocationClaimFinalizer = "allocationclaim.juneau.loutres.me/lease"
 )
 
 // errAllPoolsExhausted indicates that no candidate pool has free capacity for
@@ -71,6 +75,21 @@ func (r *AllocationClaimReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	var resource juneauloutresmev1alpha1.AllocationClaim
 	if err := r.Get(ctx, req.NamespacedName, &resource); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	if !resource.ObjectMeta.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, r.handleDeletion(ctx, &resource)
+	}
+
+	if !controllerutil.ContainsFinalizer(&resource, allocationClaimFinalizer) {
+		controllerutil.AddFinalizer(&resource, allocationClaimFinalizer)
+		if err := r.Update(ctx, &resource); err != nil {
+			return ctrl.Result{}, err
+		}
+		// Re-fetch so subsequent status updates use a fresh resourceVersion.
+		if err := r.Get(ctx, req.NamespacedName, &resource); err != nil {
+			return ctrl.Result{}, client.IgnoreNotFound(err)
+		}
 	}
 
 	if allocationClaimReady(resource) {
@@ -108,6 +127,14 @@ func (r *AllocationClaimReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			return r.updateStatusFailed(ctx, &fresh, err.Error())
 		}
 
+		// Record the value in a backing AllocationLease before marking the
+		// claim Allocated. If lease creation races with another claim that
+		// took the same value, return an error so the outer retry loop
+		// re-runs allocate() and picks a different value.
+		if err := r.ensureLease(ctx, &fresh, freshPool, result); err != nil {
+			return err
+		}
+
 		freshPool.Status.AllocationVersion++
 		freshPool.Status.LastAllocatedNumber = result.number
 		if result.ip != "" {
@@ -126,10 +153,107 @@ func (r *AllocationClaimReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	return ctrl.Result{}, nil
 }
 
+// handleDeletion processes the finalizer when an AllocationClaim is being
+// deleted. When ReleaseAfter is set the lease is kept and marked Released;
+// otherwise the lease is removed alongside the claim.
+func (r *AllocationClaimReconciler) handleDeletion(ctx context.Context, claim *juneauloutresmev1alpha1.AllocationClaim) error {
+	if !controllerutil.ContainsFinalizer(claim, allocationClaimFinalizer) {
+		return nil
+	}
+
+	leaseName := claim.Name
+	var lease juneauloutresmev1alpha1.AllocationLease
+	if err := r.Get(ctx, client.ObjectKey{Name: leaseName}, &lease); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return err
+		}
+	} else {
+		if claim.Spec.ReleaseAfter != nil && claim.Spec.ReleaseAfter.Duration > 0 {
+			now := metav1.Now()
+			ttl := int32(claim.Spec.ReleaseAfter.Duration.Seconds())
+			if lease.Spec.OwnerDeletionTimestamp == nil || lease.Spec.TTLSeconds == nil || *lease.Spec.TTLSeconds != ttl {
+				lease.Spec.OwnerDeletionTimestamp = &now
+				lease.Spec.TTLSeconds = &ttl
+				if err := r.Update(ctx, &lease); err != nil {
+					return err
+				}
+			}
+		} else {
+			if err := r.Delete(ctx, &lease); err != nil && !apierrors.IsNotFound(err) {
+				return err
+			}
+		}
+	}
+
+	controllerutil.RemoveFinalizer(claim, allocationClaimFinalizer)
+	return r.Update(ctx, claim)
+}
+
+// ensureLease creates or revives the AllocationLease that backs an allocated
+// claim. The lease is owned by the AllocationPool so that pool deletion GCs
+// the lease, while claim deletion is handled explicitly via the finalizer.
+//
+// Concurrent reconciles (the manager-dispatched controller running alongside
+// a manually invoked Reconcile in tests, or simply two queued events) may
+// both try to create the same lease. AlreadyExists is treated as success —
+// a second pass through ensureLease will see the lease and fall into the
+// update branch.
+func (r *AllocationClaimReconciler) ensureLease(ctx context.Context, claim *juneauloutresmev1alpha1.AllocationClaim, pool *juneauloutresmev1alpha1.AllocationPool, result allocationResult) error {
+	leaseName := claim.Name
+
+	var existing juneauloutresmev1alpha1.AllocationLease
+	if err := r.Get(ctx, client.ObjectKey{Name: leaseName}, &existing); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return err
+		}
+		lease := &juneauloutresmev1alpha1.AllocationLease{
+			ObjectMeta: metav1.ObjectMeta{Name: leaseName},
+			Spec: juneauloutresmev1alpha1.AllocationLeaseSpec{
+				PoolRef:  juneauloutresmev1alpha1.AllocationPoolReference{Name: pool.Name},
+				Value:    juneauloutresmev1alpha1.AllocationValue{Number: result.number, IP: result.ip},
+				ReuseKey: claim.Spec.ResourceRef,
+			},
+		}
+		if err := controllerutil.SetControllerReference(pool, lease, r.Scheme); err != nil {
+			return err
+		}
+		if err := r.Create(ctx, lease); err != nil {
+			if apierrors.IsAlreadyExists(err) {
+				return nil
+			}
+			return err
+		}
+		return nil
+	}
+
+	// Existing lease: clear OwnerDeletionTimestamp so that re-attached claims
+	// (same identity, recreated after deletion) become Active again.
+	desired := existing.DeepCopy()
+	desired.Spec.PoolRef = juneauloutresmev1alpha1.AllocationPoolReference{Name: pool.Name}
+	desired.Spec.Value = juneauloutresmev1alpha1.AllocationValue{Number: result.number, IP: result.ip}
+	desired.Spec.ReuseKey = claim.Spec.ResourceRef
+	desired.Spec.OwnerDeletionTimestamp = nil
+	desired.Spec.TTLSeconds = nil
+	if reflect.DeepEqual(existing.Spec, desired.Spec) {
+		return nil
+	}
+	return r.Update(ctx, desired)
+}
+
 // allocate iterates the claim's PoolRefs in order and returns the first
 // successful allocation. The pool object that produced the result is also
-// returned so the caller can update its status.
+// returned so the caller can update its status. Before scanning pools the
+// allocator looks up an existing AllocationLease with the same name as the
+// claim and, if found, re-uses its value (this is what allows a claim
+// deleted with ReleaseAfter and then re-created to inherit its prior
+// allocation).
 func (r *AllocationClaimReconciler) allocate(ctx context.Context, claim *juneauloutresmev1alpha1.AllocationClaim) (allocationResult, *juneauloutresmev1alpha1.AllocationPool, error) {
+	if reused, pool, ok, err := r.tryReuseLease(ctx, claim); err != nil {
+		return allocationResult{}, nil, err
+	} else if ok {
+		return reused, pool, nil
+	}
+
 	var firstPoolErr error
 	for _, ref := range claim.Spec.PoolRefs {
 		var pool juneauloutresmev1alpha1.AllocationPool
@@ -277,6 +401,27 @@ func (r *AllocationClaimReconciler) collectUsedNumbers(ctx context.Context, pool
 		}
 		used[existing.Status.Value.Number] = existing.Name
 	}
+
+	// Leases for the same pool keep values reserved across claim deletion.
+	var leases juneauloutresmev1alpha1.AllocationLeaseList
+	if err := r.reader().List(ctx, &leases); err != nil {
+		return nil, fmt.Errorf("failed to list leases for pool %q: %w", poolName, err)
+	}
+	for _, lease := range leases.Items {
+		if lease.Spec.PoolRef.Name != poolName {
+			continue
+		}
+		// Skip the lease that this claim itself owns.
+		if lease.Name == selfName {
+			continue
+		}
+		if lease.Spec.Value.Number == 0 {
+			continue
+		}
+		if _, exists := used[lease.Spec.Value.Number]; !exists {
+			used[lease.Spec.Value.Number] = "lease/" + lease.Name
+		}
+	}
 	return used, nil
 }
 
@@ -305,7 +450,64 @@ func (r *AllocationClaimReconciler) collectUsedIPs(ctx context.Context, poolName
 		}
 		used[addr] = existing.Name
 	}
+
+	var leases juneauloutresmev1alpha1.AllocationLeaseList
+	if err := r.reader().List(ctx, &leases); err != nil {
+		return nil, fmt.Errorf("failed to list leases for pool %q: %w", poolName, err)
+	}
+	for _, lease := range leases.Items {
+		if lease.Spec.PoolRef.Name != poolName {
+			continue
+		}
+		if lease.Name == selfName {
+			continue
+		}
+		if lease.Spec.Value.IP == "" {
+			continue
+		}
+		addr, err := netip.ParseAddr(lease.Spec.Value.IP)
+		if err != nil {
+			continue
+		}
+		if _, exists := used[addr]; !exists {
+			used[addr] = "lease/" + lease.Name
+		}
+	}
 	return used, nil
+}
+
+// tryReuseLease checks whether an AllocationLease with the same name as the
+// claim already exists. If so, the recorded value is returned as-is (rather
+// than running the allocator) so the claim inherits the prior allocation.
+// This is the mechanism that lets a claim deleted with ReleaseAfter and
+// then re-created with the same name keep its previous value.
+func (r *AllocationClaimReconciler) tryReuseLease(ctx context.Context, claim *juneauloutresmev1alpha1.AllocationClaim) (allocationResult, *juneauloutresmev1alpha1.AllocationPool, bool, error) {
+	var lease juneauloutresmev1alpha1.AllocationLease
+	if err := r.reader().Get(ctx, client.ObjectKey{Name: claim.Name}, &lease); err != nil {
+		if apierrors.IsNotFound(err) {
+			return allocationResult{}, nil, false, nil
+		}
+		return allocationResult{}, nil, false, err
+	}
+
+	// Verify the lease still references one of the claim's candidate pools.
+	if !claimReferencesPool(claim, lease.Spec.PoolRef.Name) {
+		return allocationResult{}, nil, false, nil
+	}
+
+	var pool juneauloutresmev1alpha1.AllocationPool
+	if err := r.reader().Get(ctx, client.ObjectKey{Name: lease.Spec.PoolRef.Name}, &pool); err != nil {
+		if apierrors.IsNotFound(err) {
+			return allocationResult{}, nil, false, nil
+		}
+		return allocationResult{}, nil, false, err
+	}
+
+	return allocationResult{
+		poolName: pool.Name,
+		number:   lease.Spec.Value.Number,
+		ip:       lease.Spec.Value.IP,
+	}, &pool, true, nil
 }
 
 func (r *AllocationClaimReconciler) ensureOwnerExists(ctx context.Context, claim *juneauloutresmev1alpha1.AllocationClaim) error {

@@ -10,4 +10,5 @@ resources:
 - v1alpha1_elasticipattachment.yaml
 - v1alpha1_allocationpool.yaml
 - v1alpha1_allocationclaim.yaml
+- v1alpha1_allocationlease.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples
