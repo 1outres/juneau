@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"net/netip"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
@@ -165,6 +166,16 @@ func (v *ElasticIPCustomValidator) validate(ctx context.Context, obj *juneaulout
 
 	if oldObj != nil && obj.Spec.ExternalNetwork != oldObj.Spec.ExternalNetwork {
 		errs = append(errs, field.Invalid(externalNetworkPath, obj.Spec.ExternalNetwork, "externalNetwork is immutable"))
+	}
+
+	requestedIPPath := field.NewPath("spec", "requestedIP")
+	if obj.Spec.RequestedIP != "" {
+		if _, err := netip.ParseAddr(obj.Spec.RequestedIP); err != nil {
+			errs = append(errs, field.Invalid(requestedIPPath, obj.Spec.RequestedIP, "requestedIP must be a valid IP address"))
+		}
+	}
+	if oldObj != nil && obj.Spec.RequestedIP != oldObj.Spec.RequestedIP {
+		errs = append(errs, field.Invalid(requestedIPPath, obj.Spec.RequestedIP, "requestedIP is immutable"))
 	}
 
 	if len(errs) > 0 {

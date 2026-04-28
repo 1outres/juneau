@@ -82,12 +82,25 @@ func (r *AllocationClaimReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	if !controllerutil.ContainsFinalizer(&resource, allocationClaimFinalizer) {
-		controllerutil.AddFinalizer(&resource, allocationClaimFinalizer)
-		if err := r.Update(ctx, &resource); err != nil {
-			return ctrl.Result{}, err
-		}
-		// Re-fetch so subsequent status updates use a fresh resourceVersion.
-		if err := r.Get(ctx, req.NamespacedName, &resource); err != nil {
+		// Tolerate races with concurrent reconciles (manager-dispatched +
+		// manually invoked) by retrying on Conflict; the only mutation is
+		// adding our finalizer, which is idempotent once present.
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			var fresh juneauloutresmev1alpha1.AllocationClaim
+			if err := r.Get(ctx, req.NamespacedName, &fresh); err != nil {
+				return err
+			}
+			if controllerutil.ContainsFinalizer(&fresh, allocationClaimFinalizer) {
+				resource = fresh
+				return nil
+			}
+			controllerutil.AddFinalizer(&fresh, allocationClaimFinalizer)
+			if err := r.Update(ctx, &fresh); err != nil {
+				return err
+			}
+			resource = fresh
+			return nil
+		}); err != nil {
 			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
 	}
