@@ -22,8 +22,11 @@ import (
 
 // AllocationClaimSpec defines the desired state of AllocationClaim.
 type AllocationClaimSpec struct {
+	// PoolRefs lists candidate pools, evaluated in order. The first pool
+	// that has a free value satisfying the claim wins.
 	// +required
-	PoolRef AllocationPoolReference `json:"poolRef"`
+	// +kubebuilder:validation:MinItems=1
+	PoolRefs []AllocationPoolReference `json:"poolRefs"`
 
 	// +required
 	ResourceRef AllocationResourceReference `json:"resourceRef"`
@@ -34,8 +37,32 @@ type AllocationClaimSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	Attribute string `json:"attribute"`
 
+	// RequestedNumber pins a specific value for number-typed pools.
 	// +kubebuilder:validation:Minimum=1
 	RequestedNumber *uint64 `json:"requestedNumber,omitempty"`
+
+	// RequestedIP pins a specific value for ip-typed pools. Must be a valid
+	// IPv4/IPv6 string and must fall inside one of the candidate pools'
+	// CIDRs (further restricted by AllocationFilter when set).
+	RequestedIP *string `json:"requestedIP,omitempty"`
+
+	// AllocationFilter restricts the candidate space inside the pools. Used
+	// when a consumer wants to take from a specific subset of CIDRs.
+	AllocationFilter *AllocationFilter `json:"allocationFilter,omitempty"`
+
+	// ReleaseAfter specifies how long the AllocationLease should outlive
+	// this claim. While the lease is alive, no other claim can take the
+	// same value, and a re-created claim with the same identity will
+	// inherit the same value. When unset, the lease is deleted immediately
+	// alongside the claim.
+	ReleaseAfter *metav1.Duration `json:"releaseAfter,omitempty"`
+}
+
+type AllocationFilter struct {
+	// CIDRs further narrow the candidate address space inside ip-typed
+	// pools. Each entry must be a subset of one of the pool CIDRs.
+	// +listType=set
+	CIDRs []string `json:"cidrs,omitempty"`
 }
 
 type AllocationPoolReference struct {
@@ -51,6 +78,9 @@ type AllocationResourceReference struct {
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	Kind string `json:"kind"`
+	// Namespace of the referenced resource. Required when the owner is a
+	// namespaced resource; omit for cluster-scoped owners.
+	Namespace string `json:"namespace,omitempty"`
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
@@ -65,6 +95,7 @@ const (
 
 type AllocationValue struct {
 	Number uint64 `json:"number,omitempty"`
+	IP     string `json:"ip,omitempty"`
 }
 
 // AllocationClaimStatus defines the observed state of AllocationClaim.
@@ -82,9 +113,9 @@ const (
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
-// +kubebuilder:printcolumn:name="Pool",type="string",JSONPath=".spec.poolRef.name"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Number",type="integer",JSONPath=".status.value.number"
+// +kubebuilder:printcolumn:name="IP",type="string",JSONPath=".status.value.ip"
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type==\"Ready\")].status"
 
 // AllocationClaim is the Schema for the allocationclaims API.

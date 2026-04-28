@@ -49,6 +49,29 @@ spec:
           spec:
             description: AllocationPoolSpec defines the desired state of AllocationPool.
             properties:
+              ip:
+                properties:
+                  cidrs:
+                    description: |-
+                      CIDR ranges that participate in this pool. The union forms the
+                      candidate address space.
+                    items:
+                      type: string
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: set
+                  excluded:
+                    description: |-
+                      Excluded lists individual addresses that must never be allocated.
+                      Typically populated with reserved IPs such as gateway, network or
+                      broadcast addresses.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                required:
+                - cidrs
+                type: object
               number:
                 properties:
                   max:
@@ -137,6 +160,8 @@ spec:
                   - type
                   type: object
                 type: array
+              lastAllocatedIP:
+                type: string
               lastAllocatedNumber:
                 format: int64
                 type: integer

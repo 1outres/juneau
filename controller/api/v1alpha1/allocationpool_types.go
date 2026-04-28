@@ -44,6 +44,7 @@ type AllocationPoolSpec struct {
 	Strategy AllocationStrategy `json:"strategy,omitempty"`
 
 	Number *AllocationPoolNumberSpec `json:"number,omitempty"`
+	IP     *AllocationPoolIPSpec     `json:"ip,omitempty"`
 }
 
 type AllocationPoolNumberSpec struct {
@@ -54,11 +55,26 @@ type AllocationPoolNumberSpec struct {
 	Max uint64 `json:"max"`
 }
 
+type AllocationPoolIPSpec struct {
+	// CIDR ranges that participate in this pool. The union forms the
+	// candidate address space.
+	// +kubebuilder:validation:MinItems=1
+	// +listType=set
+	CIDRs []string `json:"cidrs"`
+
+	// Excluded lists individual addresses that must never be allocated.
+	// Typically populated with reserved IPs such as gateway, network or
+	// broadcast addresses.
+	// +listType=set
+	Excluded []string `json:"excluded,omitempty"`
+}
+
 // AllocationPoolStatus defines the observed state of AllocationPool.
 type AllocationPoolStatus struct {
 	ObservedGeneration  int64              `json:"observedGeneration,omitempty"`
 	AllocationVersion   uint64             `json:"allocationVersion,omitempty"`
 	LastAllocatedNumber uint64             `json:"lastAllocatedNumber,omitempty"`
+	LastAllocatedIP     string             `json:"lastAllocatedIP,omitempty"`
 	Conditions          []metav1.Condition `json:"conditions,omitempty"`
 }
 

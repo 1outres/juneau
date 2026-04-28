@@ -178,9 +178,9 @@ func (r *VpcReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func (r *VpcReconciler) ensureNumberClaim(ctx context.Context, vpc *juneauv1alpha1.Vpc, poolName string, gvk schema.GroupVersionKind, attribute string) (*juneauv1alpha1.AllocationClaim, error) {
-	claim := newAllocationClaim(poolName, gvk, vpc.Name, attribute)
+	claim := newAllocationClaim(poolName, gvk, "", vpc.Name, attribute)
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, claim, func() error {
-		claim.Spec = newAllocationClaim(poolName, gvk, vpc.Name, attribute).Spec
+		claim.Spec = newAllocationClaim(poolName, gvk, "", vpc.Name, attribute).Spec
 		return controllerutil.SetControllerReference(vpc, claim, r.Scheme)
 	})
 	if err != nil {
