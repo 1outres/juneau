@@ -127,6 +127,10 @@ var _ = BeforeSuite(func() {
 		Scheme:      mgr.GetScheme(),
 		ServiceCIDR: testServiceCIDR,
 	}).SetupWithManager(mgr)).To(Succeed())
+	Expect((&AddressPoolReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr)).To(Succeed())
 	Expect((&ElasticIPReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
