@@ -46,7 +46,11 @@
 #endif
 
 #ifndef MAX_CT_MAP
-#define MAX_CT_MAP 131072
+#define MAX_CT_MAP 524288
+#endif
+
+#ifndef MAX_NAPT_SRC
+#define MAX_NAPT_SRC 4096
 #endif
 
 #define FIB_ROUTE_TYPE_CONNECTED 1
@@ -58,6 +62,10 @@
 
 #define CT_ACTION_DNAT 1
 #define CT_ACTION_SNAT 2
+#define CT_ACTION_NAPT_OUT 3
+#define CT_ACTION_NAPT_IN 4
+
+#define CT_SCOPE_HOST 0
 
 // ct_state values mirror daemon/internal/daemon/dataplane/ctstate. Keep
 // them in sync: user-space GC reads ct_val.state and assumes these
@@ -299,14 +307,18 @@ struct {
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } backend_map SEC(".maps");
 
-// ct_map is the conntrack table for Service-related flows. Both
-// directions of a flow are stored as separate entries: forward (caller
-// to ClusterIP) carries a DNAT action, reverse (backend to caller)
-// carries a SNAT action. Backed by an LRU hash so old entries evict
-// gracefully under pressure; user space additionally GC's expired
-// entries.
+// ct_map is the conntrack table shared by Service and NAPT flows. Both
+// directions of a flow are stored as separate entries:
+//
+//   - Service forward (caller → ClusterIP) carries CT_ACTION_DNAT; scope=vpc_id of caller.
+//   - Service reverse (backend → caller) carries CT_ACTION_SNAT; scope=vpc_id of caller.
+//   - NAPT forward (pod → internet) carries CT_ACTION_NAPT_OUT; scope=vpc_id of pod.
+//   - NAPT reverse (internet → host_napt_ip) carries CT_ACTION_NAPT_IN; scope=CT_SCOPE_HOST (=0).
+//
+// The map is a regular HASH (not LRU) because LRU's eviction order is
+// not flow-aware; user-space periodically scans for idle timeouts.
 struct ct_key {
-  __u32 vpc_id;
+  __u32 scope;             // CT_SCOPE_HOST=0 for host-facing keyspace, otherwise vpc_id
   __u32 saddr;
   __u32 daddr;
   __u16 sport;
@@ -320,8 +332,11 @@ struct ct_val {
   __u32 new_daddr;
   __u16 new_sport;
   __u16 new_dport;
-  __u32 backend_subnet_id; // VNI of the backend Pod's Subnet (for forward direction; 0 for reverse)
-  __u8 action;             // CT_ACTION_DNAT or CT_ACTION_SNAT
+  __u32 next_subnet_id;    // VNI used to forward the rewritten packet:
+                           //   Service DNAT: backend Pod's Subnet
+                           //   NAPT_IN: target Pod's Subnet
+                           //   Service SNAT / NAPT_OUT: 0
+  __u8 action;             // CT_ACTION_DNAT | CT_ACTION_SNAT | CT_ACTION_NAPT_OUT | CT_ACTION_NAPT_IN
   __u8 state;              // CT_STATE_*: latest state derived from observed TCP flags
   __u8 flags_seen;         // OR-accumulated FIN|SYN|RST|ACK seen on this entry's direction
   __u8 _pad;
@@ -329,11 +344,31 @@ struct ct_val {
 };
 
 struct {
-  __uint(type, BPF_MAP_TYPE_LRU_HASH);
+  __uint(type, BPF_MAP_TYPE_HASH);
   __uint(max_entries, MAX_CT_MAP);
   __type(key, struct ct_key);
   __type(value, struct ct_val);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } ct_map SEC(".maps");
+
+// napt_src maps a NATGWID (overloaded into fib_val.subnet_id when
+// fib_val.type == FIB_ROUTE_TYPE_NAPT) to the host_napt_ip the local
+// node should rewrite the source IP to. Populated by the daemon's NAPT
+// reconciler from per-(ExternalNetwork, Node) ExternalNetworkAttachments.
+struct napt_src_key {
+  __u32 nat_gateway_id;
+};
+
+struct napt_src_val {
+  __u32 host_ip;           // network byte order
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_NAPT_SRC);
+  __type(key, struct napt_src_key);
+  __type(value, struct napt_src_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} napt_src SEC(".maps");
 
 #endif // JUNEAU_BPF_MAPS_H

@@ -61,19 +61,37 @@ static __always_inline __u8 ct_initial_state_for_syn(__u8 flags) {
 }
 
 // ct_build_opposite_key derives the peer entry's key from a self entry.
-// Forward (DNAT) self: caller→ClusterIP, peer is reverse (SNAT) keyed on
-// backend→caller. Reverse self: backend→caller, peer is forward keyed on
-// caller→ClusterIP. The asymmetry comes from new_saddr/new_daddr meaning
-// different things in the two action types.
+// The scope of the opposite key depends on the action:
+//
+//   DNAT / SNAT (Service): opposite is the same vpc_id-scoped flow.
+//   NAPT_OUT (pod → internet): opposite lives in the host (CT_SCOPE_HOST)
+//                              keyspace, keyed on (internet, host_napt_ip).
+//   NAPT_IN  (internet → host_napt_ip): opposite is the originating Pod's
+//                              NAPT_OUT entry. Its scope is the Pod's
+//                              vpc_id; we resolve it from next_subnet_id
+//                              via subnet_map. If the lookup fails the
+//                              caller's delete will simply fall through
+//                              for the opposite key — the self entry is
+//                              still removed.
+//
+// The address/port formulas split by which side of the rewrite the entry
+// is on:
+//
+//   Rewrites daddr / dport (DNAT, NAPT_IN):
+//     opp.saddr = val.new_daddr; opp.daddr = self.saddr;
+//     opp.sport = val.new_dport; opp.dport = self.sport;
+//   Rewrites saddr / sport (SNAT, NAPT_OUT):
+//     opp.saddr = self.daddr;    opp.daddr = val.new_saddr;
+//     opp.sport = self.dport;    opp.dport = val.new_sport;
 static __always_inline void ct_build_opposite_key(const struct ct_key *self,
                                                   const struct ct_val *cv,
                                                   struct ct_key *opp) {
-  opp->vpc_id = self->vpc_id;
   opp->proto = self->proto;
   opp->_pad[0] = 0;
   opp->_pad[1] = 0;
   opp->_pad[2] = 0;
-  if (cv->action == CT_ACTION_DNAT) {
+
+  if (cv->action == CT_ACTION_DNAT || cv->action == CT_ACTION_NAPT_IN) {
     opp->saddr = cv->new_daddr;
     opp->daddr = self->saddr;
     opp->sport = cv->new_dport;
@@ -83,6 +101,19 @@ static __always_inline void ct_build_opposite_key(const struct ct_key *self,
     opp->daddr = cv->new_saddr;
     opp->sport = self->dport;
     opp->dport = cv->new_sport;
+  }
+
+  if (cv->action == CT_ACTION_NAPT_OUT) {
+    opp->scope = CT_SCOPE_HOST;
+  } else if (cv->action == CT_ACTION_NAPT_IN) {
+    struct subnet_key skey = {.subnet_id = cv->next_subnet_id};
+    const struct subnet_val *subnet = bpf_map_lookup_elem(&subnet_map, &skey);
+    if (subnet)
+      opp->scope = subnet->vpc_id;
+    else
+      opp->scope = self->scope;
+  } else {
+    opp->scope = self->scope;
   }
 }
 

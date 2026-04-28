@@ -174,6 +174,11 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("get ExternalNetworkAttachment informer: %w", err)
 			}
 
+			natGatewayInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.NATGateway{})
+			if err != nil {
+				return fmt.Errorf("get NATGateway informer: %w", err)
+			}
+
 			cl, err := client.New(kubecfg, client.Options{
 				Scheme: scheme,
 				Cache: &client.CacheOptions{
@@ -348,7 +353,7 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("lookup node ingress iface %q: %w", masqueradeIface, err)
 			}
 
-			bpfManager := dataplane.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, vpcInformer, serviceInformer, endpointSliceInformer, externalNetworkAttachmentInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, bpfPinPath, hostIfaceInfo.MAC)
+			bpfManager := dataplane.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, vpcInformer, serviceInformer, endpointSliceInformer, externalNetworkAttachmentInformer, natGatewayInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, bpfPinPath, hostIfaceInfo.MAC)
 			if err := bpfManager.Start(ctx); err != nil {
 				return fmt.Errorf("initialize BPF manager: %w", err)
 			}

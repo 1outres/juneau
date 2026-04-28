@@ -395,7 +395,7 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
 
   // Forward CT entry: caller -> ClusterIP keyed tuple, action=DNAT.
   struct ct_key fwd_key = {
-      .vpc_id = subnet->vpc_id,
+      .scope = subnet->vpc_id,
       .saddr = iph->saddr,
       .daddr = iph->daddr,
       .sport = sport,
@@ -407,7 +407,7 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
       .new_daddr = backend_addr_be,
       .new_sport = sport,
       .new_dport = backend_port_be,
-      .backend_subnet_id = bv->backend_subnet_id,
+      .next_subnet_id = bv->backend_subnet_id,
       .action = CT_ACTION_DNAT,
       .state = init_state,
       .flags_seen = init_flags,
@@ -418,7 +418,7 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
   // Reverse CT entry: backend -> caller keyed tuple, action=SNAT. Used by
   // the backend's pod_egress on the response leg to restore the ClusterIP.
   struct ct_key rev_key = {
-      .vpc_id = subnet->vpc_id,
+      .scope = subnet->vpc_id,
       .saddr = backend_addr_be,
       .daddr = iph->saddr,
       .sport = backend_port_be,
@@ -430,7 +430,7 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
       .new_daddr = iph->saddr,
       .new_sport = dport,
       .new_dport = sport,
-      .backend_subnet_id = 0,
+      .next_subnet_id = 0,
       .action = CT_ACTION_SNAT,
       .state = init_state,
       .flags_seen = 0,
@@ -477,7 +477,7 @@ static __always_inline int apply_conntrack_dnat(struct __sk_buff *skb,
     return 0;
 
   struct ct_key ck = {
-      .vpc_id = vpc_id,
+      .scope = vpc_id,
       .saddr = iph->saddr,
       .daddr = iph->daddr,
       .sport = sport,
@@ -510,6 +510,193 @@ static __always_inline int apply_conntrack_dnat(struct __sk_buff *skb,
   if (have_tcp_flags)
     ct_observe_tcp(&ck, cv, tcp_flags);
   return 1;
+}
+
+// NAPT_PROBE_LIMIT bounds the linear-probe loop used to claim a
+// previously-unused alloc_port. Higher values lower the probability of
+// a failed allocation under heavy port pressure but cost verifier
+// instructions; 8 strikes a balance similar to cilium's snat_v4 path.
+#define NAPT_PROBE_LIMIT 8
+
+// rotate_left mixes a 32-bit value during port probe re-derivation.
+static __always_inline __u32 napt_rotate_left(__u32 x, __u32 r) {
+  return (x << r) | (x >> (32 - r));
+}
+
+// handle_napt is the forward NAPT path: it rewrites src IP/port to the
+// node's host_napt_ip and an allocated source port, installs both
+// forward (NAPT_OUT) and reverse (NAPT_IN) ct_map entries, and then
+// hands the packet to the host network stack via a kernel FIB lookup,
+// mirroring handle_snat's tail. nat_gateway_id is fib_val.subnet_id
+// reinterpreted (FIB_ROUTE_TYPE_NAPT overload).
+static __always_inline int handle_napt(struct __sk_buff *skb,
+                                       struct ethhdr *eth, struct iphdr *iph,
+                                       const struct subnet_val *subnet,
+                                       __u32 nat_gateway_id) {
+  void *data_end = skb_data_end(skb);
+  if (iph->protocol != IPPROTO_TCP && iph->protocol != IPPROTO_UDP)
+    return TC_ACT_SHOT;
+
+  __be16 sport, dport;
+  if (read_l4_ports(iph, data_end, &sport, &dport) < 0)
+    return TC_ACT_SHOT;
+
+  // Resolve this node's NAPT source IP for the requested gateway.
+  struct napt_src_key nsk = {.nat_gateway_id = nat_gateway_id};
+  const struct napt_src_val *nsv = bpf_map_lookup_elem(&napt_src, &nsk);
+  if (!nsv)
+    return TC_ACT_SHOT;
+  __be32 host_napt_ip = nsv->host_ip;
+
+  __u8 init_flags = 0;
+  __u8 init_state = CT_STATE_ESTABLISHED;
+  if (iph->protocol == IPPROTO_TCP) {
+    __u8 f;
+    if (ct_read_tcp_flags(iph, data_end, &f) == 0) {
+      init_flags = f & TCP_FLAG_TRACKED;
+      init_state = ct_initial_state_for_syn(f);
+    }
+  }
+
+  __u64 now = bpf_ktime_get_ns();
+  __u32 caller_vpc_id = subnet->vpc_id;
+
+  // Forward CT key (scope=caller VPC, saddr=pod, daddr=internet, sport=sp, dport=dp)
+  struct ct_key fwd_key = {
+      .scope = caller_vpc_id,
+      .saddr = iph->saddr,
+      .daddr = iph->daddr,
+      .sport = sport,
+      .dport = dport,
+      .proto = iph->protocol,
+  };
+
+  // If a forward entry already exists, reuse its allocation.
+  struct ct_val *existing = bpf_map_lookup_elem(&ct_map, &fwd_key);
+  __be16 alloc_port = 0;
+  if (existing && existing->action == CT_ACTION_NAPT_OUT) {
+    existing->last_seen_ns = now;
+    alloc_port = existing->new_sport;
+  } else {
+    // Linear-probe allocation. Seed with a 5-tuple hash to spread
+    // initial candidates across the port space; on collision we
+    // increment the candidate. Skip ports < 1024.
+    __u32 seed = hash_tuple(iph->saddr, iph->daddr, sport, dport, iph->protocol);
+    bool installed = false;
+
+#pragma unroll
+    for (int i = 0; i < NAPT_PROBE_LIMIT; i++) {
+      __u32 candidate_host = 1024 + ((seed + i) % (65536 - 1024));
+      __be16 candidate = bpf_htons((__u16)candidate_host);
+
+      struct ct_key rev_key = {
+          .scope = CT_SCOPE_HOST,
+          .saddr = iph->daddr,
+          .daddr = host_napt_ip,
+          .sport = dport,
+          .dport = candidate,
+          .proto = iph->protocol,
+      };
+      struct ct_val rev_val = {
+          .new_saddr = 0,
+          .new_daddr = iph->saddr,
+          .new_sport = 0,
+          .new_dport = sport,
+          .next_subnet_id = subnet - subnet, // placeholder zero; set below
+          .action = CT_ACTION_NAPT_IN,
+          .state = init_state,
+          .flags_seen = 0,
+          .last_seen_ns = now,
+      };
+      // next_subnet_id of the reverse entry must point back to the Pod's
+      // Subnet so node_ingress can fdb-forward to the pod. We can't know
+      // the Pod's subnet_id at this site by VPC alone — we'll fill it
+      // from `subnet`'s Subnet ID looked up via ifindex_subnet.
+      // Simpler: the caller's subnet_id is what we already have in scope
+      // via ifindex_subnet, but pod_egress receives `subnet` (struct
+      // subnet_val). We need the subnet *id*, not vpc_id. Carry it via
+      // ifindex_subnet:
+      struct ifindex_subnet_key isk = {.ifindex = skb->ifindex};
+      const struct ifindex_subnet_val *isv =
+          bpf_map_lookup_elem(&ifindex_subnet, &isk);
+      if (!isv)
+        return TC_ACT_SHOT;
+      rev_val.next_subnet_id = isv->subnet_id;
+
+      long rc =
+          bpf_map_update_elem(&ct_map, &rev_key, &rev_val, BPF_NOEXIST);
+      if (rc == 0) {
+        alloc_port = candidate;
+        installed = true;
+        break;
+      }
+      seed = napt_rotate_left(seed + 0x9e3779b1, 7);
+    }
+
+    if (!installed)
+      return TC_ACT_SHOT;
+
+    // Install the forward entry. BPF_ANY because we already verified
+    // (via the lookup above) that no NAPT_OUT existed; any racing
+    // installer for the same key would have produced an identical val.
+    struct ct_val fwd_val = {
+        .new_saddr = host_napt_ip,
+        .new_daddr = iph->daddr,
+        .new_sport = alloc_port,
+        .new_dport = dport,
+        .next_subnet_id = 0,
+        .action = CT_ACTION_NAPT_OUT,
+        .state = init_state,
+        .flags_seen = init_flags,
+        .last_seen_ns = now,
+    };
+    bpf_map_update_elem(&ct_map, &fwd_key, &fwd_val, BPF_ANY);
+  }
+
+  __u8 tcp_flags = 0;
+  bool have_tcp_flags = false;
+  if (iph->protocol == IPPROTO_TCP) {
+    if (ct_read_tcp_flags(iph, data_end, &tcp_flags) == 0)
+      have_tcp_flags = true;
+  }
+
+  if (rewrite_ipv4_addr(skb, /*is_source=*/true, host_napt_ip) < 0)
+    return TC_ACT_SHOT;
+  if (rewrite_l4_port(skb, /*is_source=*/true, alloc_port) < 0)
+    return TC_ACT_SHOT;
+
+  if (have_tcp_flags) {
+    struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &fwd_key);
+    if (cv)
+      ct_observe_tcp(&fwd_key, cv, tcp_flags);
+  }
+
+  // Re-derive packet pointers and dispatch via kernel FIB to the host
+  // network stack (same shape as handle_snat's tail).
+  struct iphdr *new_iph = load_iph(skb);
+  if (!new_iph)
+    return TC_ACT_SHOT;
+
+  struct bpf_fib_lookup fib_params = {};
+  fib_params.family = AF_INET;
+  fib_params.l4_protocol = new_iph->protocol;
+  fib_params.ipv4_dst = new_iph->daddr;
+  fib_params.ifindex = skb->ifindex;
+
+  long rc = bpf_fib_lookup(skb, &fib_params, sizeof(fib_params), 0);
+  if (rc == BPF_FIB_LKUP_RET_NO_NEIGH)
+    return TC_ACT_OK;
+  if (rc != BPF_FIB_LKUP_RET_SUCCESS)
+    return TC_ACT_SHOT;
+
+  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_dest),
+                          fib_params.dmac, ETH_ALEN, 0) < 0)
+    return TC_ACT_SHOT;
+  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_source),
+                          fib_params.smac, ETH_ALEN, 0) < 0)
+    return TC_ACT_SHOT;
+
+  return bpf_redirect(fib_params.ifindex, 0);
 }
 
 static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
@@ -578,6 +765,9 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
     __builtin_memcpy(eth->h_dest, host->mac, ETH_ALEN);
     return bpf_redirect(host->ifindex, 0);
   }
+
+  if (fv->type == FIB_ROUTE_TYPE_NAPT)
+    return handle_napt(skb, eth, iph, subnet, fv->subnet_id);
 
   return TC_ACT_SHOT;
 }
