@@ -195,9 +195,9 @@ func (r *SubnetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func (r *SubnetReconciler) ensureNumberClaim(ctx context.Context, subnet *juneauv1alpha1.Subnet, poolName string, gvk schema.GroupVersionKind, attribute string) (*juneauv1alpha1.AllocationClaim, error) {
-	claim := newAllocationClaim(poolName, gvk, subnet.Name, attribute)
+	claim := newAllocationClaim(poolName, gvk, "", subnet.Name, attribute)
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, claim, func() error {
-		claim.Spec = newAllocationClaim(poolName, gvk, subnet.Name, attribute).Spec
+		claim.Spec = newAllocationClaim(poolName, gvk, "", subnet.Name, attribute).Spec
 		return controllerutil.SetControllerReference(subnet, claim, r.Scheme)
 	})
 	if err != nil {

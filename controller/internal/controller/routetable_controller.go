@@ -279,9 +279,9 @@ func (r *RouteTableReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func (r *RouteTableReconciler) ensureNumberClaim(ctx context.Context, resource *juneauloutresmev1alpha1.RouteTable, poolName string, gvk schema.GroupVersionKind, attribute string) (*juneauloutresmev1alpha1.AllocationClaim, error) {
-	claim := newAllocationClaim(poolName, gvk, resource.Name, attribute)
+	claim := newAllocationClaim(poolName, gvk, "", resource.Name, attribute)
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, claim, func() error {
-		claim.Spec = newAllocationClaim(poolName, gvk, resource.Name, attribute).Spec
+		claim.Spec = newAllocationClaim(poolName, gvk, "", resource.Name, attribute).Spec
 		return controllerutil.SetControllerReference(resource, claim, r.Scheme)
 	})
 	if err != nil {
