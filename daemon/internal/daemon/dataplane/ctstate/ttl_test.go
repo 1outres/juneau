@@ -11,7 +11,7 @@ const (
 )
 
 func TestShouldEvict(t *testing.T) {
-	const now uint64 = 1_000_000_000_000 // 1000s in ns
+	const now uint64 = 24 * 60 * 60 * 1_000_000_000 // 1 day in ns; bigger than the longest TTL
 
 	cases := []struct {
 		name       string

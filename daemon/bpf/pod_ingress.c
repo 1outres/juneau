@@ -41,7 +41,7 @@ static __always_inline int apply_reverse_snat(struct __sk_buff *skb,
     return 0;
 
   struct ct_key ck = {
-      .vpc_id = vpc_id,
+      .scope = vpc_id,
       .saddr = iph->saddr,
       .daddr = iph->daddr,
       .sport = sport,

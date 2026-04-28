@@ -3,13 +3,14 @@
 #include "vmlinux.h"
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
+#include <stdbool.h>
+#include "ct.h"
 #include "maps.h"
+#include "nat.h"
 
 #define ETH_ALEN 6
 #define ETH_P_IP 0x0800
 #define IP_OFFSET 0x1FFF
-#define IPPROTO_TCP 6
-#define IPPROTO_UDP 17
 
 #define TC_ACT_OK 0
 #define TC_ACT_SHOT 2
@@ -156,6 +157,70 @@ static __always_inline int handle_dnat(struct __sk_buff *skb, struct ethhdr *eth
   return forward_l2(skb, eth, nat->subnet_id);
 }
 
+// handle_napt_in is the reverse-NAPT path: a packet inbound on the
+// underlay matched a host_napt_ip / alloc_port pair. Look up the
+// matching CT entry, rewrite daddr/dport back to the originating Pod's
+// IP/port, and fdb-forward into the Pod's Subnet.
+static __always_inline int handle_napt_in(struct __sk_buff *skb,
+                                          struct ethhdr *eth, struct iphdr *iph,
+                                          struct ct_val *cv,
+                                          struct ct_key *ck) {
+  void *data_end = nat_skb_data_end(skb);
+
+  struct subnet_key sk = {.subnet_id = cv->next_subnet_id};
+  const struct subnet_val *subnet = bpf_map_lookup_elem(&subnet_map, &sk);
+  if (!subnet)
+    return TC_ACT_SHOT;
+
+  struct arp_table_key ak = {
+      .subnet_id = cv->next_subnet_id,
+      .ipaddr = bpf_ntohl(cv->new_daddr),
+  };
+  const struct arp_table_val *av = bpf_map_lookup_elem(&arp_table, &ak);
+  if (!av)
+    return TC_ACT_SHOT;
+
+  __u8 dst_mac[ETH_ALEN];
+  __u8 src_mac[ETH_ALEN];
+  __builtin_memcpy(dst_mac, av->mac, ETH_ALEN);
+  __builtin_memcpy(src_mac, subnet->gw_mac, ETH_ALEN);
+
+  __be32 new_daddr = cv->new_daddr;
+  __be16 new_dport = cv->new_dport;
+
+  __u8 tcp_flags = 0;
+  bool have_tcp_flags = false;
+  if (iph->protocol == IPPROTO_TCP) {
+    if (ct_read_tcp_flags(iph, data_end, &tcp_flags) == 0)
+      have_tcp_flags = true;
+  }
+
+  cv->last_seen_ns = bpf_ktime_get_ns();
+
+  if (nat_rewrite_ipv4_addr(skb, /*is_source=*/false, new_daddr) < 0)
+    return TC_ACT_SHOT;
+  if (nat_rewrite_l4_port(skb, /*is_source=*/false, new_dport) < 0)
+    return TC_ACT_SHOT;
+
+  if (have_tcp_flags) {
+    struct ct_val *cv2 = bpf_map_lookup_elem(&ct_map, ck);
+    if (cv2)
+      ct_observe_tcp(ck, cv2, tcp_flags);
+  }
+
+  // Re-derive packet pointers and rewrite L2.
+  void *data = (void *)(long)skb->data;
+  data_end = (void *)(long)skb->data_end;
+  eth = data;
+  if ((void *)(eth + 1) > data_end)
+    return TC_ACT_SHOT;
+
+  __builtin_memcpy(eth->h_dest, dst_mac, ETH_ALEN);
+  __builtin_memcpy(eth->h_source, src_mac, ETH_ALEN);
+
+  return forward_l2(skb, eth, cv->next_subnet_id);
+}
+
 static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth) {
   void *data_end = (void *)(long)skb->data_end;
 
@@ -170,6 +235,26 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth) 
   const __u8 *bgp_val = bpf_map_lookup_elem(&bgp_address_pools, &bgp_key);
   if (!bgp_val || *bgp_val == 0)
     return TC_ACT_OK;
+
+  // First try NAPT reverse: ct_map keyed on (HOST, src=internet,
+  // dst=host_napt_ip, sport=remote, dport=alloc_port). Fall through to
+  // ElasticIP 1:1 NAT (nat_dnat_map) if no NAPT entry exists.
+  if (iph->protocol == IPPROTO_TCP || iph->protocol == IPPROTO_UDP) {
+    __be16 sport, dport;
+    if (nat_read_l4_ports(iph, data_end, &sport, &dport) == 0) {
+      struct ct_key ck = {
+          .scope = CT_SCOPE_HOST,
+          .saddr = iph->saddr,
+          .daddr = iph->daddr,
+          .sport = sport,
+          .dport = dport,
+          .proto = iph->protocol,
+      };
+      struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &ck);
+      if (cv && cv->action == CT_ACTION_NAPT_IN)
+        return handle_napt_in(skb, eth, iph, cv, &ck);
+    }
+  }
 
   struct nat_outside nk = {
       .addr = bpf_ntohl(iph->daddr),

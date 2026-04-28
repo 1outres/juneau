@@ -10,29 +10,35 @@ const (
 	ProtoUDP uint8 = 17
 )
 
+// IPPROTO_ICMP mirrored locally so ShouldEvict can apply ICMP-specific TTL.
+const ProtoICMP uint8 = 1
+
 // TTLs control how long an entry may sit in ct_map without seeing fresh
-// traffic before user-space GC drops it. The eBPF hot path already
-// removes entries it knows are CLOSED, so these timeouts only catch the
-// stragglers (idle flows, half-open handshakes, half-closed FIN_WAIT).
+// traffic before user-space GC drops it. With ct_map switched from LRU
+// to a regular HASH (Phase 4b-3), the GC is the only mechanism that
+// reaps idle flows.
 const (
-	TTLNew         = 30 * time.Second
-	TTLEstablished = 5 * time.Minute
+	TTLNew         = 120 * time.Second
+	TTLEstablished = 1 * time.Hour
 	TTLFinWait     = 60 * time.Second
-	TTLUDP         = 30 * time.Second
+	TTLUDP         = 60 * time.Second
+	TTLICMP        = 30 * time.Second
 )
 
 // ShouldEvict decides whether GC should drop an entry given its current
-// state and the elapsed monotonic time since its last hit. UDP has no
-// state machine, so a single TTL applies regardless of state. CLOSED is
-// always evicted: the eBPF side normally removes those inline, but we
-// also catch any leftovers (e.g. half of a pair removed while the other
-// race-survived).
+// state and the elapsed monotonic time since its last hit. UDP and ICMP
+// have no TCP state machine, so a single TTL applies regardless of state.
+// CLOSED is always evicted: the eBPF side normally removes those inline,
+// but we also catch any leftovers.
 func ShouldEvict(state, proto uint8, lastSeenNs, nowNs uint64) bool {
 	if state == StateClosed {
 		return true
 	}
 	if proto == ProtoUDP {
 		return elapsedNs(lastSeenNs, nowNs) > uint64(TTLUDP.Nanoseconds())
+	}
+	if proto == ProtoICMP {
+		return elapsedNs(lastSeenNs, nowNs) > uint64(TTLICMP.Nanoseconds())
 	}
 	switch state {
 	case StateNew:

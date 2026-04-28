@@ -36,6 +36,7 @@ type Manager struct {
 	serviceInformer                   cache.Informer
 	endpointSliceInformer             cache.Informer
 	externalNetworkAttachmentInformer cache.Informer
+	natGatewayInformer                cache.Informer
 
 	subnetRunner      *runner.Runner
 	arpRunner         *runner.Runner
@@ -196,6 +197,11 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 		if err := m.naptRunner.Watch(m.externalNetworkAttachmentInformer, runner.MetaNamespaceKey); err != nil {
 			return fmt.Errorf("watch ExternalNetworkAttachment: %w", err)
 		}
+		if m.natGatewayInformer != nil {
+			if err := m.naptRunner.WatchFanOut(m.natGatewayInformer, m.napt.FanOutAllAttachments); err != nil {
+				return fmt.Errorf("watch NATGateway (napt fan-out): %w", err)
+			}
+		}
 		m.naptRunner.Start(ctx, 1)
 	}
 
@@ -334,6 +340,7 @@ func NewManager(
 	serviceInformer cache.Informer,
 	endpointSliceInformer cache.Informer,
 	externalNetworkAttachmentInformer cache.Informer,
+	natGatewayInformer cache.Informer,
 	nodeName string,
 	vxlanIfindex int,
 	hostIfindex int,
@@ -353,6 +360,7 @@ func NewManager(
 		serviceInformer:                   serviceInformer,
 		endpointSliceInformer:             endpointSliceInformer,
 		externalNetworkAttachmentInformer: externalNetworkAttachmentInformer,
+		natGatewayInformer:                natGatewayInformer,
 		nodeName:                          nodeName,
 		vxlanIfindex:                      vxlanIfindex,
 		hostIfindex:                       hostIfindex,

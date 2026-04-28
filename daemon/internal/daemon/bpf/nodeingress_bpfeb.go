@@ -49,7 +49,7 @@ type NodeIngressBgpAddressPoolsKey struct {
 
 type NodeIngressCtKey struct {
 	_     structs.HostLayout
-	VpcId uint32
+	Scope uint32
 	Saddr uint32
 	Daddr uint32
 	Sport uint16
@@ -59,18 +59,18 @@ type NodeIngressCtKey struct {
 }
 
 type NodeIngressCtVal struct {
-	_               structs.HostLayout
-	NewSaddr        uint32
-	NewDaddr        uint32
-	NewSport        uint16
-	NewDport        uint16
-	BackendSubnetId uint32
-	Action          uint8
-	State           uint8
-	FlagsSeen       uint8
-	Pad             uint8
-	_               [4]byte
-	LastSeenNs      uint64
+	_            structs.HostLayout
+	NewSaddr     uint32
+	NewDaddr     uint32
+	NewSport     uint16
+	NewDport     uint16
+	NextSubnetId uint32
+	Action       uint8
+	State        uint8
+	FlagsSeen    uint8
+	Pad          uint8
+	_            [4]byte
+	LastSeenNs   uint64
 }
 
 type NodeIngressFdbKey struct {
@@ -127,6 +127,16 @@ type NodeIngressIfindexSubnetKey struct {
 type NodeIngressIfindexSubnetVal struct {
 	_        structs.HostLayout
 	SubnetId uint32
+}
+
+type NodeIngressNaptSrcKey struct {
+	_            structs.HostLayout
+	NatGatewayId uint32
+}
+
+type NodeIngressNaptSrcVal struct {
+	_      structs.HostLayout
+	HostIp uint32
 }
 
 type NodeIngressNatInside struct {
@@ -230,6 +240,7 @@ type NodeIngressMapSpecs struct {
 	HostIface       *ebpf.MapSpec `ebpf:"host_iface"`
 	IfindexHostMac  *ebpf.MapSpec `ebpf:"ifindex_host_mac"`
 	IfindexSubnet   *ebpf.MapSpec `ebpf:"ifindex_subnet"`
+	NaptSrc         *ebpf.MapSpec `ebpf:"napt_src"`
 	NatDnatMap      *ebpf.MapSpec `ebpf:"nat_dnat_map"`
 	NatSnatMap      *ebpf.MapSpec `ebpf:"nat_snat_map"`
 	ServiceMap      *ebpf.MapSpec `ebpf:"service_map"`
@@ -273,6 +284,7 @@ type NodeIngressMaps struct {
 	HostIface       *ebpf.Map `ebpf:"host_iface"`
 	IfindexHostMac  *ebpf.Map `ebpf:"ifindex_host_mac"`
 	IfindexSubnet   *ebpf.Map `ebpf:"ifindex_subnet"`
+	NaptSrc         *ebpf.Map `ebpf:"napt_src"`
 	NatDnatMap      *ebpf.Map `ebpf:"nat_dnat_map"`
 	NatSnatMap      *ebpf.Map `ebpf:"nat_snat_map"`
 	ServiceMap      *ebpf.Map `ebpf:"service_map"`
@@ -292,6 +304,7 @@ func (m *NodeIngressMaps) Close() error {
 		m.HostIface,
 		m.IfindexHostMac,
 		m.IfindexSubnet,
+		m.NaptSrc,
 		m.NatDnatMap,
 		m.NatSnatMap,
 		m.ServiceMap,
