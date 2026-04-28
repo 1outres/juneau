@@ -58,9 +58,6 @@ resources:
 - networkendpoint_admin_role.yaml
 - networkendpoint_editor_role.yaml
 - networkendpoint_viewer_role.yaml
-- iplease_admin_role.yaml
-- iplease_editor_role.yaml
-- iplease_viewer_role.yaml
 - networkinterface_admin_role.yaml
 - networkinterface_editor_role.yaml
 - networkinterface_viewer_role.yaml

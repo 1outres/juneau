@@ -170,26 +170,6 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
-      path: /mutate-juneau-loutres-me-v1alpha1-iplease
-  failurePolicy: Fail
-  name: miplease-v1alpha1.kb.io
-  rules:
-  - apiGroups:
-    - juneau.loutres.me
-    apiVersions:
-    - v1alpha1
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - ipleases
-  sideEffects: None
-- admissionReviewVersions:
-  - v1
-  clientConfig:
-    service:
-      name: webhook-service
-      namespace: system
       path: /mutate-juneau-loutres-me-v1alpha1-networkendpoint
   failurePolicy: Fail
   name: mnetworkendpoint-v1alpha1.kb.io
@@ -473,26 +453,6 @@ webhooks:
     - DELETE
     resources:
     - externalnetworks
-  sideEffects: None
-- admissionReviewVersions:
-  - v1
-  clientConfig:
-    service:
-      name: webhook-service
-      namespace: system
-      path: /validate-juneau-loutres-me-v1alpha1-iplease
-  failurePolicy: Fail
-  name: viplease-v1alpha1.kb.io
-  rules:
-  - apiGroups:
-    - juneau.loutres.me
-    apiVersions:
-    - v1alpha1
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - ipleases
   sideEffects: None
 - admissionReviewVersions:
   - v1

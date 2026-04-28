@@ -285,20 +285,6 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "NetworkInterface")
 		os.Exit(1)
 	}
-	if err = (&controller.IPLeaseReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "IPLease")
-		os.Exit(1)
-	}
-	// nolint:goconst
-	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookjuneauv1alpha1.SetupIPLeaseWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create webhook", "webhook", "IPLease")
-			os.Exit(1)
-		}
-	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
 		if err = webhookjuneauv1alpha1.SetupNetworkInterfaceWebhookWithManager(mgr); err != nil {
