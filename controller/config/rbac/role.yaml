@@ -36,6 +36,7 @@ rules:
   - bgppeers
   - elasticipattachments
   - elasticips
+  - externalnetworkattachments
   - externalnetworks
   - natgateways
   - networkendpoints
@@ -62,6 +63,7 @@ rules:
   - bgppeers/finalizers
   - elasticipattachments/finalizers
   - elasticips/finalizers
+  - externalnetworkattachments/finalizers
   - externalnetworks/finalizers
   - natgateways/finalizers
   - networkendpoints/finalizers
@@ -82,6 +84,7 @@ rules:
   - bgppeers/status
   - elasticipattachments/status
   - elasticips/status
+  - externalnetworkattachments/status
   - externalnetworks/status
   - natgateways/status
   - networkendpoints/status
