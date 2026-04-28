@@ -138,14 +138,11 @@ var _ = BeforeSuite(func() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr)).To(Succeed())
-	// NetworkInterfaceReconciler is exercised directly in
-	// networkinterface_controller_test.go rather than through the manager
-	// so that other controllers' tests can fix NetworkInterface.status
-	// without racing against an active reconcile loop.
-	Expect((&ElasticIPReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr)).To(Succeed())
+	// NetworkInterfaceReconciler and ElasticIPReconciler are exercised
+	// directly in their own _test.go files rather than through the
+	// manager, so that other controllers' tests (notably the
+	// ElasticIPAttachment suite) can fix Status.Address values without
+	// racing against active reconcile loops.
 	Expect(mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 		if !mgr.GetCache().WaitForCacheSync(ctx) {
 			return fmt.Errorf("cache sync failed")
