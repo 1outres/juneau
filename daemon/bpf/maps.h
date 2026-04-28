@@ -57,7 +57,6 @@
 #define FIB_ROUTE_TYPE_ENDPOINT 2
 #define FIB_ROUTE_TYPE_INTERNET_GATEWAY 3
 #define FIB_ROUTE_TYPE_SERVICE 4
-#define FIB_ROUTE_TYPE_HOST_GATEWAY 5
 #define FIB_ROUTE_TYPE_NAPT 6
 
 #define CT_ACTION_DNAT 1
@@ -161,19 +160,6 @@ struct {
   __type(value, struct fdb_val);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } fdb SEC(".maps");
-
-struct host_iface_val {
-  __u32 ifindex;
-  __u8 mac[6];
-};
-
-struct {
-  __uint(type, BPF_MAP_TYPE_ARRAY);
-  __uint(max_entries, 1);
-  __type(key, __u32);
-  __type(value, struct host_iface_val);
-  __uint(pinning, LIBBPF_PIN_BY_NAME);
-} host_iface SEC(".maps");
 
 struct {
   __uint(type, BPF_MAP_TYPE_ARRAY);

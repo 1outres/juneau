@@ -26,13 +26,13 @@ import (
 // in handle_service.
 type Subnet struct {
 	client     client.Client
-	hostEgress *program.HostEgress
+	hostEgress *program.PodEgress
 
 	mu        sync.Mutex
 	snapshots map[string]uint32 // subnet name -> VNI used at last write
 }
 
-func NewSubnet(cl client.Client, hostEgress *program.HostEgress) *Subnet {
+func NewSubnet(cl client.Client, hostEgress *program.PodEgress) *Subnet {
 	return &Subnet{
 		client:     cl,
 		hostEgress: hostEgress,
@@ -105,8 +105,8 @@ func (r *Subnet) upsert(ctx context.Context, subnet *juneauv1alpha1.Subnet) erro
 	}
 
 	if err := r.hostEgress.Objs.SubnetMap.Update(
-		&bpf.HostEgressSubnetKey{SubnetId: subnet.Status.VNI},
-		&bpf.HostEgressSubnetVal{
+		&bpf.PodEgressSubnetKey{SubnetId: subnet.Status.VNI},
+		&bpf.PodEgressSubnetVal{
 			TableId: routeTable.Status.TableID,
 			VpcId:   vpc.Status.VpcID,
 			GwMac:   gwmac,
@@ -196,7 +196,7 @@ func (r *Subnet) delete(key string) error {
 
 	zap.S().Infof("subnet: deleting %s (VNI=%d)", key, vni)
 
-	if err := r.hostEgress.Objs.SubnetMap.Delete(&bpf.HostEgressSubnetKey{SubnetId: vni}); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+	if err := r.hostEgress.Objs.SubnetMap.Delete(&bpf.PodEgressSubnetKey{SubnetId: vni}); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 		return fmt.Errorf("delete SubnetMap: %w", err)
 	}
 

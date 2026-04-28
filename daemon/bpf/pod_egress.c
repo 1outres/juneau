@@ -749,23 +749,6 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
   if (fv->type == FIB_ROUTE_TYPE_SERVICE)
     return handle_service(skb, eth, iph, subnet);
 
-  if (fv->type == FIB_ROUTE_TYPE_HOST_GATEWAY) {
-    // Hand the packet to the host network stack via cni_host (the
-    // veth peer attached to default's gateway IP). The host's iptables
-    // MASQUERADE rule SNATs outbound traffic; return packets traverse
-    // host_egress on cni_net to reach the actual Pod veth. dst_mac is
-    // rewritten to cni_host's MAC because cni_host is created with a
-    // random MAC per node, while gw_mac is a cluster-wide LAA — without
-    // the rewrite the kernel would drop the packet as PACKET_OTHERHOST.
-    __u32 host_key = 0;
-    const struct host_iface_val *host =
-        bpf_map_lookup_elem(&host_iface, &host_key);
-    if (!host)
-      return TC_ACT_SHOT;
-    __builtin_memcpy(eth->h_dest, host->mac, ETH_ALEN);
-    return bpf_redirect(host->ifindex, 0);
-  }
-
   if (fv->type == FIB_ROUTE_TYPE_NAPT)
     return handle_napt(skb, eth, iph, subnet, fv->subnet_id);
 

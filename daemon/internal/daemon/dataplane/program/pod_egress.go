@@ -14,9 +14,8 @@ type PodEgress struct {
 	MapSpecs bpf.PodEgressMapSpecs
 }
 
-// NewPodEgress loads the pod-egress program, pins its maps under pinPath,
-// and writes the host-interface constant used by the program.
-func NewPodEgress(pinPath string, hostIfindex int, hostMac [6]uint8) (*PodEgress, error) {
+// NewPodEgress loads the pod-egress program and pins its maps under pinPath.
+func NewPodEgress(pinPath string) (*PodEgress, error) {
 	p := &PodEgress{}
 
 	spec, err := bpf.LoadPodEgress()
@@ -30,13 +29,6 @@ func NewPodEgress(pinPath string, hostIfindex int, hostMac [6]uint8) (*PodEgress
 	if err := bpf.LoadPodEgressObjects(&p.Objs, &ebpf.CollectionOptions{
 		Maps: ebpf.MapOptions{PinPath: pinPath},
 	}); err != nil {
-		return nil, err
-	}
-
-	if err := p.Objs.HostIface.Update(uint32(0), &bpf.PodEgressHostIfaceVal{
-		Ifindex: uint32(hostIfindex),
-		Mac:     hostMac,
-	}, ebpf.UpdateAny); err != nil {
 		return nil, err
 	}
 

@@ -11,7 +11,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/convert"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/runner"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/link"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/program"
@@ -75,7 +74,6 @@ type Manager struct {
 
 	podEgress    *program.PodEgress
 	podIngress   *program.PodIngress
-	hostEgress   *program.HostEgress
 	vxlanIngress *program.VxlanIngress
 	nodeIngress  *program.NodeIngress
 }
@@ -88,12 +86,8 @@ func (m *Manager) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to create BPF pin path: %w", err)
 	}
 
-	hostMac, err := convert.HardwareAddrToUint8Array(m.hostMac)
-	if err != nil {
-		return err
-	}
-
-	m.podEgress, err = program.NewPodEgress(m.pinPath, m.hostIfindex, hostMac)
+	var err error
+	m.podEgress, err = program.NewPodEgress(m.pinPath)
 	if err != nil {
 		return fmt.Errorf("load pod egress program: %w", err)
 	}
@@ -102,12 +96,6 @@ func (m *Manager) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load pod ingress program: %w", err)
 	}
-
-	m.hostEgress, err = program.NewHostEgress(m.pinPath, m.hostIfindex, m.vxlanIfindex)
-	if err != nil {
-		return fmt.Errorf("load host egress program: %w", err)
-	}
-	zap.S().Infof("attached TC program to host interface (ifindex: %d)", m.hostIfindex)
 
 	m.vxlanIngress, err = program.NewVxlanIngress(m.pinPath, m.vxlanIfindex)
 	if err != nil {
@@ -128,7 +116,7 @@ func (m *Manager) Start(ctx context.Context) error {
 }
 
 func (m *Manager) startReconcilers(ctx context.Context) error {
-	subnetReconciler := reconciler.NewSubnet(m.client, m.hostEgress)
+	subnetReconciler := reconciler.NewSubnet(m.client, m.podEgress)
 	m.subnetRunner = runner.New(subnetReconciler)
 	if err := m.subnetRunner.Watch(m.subnetInformer, runner.MetaNamespaceKey); err != nil {
 		return fmt.Errorf("watch Subnet: %w", err)
@@ -145,13 +133,13 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	}
 	m.subnetRunner.Start(ctx, 1)
 
-	m.arpRunner = runner.New(reconciler.NewArp(m.client, m.hostEgress))
+	m.arpRunner = runner.New(reconciler.NewArp(m.client, m.podEgress))
 	if err := m.arpRunner.Watch(m.nwepInformer, runner.MetaNamespaceKey); err != nil {
 		return fmt.Errorf("watch NWEP (arp): %w", err)
 	}
 	m.arpRunner.Start(ctx, 1)
 
-	m.fdbRunner = runner.New(reconciler.NewFdb(m.client, m.hostEgress, m.vxlanIngress, m.nodeName))
+	m.fdbRunner = runner.New(reconciler.NewFdb(m.client, m.podEgress, m.vxlanIngress, m.nodeName))
 	if err := m.fdbRunner.Watch(m.nwepInformer, runner.MetaNamespaceKey); err != nil {
 		return fmt.Errorf("watch NWEP (fdb): %w", err)
 	}
@@ -219,7 +207,7 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	// pseudo-pod IP. The reconciler is keyed on the default Subnet
 	// and waits for its VNI to be allocated.
 	if m.juNodeIfindex != 0 && m.juNodeHostMAC != nil && m.juNodeAssignedIP != nil {
-		juNode, err := reconciler.NewJuneauNode(m.client, m.hostEgress, "default",
+		juNode, err := reconciler.NewJuneauNode(m.client, m.podEgress, "default",
 			uint32(m.juNodeIfindex), m.juNodeHostMAC, m.juNodeAssignedIP, m.juNodeUnderlayIP)
 		if err != nil {
 			return fmt.Errorf("init juneau_node reconciler: %w", err)
@@ -354,11 +342,6 @@ func (m *Manager) Stop() error {
 		}
 	}
 
-	if m.hostEgress != nil {
-		if err := m.hostEgress.Close(); err != nil {
-			return err
-		}
-	}
 	if m.vxlanIngress != nil {
 		if err := m.vxlanIngress.Close(); err != nil {
 			return err

@@ -26,7 +26,7 @@ import (
 // ifindex, host-side MAC, and assigned IP) is provided at construction.
 type JuneauNode struct {
 	client     client.Client
-	hostEgress *program.HostEgress
+	hostEgress *program.PodEgress
 
 	subnetName  string
 	ifindex     uint32
@@ -46,7 +46,7 @@ type juneauNodeSnapshot struct {
 // nodeIP must be in network byte order (big-endian uint32).
 func NewJuneauNode(
 	cl client.Client,
-	hostEgress *program.HostEgress,
+	hostEgress *program.PodEgress,
 	subnetName string,
 	ifindex uint32,
 	hostSideMAC net.HardwareAddr,
@@ -122,16 +122,16 @@ func (r *JuneauNode) Reconcile(ctx context.Context, key string) error {
 	}
 
 	if err := r.hostEgress.Objs.IfindexSubnet.Update(
-		&bpf.HostEgressIfindexSubnetKey{Ifindex: r.ifindex},
-		&bpf.HostEgressIfindexSubnetVal{SubnetId: desired.vni},
+		&bpf.PodEgressIfindexSubnetKey{Ifindex: r.ifindex},
+		&bpf.PodEgressIfindexSubnetVal{SubnetId: desired.vni},
 		ebpf.UpdateAny,
 	); err != nil {
 		return fmt.Errorf("update ifindex_subnet for juneau_node: %w", err)
 	}
 
 	if err := r.hostEgress.Objs.ArpTable.Update(
-		&bpf.HostEgressArpTableKey{SubnetId: desired.vni, Ipaddr: r.assignedIP},
-		&bpf.HostEgressArpTableVal{Mac: r.hostSideMAC},
+		&bpf.PodEgressArpTableKey{SubnetId: desired.vni, Ipaddr: r.assignedIP},
+		&bpf.PodEgressArpTableVal{Mac: r.hostSideMAC},
 		ebpf.UpdateAny,
 	); err != nil {
 		return fmt.Errorf("update arp_table for juneau_node: %w", err)
@@ -139,8 +139,8 @@ func (r *JuneauNode) Reconcile(ctx context.Context, key string) error {
 
 	// Local fdb entry: redirect to juneau_node ifindex.
 	if err := r.hostEgress.Objs.Fdb.Update(
-		&bpf.HostEgressFdbKey{SubnetId: desired.vni, Mac: r.hostSideMAC},
-		&bpf.HostEgressFdbVal{Ifindex: r.ifindex, VtepIp: r.nodeIP},
+		&bpf.PodEgressFdbKey{SubnetId: desired.vni, Mac: r.hostSideMAC},
+		&bpf.PodEgressFdbVal{Ifindex: r.ifindex, VtepIp: r.nodeIP},
 		ebpf.UpdateAny,
 	); err != nil {
 		return fmt.Errorf("update fdb for juneau_node: %w", err)
@@ -165,13 +165,13 @@ func (r *JuneauNode) deleteAll() error {
 
 func (r *JuneauNode) cleanup(snap *juneauNodeSnapshot) error {
 	var errs []error
-	if err := r.hostEgress.Objs.IfindexSubnet.Delete(&bpf.HostEgressIfindexSubnetKey{Ifindex: r.ifindex}); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+	if err := r.hostEgress.Objs.IfindexSubnet.Delete(&bpf.PodEgressIfindexSubnetKey{Ifindex: r.ifindex}); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 		errs = append(errs, fmt.Errorf("delete ifindex_subnet for juneau_node: %w", err))
 	}
-	if err := r.hostEgress.Objs.ArpTable.Delete(&bpf.HostEgressArpTableKey{SubnetId: snap.vni, Ipaddr: r.assignedIP}); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+	if err := r.hostEgress.Objs.ArpTable.Delete(&bpf.PodEgressArpTableKey{SubnetId: snap.vni, Ipaddr: r.assignedIP}); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 		errs = append(errs, fmt.Errorf("delete arp_table for juneau_node: %w", err))
 	}
-	if err := r.hostEgress.Objs.Fdb.Delete(&bpf.HostEgressFdbKey{SubnetId: snap.vni, Mac: r.hostSideMAC}); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+	if err := r.hostEgress.Objs.Fdb.Delete(&bpf.PodEgressFdbKey{SubnetId: snap.vni, Mac: r.hostSideMAC}); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 		errs = append(errs, fmt.Errorf("delete fdb for juneau_node: %w", err))
 	}
 	if len(errs) > 0 {

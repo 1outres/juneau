@@ -69,7 +69,6 @@ spec:
                           - endpoint
                           - internetGateway
                           - service
-                          - hostGateway
                           - natGateway
                           type: string
                       required:
@@ -174,7 +173,6 @@ spec:
                           - endpoint
                           - internetGateway
                           - service
-                          - hostGateway
                           - natGateway
                           type: string
                       required:

@@ -25,6 +25,13 @@ func NewVxlanIngress(pinPath string, vxlanIfindex int) (*VxlanIngress, error) {
 		return nil, err
 	}
 
+	// vxlan_ifindex is a pinned, shared map every program reads to
+	// know which iface to redirect packets that need VXLAN encap to.
+	// Owned by the program that manages the vxlan iface.
+	if err := p.Objs.VxlanIfindex.Update(uint32(0), uint32(vxlanIfindex), ebpf.UpdateAny); err != nil {
+		return nil, err
+	}
+
 	l, err := link.AttachTCX(link.TCXOptions{
 		Program:   p.Objs.TcVxlanIngressEntry,
 		Interface: vxlanIfindex,

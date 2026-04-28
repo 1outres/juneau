@@ -24,7 +24,6 @@ const (
 	fibRouteTypeEndpoint        = 2
 	fibRouteTypeInternetGateway = 3
 	fibRouteTypeService         = 4
-	fibRouteTypeHostGateway     = 5
 	fibRouteTypeNAPT            = 6
 )
 
@@ -194,9 +193,6 @@ func (r *Fib) buildFibVal(ctx context.Context, route *juneauv1alpha1.Route) (bpf
 	case juneauv1alpha1.ViaService:
 		return buildServiceFibVal(), false, nil
 
-	case juneauv1alpha1.ViaHostGateway:
-		return buildHostGatewayFibVal(), false, nil
-
 	case juneauv1alpha1.ViaNATGateway:
 		var natGateway juneauv1alpha1.NATGateway
 		if err := r.client.Get(ctx, client.ObjectKey{Name: route.Via.NATGateway}, &natGateway); err != nil {
@@ -268,17 +264,6 @@ func buildInternetGatewayFibVal() (bpf.PodEgressFibVal, error) {
 func buildServiceFibVal() bpf.PodEgressFibVal {
 	return bpf.PodEgressFibVal{
 		Type: fibRouteTypeService,
-	}
-}
-
-// buildHostGatewayFibVal builds a FIB value for the host-gateway route
-// type used by the default VPC. Only the type matters — the BPF side
-// rewrites the dst_mac to cni_host's MAC and bpf_redirects to cni_net so
-// the host network stack handles SNAT (via iptables MASQUERADE) for
-// outbound traffic to the internet.
-func buildHostGatewayFibVal() bpf.PodEgressFibVal {
-	return bpf.PodEgressFibVal{
-		Type: fibRouteTypeHostGateway,
 	}
 }
 
