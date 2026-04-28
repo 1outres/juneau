@@ -130,26 +130,36 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		})
 	}
 
-	// The default VPC's main RouteTable carries an additional default
-	// route that delegates internet egress to the host network stack
-	// via cni_host (and the host's iptables MASQUERADE). This is a
-	// transitional path until proper in-eBPF NAPT is implemented; only
-	// the "default" VPC's main RouteTable receives it.
+	// The default VPC's main RouteTable optionally carries a 0/0
+	// route via the default NATGateway. The route is only injected
+	// when a default NATGateway exists and is Ready. Operators that
+	// need internet egress in the default VPC must either bootstrap
+	// the default ExternalNetwork + NATGateway pair or add their own
+	// 0/0 route.
 	if resource.Name == defaultVpcName && resource.Spec.Vpc == defaultVpcName {
-		statusRoutes = append(statusRoutes, juneauloutresmev1alpha1.Route{
-			Dst: "0.0.0.0/0",
-			Via: juneauloutresmev1alpha1.RouteVia{
-				Type: juneauloutresmev1alpha1.ViaHostGateway,
-			},
-		})
+		var defaultNATGW juneauloutresmev1alpha1.NATGateway
+		err := r.Get(ctx, client.ObjectKey{Name: defaultVpcName}, &defaultNATGW)
+		if err == nil && defaultNATGW.Status.GatewayID != 0 {
+			statusRoutes = append(statusRoutes, juneauloutresmev1alpha1.Route{
+				Dst: "0.0.0.0/0",
+				Via: juneauloutresmev1alpha1.RouteVia{
+					Type:       juneauloutresmev1alpha1.ViaNATGateway,
+					NATGateway: defaultNATGW.Name,
+				},
+			})
+		} else if err != nil && !errors.IsNotFound(err) {
+			if updateErr := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, fmt.Sprintf("failed to fetch default NATGateway: %v", err)); updateErr != nil {
+				return ctrl.Result{}, updateErr
+			}
+			return ctrl.Result{}, err
+		}
 	}
 
 	for _, route := range resource.Spec.Routes {
 		if rt := getRoute(statusRoutes, route.Dst); rt == nil {
 			var subnet string
 			if route.Via.Type == juneauloutresmev1alpha1.ViaConnected ||
-				route.Via.Type == juneauloutresmev1alpha1.ViaService ||
-				route.Via.Type == juneauloutresmev1alpha1.ViaHostGateway {
+				route.Via.Type == juneauloutresmev1alpha1.ViaService {
 				continue
 			} else if route.Via.Type == juneauloutresmev1alpha1.ViaEndpoint {
 				nwep, err := r.getNetworkEndpoint(ctx, route.Via.Endpoint)

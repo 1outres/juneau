@@ -56,7 +56,8 @@ func NewApp() *cli.Command {
 				Name: "vxlan-parent-iface",
 			},
 			&cli.StringFlag{
-				Name: "masquerade-iface",
+				Name:  "node-ingress-iface",
+				Usage: "Interface to attach node-ingress BPF program to. Defaults to the node's main iface.",
 			},
 			&cli.StringFlag{
 				Name:  "bpf-pin-path",
@@ -76,7 +77,7 @@ func NewApp() *cli.Command {
 			cniConfDir := cmd.String("cni-conf-dir")
 			nodeName := cmd.String("node-name")
 			vxlanParentIface := cmd.String("vxlan-parent-iface")
-			masqueradeIface := cmd.String("masquerade-iface")
+			nodeIngressIfaceName := cmd.String("node-ingress-iface")
 			bpfPinPath := cmd.String("bpf-pin-path")
 
 			zapcfg := zap.NewDevelopmentConfig()
@@ -108,16 +109,19 @@ func NewApp() *cli.Command {
 			cache, err := cache.New(kubecfg, cache.Options{
 				Scheme: scheme,
 				ByObject: map[client.Object]cache.ByObject{
-					&juneauv1alpha1.NetworkInterface{}:    {},
-					&juneauv1alpha1.NetworkEndpoint{}:     {},
-					&juneauv1alpha1.ElasticIPAttachment{}: {},
-					&juneauv1alpha1.AddressPool{}:         {},
-					&juneauv1alpha1.BGPAdvertisement{}:    {},
-					&juneauv1alpha1.Subnet{}:              {},
-					&juneauv1alpha1.Vpc{}:                 {},
-					&juneauv1alpha1.RouteTable{}:          {},
-					&corev1.Service{}:                     {},
-					&discoveryv1.EndpointSlice{}:          {},
+					&juneauv1alpha1.NetworkInterface{}:           {},
+					&juneauv1alpha1.NetworkEndpoint{}:            {},
+					&juneauv1alpha1.ElasticIPAttachment{}:        {},
+					&juneauv1alpha1.AddressPool{}:                {},
+					&juneauv1alpha1.BGPAdvertisement{}:           {},
+					&juneauv1alpha1.Subnet{}:                     {},
+					&juneauv1alpha1.Vpc{}:                        {},
+					&juneauv1alpha1.RouteTable{}:                 {},
+					&juneauv1alpha1.NATGateway{}:                 {},
+					&juneauv1alpha1.ExternalNetworkAttachment{}:  {},
+					&juneauv1alpha1.AllocationClaim{}:            {},
+					&corev1.Service{}:                            {},
+					&discoveryv1.EndpointSlice{}:                 {},
 				},
 			})
 			if err != nil {
@@ -337,7 +341,7 @@ func NewApp() *cli.Command {
 				}
 			}
 
-			if vxlanParentIface == "" || masqueradeIface == "" {
+			if vxlanParentIface == "" || nodeIngressIfaceName == "" {
 				mainIface, err := bootstrap.SearchMainIface(ctx, cl, nodeName)
 				if err != nil {
 					return fmt.Errorf("find main iface: %w", err)
@@ -346,8 +350,8 @@ func NewApp() *cli.Command {
 				if vxlanParentIface == "" {
 					vxlanParentIface = mainIface
 				}
-				if masqueradeIface == "" {
-					masqueradeIface = mainIface
+				if nodeIngressIfaceName == "" {
+					nodeIngressIfaceName = mainIface
 				}
 			}
 
@@ -360,17 +364,13 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("configure sysctl: %w", err)
 			}
 
-			if err := bootstrap.EnsureMasqueradeRule(ctx, cl, masqueradeIface); err != nil {
-				return fmt.Errorf("ensure masquerade rule: %w", err)
-			}
-
 			if err := ensureBPFFSMounted(bpfPinPath); err != nil {
 				return fmt.Errorf("ensure bpf fs mount: %w", err)
 			}
 
-			nodeIngressIface, err := net.InterfaceByName(masqueradeIface)
+			nodeIngressIface, err := net.InterfaceByName(nodeIngressIfaceName)
 			if err != nil {
-				return fmt.Errorf("lookup node ingress iface %q: %w", masqueradeIface, err)
+				return fmt.Errorf("lookup node ingress iface %q: %w", nodeIngressIfaceName, err)
 			}
 
 			bpfManager := dataplane.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, vpcInformer, serviceInformer, endpointSliceInformer, externalNetworkAttachmentInformer, natGatewayInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, bpfPinPath, hostIfaceInfo.MAC, juneauNodeIfaceInfo.AssignedIP, nodeUnderlayIP)

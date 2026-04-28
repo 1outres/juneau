@@ -102,13 +102,6 @@ type PodEgressFibVal struct {
 	Oif      uint32
 }
 
-type PodEgressHostIfaceVal struct {
-	_       structs.HostLayout
-	Ifindex uint32
-	Mac     [6]uint8
-	_       [2]byte
-}
-
 type PodEgressIfindexHostMacKey struct {
 	_       structs.HostLayout
 	Ifindex uint32
@@ -237,7 +230,6 @@ type PodEgressMapSpecs struct {
 	Fdb             *ebpf.MapSpec `ebpf:"fdb"`
 	FibInner        *ebpf.MapSpec `ebpf:"fib_inner"`
 	FibMap          *ebpf.MapSpec `ebpf:"fib_map"`
-	HostIface       *ebpf.MapSpec `ebpf:"host_iface"`
 	IfindexHostMac  *ebpf.MapSpec `ebpf:"ifindex_host_mac"`
 	IfindexSubnet   *ebpf.MapSpec `ebpf:"ifindex_subnet"`
 	NaptSrc         *ebpf.MapSpec `ebpf:"napt_src"`
@@ -281,7 +273,6 @@ type PodEgressMaps struct {
 	Fdb             *ebpf.Map `ebpf:"fdb"`
 	FibInner        *ebpf.Map `ebpf:"fib_inner"`
 	FibMap          *ebpf.Map `ebpf:"fib_map"`
-	HostIface       *ebpf.Map `ebpf:"host_iface"`
 	IfindexHostMac  *ebpf.Map `ebpf:"ifindex_host_mac"`
 	IfindexSubnet   *ebpf.Map `ebpf:"ifindex_subnet"`
 	NaptSrc         *ebpf.Map `ebpf:"napt_src"`
@@ -301,7 +292,6 @@ func (m *PodEgressMaps) Close() error {
 		m.Fdb,
 		m.FibInner,
 		m.FibMap,
-		m.HostIface,
 		m.IfindexHostMac,
 		m.IfindexSubnet,
 		m.NaptSrc,
