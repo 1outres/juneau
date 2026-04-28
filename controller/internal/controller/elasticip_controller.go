@@ -20,7 +20,6 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
-	"net"
 	"reflect"
 	"strings"
 	"time"
@@ -29,8 +28,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -49,8 +50,11 @@ const (
 	elasticIPReasonInvalidAddressPool = "InvalidAddressPool"
 	elasticIPReasonAttached           = "Attached"
 	elasticIPReasonConflict           = "Conflict"
+	elasticIPReasonAllocating         = "Allocating"
 
-	elasticIPAddressRetryAfter = 10 * time.Second
+	elasticIPRequeueAfter = 10 * time.Second
+
+	elasticIPFinalizer = "elasticip.juneau.loutres.me/allocation-claim"
 )
 
 type elasticIPReconcileError struct {
@@ -62,7 +66,12 @@ func (e *elasticIPReconcileError) Error() string {
 	return e.message
 }
 
-// ElasticIPReconciler reconciles a ElasticIP object
+// ElasticIPReconciler reconciles a ElasticIP object.
+//
+// Address allocation is delegated to an AllocationClaim that targets the
+// AllocationPools backing the AddressPools attached to the referenced
+// ExternalNetwork. The reconciler owns the lifecycle of that claim and
+// mirrors its outcome into ElasticIP.status.
 type ElasticIPReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -74,6 +83,7 @@ type ElasticIPReconciler struct {
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=externalnetworks,verbs=get;list;watch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=addresspools,verbs=get;list;watch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=elasticipattachments,verbs=get;list;watch
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=allocationclaims,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -90,22 +100,56 @@ func (r *ElasticIPReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	if !resource.ObjectMeta.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, r.handleDeletion(ctx, &resource)
+	}
+
+	if !controllerutil.ContainsFinalizer(&resource, elasticIPFinalizer) {
+		controllerutil.AddFinalizer(&resource, elasticIPFinalizer)
+		if err := r.Update(ctx, &resource); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.Get(ctx, req.NamespacedName, &resource); err != nil {
+			return ctrl.Result{}, client.IgnoreNotFound(err)
+		}
 	}
 
 	return r.reconcileNormal(ctx, &resource)
 }
 
+func (r *ElasticIPReconciler) handleDeletion(ctx context.Context, resource *juneauv1alpha1.ElasticIP) error {
+	if !controllerutil.ContainsFinalizer(resource, elasticIPFinalizer) {
+		return nil
+	}
+
+	claimName := elasticIPClaimName(resource)
+	var claim juneauv1alpha1.AllocationClaim
+	if err := r.Get(ctx, client.ObjectKey{Name: claimName}, &claim); err == nil {
+		if err := r.Delete(ctx, &claim); err != nil && !errors.IsNotFound(err) {
+			return err
+		}
+	} else if !errors.IsNotFound(err) {
+		return err
+	}
+
+	controllerutil.RemoveFinalizer(resource, elasticIPFinalizer)
+	return r.Update(ctx, resource)
+}
+
 func (r *ElasticIPReconciler) reconcileNormal(ctx context.Context, resource *juneauv1alpha1.ElasticIP) (ctrl.Result, error) {
-	address, requeue, err := r.resolveAddress(ctx, resource)
+	poolNames, err := r.resolvePoolRefs(ctx, resource)
 	if err != nil {
 		var reconcileErr *elasticIPReconcileError
 		if stderrors.As(err, &reconcileErr) {
-			if err := r.updateErrorStatus(ctx, resource, reconcileErr.reason, reconcileErr.message); err != nil {
-				return ctrl.Result{}, err
+			if updateErr := r.updateErrorStatus(ctx, resource, reconcileErr.reason, reconcileErr.message); updateErr != nil {
+				return ctrl.Result{}, updateErr
 			}
 			return ctrl.Result{}, nil
 		}
+		return ctrl.Result{}, err
+	}
+
+	address, requeue, err := r.ensureClaim(ctx, resource, poolNames)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -126,7 +170,28 @@ func (r *ElasticIPReconciler) reconcileNormal(ctx context.Context, resource *jun
 		); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: elasticIPAddressRetryAfter}, nil
+		return ctrl.Result{RequeueAfter: elasticIPRequeueAfter}, nil
+	}
+
+	if address == "" {
+		// Claim exists but has not yet reached Allocated. Treat as Pending.
+		if err := r.updateStatus(ctx, resource, juneauv1alpha1.ElasticIPPhasePending, "", "",
+			metav1.Condition{
+				Type:    elasticIPConditionAllocated,
+				Status:  metav1.ConditionFalse,
+				Reason:  elasticIPReasonAllocating,
+				Message: "AllocationClaim is still allocating an address",
+			},
+			metav1.Condition{
+				Type:    elasticIPConditionAttached,
+				Status:  metav1.ConditionFalse,
+				Reason:  elasticIPReasonAwaitingAttachment,
+				Message: "ElasticIP is not attached",
+			},
+		); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
 	}
 
 	attachments, err := r.listActiveAttachments(ctx, resource)
@@ -178,13 +243,12 @@ func (r *ElasticIPReconciler) reconcileNormal(ctx context.Context, resource *jun
 	return ctrl.Result{}, nil
 }
 
-func (r *ElasticIPReconciler) resolveAddress(ctx context.Context, resource *juneauv1alpha1.ElasticIP) (string, bool, error) {
-	if resource.Status.Address != "" {
-		return resource.Status.Address, false, nil
-	}
-
+// resolvePoolRefs returns the AllocationPool names that back the AddressPools
+// attached to the referenced ExternalNetwork. Only BGP-mode AddressPools are
+// included, matching the prior behaviour.
+func (r *ElasticIPReconciler) resolvePoolRefs(ctx context.Context, resource *juneauv1alpha1.ElasticIP) ([]string, error) {
 	if strings.TrimSpace(resource.Spec.ExternalNetwork) == "" {
-		return "", false, &elasticIPReconcileError{
+		return nil, &elasticIPReconcileError{
 			reason:  elasticIPReasonMissingDependency,
 			message: "spec.externalNetwork is empty",
 		}
@@ -193,89 +257,124 @@ func (r *ElasticIPReconciler) resolveAddress(ctx context.Context, resource *june
 	var externalNetwork juneauv1alpha1.ExternalNetwork
 	if err := r.Get(ctx, client.ObjectKey{Name: resource.Spec.ExternalNetwork}, &externalNetwork); err != nil {
 		if errors.IsNotFound(err) {
-			return "", false, &elasticIPReconcileError{
+			return nil, &elasticIPReconcileError{
 				reason:  elasticIPReasonMissingDependency,
 				message: fmt.Sprintf("ExternalNetwork %q not found", resource.Spec.ExternalNetwork),
 			}
 		}
-		return "", false, err
+		return nil, err
 	}
 
 	if len(externalNetwork.Spec.AddressPools) == 0 {
-		return "", false, &elasticIPReconcileError{
+		return nil, &elasticIPReconcileError{
 			reason:  elasticIPReasonMissingDependency,
 			message: fmt.Sprintf("ExternalNetwork %q has no AddressPools", externalNetwork.Name),
 		}
 	}
 
-	usedAddresses, err := r.listUsedAddressesByExternalNetwork(ctx, externalNetwork.Name, resource.Namespace, resource.Name)
-	if err != nil {
-		return "", false, err
-	}
-
-	for _, poolName := range externalNetwork.Spec.AddressPools {
-		poolName = strings.TrimSpace(poolName)
+	poolNames := make([]string, 0, len(externalNetwork.Spec.AddressPools))
+	for _, raw := range externalNetwork.Spec.AddressPools {
+		poolName := strings.TrimSpace(raw)
 		if poolName == "" {
 			continue
 		}
 
-		var pool juneauv1alpha1.AddressPool
-		if err := r.Get(ctx, client.ObjectKey{Name: poolName}, &pool); err != nil {
+		var addressPool juneauv1alpha1.AddressPool
+		if err := r.Get(ctx, client.ObjectKey{Name: poolName}, &addressPool); err != nil {
 			if errors.IsNotFound(err) {
-				return "", false, &elasticIPReconcileError{
+				return nil, &elasticIPReconcileError{
 					reason:  elasticIPReasonMissingDependency,
 					message: fmt.Sprintf("AddressPool %q not found", poolName),
 				}
 			}
-			return "", false, err
+			return nil, err
 		}
 
-		if pool.Spec.AdvertiseMode != juneauv1alpha1.AddressPoolAdvertiseModeBGP {
-			return "", false, &elasticIPReconcileError{
+		if addressPool.Spec.AdvertiseMode != juneauv1alpha1.AddressPoolAdvertiseModeBGP {
+			return nil, &elasticIPReconcileError{
 				reason:  elasticIPReasonInvalidAddressPool,
-				message: fmt.Sprintf("AddressPool %q advertiseMode must be bgp", pool.Name),
+				message: fmt.Sprintf("AddressPool %q advertiseMode must be bgp", addressPool.Name),
 			}
 		}
 
-		for _, addressRange := range pool.Spec.Addresses {
-			candidate, found, err := firstFreeAddressInCIDR(addressRange, usedAddresses)
-			if err != nil {
-				return "", false, &elasticIPReconcileError{
-					reason:  elasticIPReasonInvalidAddressPool,
-					message: fmt.Sprintf("AddressPool %q has invalid address %q: %v", pool.Name, addressRange, err),
-				}
-			}
-			if found {
-				return candidate, false, nil
-			}
+		poolNames = append(poolNames, AddressPoolAllocationPoolName(addressPool.Name))
+	}
+
+	if len(poolNames) == 0 {
+		return nil, &elasticIPReconcileError{
+			reason:  elasticIPReasonMissingDependency,
+			message: fmt.Sprintf("ExternalNetwork %q resolves to no usable AddressPools", externalNetwork.Name),
 		}
 	}
 
-	return "", true, nil
+	return poolNames, nil
 }
 
-func (r *ElasticIPReconciler) listUsedAddressesByExternalNetwork(ctx context.Context, externalNetworkName, selfNamespace, selfName string) (map[string]struct{}, error) {
-	var list juneauv1alpha1.ElasticIPList
-	if err := r.List(ctx, &list); err != nil {
-		return nil, err
+// ensureClaim creates or updates the AllocationClaim that backs this
+// ElasticIP. Returns (allocatedIP, requeue, err) where requeue indicates the
+// claim is unable to find a free address and should be retried later.
+func (r *ElasticIPReconciler) ensureClaim(ctx context.Context, resource *juneauv1alpha1.ElasticIP, poolNames []string) (string, bool, error) {
+	claimName := elasticIPClaimName(resource)
+	poolRefs := make([]juneauv1alpha1.AllocationPoolReference, 0, len(poolNames))
+	for _, name := range poolNames {
+		poolRefs = append(poolRefs, juneauv1alpha1.AllocationPoolReference{Name: name})
 	}
 
-	used := make(map[string]struct{}, len(list.Items))
-	for i := range list.Items {
-		item := &list.Items[i]
-		if item.Spec.ExternalNetwork != externalNetworkName {
-			continue
-		}
-		if item.Name == selfName && item.Namespace == selfNamespace {
-			continue
-		}
-		if item.DeletionTimestamp != nil || item.Status.Address == "" {
-			continue
-		}
-		used[item.Status.Address] = struct{}{}
+	desiredSpec := juneauv1alpha1.AllocationClaimSpec{
+		PoolRefs: poolRefs,
+		ResourceRef: juneauv1alpha1.AllocationResourceReference{
+			APIVersion: juneauv1alpha1.GroupVersion.String(),
+			Kind:       "ElasticIP",
+			Namespace:  resource.Namespace,
+			Name:       resource.Name,
+		},
+		Attribute: "status.address",
+	}
+	if resource.Spec.RequestedIP != "" {
+		ip := resource.Spec.RequestedIP
+		desiredSpec.RequestedIP = &ip
 	}
 
-	return used, nil
+	var existing juneauv1alpha1.AllocationClaim
+	err := r.Get(ctx, client.ObjectKey{Name: claimName}, &existing)
+	switch {
+	case errors.IsNotFound(err):
+		claim := &juneauv1alpha1.AllocationClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: claimName},
+			Spec:       desiredSpec,
+		}
+		if err := r.Create(ctx, claim); err != nil && !errors.IsAlreadyExists(err) {
+			return "", false, fmt.Errorf("create AllocationClaim: %w", err)
+		}
+		return "", false, nil
+	case err != nil:
+		return "", false, err
+	}
+
+	// Existing claim: status mirroring + diagnose pool exhaustion.
+	if existing.Status.Phase == juneauv1alpha1.AllocationClaimPhasePending {
+		ready := meta.FindStatusCondition(existing.Status.Conditions, juneauv1alpha1.AllocationClaimStatusReady)
+		if ready != nil && ready.Reason == allocationClaimReasonPending {
+			return "", true, nil
+		}
+		return "", false, nil
+	}
+
+	if existing.Status.Phase == juneauv1alpha1.AllocationClaimPhaseAllocated && existing.Status.Value.IP != "" {
+		return existing.Status.Value.IP, false, nil
+	}
+
+	return "", false, nil
+}
+
+func elasticIPClaimName(resource *juneauv1alpha1.ElasticIP) string {
+	return allocationClaimName(
+		"elasticip",
+		schema.GroupVersionKind{Group: juneauv1alpha1.GroupVersion.Group, Version: juneauv1alpha1.GroupVersion.Version, Kind: "ElasticIP"},
+		resource.Namespace,
+		resource.Name,
+		"status.address",
+	)
 }
 
 func (r *ElasticIPReconciler) listActiveAttachments(ctx context.Context, resource *juneauv1alpha1.ElasticIP) ([]juneauv1alpha1.ElasticIPAttachment, error) {
@@ -380,52 +479,22 @@ func (r *ElasticIPReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				}}
 			}),
 		).
+		Watches(
+			&juneauv1alpha1.AllocationClaim{},
+			handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
+				claim, ok := obj.(*juneauv1alpha1.AllocationClaim)
+				if !ok {
+					return nil
+				}
+				ref := claim.Spec.ResourceRef
+				if ref.Kind != "ElasticIP" || ref.Name == "" {
+					return nil
+				}
+				return []reconcile.Request{{
+					NamespacedName: client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name},
+				}}
+			}),
+		).
 		Named("elasticip").
 		Complete(r)
-}
-
-func firstFreeAddressInCIDR(raw string, used map[string]struct{}) (string, bool, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return "", false, nil
-	}
-
-	start, ipnet, err := net.ParseCIDR(raw)
-	if err != nil {
-		return "", false, fmt.Errorf("invalid CIDR")
-	}
-
-	start = start.To4()
-	if start == nil {
-		return "", false, fmt.Errorf("only IPv4 CIDR is supported")
-	}
-
-	prefixLen, bits := ipnet.Mask.Size()
-	if bits != 32 {
-		return "", false, fmt.Errorf("only IPv4 CIDR is supported")
-	}
-
-	ip := append(net.IP(nil), start...)
-	broadcast := broadcastIP(ipnet).To4()
-
-	if prefixLen < 31 {
-		incIP(&ip)
-	}
-
-	for {
-		if prefixLen < 31 && ip.Equal(broadcast) {
-			return "", false, nil
-		}
-
-		candidate := ip.String()
-		if _, exists := used[candidate]; !exists {
-			return candidate, true, nil
-		}
-
-		if ip.Equal(broadcast) {
-			return "", false, nil
-		}
-
-		incIP(&ip)
-	}
 }
