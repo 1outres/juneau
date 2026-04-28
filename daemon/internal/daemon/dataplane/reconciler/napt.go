@@ -2,7 +2,6 @@ package reconciler
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -15,6 +14,7 @@ import (
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	bpf "github.com/1outres/juneau/daemon/internal/daemon/bpf"
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/convert"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/program"
 )
 
@@ -102,7 +102,7 @@ func (r *Napt) upsertBgpAddressPools(attachmentName, address string) error {
 }
 
 func (r *Napt) upsertNaptSrc(ctx context.Context, attachmentName string, attachment *juneauv1alpha1.ExternalNetworkAttachment, address string) error {
-	hostIP, err := parseIPv4ToBE(address)
+	hostIP, err := parseAssignedIPForBPF(address)
 	if err != nil {
 		return fmt.Errorf("parse assignedIP %q: %w", address, err)
 	}
@@ -186,9 +186,16 @@ func naptHostPrefix(address string) string {
 	return address
 }
 
-// parseIPv4ToBE returns the address in big-endian (network byte order)
-// matching the BPF napt_src_val.host_ip field.
-func parseIPv4ToBE(address string) (uint32, error) {
+// parseAssignedIPForBPF parses an attachment's assignedIP and encodes
+// it for the napt_src.host_ip BPF field, which is consumed as __be32
+// (the value is later fed straight into bpf_skb_store_bytes against an
+// IP header). On a little-endian host this means the in-memory bytes
+// must be NBO; convert.IPv4ToBPFNetworkOrder produces that. The
+// previous implementation used binary.BigEndian.Uint32, which on LE
+// hosts laid the bytes down in reverse and made the data plane stamp
+// packets with a byte-swapped source IP (192.0.2.3 became 3.2.0.192
+// on the wire).
+func parseAssignedIPForBPF(address string) (uint32, error) {
 	ip := net.ParseIP(address)
 	if ip == nil {
 		if strings.Contains(address, "/") {
@@ -202,11 +209,7 @@ func parseIPv4ToBE(address string) (uint32, error) {
 	if ip == nil {
 		return 0, fmt.Errorf("invalid IP %q", address)
 	}
-	ip4 := ip.To4()
-	if ip4 == nil {
-		return 0, fmt.Errorf("not an IPv4 address: %q", address)
-	}
-	return binary.BigEndian.Uint32(ip4), nil
+	return convert.IPv4ToBPFNetworkOrder(ip)
 }
 
 // FanOutAllAttachments enqueues every owned attachment when an upstream
