@@ -230,6 +230,7 @@ type NodeIngressMapSpecs struct {
 	Fdb             *ebpf.MapSpec `ebpf:"fdb"`
 	FibInner        *ebpf.MapSpec `ebpf:"fib_inner"`
 	FibMap          *ebpf.MapSpec `ebpf:"fib_map"`
+	HostUnderlay    *ebpf.MapSpec `ebpf:"host_underlay"`
 	IfindexHostMac  *ebpf.MapSpec `ebpf:"ifindex_host_mac"`
 	IfindexSubnet   *ebpf.MapSpec `ebpf:"ifindex_subnet"`
 	NaptSrc         *ebpf.MapSpec `ebpf:"napt_src"`
@@ -273,6 +274,7 @@ type NodeIngressMaps struct {
 	Fdb             *ebpf.Map `ebpf:"fdb"`
 	FibInner        *ebpf.Map `ebpf:"fib_inner"`
 	FibMap          *ebpf.Map `ebpf:"fib_map"`
+	HostUnderlay    *ebpf.Map `ebpf:"host_underlay"`
 	IfindexHostMac  *ebpf.Map `ebpf:"ifindex_host_mac"`
 	IfindexSubnet   *ebpf.Map `ebpf:"ifindex_subnet"`
 	NaptSrc         *ebpf.Map `ebpf:"napt_src"`
@@ -292,6 +294,7 @@ func (m *NodeIngressMaps) Close() error {
 		m.Fdb,
 		m.FibInner,
 		m.FibMap,
+		m.HostUnderlay,
 		m.IfindexHostMac,
 		m.IfindexSubnet,
 		m.NaptSrc,

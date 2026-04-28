@@ -30,6 +30,16 @@ const (
 	// kubernetesServiceLabel links an EndpointSlice to its parent Service
 	// and is the canonical Kubernetes selector for the relationship.
 	kubernetesServiceLabel = "kubernetes.io/service-name"
+
+	// backendSubnetIDUnderlay is the sentinel written into
+	// backend_val.backend_subnet_id when an endpoint lives on the
+	// underlay (a non-Pod target such as kube-apiserver, or a
+	// hostNetwork Pod we don't manage). The data plane treats this
+	// value as "host-network NAPT path" rather than "Pod backend with
+	// VNI 0". Subnet VNIs always start at >=1 (subnet-vni
+	// AllocationPool min=2 except the default Subnet which uses 1),
+	// so 0 is unambiguously available as a sentinel.
+	backendSubnetIDUnderlay uint32 = 0
 )
 
 // Service keeps service_map and backend_map in sync with Kubernetes
@@ -144,9 +154,17 @@ func (r *Service) upsert(ctx context.Context, key string, svc *corev1.Service) e
 					return err
 				}
 			}
+
+			// Endpoints that don't map to a NetworkInterface live on the
+			// underlay (host-network Pods or non-Pod endpoints such as
+			// kube-apiserver). Mark them with the underlay sentinel; the
+			// data plane recognises it as the host-network NAPT path.
 			if iface == nil {
-				// Skip endpoints we can't map to a NetworkInterface; they
-				// might be hostNetwork Pods that we don't manage.
+				backendsByPort[port] = append(backendsByPort[port], bpf.PodEgressBackendVal{
+					BackendIp:       binary.BigEndian.Uint32(backendIP),
+					BackendPort:     uint16(ep.port),
+					BackendSubnetId: backendSubnetIDUnderlay,
+				})
 				continue
 			}
 

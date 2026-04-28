@@ -288,6 +288,17 @@ static __always_inline __u32 hash_tuple(__be32 saddr, __be32 daddr,
   return h;
 }
 
+// NAPT_PROBE_LIMIT bounds the linear-probe loop used to claim a
+// previously-unused alloc_port. Higher values lower the probability of
+// a failed allocation under heavy port pressure but cost verifier
+// instructions; 8 strikes a balance similar to cilium's snat_v4 path.
+#define NAPT_PROBE_LIMIT 8
+
+// rotate_left mixes a 32-bit value during port probe re-derivation.
+static __always_inline __u32 napt_rotate_left(__u32 x, __u32 r) {
+  return (x << r) | (x >> (32 - r));
+}
+
 // dispatch_after_dnat does the second FIB lookup that finds the route to
 // the chosen backend and forwards the (already DNAT'd) packet onward.
 // Service entries are not expected here — if the second lookup itself
@@ -334,6 +345,176 @@ static __always_inline int dispatch_after_dnat(struct __sk_buff *skb,
   return TC_ACT_SHOT;
 }
 
+// handle_service_host_backend dispatches a Service flow whose chosen
+// backend lives on the underlay (no Pod / no NetworkInterface). The
+// packet is rewritten so dst becomes the backend's host IP and src
+// becomes this node's underlay IP — letting the kernel route the flow
+// over the underlay as if it originated from the local host. CT
+// entries record the full 5-tuple translation so the response can be
+// reversed by node_ingress.
+static __always_inline int
+handle_service_host_backend(struct __sk_buff *skb, struct ethhdr *eth,
+                            struct iphdr *iph,
+                            const struct subnet_val *subnet,
+                            const struct backend_val *bv) {
+  void *data_end = skb_data_end(skb);
+
+  if (iph->protocol != IPPROTO_TCP && iph->protocol != IPPROTO_UDP)
+    return TC_ACT_SHOT;
+
+  __be16 sport, dport;
+  if (read_l4_ports(iph, data_end, &sport, &dport) < 0)
+    return TC_ACT_SHOT;
+
+  __u32 underlay_key = 0;
+  const __u32 *underlay_ip = bpf_map_lookup_elem(&host_underlay, &underlay_key);
+  if (!underlay_ip || *underlay_ip == 0)
+    return TC_ACT_SHOT;
+  __be32 node_underlay_ip = *underlay_ip;
+
+  // Resolve this Pod's Subnet ID via ifindex_subnet so the reverse CT
+  // entry can fdb-forward the response back to the originating Pod.
+  struct ifindex_subnet_key isk = {.ifindex = skb->ifindex};
+  const struct ifindex_subnet_val *isv =
+      bpf_map_lookup_elem(&ifindex_subnet, &isk);
+  if (!isv)
+    return TC_ACT_SHOT;
+  __u32 pod_subnet_id = isv->subnet_id;
+
+  __be32 backend_addr_be = bpf_htonl(bv->backend_ip);
+  __be16 backend_port_be = bpf_htons(bv->backend_port);
+  __be32 cluster_ip_be = iph->daddr;
+
+  __u8 init_flags = 0;
+  __u8 init_state = CT_STATE_ESTABLISHED;
+  if (iph->protocol == IPPROTO_TCP) {
+    __u8 f;
+    if (ct_read_tcp_flags(iph, data_end, &f) == 0) {
+      init_flags = f & TCP_FLAG_TRACKED;
+      init_state = ct_initial_state_for_syn(f);
+    }
+  }
+
+  __u64 now = bpf_ktime_get_ns();
+
+  struct ct_key fwd_key = {
+      .scope = subnet->vpc_id,
+      .saddr = iph->saddr,
+      .daddr = cluster_ip_be,
+      .sport = sport,
+      .dport = dport,
+      .proto = iph->protocol,
+  };
+
+  struct ct_val *existing = bpf_map_lookup_elem(&ct_map, &fwd_key);
+  __be16 alloc_port = 0;
+  if (existing && existing->action == CT_ACTION_SVC_NAPT_OUT) {
+    existing->last_seen_ns = now;
+    alloc_port = existing->new_sport;
+  } else {
+    __u32 seed = hash_tuple(iph->saddr, cluster_ip_be, sport, dport,
+                            iph->protocol);
+    bool installed = false;
+
+#pragma unroll
+    for (int i = 0; i < NAPT_PROBE_LIMIT; i++) {
+      __u32 candidate_host = 1024 + ((seed + i) % (65536 - 1024));
+      __be16 candidate = bpf_htons((__u16)candidate_host);
+
+      struct ct_key rev_key = {
+          .scope = CT_SCOPE_HOST,
+          .saddr = backend_addr_be,
+          .daddr = node_underlay_ip,
+          .sport = backend_port_be,
+          .dport = candidate,
+          .proto = iph->protocol,
+      };
+      struct ct_val rev_val = {
+          .new_saddr = cluster_ip_be,
+          .new_daddr = iph->saddr,
+          .new_sport = dport,
+          .new_dport = sport,
+          .next_subnet_id = pod_subnet_id,
+          .action = CT_ACTION_SVC_NAPT_IN,
+          .state = init_state,
+          .flags_seen = 0,
+          .last_seen_ns = now,
+      };
+      long rc =
+          bpf_map_update_elem(&ct_map, &rev_key, &rev_val, BPF_NOEXIST);
+      if (rc == 0) {
+        alloc_port = candidate;
+        installed = true;
+        break;
+      }
+      seed = napt_rotate_left(seed + 0x9e3779b1, 7);
+    }
+    if (!installed)
+      return TC_ACT_SHOT;
+
+    struct ct_val fwd_val = {
+        .new_saddr = node_underlay_ip,
+        .new_daddr = backend_addr_be,
+        .new_sport = alloc_port,
+        .new_dport = backend_port_be,
+        .next_subnet_id = 0,
+        .action = CT_ACTION_SVC_NAPT_OUT,
+        .state = init_state,
+        .flags_seen = init_flags,
+        .last_seen_ns = now,
+    };
+    bpf_map_update_elem(&ct_map, &fwd_key, &fwd_val, BPF_ANY);
+  }
+
+  __u8 tcp_flags = 0;
+  bool have_tcp_flags = false;
+  if (iph->protocol == IPPROTO_TCP) {
+    if (ct_read_tcp_flags(iph, data_end, &tcp_flags) == 0)
+      have_tcp_flags = true;
+  }
+
+  if (rewrite_ipv4_addr(skb, /*is_source=*/true, node_underlay_ip) < 0)
+    return TC_ACT_SHOT;
+  if (rewrite_l4_port(skb, /*is_source=*/true, alloc_port) < 0)
+    return TC_ACT_SHOT;
+  if (rewrite_ipv4_addr(skb, /*is_source=*/false, backend_addr_be) < 0)
+    return TC_ACT_SHOT;
+  if (rewrite_l4_port(skb, /*is_source=*/false, backend_port_be) < 0)
+    return TC_ACT_SHOT;
+
+  if (have_tcp_flags) {
+    struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &fwd_key);
+    if (cv)
+      ct_observe_tcp(&fwd_key, cv, tcp_flags);
+  }
+
+  // Hand to kernel FIB to reach the backend host IP via the underlay.
+  struct iphdr *new_iph = load_iph(skb);
+  if (!new_iph)
+    return TC_ACT_SHOT;
+
+  struct bpf_fib_lookup fib_params = {};
+  fib_params.family = AF_INET;
+  fib_params.l4_protocol = new_iph->protocol;
+  fib_params.ipv4_dst = new_iph->daddr;
+  fib_params.ifindex = skb->ifindex;
+
+  long rc = bpf_fib_lookup(skb, &fib_params, sizeof(fib_params), 0);
+  if (rc == BPF_FIB_LKUP_RET_NO_NEIGH)
+    return TC_ACT_OK;
+  if (rc != BPF_FIB_LKUP_RET_SUCCESS)
+    return TC_ACT_SHOT;
+
+  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_dest),
+                          fib_params.dmac, ETH_ALEN, 0) < 0)
+    return TC_ACT_SHOT;
+  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_source),
+                          fib_params.smac, ETH_ALEN, 0) < 0)
+    return TC_ACT_SHOT;
+
+  return bpf_redirect(fib_params.ifindex, 0);
+}
+
 // handle_service performs the Service DNAT path. It enforces VPC ownership
 // (caller and Service owner must share a Vpc), picks a backend by hashing
 // the 5-tuple, installs forward and reverse CT entries, rewrites the
@@ -374,6 +555,14 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
   const struct backend_val *bv = bpf_map_lookup_elem(&backend_map, &bk);
   if (!bv)
     return TC_ACT_SHOT;
+
+  // BACKEND_SUBNET_ID_UNDERLAY (0) marks an endpoint as living on the
+  // underlay (hostNetwork Pod or non-Pod target like kube-apiserver).
+  // Pod-backed endpoints always carry a VNI >= 1, so 0 is unambiguous
+  // as a sentinel. Routed via the host-network NAPT path so the packet
+  // leaves the node sourced from the local underlay IP.
+  if (bv->backend_subnet_id == BACKEND_SUBNET_ID_UNDERLAY)
+    return handle_service_host_backend(skb, eth, iph, subnet, bv);
 
   __be32 backend_addr_be = bpf_htonl(bv->backend_ip);
   __be16 backend_port_be = bpf_htons(bv->backend_port);
@@ -510,17 +699,6 @@ static __always_inline int apply_conntrack_dnat(struct __sk_buff *skb,
   if (have_tcp_flags)
     ct_observe_tcp(&ck, cv, tcp_flags);
   return 1;
-}
-
-// NAPT_PROBE_LIMIT bounds the linear-probe loop used to claim a
-// previously-unused alloc_port. Higher values lower the probability of
-// a failed allocation under heavy port pressure but cost verifier
-// instructions; 8 strikes a balance similar to cilium's snat_v4 path.
-#define NAPT_PROBE_LIMIT 8
-
-// rotate_left mixes a 32-bit value during port probe re-derivation.
-static __always_inline __u32 napt_rotate_left(__u32 x, __u32 r) {
-  return (x << r) | (x >> (32 - r));
 }
 
 // handle_napt is the forward NAPT path: it rewrites src IP/port to the
