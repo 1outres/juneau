@@ -124,6 +124,11 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 			return fmt.Errorf("watch Vpc (subnet fan-out): %w", err)
 		}
 	}
+	if m.rtInformer != nil {
+		if err := m.subnetRunner.WatchFanOut(m.rtInformer, subnetReconciler.FanOutRouteTableToSubnets); err != nil {
+			return fmt.Errorf("watch RouteTable (subnet fan-out): %w", err)
+		}
+	}
 	m.subnetRunner.Start(ctx, 1)
 
 	m.arpRunner = runner.New(reconciler.NewArp(m.client, m.hostEgress))

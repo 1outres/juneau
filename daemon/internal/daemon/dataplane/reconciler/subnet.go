@@ -62,8 +62,15 @@ func (r *Subnet) upsert(ctx context.Context, subnet *juneauv1alpha1.Subnet) erro
 		return err
 	}
 
-	var mainTable juneauv1alpha1.RouteTable
-	if err := r.client.Get(ctx, client.ObjectKey{Name: vpc.Status.MainRouteTable}, &mainTable); err != nil {
+	// spec.routeTable lets a Subnet override the Vpc's main RouteTable
+	// for traffic originating from its Pods. Falling back to the main RT
+	// preserves the original behaviour when the field is empty.
+	rtName := subnet.Spec.RouteTable
+	if rtName == "" {
+		rtName = vpc.Status.MainRouteTable
+	}
+	var routeTable juneauv1alpha1.RouteTable
+	if err := r.client.Get(ctx, client.ObjectKey{Name: rtName}, &routeTable); err != nil {
 		return err
 	}
 
@@ -100,7 +107,7 @@ func (r *Subnet) upsert(ctx context.Context, subnet *juneauv1alpha1.Subnet) erro
 	if err := r.hostEgress.Objs.SubnetMap.Update(
 		&bpf.HostEgressSubnetKey{SubnetId: subnet.Status.VNI},
 		&bpf.HostEgressSubnetVal{
-			TableId: mainTable.Status.TableID,
+			TableId: routeTable.Status.TableID,
 			VpcId:   vpc.Status.VpcID,
 			GwMac:   gwmac,
 			GwAddr:  gwaddr,
@@ -135,6 +142,46 @@ func (r *Subnet) FanOutVpcToSubnets(obj any) []string {
 	keys := make([]string, 0, len(subnetList.Items))
 	for i := range subnetList.Items {
 		keys = append(keys, subnetList.Items[i].Name)
+	}
+	return keys
+}
+
+// FanOutRouteTableToSubnets re-enqueues every Subnet whose effective
+// RouteTable matches the changed RouteTable. This makes
+// RouteTable.Status.TableID changes (initial allocation, reassignment)
+// propagate into subnet_map.table_id without waiting for an unrelated
+// Subnet event.
+func (r *Subnet) FanOutRouteTableToSubnets(obj any) []string {
+	rt, ok := obj.(*juneauv1alpha1.RouteTable)
+	if !ok {
+		return nil
+	}
+
+	var subnetList juneauv1alpha1.SubnetList
+	if err := r.client.List(context.Background(), &subnetList, client.MatchingFields{"spec.vpc": rt.Spec.Vpc}); err != nil {
+		zap.S().Warnf("subnet: list subnets for routetable %q fan-out: %v", rt.Name, err)
+		return nil
+	}
+
+	// A Subnet is affected when either: (a) it explicitly references
+	// this RouteTable, or (b) it has no override and this RouteTable is
+	// the Vpc's main one. Check the Vpc's MainRouteTable once for case
+	// (b) to avoid a Get per Subnet.
+	var vpc juneauv1alpha1.Vpc
+	if err := r.client.Get(context.Background(), client.ObjectKey{Name: rt.Spec.Vpc}, &vpc); err != nil {
+		zap.S().Warnf("subnet: get vpc %q for routetable fan-out: %v", rt.Spec.Vpc, err)
+	}
+	isMain := vpc.Status.MainRouteTable == rt.Name
+
+	keys := make([]string, 0, len(subnetList.Items))
+	for i := range subnetList.Items {
+		s := &subnetList.Items[i]
+		switch {
+		case s.Spec.RouteTable == rt.Name:
+			keys = append(keys, s.Name)
+		case s.Spec.RouteTable == "" && isMain:
+			keys = append(keys, s.Name)
+		}
 	}
 	return keys
 }

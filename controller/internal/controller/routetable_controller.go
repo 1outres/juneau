@@ -296,20 +296,23 @@ func (r *RouteTableReconciler) mapSubnetToRouteTables(ctx context.Context, obj c
 		return nil
 	}
 
-	var vpc juneauloutresmev1alpha1.Vpc
-	if err := r.Get(ctx, client.ObjectKey{Name: subnet.Spec.Vpc}, &vpc); err != nil {
-		if errors.IsNotFound(err) {
-			return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: subnet.Spec.Vpc}}}
-		}
+	// CONNECTED routes for every Subnet are injected into every
+	// RouteTable in the same Vpc. A Subnet event therefore must wake
+	// every Vpc-local RouteTable, not just the main one.
+	var routeTableList juneauloutresmev1alpha1.RouteTableList
+	if err := r.List(ctx, &routeTableList); err != nil {
 		return nil
 	}
 
-	routeTableName := vpc.Status.MainRouteTable
-	if routeTableName == "" {
-		routeTableName = vpc.Name
+	requests := make([]reconcile.Request, 0, len(routeTableList.Items))
+	for i := range routeTableList.Items {
+		rt := &routeTableList.Items[i]
+		if rt.Spec.Vpc != subnet.Spec.Vpc {
+			continue
+		}
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: rt.Name}})
 	}
-
-	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: routeTableName}}}
+	return requests
 }
 
 func (r *RouteTableReconciler) mapVpcToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {

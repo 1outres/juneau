@@ -51,6 +51,13 @@ spec:
             properties:
               cidr:
                 type: string
+              routeTable:
+                description: |-
+                  RouteTable selects which RouteTable governs traffic from Pods in
+                  this Subnet. Empty means "use the owning Vpc's main RouteTable",
+                  which preserves the original behaviour. The referenced RouteTable
+                  must belong to the same Vpc.
+                type: string
               vpc:
                 type: string
             required:

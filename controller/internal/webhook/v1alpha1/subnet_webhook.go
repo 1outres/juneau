@@ -112,6 +112,11 @@ func (v *SubnetCustomValidator) ValidateCreate(ctx context.Context, obj runtime.
 		return nil, err
 	}
 	errs = append(errs, serviceErrs...)
+	rtErrs, err := validateSubnetRouteTable(ctx, v.Client, subnet, errPath.Child("routeTable"))
+	if err != nil {
+		return nil, err
+	}
+	errs = append(errs, rtErrs...)
 
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "Subnet"}, subnet.Name, errs)
@@ -144,6 +149,12 @@ func (v *SubnetCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newO
 	if subnet.Spec.CIDR != oldSubnet.Spec.CIDR {
 		errs = append(errs, field.Invalid(errPath.Child("cidr"), subnet.Spec.CIDR, "spec.cidr is immutable"))
 	}
+
+	rtErrs, err := validateSubnetRouteTable(ctx, v.Client, subnet, errPath.Child("routeTable"))
+	if err != nil {
+		return nil, err
+	}
+	errs = append(errs, rtErrs...)
 
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "Subnet"}, subnet.Name, errs)
@@ -244,6 +255,34 @@ func validateSubnetCIDROverlap(ctx context.Context, c client.Client, subnet *jun
 
 func cidrsOverlap(a, b *net.IPNet) bool {
 	return a.Contains(b.IP) || b.Contains(a.IP)
+}
+
+// validateSubnetRouteTable rejects a Subnet whose spec.routeTable points
+// to a non-existent RouteTable, an RT in a different Vpc, or whose name
+// is "default" (the default Subnet must use the Vpc's main RouteTable so
+// the controller-managed default route stays attached to it).
+func validateSubnetRouteTable(ctx context.Context, c client.Client, subnet *juneauv1alpha1.Subnet, path *field.Path) (field.ErrorList, error) {
+	if subnet.Spec.RouteTable == "" {
+		return nil, nil
+	}
+
+	if subnet.Name == "default" {
+		return field.ErrorList{field.Forbidden(path, "default Subnet must use the Vpc's main RouteTable; leave spec.routeTable empty")}, nil
+	}
+
+	var rt juneauv1alpha1.RouteTable
+	if err := c.Get(ctx, client.ObjectKey{Name: subnet.Spec.RouteTable}, &rt); err != nil {
+		if errors.IsNotFound(err) {
+			return field.ErrorList{field.Invalid(path, subnet.Spec.RouteTable, "referenced RouteTable does not exist")}, nil
+		}
+		return nil, err
+	}
+
+	if rt.Spec.Vpc != subnet.Spec.Vpc {
+		return field.ErrorList{field.Invalid(path, subnet.Spec.RouteTable, fmt.Sprintf("RouteTable belongs to a different Vpc %q", rt.Spec.Vpc))}, nil
+	}
+
+	return nil, nil
 }
 
 // validateSubnetServiceCIDROverlap rejects creating a Subnet whose CIDR

@@ -170,6 +170,33 @@ var _ = Describe("RouteTable controller", func() {
 		}).Should(Succeed())
 	})
 
+	It("propagates Subnet CONNECTED routes to non-main RouteTables under the same VPC", func() {
+		vpcName := createControllerVpc()
+
+		extraRouteTable := uniqueTestName("routetable")
+		Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
+			ObjectMeta: metav1.ObjectMeta{Name: extraRouteTable},
+			Spec:       juneauv1alpha1.RouteTableSpec{Vpc: vpcName},
+		})).To(Succeed())
+
+		// Subnet created AFTER both RouteTables exist must surface as a
+		// CONNECTED route in the non-main RouteTable too. Without the
+		// fan-out fix the extra RT would only learn about the Subnet on
+		// the next unrelated reconcile (e.g. a Vpc update).
+		subnet := createControllerSubnet(vpcName, uniqueTestName("subnet"), uniqueSubnetCIDR())
+
+		expected := juneauv1alpha1.Route{
+			Dst:    subnet.Spec.CIDR,
+			Subnet: subnet.Name,
+			Via:    juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaConnected},
+		}
+
+		Eventually(func(g Gomega) {
+			extra := getControllerRouteTable(extraRouteTable)
+			g.Expect(extra.Status.Routes).To(ContainElement(expected))
+		}).Should(Succeed())
+	})
+
 	It("propagates Service routes to all RouteTables under the same VPC", func() {
 		vpcName := createControllerVpc()
 		subnet := createControllerSubnet(vpcName, uniqueTestName("subnet"), uniqueSubnetCIDR())
