@@ -197,14 +197,27 @@ func (v *RouteTableCustomValidator) validateRouteTableSpec(ctx context.Context, 
 			if route.Via.Endpoint == "" {
 				errs = append(errs, field.Required(routePath.Child("via", "endpointName"), "spec.routes[].via.endpointName is required when via.type is endpoint"))
 			}
+			if route.Via.NATGateway != "" {
+				errs = append(errs, field.Invalid(routePath.Child("via", "natGateway"), route.Via.NATGateway, "spec.routes[].via.natGateway must be empty when via.type is endpoint"))
+			}
 		case juneauv1alpha1.ViaConnected, juneauv1alpha1.ViaInternetGateway:
 			if route.Via.Endpoint != "" {
 				errs = append(errs, field.Invalid(routePath.Child("via", "endpointName"), route.Via.Endpoint, fmt.Sprintf("spec.routes[].via.endpointName must be empty when via.type is %q", route.Via.Type)))
+			}
+			if route.Via.NATGateway != "" {
+				errs = append(errs, field.Invalid(routePath.Child("via", "natGateway"), route.Via.NATGateway, fmt.Sprintf("spec.routes[].via.natGateway must be empty when via.type is %q", route.Via.Type)))
 			}
 		case juneauv1alpha1.ViaService:
 			errs = append(errs, field.Forbidden(routePath.Child("via", "type"), "spec.routes[].via.type=service is managed by the controller and cannot be specified manually; set spec.enableService on the Vpc instead"))
 		case juneauv1alpha1.ViaHostGateway:
 			errs = append(errs, field.Forbidden(routePath.Child("via", "type"), "spec.routes[].via.type=hostGateway is managed by the controller and cannot be specified manually"))
+		case juneauv1alpha1.ViaNATGateway:
+			if route.Via.NATGateway == "" {
+				errs = append(errs, field.Required(routePath.Child("via", "natGateway"), "spec.routes[].via.natGateway is required when via.type is natGateway"))
+			}
+			if route.Via.Endpoint != "" {
+				errs = append(errs, field.Invalid(routePath.Child("via", "endpointName"), route.Via.Endpoint, "spec.routes[].via.endpointName must be empty when via.type is natGateway"))
+			}
 		}
 
 		if _, ok := seenDst[route.Dst]; ok {

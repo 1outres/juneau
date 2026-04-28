@@ -25,6 +25,7 @@ const (
 	fibRouteTypeInternetGateway = 3
 	fibRouteTypeService         = 4
 	fibRouteTypeHostGateway     = 5
+	fibRouteTypeNAPT            = 6
 )
 
 // Fib keeps podEgress.FibMap in sync with RouteTable objects. Each
@@ -196,6 +197,16 @@ func (r *Fib) buildFibVal(ctx context.Context, route *juneauv1alpha1.Route) (bpf
 	case juneauv1alpha1.ViaHostGateway:
 		return buildHostGatewayFibVal(), false, nil
 
+	case juneauv1alpha1.ViaNATGateway:
+		var natGateway juneauv1alpha1.NATGateway
+		if err := r.client.Get(ctx, client.ObjectKey{Name: route.Via.NATGateway}, &natGateway); err != nil {
+			return bpf.PodEgressFibVal{}, false, err
+		}
+		if natGateway.Status.GatewayID == 0 {
+			return bpf.PodEgressFibVal{}, true, nil
+		}
+		return buildNATGatewayFibVal(&natGateway), false, nil
+
 	default:
 		return bpf.PodEgressFibVal{}, true, fmt.Errorf("unsupported route type %q", route.Via.Type)
 	}
@@ -268,6 +279,17 @@ func buildServiceFibVal() bpf.PodEgressFibVal {
 func buildHostGatewayFibVal() bpf.PodEgressFibVal {
 	return bpf.PodEgressFibVal{
 		Type: fibRouteTypeHostGateway,
+	}
+}
+
+// buildNATGatewayFibVal builds a FIB value for the NAT-gateway route
+// type. The NATGateway's GatewayID is overloaded into the subnet_id
+// field; the BPF side reads it as a NATGWID and uses it to look up the
+// per-node host_napt_ip via the napt_src map.
+func buildNATGatewayFibVal(natGateway *juneauv1alpha1.NATGateway) bpf.PodEgressFibVal {
+	return bpf.PodEgressFibVal{
+		Type:     fibRouteTypeNAPT,
+		SubnetId: natGateway.Status.GatewayID,
 	}
 }
 

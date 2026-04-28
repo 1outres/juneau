@@ -11,4 +11,5 @@ resources:
 - v1alpha1_allocationpool.yaml
 - v1alpha1_allocationclaim.yaml
 - v1alpha1_allocationlease.yaml
+- v1alpha1_natgateway.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

@@ -170,6 +170,26 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /mutate-juneau-loutres-me-v1alpha1-natgateway
+  failurePolicy: Fail
+  name: mnatgateway-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - natgateways
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /mutate-juneau-loutres-me-v1alpha1-networkendpoint
   failurePolicy: Fail
   name: mnetworkendpoint-v1alpha1.kb.io
@@ -453,6 +473,27 @@ webhooks:
     - DELETE
     resources:
     - externalnetworks
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-juneau-loutres-me-v1alpha1-natgateway
+  failurePolicy: Fail
+  name: vnatgateway-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    - DELETE
+    resources:
+    - natgateways
   sideEffects: None
 - admissionReviewVersions:
   - v1

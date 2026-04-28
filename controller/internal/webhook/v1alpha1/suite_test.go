@@ -96,6 +96,7 @@ var _ = BeforeSuite(func() {
 	Expect(SetupElasticIPAttachmentWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupNetworkEndpointWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupElasticIPWebhookWithManager(mgr)).To(Succeed())
+	Expect(SetupNATGatewayWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupRouteTableWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupAllocationPoolWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupAllocationClaimWebhookWithManager(mgr)).To(Succeed())

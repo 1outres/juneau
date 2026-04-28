@@ -17,6 +17,7 @@ const (
 	allocationPoolSubnetVNI    = "subnet-vni"
 	allocationPoolRouteTableID = "route-table-id"
 	allocationPoolVpcID        = "vpc-id"
+	allocationPoolNATGatewayID = "nat-gateway-id"
 )
 
 // allocationClaimName composes a deterministic claim name from the
