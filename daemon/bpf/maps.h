@@ -63,6 +63,22 @@
 #define CT_ACTION_SNAT 2
 #define CT_ACTION_NAPT_OUT 3
 #define CT_ACTION_NAPT_IN 4
+// SVC_NAPT_OUT / SVC_NAPT_IN: combined DNAT+SNAT for host-network
+// Service backends (e.g. kube-apiserver). Pod traffic destined to a
+// ClusterIP whose backend is on the underlay (no Pod / no NetworkInterface)
+// is rewritten on egress so dst becomes the backend's host IP and src
+// becomes this node's underlay IP — letting the kernel route the packet
+// over the underlay as if it originated from the node itself. The
+// reverse direction undoes both rewrites on the way back.
+#define CT_ACTION_SVC_NAPT_OUT 5
+#define CT_ACTION_SVC_NAPT_IN 6
+
+// BACKEND_SUBNET_ID_UNDERLAY is the sentinel value the user-space
+// service reconciler writes into backend_val.backend_subnet_id when an
+// endpoint lives on the underlay (host-network endpoints, e.g.
+// kube-apiserver). Pod-backed entries carry a real Subnet VNI >= 1, so
+// 0 is unambiguous.
+#define BACKEND_SUBNET_ID_UNDERLAY 0
 
 #define CT_SCOPE_HOST 0
 
@@ -168,6 +184,19 @@ struct {
   __type(value, __u32); // vxlan ifindex
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } vxlan_ifindex SEC(".maps");
+
+// host_underlay holds this node's underlay IPv4 (the Node's
+// InternalIP, in network byte order). Single-entry array map shared
+// across programs. pod_egress writes the source IP for host-network
+// Service NAPT here at startup; node_ingress consults it to detect
+// the response leg of those flows.
+struct {
+  __uint(type, BPF_MAP_TYPE_ARRAY);
+  __uint(max_entries, 1);
+  __type(key, __u32);
+  __type(value, __u32);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} host_underlay SEC(".maps");
 
 struct fib_key {
   __u32 prefixlen;

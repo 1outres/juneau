@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/convert"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/runner"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/link"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/program"
@@ -87,7 +88,18 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 
 	var err error
-	m.podEgress, err = program.NewPodEgress(m.pinPath)
+	// host_underlay's slot is consumed by BPF as __be32 (compared to
+	// iph->daddr in node_ingress, used as the saddr rewrite source in
+	// pod_egress). Encode accordingly.
+	var nodeUnderlayBE uint32
+	if m.juNodeUnderlayIP != nil {
+		nodeUnderlayBE, err = convert.IPv4ToBPFNetworkOrder(m.juNodeUnderlayIP)
+		if err != nil {
+			return fmt.Errorf("convert juneau_node underlay IP: %w", err)
+		}
+	}
+
+	m.podEgress, err = program.NewPodEgress(m.pinPath, nodeUnderlayBE)
 	if err != nil {
 		return fmt.Errorf("load pod egress program: %w", err)
 	}

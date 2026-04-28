@@ -91,7 +91,16 @@ static __always_inline void ct_build_opposite_key(const struct ct_key *self,
   opp->_pad[1] = 0;
   opp->_pad[2] = 0;
 
-  if (cv->action == CT_ACTION_DNAT || cv->action == CT_ACTION_NAPT_IN) {
+  if (cv->action == CT_ACTION_SVC_NAPT_OUT ||
+      cv->action == CT_ACTION_SVC_NAPT_IN) {
+    // Both src and dst are rewritten. The opposite tuple is the
+    // mirror of the after-rewrite 5-tuple regardless of direction.
+    opp->saddr = cv->new_daddr;
+    opp->daddr = cv->new_saddr;
+    opp->sport = cv->new_dport;
+    opp->dport = cv->new_sport;
+  } else if (cv->action == CT_ACTION_DNAT ||
+             cv->action == CT_ACTION_NAPT_IN) {
     opp->saddr = cv->new_daddr;
     opp->daddr = self->saddr;
     opp->sport = cv->new_dport;
@@ -103,9 +112,11 @@ static __always_inline void ct_build_opposite_key(const struct ct_key *self,
     opp->dport = cv->new_sport;
   }
 
-  if (cv->action == CT_ACTION_NAPT_OUT) {
+  if (cv->action == CT_ACTION_NAPT_OUT ||
+      cv->action == CT_ACTION_SVC_NAPT_OUT) {
     opp->scope = CT_SCOPE_HOST;
-  } else if (cv->action == CT_ACTION_NAPT_IN) {
+  } else if (cv->action == CT_ACTION_NAPT_IN ||
+             cv->action == CT_ACTION_SVC_NAPT_IN) {
     struct subnet_key skey = {.subnet_id = cv->next_subnet_id};
     const struct subnet_val *subnet = bpf_map_lookup_elem(&subnet_map, &skey);
     if (subnet)

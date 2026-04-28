@@ -158,9 +158,15 @@ static __always_inline int handle_dnat(struct __sk_buff *skb, struct ethhdr *eth
 }
 
 // handle_napt_in is the reverse-NAPT path: a packet inbound on the
-// underlay matched a host_napt_ip / alloc_port pair. Look up the
-// matching CT entry, rewrite daddr/dport back to the originating Pod's
-// IP/port, and fdb-forward into the Pod's Subnet.
+// underlay matched a host_napt_ip / alloc_port pair (NAPT_IN), or a
+// node-underlay-IP / alloc_port pair (SVC_NAPT_IN). Both share the same
+// shape: rewrite to the recorded tuple, then fdb-forward to the
+// originating Pod's Subnet.
+//
+// NAPT_IN only rewrites daddr/dport (saddr/sport unchanged). SVC_NAPT_IN
+// also rewrites saddr/sport so the Pod sees the original ClusterIP as
+// the response source. The cv->new_saddr / cv->new_sport fields are
+// 0 for NAPT_IN to make the rewrite a no-op there.
 static __always_inline int handle_napt_in(struct __sk_buff *skb,
                                           struct ethhdr *eth, struct iphdr *iph,
                                           struct ct_val *cv,
@@ -185,8 +191,11 @@ static __always_inline int handle_napt_in(struct __sk_buff *skb,
   __builtin_memcpy(dst_mac, av->mac, ETH_ALEN);
   __builtin_memcpy(src_mac, subnet->gw_mac, ETH_ALEN);
 
+  __be32 new_saddr = cv->new_saddr;
+  __be16 new_sport = cv->new_sport;
   __be32 new_daddr = cv->new_daddr;
   __be16 new_dport = cv->new_dport;
+  __u8 action = cv->action;
 
   __u8 tcp_flags = 0;
   bool have_tcp_flags = false;
@@ -196,6 +205,13 @@ static __always_inline int handle_napt_in(struct __sk_buff *skb,
   }
 
   cv->last_seen_ns = bpf_ktime_get_ns();
+
+  if (action == CT_ACTION_SVC_NAPT_IN) {
+    if (nat_rewrite_ipv4_addr(skb, /*is_source=*/true, new_saddr) < 0)
+      return TC_ACT_SHOT;
+    if (nat_rewrite_l4_port(skb, /*is_source=*/true, new_sport) < 0)
+      return TC_ACT_SHOT;
+  }
 
   if (nat_rewrite_ipv4_addr(skb, /*is_source=*/false, new_daddr) < 0)
     return TC_ACT_SHOT;
@@ -227,6 +243,36 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth) 
   struct iphdr *iph = (void *)(eth + 1);
   if ((void *)(iph + 1) > data_end)
     return TC_ACT_SHOT;
+
+  // Packets destined to this node's underlay IP may be the response
+  // leg of a host-network Service NAPT flow (CT_ACTION_SVC_NAPT_IN).
+  // Try a SVC_NAPT_IN match first; on miss, fall through to the
+  // bgp_address_pools / NAPT_IN / ElasticIP path so deployments where
+  // host_napt_ip and the node's underlay IP coincide (single-NIC
+  // bare-metal advertising the node IP via BGP, etc.) still recover
+  // their existing NAPT_IN flows.
+  __u32 underlay_key = 0;
+  const __u32 *underlay_ip =
+      bpf_map_lookup_elem(&host_underlay, &underlay_key);
+  if (underlay_ip && *underlay_ip != 0 && iph->daddr == *underlay_ip) {
+    if (iph->protocol == IPPROTO_TCP || iph->protocol == IPPROTO_UDP) {
+      __be16 sport, dport;
+      if (nat_read_l4_ports(iph, data_end, &sport, &dport) == 0) {
+        struct ct_key ck = {
+            .scope = CT_SCOPE_HOST,
+            .saddr = iph->saddr,
+            .daddr = iph->daddr,
+            .sport = sport,
+            .dport = dport,
+            .proto = iph->protocol,
+        };
+        struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &ck);
+        if (cv && cv->action == CT_ACTION_SVC_NAPT_IN)
+          return handle_napt_in(skb, eth, iph, cv, &ck);
+      }
+    }
+    // Fall through to bgp_address_pools below.
+  }
 
   struct bgp_address_pools_key bgp_key = {
       .prefixlen = 32,
