@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -31,7 +32,8 @@ import (
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
-// NodeReconciler reconciles a Node object for BGPNodeState provisioning.
+// NodeReconciler reconciles a Node object for BGPNodeState provisioning
+// and allocates a default-Subnet IP for the node's juneau_node iface.
 type NodeReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -39,8 +41,11 @@ type NodeReconciler struct {
 
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=bgpnodestates,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=allocationclaims,verbs=get;list;watch;create;update;patch;delete
 
-// Reconcile creates a BGPNodeState for a Node.
+// Reconcile creates a BGPNodeState for a Node and ensures an
+// AllocationClaim against the default Subnet's IP pool so the daemon
+// can configure the node's juneau_node iface.
 func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -70,7 +75,44 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, err
 	}
 
+	if err := r.ensureJuneauNodeClaim(ctx, &node); err != nil {
+		logger.Error(err, "unable to ensure default-Subnet AllocationClaim", "name", node.Name)
+		return ctrl.Result{}, err
+	}
+
 	return ctrl.Result{}, nil
+}
+
+// ensureJuneauNodeClaim creates (or refreshes) an AllocationClaim that
+// allocates one IP from the default Subnet's IP pool for this Node. The
+// daemon reads it to configure the juneau_node iface.
+func (r *NodeReconciler) ensureJuneauNodeClaim(ctx context.Context, node *corev1.Node) error {
+	gvk := schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Node"}
+	poolName := SubnetIPAllocationPoolName(JuneauNodeDefaultSubnet)
+	claim := newAllocationClaim(poolName, gvk, "", node.Name, JuneauNodeAllocationAttribute)
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, claim, func() error {
+		claim.Spec = newAllocationClaim(poolName, gvk, "", node.Name, JuneauNodeAllocationAttribute).Spec
+		return controllerutil.SetControllerReference(node, claim, r.Scheme)
+	})
+	return err
+}
+
+const (
+	// JuneauNodeDefaultSubnet is the Subnet whose IP pool the per-Node
+	// juneau_node iface allocates from.
+	JuneauNodeDefaultSubnet = "default"
+	// JuneauNodeAllocationAttribute is the AllocationClaim attribute
+	// label used for per-Node juneau_node IP claims. The daemon scans
+	// claims with this attribute to find its assigned IP.
+	JuneauNodeAllocationAttribute = "juneauNode.assignedIP"
+)
+
+// JuneauNodeClaimName returns the deterministic AllocationClaim name
+// for a given Node's juneau_node IP. Daemons can reconstruct it without
+// listing.
+func JuneauNodeClaimName(nodeName string) string {
+	gvk := schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Node"}
+	return allocationClaimName(SubnetIPAllocationPoolName(JuneauNodeDefaultSubnet), gvk, "", nodeName, JuneauNodeAllocationAttribute)
 }
 
 // SetupWithManager sets up the controller with the Manager.

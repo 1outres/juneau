@@ -48,8 +48,17 @@ type Manager struct {
 	bgpPoolRunner     *runner.Runner
 	serviceRunner     *runner.Runner
 	naptRunner        *runner.Runner
+	juNodeRunner      *runner.Runner
 
-	napt *reconciler.Napt
+	napt    *reconciler.Napt
+	juNode  *reconciler.JuneauNode
+
+	juNodeAttacher *link.JuneauNodeAttacher
+
+	juNodeIfindex     int
+	juNodeHostMAC     net.HardwareAddr
+	juNodeAssignedIP  net.IP
+	juNodeUnderlayIP  net.IP
 
 	conntrackCancel context.CancelFunc
 	conntrackDone   chan struct{}
@@ -205,6 +214,33 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 		m.naptRunner.Start(ctx, 1)
 	}
 
+	// juneau_node iface: register ifindex_subnet / arp_table / fdb so
+	// pods in the default Subnet can reach (and reply to) the host's
+	// pseudo-pod IP. The reconciler is keyed on the default Subnet
+	// and waits for its VNI to be allocated.
+	if m.juNodeIfindex != 0 && m.juNodeHostMAC != nil && m.juNodeAssignedIP != nil {
+		juNode, err := reconciler.NewJuneauNode(m.client, m.hostEgress, "default",
+			uint32(m.juNodeIfindex), m.juNodeHostMAC, m.juNodeAssignedIP, m.juNodeUnderlayIP)
+		if err != nil {
+			return fmt.Errorf("init juneau_node reconciler: %w", err)
+		}
+		m.juNode = juNode
+		m.juNodeRunner = runner.New(m.juNode)
+		if err := m.juNodeRunner.Watch(m.subnetInformer, runner.MetaNamespaceKey); err != nil {
+			return fmt.Errorf("watch Subnet (juneau_node): %w", err)
+		}
+		m.juNodeRunner.Start(ctx, 1)
+
+		// Attach pod_egress / pod_ingress to juneau_node so the
+		// host's outbound and inbound packets traverse the
+		// in-eBPF data plane like a normal Pod.
+		attacher, err := link.AttachJuneauNode(m.podEgress, m.podIngress, m.juNodeIfindex)
+		if err != nil {
+			return fmt.Errorf("attach juneau_node BPF programs: %w", err)
+		}
+		m.juNodeAttacher = attacher
+	}
+
 	if m.serviceInformer != nil && m.endpointSliceInformer != nil {
 		svc := reconciler.NewService(m.client, m.podEgress)
 		m.serviceRunner = runner.New(svc)
@@ -285,6 +321,16 @@ func (m *Manager) Stop() error {
 			return err
 		}
 	}
+	if m.juNode != nil {
+		if err := m.juNode.CloseAll(); err != nil {
+			return err
+		}
+	}
+	if m.juNodeAttacher != nil {
+		if err := m.juNodeAttacher.Close(); err != nil {
+			return err
+		}
+	}
 
 	runners := []*runner.Runner{
 		m.subnetRunner,
@@ -297,6 +343,7 @@ func (m *Manager) Stop() error {
 		m.bgpPoolRunner,
 		m.serviceRunner,
 		m.naptRunner,
+		m.juNodeRunner,
 	}
 	for _, rn := range runners {
 		if rn == nil {
@@ -347,6 +394,8 @@ func NewManager(
 	nodeIngressIfindex int,
 	pinPath string,
 	defaultGatewayMac net.HardwareAddr,
+	juNodeAssignedIP net.IP,
+	juNodeUnderlayIP net.IP,
 ) *Manager {
 	return &Manager{
 		client:                            cl,
@@ -367,5 +416,9 @@ func NewManager(
 		nodeIngressIfindex:                nodeIngressIfindex,
 		pinPath:                           pinPath,
 		hostMac:                           defaultGatewayMac,
+		juNodeIfindex:                     hostIfindex, // juneau_node IS the BPF-attached side returned in HostIfaceInfo
+		juNodeHostMAC:                     defaultGatewayMac,
+		juNodeAssignedIP:                  juNodeAssignedIP,
+		juNodeUnderlayIP:                  juNodeUnderlayIP,
 	}
 }
