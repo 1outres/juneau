@@ -30,11 +30,9 @@ const (
 type networkMode string
 
 const (
-	networkDefault                       networkMode = "default"
-	networkSameCustomSubnet              networkMode = "same-custom-subnet"
-	networkDifferentCustomSubnets        networkMode = "different-custom-subnets"
-	networkSameCustomSubnetService       networkMode = "same-custom-subnet-service"
-	networkDifferentCustomSubnetsService networkMode = "different-custom-subnets-service"
+	networkDefault                networkMode = "default"
+	networkSameCustomSubnet       networkMode = "same-custom-subnet"
+	networkDifferentCustomSubnets networkMode = "different-custom-subnets"
 )
 
 type connectivityScenario struct {
@@ -135,7 +133,10 @@ func cidrForScenario(base string, offset int) string {
 	for _, r := range base {
 		sum += int(r)
 	}
-	thirdOctet := 32 + ((sum + (offset * 37)) % 160)
+	// 128–255 avoids both the kind Pod CIDR (10.16.0.0/16) and the
+	// Service CIDR (10.96.0.0/12 = 10.96–111). Older spec names happened
+	// not to hash into the Service range, so the bug stayed dormant.
+	thirdOctet := 128 + ((sum + (offset * 37)) % 128)
 	return fmt.Sprintf("10.%d.0.0/24", thirdOctet)
 }
 
@@ -163,12 +164,6 @@ func ensureNetworkFixture(ctx caseContext, mode networkMode) networkFixture {
 		return networkFixture{vpcName: ctx.vpcName, serverSubnet: ctx.serverSubnet, clientSubnet: ctx.serverSubnet}
 	case networkDifferentCustomSubnets:
 		createCustomNetwork(ctx, true, false)
-		return networkFixture{vpcName: ctx.vpcName, serverSubnet: ctx.serverSubnet, clientSubnet: ctx.clientSubnet}
-	case networkSameCustomSubnetService:
-		createCustomNetwork(ctx, false, true)
-		return networkFixture{vpcName: ctx.vpcName, serverSubnet: ctx.serverSubnet, clientSubnet: ctx.serverSubnet}
-	case networkDifferentCustomSubnetsService:
-		createCustomNetwork(ctx, true, true)
 		return networkFixture{vpcName: ctx.vpcName, serverSubnet: ctx.serverSubnet, clientSubnet: ctx.clientSubnet}
 	default:
 		Fail(fmt.Sprintf("unknown network mode: %s", mode))

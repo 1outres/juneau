@@ -144,6 +144,12 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 		g.Expect(run(root, "kubectl", "rollout", "status", "daemonset/juneau-bgp-speaker", "-n", bgpSpeakerNamespace, "--timeout=30s")).To(Succeed())
 	}).Should(Succeed())
 
+	// coredns rollout is asserted in host_network_test's BeforeAll
+	// instead of here: gating the whole suite on it makes a flaky
+	// startup take down every spec. The host-network Service backend
+	// regression is still covered there (without it coredns never
+	// resolves kubernetes Service).
+
 	nodes, err := discoverWorkerNodes(root)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(nodes).To(HaveLen(numWorkers))
@@ -241,7 +247,22 @@ func dockerImageExists(image string) bool {
 }
 
 func discoverWorkerNodes(dir string) ([]string, error) {
-	out, err := kubectlOutput(dir, "get", "nodes", "-l", "!node-role.kubernetes.io/control-plane", "-o", `jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}`)
+	return discoverNodesWithSelector(dir, "!node-role.kubernetes.io/control-plane")
+}
+
+// discoverAllNodes returns every Node in the cluster, including the
+// control plane. NATGateway fan-out targets all nodes.
+func discoverAllNodes(dir string) ([]string, error) {
+	return discoverNodesWithSelector(dir, "")
+}
+
+func discoverNodesWithSelector(dir, selector string) ([]string, error) {
+	args := []string{"get", "nodes"}
+	if selector != "" {
+		args = append(args, "-l", selector)
+	}
+	args = append(args, "-o", `jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}`)
+	out, err := kubectlOutput(dir, args...)
 	if err != nil {
 		return nil, err
 	}
