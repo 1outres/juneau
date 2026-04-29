@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 FROM docker.io/golang:1.24 AS builder
 ARG TARGETOS
 ARG TARGETARCH
@@ -13,10 +14,21 @@ COPY controller/go.mod controller/go.mod
 COPY controller/go.sum controller/go.sum
 COPY test/e2e/go.mod test/e2e/go.mod
 
+# Pre-download module deps so the cache layer is only invalidated when
+# go.mod/go.sum changes; the cache mount keeps /go/pkg/mod warm across
+# rebuilds either way.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download -C bgp-speaker
+
 COPY controller/ controller/
 COPY bgp-speaker/ bgp-speaker/
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -C bgp-speaker -a -o /workspace/bgpspeaker ./cmd/bgpspeaker
+# Cache mounts make incremental rebuilds finish in seconds; -a forced
+# full rebuilds and is dropped.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -C bgp-speaker -o /workspace/bgpspeaker ./cmd/bgpspeaker
 
 FROM docker.io/alpine:3.23
 
