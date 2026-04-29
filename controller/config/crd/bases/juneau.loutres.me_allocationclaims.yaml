@@ -15,15 +15,15 @@ spec:
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.poolRef.name
-      name: Pool
-      type: string
     - jsonPath: .status.phase
       name: Phase
       type: string
     - jsonPath: .status.value.number
       name: Number
       type: integer
+    - jsonPath: .status.value.ip
+      name: IP
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
@@ -52,21 +52,57 @@ spec:
           spec:
             description: AllocationClaimSpec defines the desired state of AllocationClaim.
             properties:
+              allocationFilter:
+                description: |-
+                  AllocationFilter restricts the candidate space inside the pools. Used
+                  when a consumer wants to take from a specific subset of CIDRs.
+                properties:
+                  cidrs:
+                    description: |-
+                      CIDRs further narrow the candidate address space inside ip-typed
+                      pools. Each entry must be a subset of one of the pool CIDRs.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                type: object
               attribute:
                 description: |-
                   Attribute identifies the target field on the owning resource, for example
                   status.vni or status.tableID.
                 minLength: 1
                 type: string
-              poolRef:
-                properties:
-                  name:
-                    minLength: 1
-                    type: string
-                required:
-                - name
-                type: object
+              poolRefs:
+                description: |-
+                  PoolRefs lists candidate pools, evaluated in order. The first pool
+                  that has a free value satisfying the claim wins.
+                items:
+                  properties:
+                    name:
+                      minLength: 1
+                      type: string
+                  required:
+                  - name
+                  type: object
+                minItems: 1
+                type: array
+              releaseAfter:
+                description: |-
+                  ReleaseAfter specifies how long the AllocationLease should outlive
+                  this claim. While the lease is alive, no other claim can take the
+                  same value, and a re-created claim with the same identity will
+                  inherit the same value. When unset, the lease is deleted immediately
+                  alongside the claim.
+                type: string
+              requestedIP:
+                description: |-
+                  RequestedIP pins a specific value for ip-typed pools. Must be a valid
+                  IPv4/IPv6 string and must fall inside one of the candidate pools'
+                  CIDRs (further restricted by AllocationFilter when set).
+                type: string
               requestedNumber:
+                description: RequestedNumber pins a specific value for number-typed
+                  pools.
                 format: int64
                 minimum: 1
                 type: integer
@@ -81,6 +117,11 @@ spec:
                   name:
                     minLength: 1
                     type: string
+                  namespace:
+                    description: |-
+                      Namespace of the referenced resource. Required when the owner is a
+                      namespaced resource; omit for cluster-scoped owners.
+                    type: string
                 required:
                 - apiVersion
                 - kind
@@ -88,7 +129,7 @@ spec:
                 type: object
             required:
             - attribute
-            - poolRef
+            - poolRefs
             - resourceRef
             type: object
           status:
@@ -157,6 +198,8 @@ spec:
                 type: string
               value:
                 properties:
+                  ip:
+                    type: string
                   number:
                     format: int64
                     type: integer

@@ -24,7 +24,7 @@ import (
 // entry was written to so delete/move can clean up the right map.
 type Fdb struct {
 	client       client.Client
-	hostEgress   *program.HostEgress
+	hostEgress   *program.PodEgress
 	vxlanIngress *program.VxlanIngress
 	nodeName     string
 
@@ -38,7 +38,7 @@ type fdbSnapshot struct {
 	isLocal bool
 }
 
-func NewFdb(cl client.Client, hostEgress *program.HostEgress, vxlanIngress *program.VxlanIngress, nodeName string) *Fdb {
+func NewFdb(cl client.Client, hostEgress *program.PodEgress, vxlanIngress *program.VxlanIngress, nodeName string) *Fdb {
 	return &Fdb{
 		client:       cl,
 		hostEgress:   hostEgress,
@@ -69,7 +69,7 @@ func (r *Fdb) Reconcile(ctx context.Context, key string) error {
 
 type fdbDesired struct {
 	snap fdbSnapshot
-	val  bpf.HostEgressFdbVal
+	val  bpf.PodEgressFdbVal
 }
 
 func (r *Fdb) upsert(ctx context.Context, key string, nwep *juneauv1alpha1.NetworkEndpoint) error {
@@ -94,7 +94,7 @@ func (r *Fdb) upsert(ctx context.Context, key string, nwep *juneauv1alpha1.Netwo
 	case isLocal:
 		desired = &fdbDesired{
 			snap: fdbSnapshot{vni: subnet.Status.VNI, mac: mac, isLocal: true},
-			val:  bpf.HostEgressFdbVal{Ifindex: uint32(nwep.Spec.Ifindex)},
+			val:  bpf.PodEgressFdbVal{Ifindex: uint32(nwep.Spec.Ifindex)},
 		}
 	case nwep.Status.NodeIP != "":
 		netNodeAddr := net.ParseIP(nwep.Status.NodeIP)
@@ -107,7 +107,7 @@ func (r *Fdb) upsert(ctx context.Context, key string, nwep *juneauv1alpha1.Netwo
 		}
 		desired = &fdbDesired{
 			snap: fdbSnapshot{vni: subnet.Status.VNI, mac: mac, isLocal: false},
-			val:  bpf.HostEgressFdbVal{VtepIp: nodeAddr},
+			val:  bpf.PodEgressFdbVal{VtepIp: nodeAddr},
 		}
 	}
 
@@ -130,7 +130,7 @@ func (r *Fdb) upsert(ctx context.Context, key string, nwep *juneauv1alpha1.Netwo
 
 	m := r.mapFor(desired.snap.isLocal)
 	if err := m.Update(
-		&bpf.HostEgressFdbKey{SubnetId: desired.snap.vni, Mac: desired.snap.mac},
+		&bpf.PodEgressFdbKey{SubnetId: desired.snap.vni, Mac: desired.snap.mac},
 		&desired.val,
 		ebpf.UpdateAny,
 	); err != nil {
@@ -163,7 +163,7 @@ func (r *Fdb) delete(key string) error {
 
 func (r *Fdb) deleteEntry(snap fdbSnapshot) error {
 	m := r.mapFor(snap.isLocal)
-	if err := m.Delete(&bpf.HostEgressFdbKey{SubnetId: snap.vni, Mac: snap.mac}); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+	if err := m.Delete(&bpf.PodEgressFdbKey{SubnetId: snap.vni, Mac: snap.mac}); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 		return fmt.Errorf("delete Fdb: %w", err)
 	}
 	return nil

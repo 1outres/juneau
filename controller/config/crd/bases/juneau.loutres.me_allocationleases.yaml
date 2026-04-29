@@ -4,32 +4,36 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.2
-  name: ipleases.juneau.loutres.me
+  name: allocationleases.juneau.loutres.me
 spec:
   group: juneau.loutres.me
   names:
-    kind: IPLease
-    listKind: IPLeaseList
-    plural: ipleases
-    shortNames:
-    - lease
-    singular: iplease
+    kind: AllocationLease
+    listKind: AllocationLeaseList
+    plural: allocationleases
+    singular: allocationlease
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .status.podDisplayName
-      name: Pod
+    - jsonPath: .spec.poolRef.name
+      name: Pool
       type: string
-    - jsonPath: .status.expiresAt
-      name: Expires At
+    - jsonPath: .spec.value.number
+      name: Number
+      type: integer
+    - jsonPath: .spec.value.ip
+      name: IP
       type: string
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.expiresAt
+      name: ExpiresAt
+      type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: IPLease is the Schema for the ipleases API.
+        description: AllocationLease is the Schema for the allocationleases API.
         properties:
           apiVersion:
             description: |-
@@ -49,48 +53,83 @@ spec:
           metadata:
             type: object
           spec:
-            description: IPLeaseSpec defines the desired state of IPLease.
+            description: |-
+              AllocationLeaseSpec defines the desired state of AllocationLease.
+
+              AllocationLease records a single (pool, value) reservation that survives
+              the deletion of its owning AllocationClaim. While a lease exists no other
+              claim can take the same value, and a claim re-created with the same
+              ReuseKey will inherit the recorded value. Leases are managed entirely by
+              the AllocationClaim controller; consumers of the allocation framework
+              should never create or modify AllocationLease objects directly.
             properties:
-              address:
-                minLength: 1
-                type: string
               ownerDeletionTimestamp:
+                description: |-
+                  OwnerDeletionTimestamp records when the owning AllocationClaim was
+                  deleted. While unset, the lease is considered Active and will not be
+                  reaped. Once set, the lease is treated as Released and the controller
+                  will delete it after TTLSeconds elapses.
                 format: date-time
                 type: string
-              podRef:
+              poolRef:
+                description: |-
+                  PoolRef references the AllocationPool that owns this lease via
+                  metadata.ownerReferences. The pool name is also kept here for
+                  efficient field-indexed lookups.
                 properties:
-                  interface:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              reuseKey:
+                description: |-
+                  ReuseKey identifies the upstream owner so that a re-created
+                  AllocationClaim with the same identity can recover the value.
+                properties:
+                  apiVersion:
+                    minLength: 1
+                    type: string
+                  kind:
                     minLength: 1
                     type: string
                   name:
                     minLength: 1
                     type: string
                   namespace:
-                    minLength: 1
+                    description: |-
+                      Namespace of the referenced resource. Required when the owner is a
+                      namespaced resource; omit for cluster-scoped owners.
                     type: string
                 required:
-                - interface
+                - apiVersion
+                - kind
                 - name
-                - namespace
                 type: object
-              subnet:
-                minLength: 1
-                type: string
               ttlSeconds:
+                description: |-
+                  TTLSeconds is the grace period applied after OwnerDeletionTimestamp.
+                  Copied from the originating AllocationClaim.spec.releaseAfter.
                 format: int32
-                minimum: 1
+                minimum: 0
                 type: integer
-              vpc:
-                minLength: 1
-                type: string
+              value:
+                description: Value is the reserved address or number.
+                properties:
+                  ip:
+                    type: string
+                  number:
+                    format: int64
+                    type: integer
+                type: object
             required:
-            - address
-            - podRef
-            - subnet
-            - vpc
+            - poolRef
+            - reuseKey
+            - value
             type: object
           status:
-            description: IPLeaseStatus defines the observed state of IPLease.
+            description: AllocationLeaseStatus defines the observed state of AllocationLease.
             properties:
               conditions:
                 items:
@@ -155,8 +194,6 @@ spec:
                 format: int64
                 type: integer
               phase:
-                type: string
-              podDisplayName:
                 type: string
             type: object
         type: object

@@ -19,6 +19,8 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"net/netip"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -116,6 +118,7 @@ func (v *BGPAdvertisementCustomValidator) ValidateDelete(_ context.Context, obj 
 func (v *BGPAdvertisementCustomValidator) validate(ctx context.Context, obj *juneauloutresmev1alpha1.BGPAdvertisement) (admission.Warnings, error) {
 	var errs field.ErrorList
 
+	pools := make([]*juneauloutresmev1alpha1.AddressPool, 0, len(obj.Spec.AddressPools))
 	for i, pool := range obj.Spec.AddressPools {
 		var ap juneauloutresmev1alpha1.AddressPool
 		if err := v.Get(ctx, client.ObjectKey{Name: pool}, &ap); err != nil {
@@ -128,6 +131,46 @@ func (v *BGPAdvertisementCustomValidator) validate(ctx context.Context, obj *jun
 		if ap.Spec.AdvertiseMode != juneauloutresmev1alpha1.AddressPoolAdvertiseModeBGP {
 			errs = append(errs, field.Invalid(field.NewPath("spec", "addressPools").Index(i), pool, "AddressPool must have advertiseMode=bgp"))
 		}
+		pools = append(pools, ap.DeepCopy())
+	}
+
+	if obj.Spec.Prefix != "" {
+		prefixPath := field.NewPath("spec", "prefix")
+		prefix, err := netip.ParsePrefix(obj.Spec.Prefix)
+		if err != nil {
+			errs = append(errs, field.Invalid(prefixPath, obj.Spec.Prefix, fmt.Sprintf("must be a valid CIDR: %v", err)))
+		} else {
+			contained := false
+			for _, pool := range pools {
+				for _, raw := range pool.Spec.Addresses {
+					raw = strings.TrimSpace(raw)
+					if raw == "" {
+						continue
+					}
+					if poolPrefix, parseErr := netip.ParsePrefix(raw); parseErr == nil {
+						if prefixContains(poolPrefix, prefix) {
+							contained = true
+							break
+						}
+					} else if addr, addrErr := netip.ParseAddr(raw); addrErr == nil {
+						bits := 32
+						if addr.Is6() {
+							bits = 128
+						}
+						if prefixContains(netip.PrefixFrom(addr, bits), prefix) {
+							contained = true
+							break
+						}
+					}
+				}
+				if contained {
+					break
+				}
+			}
+			if !contained && len(pools) > 0 {
+				errs = append(errs, field.Invalid(prefixPath, obj.Spec.Prefix, "must be contained in one of the referenced AddressPools' CIDRs"))
+			}
+		}
 	}
 
 	if len(errs) > 0 {
@@ -137,4 +180,15 @@ func (v *BGPAdvertisementCustomValidator) validate(ctx context.Context, obj *jun
 	}
 
 	return nil, nil
+}
+
+// prefixContains reports whether outer fully contains inner.
+func prefixContains(outer, inner netip.Prefix) bool {
+	if outer.Addr().Is4() != inner.Addr().Is4() {
+		return false
+	}
+	if outer.Bits() > inner.Bits() {
+		return false
+	}
+	return outer.Masked().Contains(inner.Addr())
 }

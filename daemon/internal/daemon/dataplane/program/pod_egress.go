@@ -14,9 +14,11 @@ type PodEgress struct {
 	MapSpecs bpf.PodEgressMapSpecs
 }
 
-// NewPodEgress loads the pod-egress program, pins its maps under pinPath,
-// and writes the host-interface constant used by the program.
-func NewPodEgress(pinPath string, hostIfindex int, hostMac [6]uint8) (*PodEgress, error) {
+// NewPodEgress loads the pod-egress program and pins its maps under
+// pinPath. nodeUnderlayBE is the node's underlay IPv4 in network byte
+// order; it is written to the host_underlay map so handle_service can
+// stamp host-network Service flows with the correct source IP.
+func NewPodEgress(pinPath string, nodeUnderlayBE uint32) (*PodEgress, error) {
 	p := &PodEgress{}
 
 	spec, err := bpf.LoadPodEgress()
@@ -33,10 +35,7 @@ func NewPodEgress(pinPath string, hostIfindex int, hostMac [6]uint8) (*PodEgress
 		return nil, err
 	}
 
-	if err := p.Objs.HostIface.Update(uint32(0), &bpf.PodEgressHostIfaceVal{
-		Ifindex: uint32(hostIfindex),
-		Mac:     hostMac,
-	}, ebpf.UpdateAny); err != nil {
+	if err := p.Objs.HostUnderlay.Update(uint32(0), nodeUnderlayBE, ebpf.UpdateAny); err != nil {
 		return nil, err
 	}
 

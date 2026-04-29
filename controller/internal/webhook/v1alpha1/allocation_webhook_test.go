@@ -116,7 +116,7 @@ var _ = Describe("Allocation webhooks", func() {
 			claim := &juneauv1alpha1.AllocationClaim{
 				ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("allocationclaim")},
 				Spec: juneauv1alpha1.AllocationClaimSpec{
-					PoolRef:     juneauv1alpha1.AllocationPoolReference{Name: pool.Name},
+					PoolRefs:    []juneauv1alpha1.AllocationPoolReference{{Name: pool.Name}},
 					ResourceRef: juneauv1alpha1.AllocationResourceReference{APIVersion: juneauv1alpha1.GroupVersion.String(), Kind: "Vpc", Name: "does-not-matter"},
 					Attribute:   "status.vni",
 				},
@@ -148,29 +148,29 @@ var _ = Describe("Allocation webhooks", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("allocationclaim")},
 			})
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("spec.poolRef"))
+			Expect(err.Error()).To(ContainSubstring("spec.poolRefs"))
 			Expect(err.Error()).To(ContainSubstring("spec.resourceRef"))
 			Expect(err.Error()).To(ContainSubstring("spec.attribute"))
 		})
 
-		It("rejects empty spec.poolRef.name", func() {
+		It("rejects empty spec.poolRefs[*].name", func() {
 			err := webhookK8sClient.Create(ctx, &juneauv1alpha1.AllocationClaim{
 				ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("allocationclaim")},
 				Spec: juneauv1alpha1.AllocationClaimSpec{
-					PoolRef:     juneauv1alpha1.AllocationPoolReference{Name: ""},
+					PoolRefs:    []juneauv1alpha1.AllocationPoolReference{{Name: ""}},
 					ResourceRef: juneauv1alpha1.AllocationResourceReference{APIVersion: juneauv1alpha1.GroupVersion.String(), Kind: "Vpc", Name: "owner"},
 					Attribute:   "status.vni",
 				},
 			})
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("spec.poolRef.name"))
+			Expect(err.Error()).To(ContainSubstring("name"))
 		})
 
 		It("rejects empty spec.attribute", func() {
 			err := webhookK8sClient.Create(ctx, &juneauv1alpha1.AllocationClaim{
 				ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("allocationclaim")},
 				Spec: juneauv1alpha1.AllocationClaimSpec{
-					PoolRef:     juneauv1alpha1.AllocationPoolReference{Name: "subnet-vni"},
+					PoolRefs:    []juneauv1alpha1.AllocationPoolReference{{Name: "subnet-vni"}},
 					ResourceRef: juneauv1alpha1.AllocationResourceReference{APIVersion: juneauv1alpha1.GroupVersion.String(), Kind: "Vpc", Name: "owner"},
 					Attribute:   "",
 				},
@@ -184,7 +184,7 @@ var _ = Describe("Allocation webhooks", func() {
 			err := webhookK8sClient.Create(ctx, &juneauv1alpha1.AllocationClaim{
 				ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("allocationclaim")},
 				Spec: juneauv1alpha1.AllocationClaimSpec{
-					PoolRef:         juneauv1alpha1.AllocationPoolReference{Name: "subnet-vni"},
+					PoolRefs:        []juneauv1alpha1.AllocationPoolReference{{Name: "subnet-vni"}},
 					ResourceRef:     juneauv1alpha1.AllocationResourceReference{APIVersion: juneauv1alpha1.GroupVersion.String(), Kind: "Vpc", Name: "owner"},
 					Attribute:       "status.vni",
 					RequestedNumber: &zero,
@@ -199,7 +199,7 @@ var _ = Describe("Allocation webhooks", func() {
 			newRequested := uint64(3)
 			oldObj := &juneauv1alpha1.AllocationClaim{
 				Spec: juneauv1alpha1.AllocationClaimSpec{
-					PoolRef:         juneauv1alpha1.AllocationPoolReference{Name: "subnet-vni"},
+					PoolRefs:        []juneauv1alpha1.AllocationPoolReference{{Name: "subnet-vni"}},
 					ResourceRef:     juneauv1alpha1.AllocationResourceReference{APIVersion: juneauv1alpha1.GroupVersion.String(), Kind: "Subnet", Name: "s1"},
 					Attribute:       "status.vni",
 					RequestedNumber: &oldRequested,
@@ -212,12 +212,12 @@ var _ = Describe("Allocation webhooks", func() {
 			Expect(err.Error()).To(ContainSubstring("spec.requestedNumber is immutable"))
 		})
 
-		It("rejects immutable spec.poolRef.name update via envtest", func() {
+		It("rejects immutable spec.poolRefs update via envtest", func() {
 			requested := uint64(5)
 			claim := &juneauv1alpha1.AllocationClaim{
 				ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("allocationclaim")},
 				Spec: juneauv1alpha1.AllocationClaimSpec{
-					PoolRef:         juneauv1alpha1.AllocationPoolReference{Name: "subnet-vni"},
+					PoolRefs:        []juneauv1alpha1.AllocationPoolReference{{Name: "subnet-vni"}},
 					ResourceRef:     juneauv1alpha1.AllocationResourceReference{APIVersion: juneauv1alpha1.GroupVersion.String(), Kind: "Vpc", Name: "owner"},
 					Attribute:       "status.vni",
 					RequestedNumber: &requested,
@@ -227,10 +227,10 @@ var _ = Describe("Allocation webhooks", func() {
 
 			var current juneauv1alpha1.AllocationClaim
 			Expect(webhookK8sClient.Get(ctx, client.ObjectKeyFromObject(claim), &current)).To(Succeed())
-			current.Spec.PoolRef.Name = "route-table-id"
+			current.Spec.PoolRefs = []juneauv1alpha1.AllocationPoolReference{{Name: "route-table-id"}}
 			err := webhookK8sClient.Update(ctx, &current)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("spec.poolRef.name is immutable"))
+			Expect(err.Error()).To(ContainSubstring("spec.poolRefs is immutable"))
 
 			Expect(webhookK8sClient.Get(ctx, client.ObjectKeyFromObject(claim), &current)).To(Succeed())
 			current.Spec.Attribute = "status.other"

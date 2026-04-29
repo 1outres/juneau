@@ -22,7 +22,7 @@ import (
 // Keyed by NWEP namespace/name.
 type Arp struct {
 	client     client.Client
-	hostEgress *program.HostEgress
+	hostEgress *program.PodEgress
 
 	mu        sync.Mutex
 	snapshots map[string]arpSnapshot
@@ -33,7 +33,7 @@ type arpSnapshot struct {
 	addr uint32
 }
 
-func NewArp(cl client.Client, hostEgress *program.HostEgress) *Arp {
+func NewArp(cl client.Client, hostEgress *program.PodEgress) *Arp {
 	return &Arp{
 		client:     cl,
 		hostEgress: hostEgress,
@@ -91,7 +91,7 @@ func (r *Arp) upsert(ctx context.Context, key string, nwep *juneauv1alpha1.Netwo
 	r.mu.Unlock()
 
 	if hadOld && old != desired {
-		if err := r.hostEgress.Objs.ArpTable.Delete(&bpf.HostEgressArpTableKey{
+		if err := r.hostEgress.Objs.ArpTable.Delete(&bpf.PodEgressArpTableKey{
 			SubnetId: old.vni, Ipaddr: old.addr,
 		}); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 			return fmt.Errorf("delete old ArpTable entry: %w", err)
@@ -99,8 +99,8 @@ func (r *Arp) upsert(ctx context.Context, key string, nwep *juneauv1alpha1.Netwo
 	}
 
 	if err := r.hostEgress.Objs.ArpTable.Update(
-		&bpf.HostEgressArpTableKey{SubnetId: desired.vni, Ipaddr: desired.addr},
-		&bpf.HostEgressArpTableVal{Mac: mac},
+		&bpf.PodEgressArpTableKey{SubnetId: desired.vni, Ipaddr: desired.addr},
+		&bpf.PodEgressArpTableVal{Mac: mac},
 		ebpf.UpdateAny,
 	); err != nil {
 		return fmt.Errorf("update ArpTable: %w", err)
@@ -120,7 +120,7 @@ func (r *Arp) delete(key string) error {
 		return nil
 	}
 
-	if err := r.hostEgress.Objs.ArpTable.Delete(&bpf.HostEgressArpTableKey{
+	if err := r.hostEgress.Objs.ArpTable.Delete(&bpf.PodEgressArpTableKey{
 		SubnetId: snap.vni, Ipaddr: snap.addr,
 	}); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 		return fmt.Errorf("delete ArpTable: %w", err)

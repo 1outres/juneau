@@ -14,9 +14,21 @@
 2. ifindex_subnet mapを引く(key: skb->ifindex)
 3. subnet_mapを引く
 4. ARPリクエストの場合、handle_arp関数を呼び出し、その関数の返り値を返す（handle_arp関数にはsubnet_idとsubnet_mapのvalも渡す）
-5. subnet_idが1の場合、host_iface mapを引いて、ifindexにbpf_redirectする
-6. subnet_idが1以外の場合、もし対象がgw_macだったらhandle_l3関数を呼び出し、その関数の返り値を返す(subnet_idとsubnet_mapのvalも渡す)
+5. IPv4の場合、apply_conntrack_dnatを呼び出す
+   - DNATが適用されたらdispatch_after_dnatに渡して終了(dst IPが書き換わったのでFIB再lookup必要)
+   - DNAT非該当(CT miss、もしくはCT actionがDNAT以外) → fall through
+6. もし対象がgw_macだったらhandle_l3関数を呼び出し、その関数の返り値を返す(subnet_idとsubnet_mapのvalも渡す)
 7. そうじゃなかったらforward_l2関数を呼び出し、その返り値を返す(subnet_idとsubnet_mapのvalも渡す)
+
+## apply_conntrack_dnat
+
+forward方向(caller→ClusterIP)のDNATのみを担当する。reverse SNATはpod_ingress側で行う(同一node・別nodeを問わず宛先veth上で発火)。
+
+1. TCP/UDP以外は0を返す(rewriteしない)
+2. ct_mapをパケットの5-tuple (vpc_id=subnet->vpc_id, saddr, daddr, sport, dport, proto) で引く
+3. miss、もしくは action != DNAT → 0
+4. cv->last_seen_ns更新、dst IPとdst portを書き換え、1を返す
+5. rewrite失敗で-1を返す
 
 ## forward_l2
 
@@ -31,13 +43,10 @@
 
 1. ARPペイロードのパースを行う
 2. 対象のIPアドレスが範囲内かどうか、gw_addrとmaskを使って範囲判定する。範囲外の場合ドロップする。
-3. subnet_idが1の場合、gw_macをARPレスポンスとして返す(bpf_redirectを使う)
-  - dst macをrequester mac, source macをgw_mac
-  - thaをrequester mac, tpaをrequester ip, shaをgw_mac, spaを元のtpa
-4. subnet_idが1以外の場合、もし対象がgw_addrだったらgw_macをARPレスポンスとして返す(bpf_redirectを使う)
-5. そうじゃなかったらarp_table mapを引く
-6. arp_tableに見つからない場合ドロップ
-7. エントリが見つかった場合、ARPレスポンスとして返す(bpf_redirectを使う)
+3. もし対象がgw_addrだったらsubnet->gw_macをARPレスポンスとして返す(bpf_redirectを使う)
+4. そうじゃなかったらarp_table mapを引く
+5. arp_tableに見つからない場合ドロップ
+6. エントリが見つかった場合、ARPレスポンスとして返す(bpf_redirectを使う)
 
 ## handle_l3
 
@@ -53,6 +62,26 @@
 10. パケットのsmacをfib_val.smacで書き換える
 11. forward_l2にfib_val.subnet_idを渡す
 12. fib_val.type が INTERNET_GATEWAY の場合、handle_snatに渡す
+13. fib_val.type が SERVICE の場合、handle_serviceに渡す
+14. fib_val.type が HOST_GATEWAY の場合、host_iface mapからcni_hostのMAC/ifindexを取得し、dst_macを書き換えてbpf_redirect(host->ifindex)する。host network stackの routing + iptables MASQUERADEに委譲する経路（default VPCの外部疎通用、暫定的な仕様）
+
+## handle_service
+
+1. パケットからsport/dportを読む
+2. service_mapを (cluster_ip=daddr, port=dport, proto) で引く
+3. 見つからない、もしくは sv->owner_vpc_id != caller_vpc_id ならドロップ
+4. backend_count が 0 ならドロップ
+5. 5-tupleからhashを計算し、idx = hash % backend_count を求める
+6. backend_mapを (cluster_ip, port, proto, idx) で引く
+7. 見つからなかったらドロップ
+8. ct_mapに forward(=DNAT) と reverse(=SNAT) のエントリを登録する
+9. パケットの宛先IP/portをbackendに書き換える
+10. dispatch_after_dnatに渡す(table_idは subnet->table_id、宛先IPはbackendのIP)
+
+## dispatch_after_dnat
+
+1. fib_mapをbackend宛先で再lookup
+2. fv->type に応じて CONNECTED / ENDPOINT / INTERNET_GATEWAY の処理を行う(SERVICEヒットはドロップ)
 
 ## handle_snat
 

@@ -54,12 +54,22 @@ spec:
                     via:
                       properties:
                         endpointName:
+                          description: |-
+                            Endpoint is required when type=endpoint. Refers to a
+                            NetworkEndpoint by name.
+                          type: string
+                        natGateway:
+                          description: |-
+                            NATGateway is required when type=natGateway. Refers to a
+                            NATGateway by name (cluster-scoped).
                           type: string
                         type:
                           enum:
                           - connected
                           - endpoint
                           - internetGateway
+                          - service
+                          - natGateway
                           type: string
                       required:
                       - type
@@ -148,12 +158,22 @@ spec:
                     via:
                       properties:
                         endpointName:
+                          description: |-
+                            Endpoint is required when type=endpoint. Refers to a
+                            NetworkEndpoint by name.
+                          type: string
+                        natGateway:
+                          description: |-
+                            NATGateway is required when type=natGateway. Refers to a
+                            NATGateway by name (cluster-scoped).
                           type: string
                         type:
                           enum:
                           - connected
                           - endpoint
                           - internetGateway
+                          - service
+                          - natGateway
                           type: string
                       required:
                       - type

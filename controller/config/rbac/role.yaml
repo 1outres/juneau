@@ -30,13 +30,15 @@ rules:
   resources:
   - addresspools
   - allocationclaims
+  - allocationleases
   - allocationpools
   - bgpadvertisements
   - bgppeers
   - elasticipattachments
   - elasticips
+  - externalnetworkattachments
   - externalnetworks
-  - ipleases
+  - natgateways
   - networkendpoints
   - networkinterfaces
   - routetables
@@ -55,13 +57,15 @@ rules:
   resources:
   - addresspools/finalizers
   - allocationclaims/finalizers
+  - allocationleases/finalizers
   - allocationpools/finalizers
   - bgpadvertisements/finalizers
   - bgppeers/finalizers
   - elasticipattachments/finalizers
   - elasticips/finalizers
+  - externalnetworkattachments/finalizers
   - externalnetworks/finalizers
-  - ipleases/finalizers
+  - natgateways/finalizers
   - networkendpoints/finalizers
   - networkinterfaces/finalizers
   - routetables/finalizers
@@ -74,13 +78,15 @@ rules:
   resources:
   - addresspools/status
   - allocationclaims/status
+  - allocationleases/status
   - allocationpools/status
   - bgpadvertisements/status
   - bgppeers/status
   - elasticipattachments/status
   - elasticips/status
+  - externalnetworkattachments/status
   - externalnetworks/status
-  - ipleases/status
+  - natgateways/status
   - networkendpoints/status
   - networkinterfaces/status
   - routetables/status

@@ -123,6 +123,22 @@ var _ = Describe("ElasticIP controller", func() {
 		Expect(attached.ObservedGeneration).To(Equal(elasticIP.Generation))
 	})
 
+	It("honors spec.requestedIP when the address is available", func() {
+		ctx := context.Background()
+		externalNetworkName, _ := createControllerElasticIPNetwork(ctx, []string{"10.130.0.0/29"})
+		name := uniqueTestName("elasticip")
+		eip := newControllerElasticIP(name, externalNetworkName)
+		eip.Spec.RequestedIP = "10.130.0.5"
+		Expect(k8sClient.Create(ctx, eip)).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			g.Expect(reconcileElasticIP(name)).To(Succeed())
+			elasticIP := getControllerElasticIP(name)
+			g.Expect(elasticIP.Status.Address).To(Equal("10.130.0.5"))
+			g.Expect(elasticIP.Status.Phase).To(Equal(juneauv1alpha1.ElasticIPPhaseAvailable))
+		}).Should(Succeed())
+	})
+
 	It("enters error when multiple attachments reference it", func() {
 		ctx := context.Background()
 		externalNetworkName, _ := createControllerElasticIPNetwork(ctx, []string{"10.124.0.0/30"})

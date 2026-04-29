@@ -234,8 +234,6 @@ func buildReconcileResult(
 	advs *juneauv1alpha1.BGPAdvertisementList,
 	peers *juneauv1alpha1.BGPPeerList,
 ) ReconcileResult {
-	_ = nodeName
-
 	var warnings []string
 	var errs []nodestate.ResourceError
 	addErr := func(kind, name, msg string) {
@@ -253,19 +251,19 @@ func buildReconcileResult(
 		poolsByName[pool.Name] = pool
 	}
 
-	referencedPools := make(map[string]struct{})
+	// Filter advertisements by nodeName: only keep those that this
+	// speaker should emit. spec.prefix overrides are honoured per
+	// advertisement when projecting prefixes.
+	relevantAdvs := make([]*juneauv1alpha1.BGPAdvertisement, 0, len(advs.Items))
 	for i := range advs.Items {
 		adv := &advs.Items[i]
-		for _, poolName := range adv.Spec.AddressPools {
-			poolName = strings.TrimSpace(poolName)
-			if poolName == "" {
-				continue
-			}
-			referencedPools[poolName] = struct{}{}
+		if adv.Spec.NodeName != "" && adv.Spec.NodeName != nodeName {
+			continue
 		}
+		relevantAdvs = append(relevantAdvs, adv)
 	}
 
-	prefixes := buildPrefixes(poolsByName, referencedPools, addErr)
+	prefixes := buildPrefixes(poolsByName, relevantAdvs, addErr)
 
 	desiredPeers := make([]*bgptypes.Peer, 0, len(peers.Items))
 	peerIndex := map[string]string{}
@@ -308,74 +306,137 @@ func buildReconcileResult(
 
 	return ReconcileResult{
 		Desired:            &bgptypes.DesiredConfig{Peers: desiredPeers},
-		Advertisements:     buildAdvertisementsIntent(poolsByName, referencedPools),
+		Advertisements:     buildAdvertisementsIntent(poolsByName, relevantAdvs),
 		PeerNamesByAddress: peerIndex,
 		Errors:             errs,
 		Warnings:           warnings,
 	}
 }
 
-// buildAdvertisementsIntent projects the set of referenced BGP AddressPools
-// into the shape consumed by BGPNodeState.advertisements: one entry per pool,
-// prefix count = number of distinct CIDRs in spec.addresses.
+// buildAdvertisementsIntent projects the set of relevant advertisements
+// into the shape consumed by BGPNodeState.advertisements: one entry per
+// (advertisement, pool) pair. Pools not in BGP mode are skipped. When an
+// advertisement specifies spec.prefix it overrides the pool-wide prefix
+// list with a single prefix.
 func buildAdvertisementsIntent(
 	poolsByName map[string]*juneauv1alpha1.AddressPool,
-	referencedPools map[string]struct{},
+	advs []*juneauv1alpha1.BGPAdvertisement,
 ) []nodestate.Advertisement {
-	out := make([]nodestate.Advertisement, 0, len(referencedPools))
-	for name := range referencedPools {
-		pool, ok := poolsByName[name]
-		if !ok {
-			continue
-		}
-		if pool.Spec.AdvertiseMode != juneauv1alpha1.AddressPoolAdvertiseModeBGP {
-			continue
-		}
-		unique := map[string]struct{}{}
-		for _, raw := range pool.Spec.Addresses {
-			raw = strings.TrimSpace(raw)
-			if raw == "" {
+	type entry struct {
+		pool     string
+		prefixes []string
+	}
+	merged := make(map[string]*entry)
+	for _, adv := range advs {
+		for _, poolName := range adv.Spec.AddressPools {
+			poolName = strings.TrimSpace(poolName)
+			if poolName == "" {
 				continue
 			}
-			if ipnet, err := parsePrefix(raw); err == nil {
-				unique[ipnet.String()] = struct{}{}
+			pool, ok := poolsByName[poolName]
+			if !ok {
+				continue
 			}
+			if pool.Spec.AdvertiseMode != juneauv1alpha1.AddressPoolAdvertiseModeBGP {
+				continue
+			}
+
+			var prefixes []string
+			if adv.Spec.Prefix != "" {
+				if ipnet, err := parsePrefix(strings.TrimSpace(adv.Spec.Prefix)); err == nil {
+					prefixes = append(prefixes, ipnet.String())
+				}
+			} else {
+				unique := map[string]struct{}{}
+				for _, raw := range pool.Spec.Addresses {
+					raw = strings.TrimSpace(raw)
+					if raw == "" {
+						continue
+					}
+					if ipnet, err := parsePrefix(raw); err == nil {
+						unique[ipnet.String()] = struct{}{}
+					}
+				}
+				for p := range unique {
+					prefixes = append(prefixes, p)
+				}
+			}
+			sort.Strings(prefixes)
+
+			e, ok := merged[poolName]
+			if !ok {
+				merged[poolName] = &entry{pool: poolName, prefixes: prefixes}
+				continue
+			}
+			seen := map[string]struct{}{}
+			for _, p := range e.prefixes {
+				seen[p] = struct{}{}
+			}
+			for _, p := range prefixes {
+				if _, ok := seen[p]; ok {
+					continue
+				}
+				seen[p] = struct{}{}
+				e.prefixes = append(e.prefixes, p)
+			}
+			sort.Strings(e.prefixes)
 		}
-		prefixes := make([]string, 0, len(unique))
-		for p := range unique {
-			prefixes = append(prefixes, p)
-		}
-		sort.Strings(prefixes)
+	}
+
+	out := make([]nodestate.Advertisement, 0, len(merged))
+	for _, e := range merged {
 		out = append(out, nodestate.Advertisement{
-			AddressPool: name,
-			Prefixes:    prefixes,
+			AddressPool: e.pool,
+			Prefixes:    e.prefixes,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].AddressPool < out[j].AddressPool })
 	return out
 }
 
+// buildPrefixes returns the union of CIDRs that the bgp-speaker should
+// announce. Each advertisement contributes either its spec.prefix
+// (override) or every CIDR backing the referenced AddressPools.
 func buildPrefixes(
 	poolsByName map[string]*juneauv1alpha1.AddressPool,
-	referencedPools map[string]struct{},
+	advs []*juneauv1alpha1.BGPAdvertisement,
 	addErr func(kind, name, msg string),
 ) []*net.IPNet {
-	var poolNames []string
-	for name := range referencedPools {
-		poolNames = append(poolNames, name)
-	}
-	sort.Strings(poolNames)
-
 	unique := make(map[string]*net.IPNet)
 
-	for _, poolName := range poolNames {
-		pool, ok := poolsByName[poolName]
+	type advPool struct {
+		adv      *juneauv1alpha1.BGPAdvertisement
+		poolName string
+	}
+	pairs := make([]advPool, 0, len(advs))
+	for _, adv := range advs {
+		for _, poolName := range adv.Spec.AddressPools {
+			poolName = strings.TrimSpace(poolName)
+			if poolName == "" {
+				continue
+			}
+			pairs = append(pairs, advPool{adv: adv, poolName: poolName})
+		}
+	}
+
+	for _, pair := range pairs {
+		pool, ok := poolsByName[pair.poolName]
 		if !ok {
-			addErr("AddressPool", poolName, "referenced by BGPAdvertisement but not found")
+			addErr("AddressPool", pair.poolName, "referenced by BGPAdvertisement but not found")
 			continue
 		}
 		if pool.Spec.AdvertiseMode != juneauv1alpha1.AddressPoolAdvertiseModeBGP {
 			addErr("AddressPool", pool.Name, fmt.Sprintf("spec.advertiseMode=%q is not bgp", pool.Spec.AdvertiseMode))
+			continue
+		}
+
+		if pair.adv.Spec.Prefix != "" {
+			ipnet, err := parsePrefix(strings.TrimSpace(pair.adv.Spec.Prefix))
+			if err != nil {
+				addErr("BGPAdvertisement", pair.adv.Name, fmt.Sprintf("invalid spec.prefix %q: %v", pair.adv.Spec.Prefix, err))
+				continue
+			}
+			unique[ipnet.String()] = ipnet
 			continue
 		}
 

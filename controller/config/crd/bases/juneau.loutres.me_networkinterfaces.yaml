@@ -91,6 +91,12 @@ spec:
             properties:
               address:
                 type: string
+              allocationClaim:
+                description: |-
+                  AllocationClaim names the cluster-scoped AllocationClaim that the
+                  reconciler maintains for this interface's IP reservation. Useful
+                  only for debugging — daemon/CNI consumers should rely on Address.
+                type: string
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current
@@ -147,8 +153,6 @@ spec:
                   - type
                   type: object
                 type: array
-              ipLease:
-                type: string
               observedGeneration:
                 format: int64
                 type: integer

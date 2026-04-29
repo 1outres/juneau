@@ -45,9 +45,14 @@ type Route struct {
 }
 
 type RouteVia struct {
-	// +kubebuilder:validation:Enum=connected;endpoint;internetGateway
-	Type     RouteViaType `json:"type"`
-	Endpoint string       `json:"endpointName,omitempty"`
+	// +kubebuilder:validation:Enum=connected;endpoint;internetGateway;service;natGateway
+	Type RouteViaType `json:"type"`
+	// Endpoint is required when type=endpoint. Refers to a
+	// NetworkEndpoint by name.
+	Endpoint string `json:"endpointName,omitempty"`
+	// NATGateway is required when type=natGateway. Refers to a
+	// NATGateway by name (cluster-scoped).
+	NATGateway string `json:"natGateway,omitempty"`
 }
 
 type RouteViaType string
@@ -56,6 +61,11 @@ const (
 	ViaConnected       RouteViaType = "connected"
 	ViaEndpoint        RouteViaType = "endpoint"
 	ViaInternetGateway RouteViaType = "internetGateway"
+	ViaService         RouteViaType = "service"
+	// ViaNATGateway delegates the matching destination to a
+	// NATGateway resource that performs N:1 NAPT towards the
+	// associated ExternalNetwork.
+	ViaNATGateway RouteViaType = "natGateway"
 )
 
 // +kubebuilder:object:root=true

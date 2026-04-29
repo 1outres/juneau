@@ -12,10 +12,12 @@ import (
 )
 
 const (
-	defaultVpcName            = "default"
-	defaultSubnetName         = "default"
-	defaultSubnetVNIPoolName  = "subnet-vni"
-	defaultRouteTablePoolName = "route-table-id"
+	defaultVpcName              = "default"
+	defaultSubnetName           = "default"
+	defaultSubnetVNIPoolName    = "subnet-vni"
+	defaultRouteTablePoolName   = "route-table-id"
+	defaultVpcIDPoolName        = "vpc-id"
+	defaultNATGatewayIDPoolName = "nat-gateway-id"
 )
 
 // EnsureDefaults creates default VPC and Subnet if they don't already exist.
@@ -59,6 +61,28 @@ func ensureDefaultAllocationPools(ctx context.Context, c client.Client, logger l
 				},
 			},
 		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: defaultVpcIDPoolName},
+			Spec: juneauv1alpha1.AllocationPoolSpec{
+				Type:     juneauv1alpha1.AllocationTypeNumber,
+				Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+				Number: &juneauv1alpha1.AllocationPoolNumberSpec{
+					Min: 2,
+					Max: uint64(^uint32(0)),
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: defaultNATGatewayIDPoolName},
+			Spec: juneauv1alpha1.AllocationPoolSpec{
+				Type:     juneauv1alpha1.AllocationTypeNumber,
+				Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+				Number: &juneauv1alpha1.AllocationPoolNumberSpec{
+					Min: 1,
+					Max: uint64(^uint32(0)),
+				},
+			},
+		},
 	}
 
 	for _, pool := range pools {
@@ -89,7 +113,16 @@ func ensureDefaultVpc(ctx context.Context, c client.Client, logger logr.Logger) 
 			ObjectMeta: metav1.ObjectMeta{
 				Name: defaultVpcName,
 			},
-			Spec: juneauv1alpha1.VpcSpec{},
+			Spec: juneauv1alpha1.VpcSpec{
+				// Enable Service routing on the default VPC so
+				// Services without the juneau.loutres.me/vpc
+				// annotation (which implicitly target default)
+				// are not rejected by the webhook. While default
+				// Subnet Pods are still routed to cni_host and
+				// use kube-proxy / iptables, this keeps the
+				// CRD-level surface consistent.
+				EnableService: true,
+			},
 		})
 	}
 

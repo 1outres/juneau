@@ -27,14 +27,24 @@ func IPv4ToUint32(ip net.IP) (uint32, error) {
 	return binary.BigEndian.Uint32(ip4), nil
 }
 
-// IPv4ToLPMTrieUint32 converts an IPv4 address to a little-endian uint32,
-// the format used by BPF_MAP_TYPE_LPM_TRIE keys.
-func IPv4ToLPMTrieUint32(ip net.IP) (uint32, error) {
+// IPv4ToBPFNetworkOrder encodes an IPv4 address as a uint32 whose
+// memory representation, on a little-endian host, is network byte
+// order. Use this for any BPF map field declared as __be32 — direct
+// comparison with iph->saddr / iph->daddr, bpf_skb_store_bytes into IP
+// headers, or LPM trie keys all expect this layout. The naive
+// binary.BigEndian.Uint32 would silently reverse the bytes on LE.
+func IPv4ToBPFNetworkOrder(ip net.IP) (uint32, error) {
 	ip4 := ip.To4()
 	if ip4 == nil {
 		return 0, fmt.Errorf("not an IPv4 address: %v", ip)
 	}
 	return binary.LittleEndian.Uint32(ip4), nil
+}
+
+// IPv4ToLPMTrieUint32 is an alias retained for the existing LPM trie
+// call sites. Equivalent to IPv4ToBPFNetworkOrder.
+func IPv4ToLPMTrieUint32(ip net.IP) (uint32, error) {
+	return IPv4ToBPFNetworkOrder(ip)
 }
 
 // IPMaskToUint32 converts an IPv4 netmask to a big-endian uint32

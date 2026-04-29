@@ -5,7 +5,6 @@ resources:
 - bases/juneau.loutres.me_vpcs.yaml
 - bases/juneau.loutres.me_subnets.yaml
 - bases/juneau.loutres.me_networkinterfaces.yaml
-- bases/juneau.loutres.me_ipleases.yaml
 - bases/juneau.loutres.me_networkendpoints.yaml
 - bases/juneau.loutres.me_routetables.yaml
 - bases/juneau.loutres.me_addresspools.yaml
@@ -17,6 +16,9 @@ resources:
 - bases/juneau.loutres.me_elasticipattachments.yaml
 - bases/juneau.loutres.me_allocationpools.yaml
 - bases/juneau.loutres.me_allocationclaims.yaml
+- bases/juneau.loutres.me_allocationleases.yaml
+- bases/juneau.loutres.me_natgateways.yaml
+- bases/juneau.loutres.me_externalnetworkattachments.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

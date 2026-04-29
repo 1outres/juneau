@@ -22,6 +22,15 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the {{ .ProjectName }} itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
+- externalnetworkattachment_admin_role.yaml
+- externalnetworkattachment_editor_role.yaml
+- externalnetworkattachment_viewer_role.yaml
+- natgateway_admin_role.yaml
+- natgateway_editor_role.yaml
+- natgateway_viewer_role.yaml
+- allocationlease_admin_role.yaml
+- allocationlease_editor_role.yaml
+- allocationlease_viewer_role.yaml
 - allocationclaim_admin_role.yaml
 - allocationclaim_editor_role.yaml
 - allocationclaim_viewer_role.yaml
@@ -55,9 +64,6 @@ resources:
 - networkendpoint_admin_role.yaml
 - networkendpoint_editor_role.yaml
 - networkendpoint_viewer_role.yaml
-- iplease_admin_role.yaml
-- iplease_editor_role.yaml
-- iplease_viewer_role.yaml
 - networkinterface_admin_role.yaml
 - networkinterface_editor_role.yaml
 - networkinterface_viewer_role.yaml

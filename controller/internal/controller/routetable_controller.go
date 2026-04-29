@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net"
 	"reflect"
 	"slices"
 	"time"
@@ -49,6 +50,12 @@ const (
 type RouteTableReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// ServiceCIDR is the cluster-wide CIDR used by Kubernetes Services.
+	// When the owning VPC has spec.enableService=true, the reconciler
+	// injects a route for this CIDR with via.type=service into the
+	// RouteTable's status.routes.
+	ServiceCIDR *net.IPNet
 }
 
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=routetables,verbs=get;list;watch;create;update;patch;delete
@@ -88,6 +95,14 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	var statusRoutes []juneauloutresmev1alpha1.Route
 	var subnetNames []string
 
+	var vpc juneauloutresmev1alpha1.Vpc
+	if err := r.Get(ctx, client.ObjectKey{Name: resource.Spec.Vpc}, &vpc); err != nil && !errors.IsNotFound(err) {
+		if updateErr := r.updateStatus(ctx, &resource, resource.Status.Routes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, "failed to fetch VPC"); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{}, err
+	}
+
 	var subnets juneauloutresmev1alpha1.SubnetList
 	if err := r.List(ctx, &subnets, client.MatchingFields{"spec.vpc": resource.Spec.Vpc}); err != nil {
 		if updateErr := r.updateStatus(ctx, &resource, resource.Status.Routes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, "failed to list subnets for VPC"); updateErr != nil {
@@ -106,10 +121,45 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		subnetNames = append(subnetNames, subnet.Name)
 	}
 
+	if vpc.Spec.EnableService && r.ServiceCIDR != nil {
+		statusRoutes = append(statusRoutes, juneauloutresmev1alpha1.Route{
+			Dst: r.ServiceCIDR.String(),
+			Via: juneauloutresmev1alpha1.RouteVia{
+				Type: juneauloutresmev1alpha1.ViaService,
+			},
+		})
+	}
+
+	// The default VPC's main RouteTable optionally carries a 0/0
+	// route via the default NATGateway. The route is only injected
+	// when a default NATGateway exists and is Ready. Operators that
+	// need internet egress in the default VPC must either bootstrap
+	// the default ExternalNetwork + NATGateway pair or add their own
+	// 0/0 route.
+	if resource.Name == defaultVpcName && resource.Spec.Vpc == defaultVpcName {
+		var defaultNATGW juneauloutresmev1alpha1.NATGateway
+		err := r.Get(ctx, client.ObjectKey{Name: defaultVpcName}, &defaultNATGW)
+		if err == nil && defaultNATGW.Status.GatewayID != 0 {
+			statusRoutes = append(statusRoutes, juneauloutresmev1alpha1.Route{
+				Dst: "0.0.0.0/0",
+				Via: juneauloutresmev1alpha1.RouteVia{
+					Type:       juneauloutresmev1alpha1.ViaNATGateway,
+					NATGateway: defaultNATGW.Name,
+				},
+			})
+		} else if err != nil && !errors.IsNotFound(err) {
+			if updateErr := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, fmt.Sprintf("failed to fetch default NATGateway: %v", err)); updateErr != nil {
+				return ctrl.Result{}, updateErr
+			}
+			return ctrl.Result{}, err
+		}
+	}
+
 	for _, route := range resource.Spec.Routes {
 		if rt := getRoute(statusRoutes, route.Dst); rt == nil {
 			var subnet string
-			if route.Via.Type == juneauloutresmev1alpha1.ViaConnected {
+			if route.Via.Type == juneauloutresmev1alpha1.ViaConnected ||
+				route.Via.Type == juneauloutresmev1alpha1.ViaService {
 				continue
 			} else if route.Via.Type == juneauloutresmev1alpha1.ViaEndpoint {
 				nwep, err := r.getNetworkEndpoint(ctx, route.Via.Endpoint)
@@ -132,6 +182,32 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 					return ctrl.Result{}, nil
 				}
 				subnet = nwep.Spec.Subnet
+			} else if route.Via.Type == juneauloutresmev1alpha1.ViaNATGateway {
+				var natGateway juneauloutresmev1alpha1.NATGateway
+				if err := r.Get(ctx, client.ObjectKey{Name: route.Via.NATGateway}, &natGateway); err != nil {
+					if errors.IsNotFound(err) {
+						if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("NATGateway %q not found", route.Via.NATGateway)); err != nil {
+							return ctrl.Result{}, err
+						}
+						return ctrl.Result{}, nil
+					}
+					if updateErr := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, fmt.Sprintf("failed to get NATGateway %q", route.Via.NATGateway)); updateErr != nil {
+						return ctrl.Result{}, updateErr
+					}
+					return ctrl.Result{}, err
+				}
+				if natGateway.Spec.Vpc != resource.Spec.Vpc {
+					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("NATGateway %q belongs to Vpc %q, not %q", natGateway.Name, natGateway.Spec.Vpc, resource.Spec.Vpc)); err != nil {
+						return ctrl.Result{}, err
+					}
+					return ctrl.Result{}, nil
+				}
+				if natGateway.Status.GatewayID == 0 {
+					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("NATGateway %q has not yet been assigned a gatewayID", natGateway.Name)); err != nil {
+						return ctrl.Result{}, err
+					}
+					return ctrl.Result{}, nil
+				}
 			}
 			route.Subnet = subnet
 			statusRoutes = append(statusRoutes, route)
@@ -232,15 +308,17 @@ func (r *RouteTableReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&juneauloutresmev1alpha1.RouteTable{}).
 		Watches(&juneauloutresmev1alpha1.Subnet{}, handler.EnqueueRequestsFromMapFunc(r.mapSubnetToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.NetworkEndpoint{}, handler.EnqueueRequestsFromMapFunc(r.mapNetworkEndpointToRouteTables)).
+		Watches(&juneauloutresmev1alpha1.Vpc{}, handler.EnqueueRequestsFromMapFunc(r.mapVpcToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.AllocationClaim{}, handler.EnqueueRequestsFromMapFunc(r.mapClaimToRouteTables)).
+		Watches(&juneauloutresmev1alpha1.NATGateway{}, handler.EnqueueRequestsFromMapFunc(r.mapNATGatewayToRouteTables)).
 		Named("routetable").
 		Complete(r)
 }
 
 func (r *RouteTableReconciler) ensureNumberClaim(ctx context.Context, resource *juneauloutresmev1alpha1.RouteTable, poolName string, gvk schema.GroupVersionKind, attribute string) (*juneauloutresmev1alpha1.AllocationClaim, error) {
-	claim := newAllocationClaim(poolName, gvk, resource.Name, attribute)
+	claim := newAllocationClaim(poolName, gvk, "", resource.Name, attribute)
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, claim, func() error {
-		claim.Spec = newAllocationClaim(poolName, gvk, resource.Name, attribute).Spec
+		claim.Spec = newAllocationClaim(poolName, gvk, "", resource.Name, attribute).Spec
 		return controllerutil.SetControllerReference(resource, claim, r.Scheme)
 	})
 	if err != nil {
@@ -255,20 +333,44 @@ func (r *RouteTableReconciler) mapSubnetToRouteTables(ctx context.Context, obj c
 		return nil
 	}
 
-	var vpc juneauloutresmev1alpha1.Vpc
-	if err := r.Get(ctx, client.ObjectKey{Name: subnet.Spec.Vpc}, &vpc); err != nil {
-		if errors.IsNotFound(err) {
-			return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: subnet.Spec.Vpc}}}
-		}
+	// CONNECTED routes for every Subnet are injected into every
+	// RouteTable in the same Vpc. A Subnet event therefore must wake
+	// every Vpc-local RouteTable, not just the main one.
+	var routeTableList juneauloutresmev1alpha1.RouteTableList
+	if err := r.List(ctx, &routeTableList); err != nil {
 		return nil
 	}
 
-	routeTableName := vpc.Status.MainRouteTable
-	if routeTableName == "" {
-		routeTableName = vpc.Name
+	requests := make([]reconcile.Request, 0, len(routeTableList.Items))
+	for i := range routeTableList.Items {
+		rt := &routeTableList.Items[i]
+		if rt.Spec.Vpc != subnet.Spec.Vpc {
+			continue
+		}
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: rt.Name}})
+	}
+	return requests
+}
+
+func (r *RouteTableReconciler) mapVpcToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
+	vpc, ok := obj.(*juneauloutresmev1alpha1.Vpc)
+	if !ok {
+		return nil
 	}
 
-	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: routeTableName}}}
+	var routeTableList juneauloutresmev1alpha1.RouteTableList
+	if err := r.List(ctx, &routeTableList); err != nil {
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0, len(routeTableList.Items))
+	for _, rt := range routeTableList.Items {
+		if rt.Spec.Vpc != vpc.Name {
+			continue
+		}
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: rt.Name}})
+	}
+	return requests
 }
 
 func (r *RouteTableReconciler) mapClaimToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
@@ -278,6 +380,46 @@ func (r *RouteTableReconciler) mapClaimToRouteTables(ctx context.Context, obj cl
 		return nil
 	}
 	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: claim.Spec.ResourceRef.Name}}}
+}
+
+func (r *RouteTableReconciler) mapNATGatewayToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
+	natGateway, ok := obj.(*juneauloutresmev1alpha1.NATGateway)
+	if !ok {
+		return nil
+	}
+
+	var routeTableList juneauloutresmev1alpha1.RouteTableList
+	if err := r.List(ctx, &routeTableList); err != nil {
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0)
+	enqueued := map[string]bool{}
+	for _, rt := range routeTableList.Items {
+		for _, route := range rt.Spec.Routes {
+			if route.Via.Type == juneauloutresmev1alpha1.ViaNATGateway && route.Via.NATGateway == natGateway.Name {
+				if !enqueued[rt.Name] {
+					requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: rt.Name}})
+					enqueued[rt.Name] = true
+				}
+				break
+			}
+		}
+	}
+	// The default-VPC main RouteTable receives a 0/0 auto-injection
+	// when a NATGateway named "default" exists. That dependency lives
+	// only in status.routes (not spec), so the loop above never picks
+	// it up; enqueue it explicitly here.
+	if natGateway.Name == defaultVpcName {
+		for _, rt := range routeTableList.Items {
+			if rt.Name == defaultVpcName && rt.Spec.Vpc == defaultVpcName && !enqueued[rt.Name] {
+				requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: rt.Name}})
+				enqueued[rt.Name] = true
+				break
+			}
+		}
+	}
+	return requests
 }
 
 func (r *RouteTableReconciler) mapNetworkEndpointToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {

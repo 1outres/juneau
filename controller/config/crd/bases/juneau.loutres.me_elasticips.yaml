@@ -61,6 +61,13 @@ spec:
               externalNetwork:
                 minLength: 1
                 type: string
+              requestedIP:
+                description: |-
+                  RequestedIP optionally pins a specific address. The address must
+                  fall inside one of the AddressPools attached to the referenced
+                  ExternalNetwork. When unset (empty string) the controller picks
+                  the first available address.
+                type: string
             required:
             - externalNetwork
             type: object

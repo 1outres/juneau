@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"net/netip"
 	"reflect"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -57,8 +58,8 @@ func (r *AllocationPoolReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	if resource.ObjectMeta.DeletionTimestamp.IsZero() {
-		if resource.Spec.Type == juneauloutresmev1alpha1.AllocationTypeNumber && resource.Spec.Number != nil && resource.Spec.Number.Min > resource.Spec.Number.Max {
-			if err := r.updateStatus(ctx, &resource, metav1.ConditionFalse, allocationPoolReasonInvalid, "number.min must be less than or equal to number.max"); err != nil {
+		if msg := validateAllocationPoolForStatus(&resource); msg != "" {
+			if err := r.updateStatus(ctx, &resource, metav1.ConditionFalse, allocationPoolReasonInvalid, msg); err != nil {
 				logger.Error(err, "unable to update AllocationPool status", "name", req.Name)
 				return ctrl.Result{}, err
 			}
@@ -84,6 +85,7 @@ func (r *AllocationPoolReconciler) updateStatus(ctx context.Context, resource *j
 		updated := fresh.DeepCopy()
 		updated.Status.AllocationVersion = fresh.Status.AllocationVersion
 		updated.Status.LastAllocatedNumber = fresh.Status.LastAllocatedNumber
+		updated.Status.LastAllocatedIP = fresh.Status.LastAllocatedIP
 		updated.Status.ObservedGeneration = updated.Generation
 		meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
 			Type:               juneauloutresmev1alpha1.AllocationPoolStatusReady,
@@ -93,7 +95,11 @@ func (r *AllocationPoolReconciler) updateStatus(ctx context.Context, resource *j
 			ObservedGeneration: updated.Generation,
 		})
 
-		if updated.Status.ObservedGeneration == fresh.Status.ObservedGeneration && updated.Status.AllocationVersion == fresh.Status.AllocationVersion && updated.Status.LastAllocatedNumber == fresh.Status.LastAllocatedNumber && reflect.DeepEqual(updated.Status.Conditions, fresh.Status.Conditions) {
+		if updated.Status.ObservedGeneration == fresh.Status.ObservedGeneration &&
+			updated.Status.AllocationVersion == fresh.Status.AllocationVersion &&
+			updated.Status.LastAllocatedNumber == fresh.Status.LastAllocatedNumber &&
+			updated.Status.LastAllocatedIP == fresh.Status.LastAllocatedIP &&
+			reflect.DeepEqual(updated.Status.Conditions, fresh.Status.Conditions) {
 			resource.Status = updated.Status
 			return nil
 		}
@@ -106,6 +112,39 @@ func (r *AllocationPoolReconciler) updateStatus(ctx context.Context, resource *j
 		resource.ObjectMeta.ResourceVersion = fresh.ObjectMeta.ResourceVersion
 		return nil
 	})
+}
+
+// validateAllocationPoolForStatus mirrors the webhook validation but produces
+// a single human-readable message for status reporting. Returns an empty
+// string when the pool is valid.
+func validateAllocationPoolForStatus(pool *juneauloutresmev1alpha1.AllocationPool) string {
+	switch pool.Spec.Type {
+	case juneauloutresmev1alpha1.AllocationTypeNumber:
+		if pool.Spec.Number == nil {
+			return "spec.number is required for type=number"
+		}
+		if pool.Spec.Number.Min > pool.Spec.Number.Max {
+			return "number.min must be less than or equal to number.max"
+		}
+	case juneauloutresmev1alpha1.AllocationTypeIP:
+		if pool.Spec.IP == nil {
+			return "spec.ip is required for type=ip"
+		}
+		if len(pool.Spec.IP.CIDRs) == 0 {
+			return "spec.ip.cidrs must contain at least one entry"
+		}
+		for _, raw := range pool.Spec.IP.CIDRs {
+			if _, err := netip.ParsePrefix(raw); err != nil {
+				return "invalid CIDR: " + raw
+			}
+		}
+		for _, raw := range pool.Spec.IP.Excluded {
+			if _, err := netip.ParseAddr(raw); err != nil {
+				return "invalid excluded IP: " + raw
+			}
+		}
+	}
+	return ""
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -18,6 +18,7 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -55,7 +56,8 @@ func NewApp() *cli.Command {
 				Name: "vxlan-parent-iface",
 			},
 			&cli.StringFlag{
-				Name: "masquerade-iface",
+				Name:  "node-ingress-iface",
+				Usage: "Interface to attach node-ingress BPF program to. Defaults to the node's main iface.",
 			},
 			&cli.StringFlag{
 				Name:  "bpf-pin-path",
@@ -75,7 +77,7 @@ func NewApp() *cli.Command {
 			cniConfDir := cmd.String("cni-conf-dir")
 			nodeName := cmd.String("node-name")
 			vxlanParentIface := cmd.String("vxlan-parent-iface")
-			masqueradeIface := cmd.String("masquerade-iface")
+			nodeIngressIfaceName := cmd.String("node-ingress-iface")
 			bpfPinPath := cmd.String("bpf-pin-path")
 
 			zapcfg := zap.NewDevelopmentConfig()
@@ -100,18 +102,26 @@ func NewApp() *cli.Command {
 			if err := corev1.AddToScheme(scheme); err != nil {
 				return fmt.Errorf("add corev1 scheme: %w", err)
 			}
+			if err := discoveryv1.AddToScheme(scheme); err != nil {
+				return fmt.Errorf("add discoveryv1 scheme: %w", err)
+			}
 
 			cache, err := cache.New(kubecfg, cache.Options{
 				Scheme: scheme,
 				ByObject: map[client.Object]cache.ByObject{
-					&juneauv1alpha1.NetworkInterface{}:    {},
-					&juneauv1alpha1.NetworkEndpoint{}:     {},
-					&juneauv1alpha1.ElasticIPAttachment{}: {},
-					&juneauv1alpha1.AddressPool{}:         {},
-					&juneauv1alpha1.BGPAdvertisement{}:    {},
-					&juneauv1alpha1.Subnet{}:              {},
-					&juneauv1alpha1.Vpc{}:                 {},
-					&juneauv1alpha1.RouteTable{}:          {},
+					&juneauv1alpha1.NetworkInterface{}:          {},
+					&juneauv1alpha1.NetworkEndpoint{}:           {},
+					&juneauv1alpha1.ElasticIPAttachment{}:       {},
+					&juneauv1alpha1.AddressPool{}:               {},
+					&juneauv1alpha1.BGPAdvertisement{}:          {},
+					&juneauv1alpha1.Subnet{}:                    {},
+					&juneauv1alpha1.Vpc{}:                       {},
+					&juneauv1alpha1.RouteTable{}:                {},
+					&juneauv1alpha1.NATGateway{}:                {},
+					&juneauv1alpha1.ExternalNetworkAttachment{}: {},
+					&juneauv1alpha1.AllocationClaim{}:           {},
+					&corev1.Service{}:                           {},
+					&discoveryv1.EndpointSlice{}:                {},
 				},
 			})
 			if err != nil {
@@ -146,6 +156,31 @@ func NewApp() *cli.Command {
 			subnetInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.Subnet{})
 			if err != nil {
 				return fmt.Errorf("get Subnet informer: %w", err)
+			}
+
+			vpcInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.Vpc{})
+			if err != nil {
+				return fmt.Errorf("get Vpc informer: %w", err)
+			}
+
+			serviceInformer, err := cache.GetInformer(ctx, &corev1.Service{})
+			if err != nil {
+				return fmt.Errorf("get Service informer: %w", err)
+			}
+
+			endpointSliceInformer, err := cache.GetInformer(ctx, &discoveryv1.EndpointSlice{})
+			if err != nil {
+				return fmt.Errorf("get EndpointSlice informer: %w", err)
+			}
+
+			externalNetworkAttachmentInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.ExternalNetworkAttachment{})
+			if err != nil {
+				return fmt.Errorf("get ExternalNetworkAttachment informer: %w", err)
+			}
+
+			natGatewayInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.NATGateway{})
+			if err != nil {
+				return fmt.Errorf("get NATGateway informer: %w", err)
 			}
 
 			cl, err := client.New(kubecfg, client.Options{
@@ -281,12 +316,32 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("failed to sync cache")
 			}
 
-			hostIfaceInfo, err := bootstrap.SetupDefaultGatewayIface(ctx, cl)
+			juneauNodeIfaceInfo, err := bootstrap.SetupDefaultGatewayIface(ctx, cl, nodeName)
 			if err != nil {
 				return fmt.Errorf("setup default gateway iface: %w", err)
 			}
+			hostIfaceInfo := &juneauNodeIfaceInfo.HostIfaceInfo
 
-			if vxlanParentIface == "" || masqueradeIface == "" {
+			// The node's underlay IP (its NodeInternalIP) backs cross-node
+			// fdb entries pointing at this node's juneau_node.
+			var nodeUnderlayIP net.IP
+			{
+				var node corev1.Node
+				if err := cl.Get(ctx, client.ObjectKey{Name: nodeName}, &node); err != nil {
+					return fmt.Errorf("get Node %q for underlay IP: %w", nodeName, err)
+				}
+				for _, addr := range node.Status.Addresses {
+					if addr.Type == corev1.NodeInternalIP {
+						nodeUnderlayIP = net.ParseIP(addr.Address)
+						break
+					}
+				}
+				if nodeUnderlayIP == nil {
+					return fmt.Errorf("node %q has no InternalIP", nodeName)
+				}
+			}
+
+			if vxlanParentIface == "" || nodeIngressIfaceName == "" {
 				mainIface, err := bootstrap.SearchMainIface(ctx, cl, nodeName)
 				if err != nil {
 					return fmt.Errorf("find main iface: %w", err)
@@ -295,8 +350,8 @@ func NewApp() *cli.Command {
 				if vxlanParentIface == "" {
 					vxlanParentIface = mainIface
 				}
-				if masqueradeIface == "" {
-					masqueradeIface = mainIface
+				if nodeIngressIfaceName == "" {
+					nodeIngressIfaceName = mainIface
 				}
 			}
 
@@ -309,20 +364,16 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("configure sysctl: %w", err)
 			}
 
-			if err := bootstrap.EnsureMasqueradeRule(ctx, cl, masqueradeIface); err != nil {
-				return fmt.Errorf("ensure masquerade rule: %w", err)
-			}
-
 			if err := ensureBPFFSMounted(bpfPinPath); err != nil {
 				return fmt.Errorf("ensure bpf fs mount: %w", err)
 			}
 
-			nodeIngressIface, err := net.InterfaceByName(masqueradeIface)
+			nodeIngressIface, err := net.InterfaceByName(nodeIngressIfaceName)
 			if err != nil {
-				return fmt.Errorf("lookup node ingress iface %q: %w", masqueradeIface, err)
+				return fmt.Errorf("lookup node ingress iface %q: %w", nodeIngressIfaceName, err)
 			}
 
-			bpfManager := dataplane.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, bpfPinPath, hostIfaceInfo.MAC)
+			bpfManager := dataplane.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, vpcInformer, serviceInformer, endpointSliceInformer, externalNetworkAttachmentInformer, natGatewayInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, bpfPinPath, hostIfaceInfo.MAC, juneauNodeIfaceInfo.AssignedIP, nodeUnderlayIP)
 			if err := bpfManager.Start(ctx); err != nil {
 				return fmt.Errorf("initialize BPF manager: %w", err)
 			}

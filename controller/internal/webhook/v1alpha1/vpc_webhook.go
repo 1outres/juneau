@@ -19,12 +19,14 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"net"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -37,9 +39,9 @@ import (
 var vpclog = logf.Log.WithName("vpc-resource")
 
 // SetupVpcWebhookWithManager registers the webhook for Vpc in the manager.
-func SetupVpcWebhookWithManager(mgr ctrl.Manager) error {
+func SetupVpcWebhookWithManager(mgr ctrl.Manager, serviceCIDR *net.IPNet) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&juneauv1alpha1.Vpc{}).
-		WithValidator(&VpcCustomValidator{}).
+		WithValidator(&VpcCustomValidator{Client: mgr.GetClient(), ServiceCIDR: serviceCIDR}).
 		WithDefaulter(&VpcCustomDefaulter{}).
 		Complete()
 }
@@ -70,6 +72,8 @@ func (d *VpcCustomDefaulter) Default(ctx context.Context, obj runtime.Object) er
 // VpcCustomValidator struct is responsible for validating the Vpc resource
 // when it is created, updated, or deleted.
 type VpcCustomValidator struct {
+	client.Client
+	ServiceCIDR *net.IPNet
 }
 
 var _ webhook.CustomValidator = &VpcCustomValidator{}
@@ -83,6 +87,13 @@ func (v *VpcCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Obj
 	vpclog.Info("Validation for Vpc upon creation", "name", vpc.GetName())
 
 	var errs field.ErrorList
+	if vpc.Spec.EnableService {
+		serviceErrs, err := v.validateServiceEnabled(ctx, vpc, field.NewPath("spec").Child("enableService"))
+		if err != nil {
+			return nil, err
+		}
+		errs = append(errs, serviceErrs...)
+	}
 
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "Vpc"}, vpc.Name, errs)
@@ -99,9 +110,58 @@ func (v *VpcCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj 
 	if !ok {
 		return nil, fmt.Errorf("expected a Vpc object for the newObj but got %T", newObj)
 	}
+	oldVpc, ok := oldObj.(*juneauv1alpha1.Vpc)
+	if !ok {
+		return nil, fmt.Errorf("expected a Vpc object for the oldObj but got %T", oldObj)
+	}
 	vpclog.Info("Validation for Vpc upon update", "name", vpc.GetName())
 
+	var errs field.ErrorList
+	if vpc.Spec.EnableService && !oldVpc.Spec.EnableService {
+		serviceErrs, err := v.validateServiceEnabled(ctx, vpc, field.NewPath("spec").Child("enableService"))
+		if err != nil {
+			return nil, err
+		}
+		errs = append(errs, serviceErrs...)
+	}
+
+	if len(errs) > 0 {
+		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "Vpc"}, vpc.Name, errs)
+		vpclog.Info("Validation failed for Vpc", "name", vpc.GetName(), "error", err)
+		return nil, err
+	}
+
 	return nil, nil
+}
+
+// validateServiceEnabled checks that no Subnet in this VPC has a CIDR
+// that overlaps with the cluster Service CIDR. The check protects against
+// enabling Service routing on a VPC where Pod IPs would collide with
+// ClusterIPs.
+func (v *VpcCustomValidator) validateServiceEnabled(ctx context.Context, vpc *juneauv1alpha1.Vpc, path *field.Path) (field.ErrorList, error) {
+	if v.ServiceCIDR == nil {
+		return nil, nil
+	}
+
+	var subnetList juneauv1alpha1.SubnetList
+	if err := v.List(ctx, &subnetList); err != nil {
+		return nil, err
+	}
+
+	var errs field.ErrorList
+	for _, subnet := range subnetList.Items {
+		if subnet.Spec.Vpc != vpc.Name {
+			continue
+		}
+		_, subnetCIDR, err := net.ParseCIDR(subnet.Spec.CIDR)
+		if err != nil {
+			continue
+		}
+		if cidrsOverlap(subnetCIDR, v.ServiceCIDR) {
+			errs = append(errs, field.Invalid(path, vpc.Spec.EnableService, fmt.Sprintf("Subnet %q (CIDR %q) overlaps with Service CIDR %q", subnet.Name, subnet.Spec.CIDR, v.ServiceCIDR.String())))
+		}
+	}
+	return errs, nil
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type Vpc.

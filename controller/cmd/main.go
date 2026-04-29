@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 
@@ -80,6 +81,7 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var defaultSubnetCIDR string
+	var serviceClusterIPRange string
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
 	var webhookCASecret string
@@ -93,6 +95,7 @@ func main() {
 	flag.BoolVar(&secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
 	flag.StringVar(&defaultSubnetCIDR, "default-subnet-cidr", "10.16.0.0/16", "CIDR block for the default subnet created at startup.")
+	flag.StringVar(&serviceClusterIPRange, "service-cluster-ip-range", "10.96.0.0/12", "Cluster-wide CIDR from which Kubernetes Service ClusterIPs are allocated.")
 	flag.StringVar(&webhookCASecret, "webhook-ca-secret-name", "webhook-certs", "Secret name that holds webhook CA/certs")
 	flag.StringVar(&podNamespace, "pod-namespace", os.Getenv("POD_NAMESPACE"), "Namespace where webhook secrets live (defaults to POD_NAMESPACE)")
 	flag.StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
@@ -111,6 +114,12 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	_, parsedServiceCIDR, err := net.ParseCIDR(serviceClusterIPRange)
+	if err != nil {
+		setupLog.Error(err, "invalid --service-cluster-ip-range", "value", serviceClusterIPRange)
+		os.Exit(1)
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -250,15 +259,22 @@ func main() {
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookjuneauv1alpha1.SetupSubnetWebhookWithManager(mgr); err != nil {
+		if err = webhookjuneauv1alpha1.SetupSubnetWebhookWithManager(mgr, parsedServiceCIDR); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Subnet")
 			os.Exit(1)
 		}
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookjuneauv1alpha1.SetupVpcWebhookWithManager(mgr); err != nil {
+		if err = webhookjuneauv1alpha1.SetupVpcWebhookWithManager(mgr, parsedServiceCIDR); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Vpc")
+			os.Exit(1)
+		}
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err = webhookjuneauv1alpha1.SetupServiceWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "Service")
 			os.Exit(1)
 		}
 	}
@@ -268,20 +284,6 @@ func main() {
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NetworkInterface")
 		os.Exit(1)
-	}
-	if err = (&controller.IPLeaseReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "IPLease")
-		os.Exit(1)
-	}
-	// nolint:goconst
-	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookjuneauv1alpha1.SetupIPLeaseWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create webhook", "webhook", "IPLease")
-			os.Exit(1)
-		}
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
@@ -305,8 +307,9 @@ func main() {
 		}
 	}
 	if err = (&controller.RouteTableReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		ServiceCIDR: parsedServiceCIDR,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "RouteTable")
 		os.Exit(1)
@@ -427,6 +430,48 @@ func main() {
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
 		if err = webhookjuneauloutresmev1alpha1.SetupAllocationClaimWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "AllocationClaim")
+			os.Exit(1)
+		}
+	}
+	if err = (&controller.AllocationLeaseReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "AllocationLease")
+		os.Exit(1)
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err = webhookjuneauloutresmev1alpha1.SetupAllocationLeaseWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "AllocationLease")
+			os.Exit(1)
+		}
+	}
+	if err = (&controller.NATGatewayReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "NATGateway")
+		os.Exit(1)
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err = webhookjuneauloutresmev1alpha1.SetupNATGatewayWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "NATGateway")
+			os.Exit(1)
+		}
+	}
+	if err = (&controller.ExternalNetworkAttachmentReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ExternalNetworkAttachment")
+		os.Exit(1)
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err = webhookjuneauloutresmev1alpha1.SetupExternalNetworkAttachmentWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "ExternalNetworkAttachment")
 			os.Exit(1)
 		}
 	}

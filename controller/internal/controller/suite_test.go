@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -41,6 +42,8 @@ import (
 	"github.com/1outres/juneau/controller/internal/bootstrap"
 	// +kubebuilder:scaffold:imports
 )
+
+var testServiceCIDR *net.IPNet
 
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
@@ -109,18 +112,37 @@ var _ = BeforeSuite(func() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr)).To(Succeed())
+	Expect((&AllocationLeaseReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr)).To(Succeed())
 	Expect((&SubnetReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr)).To(Succeed())
+	_, testServiceCIDR, err = net.ParseCIDR("10.96.0.0/12")
+	Expect(err).NotTo(HaveOccurred())
 	Expect((&RouteTableReconciler{
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		ServiceCIDR: testServiceCIDR,
+	}).SetupWithManager(mgr)).To(Succeed())
+	Expect((&AddressPoolReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr)).To(Succeed())
-	Expect((&ElasticIPReconciler{
+	// NetworkEndpointReconciler is registered so that its field indexers
+	// (spec.podRef.{name,interface,uid}) are installed; the
+	// NetworkInterface reconciler relies on them when listing endpoints.
+	Expect((&NetworkEndpointReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr)).To(Succeed())
+	// NetworkInterfaceReconciler and ElasticIPReconciler are exercised
+	// directly in their own _test.go files rather than through the
+	// manager, so that other controllers' tests (notably the
+	// ElasticIPAttachment suite) can fix Status.Address values without
+	// racing against active reconcile loops.
 	Expect(mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 		if !mgr.GetCache().WaitForCacheSync(ctx) {
 			return fmt.Errorf("cache sync failed")
@@ -144,6 +166,8 @@ var _ = BeforeSuite(func() {
 		g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: allocationPoolSubnetVNI}, &subnetPool)).To(Succeed())
 		var routeTablePool juneauloutresmev1alpha1.AllocationPool
 		g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: allocationPoolRouteTableID}, &routeTablePool)).To(Succeed())
+		var vpcIDPool juneauloutresmev1alpha1.AllocationPool
+		g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: allocationPoolVpcID}, &vpcIDPool)).To(Succeed())
 	}).Should(Succeed())
 })
 

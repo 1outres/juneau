@@ -25,13 +25,18 @@ import (
 type Manager struct {
 	mu sync.Mutex
 
-	client                   client.Client
-	nwepInformer             cache.Informer
-	eipaInformer             cache.Informer
-	addressPoolInformer      cache.Informer
-	bgpAdvertisementInformer cache.Informer
-	subnetInformer           cache.Informer
-	rtInformer               cache.Informer
+	client                            client.Client
+	nwepInformer                      cache.Informer
+	eipaInformer                      cache.Informer
+	addressPoolInformer               cache.Informer
+	bgpAdvertisementInformer          cache.Informer
+	subnetInformer                    cache.Informer
+	rtInformer                        cache.Informer
+	vpcInformer                       cache.Informer
+	serviceInformer                   cache.Informer
+	endpointSliceInformer             cache.Informer
+	externalNetworkAttachmentInformer cache.Informer
+	natGatewayInformer                cache.Informer
 
 	subnetRunner      *runner.Runner
 	arpRunner         *runner.Runner
@@ -41,6 +46,22 @@ type Manager struct {
 	fibRunner         *runner.Runner
 	natRunner         *runner.Runner
 	bgpPoolRunner     *runner.Runner
+	serviceRunner     *runner.Runner
+	naptRunner        *runner.Runner
+	juNodeRunner      *runner.Runner
+
+	napt   *reconciler.Napt
+	juNode *reconciler.JuneauNode
+
+	juNodeAttacher *link.JuneauNodeAttacher
+
+	juNodeIfindex    int
+	juNodeHostMAC    net.HardwareAddr
+	juNodeAssignedIP net.IP
+	juNodeUnderlayIP net.IP
+
+	conntrackCancel context.CancelFunc
+	conntrackDone   chan struct{}
 
 	podAttacher *link.PodAttacher
 	fib         *reconciler.Fib
@@ -53,7 +74,7 @@ type Manager struct {
 	hostMac            net.HardwareAddr
 
 	podEgress    *program.PodEgress
-	hostEgress   *program.HostEgress
+	podIngress   *program.PodIngress
 	vxlanIngress *program.VxlanIngress
 	nodeIngress  *program.NodeIngress
 }
@@ -66,21 +87,27 @@ func (m *Manager) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to create BPF pin path: %w", err)
 	}
 
-	hostMac, err := convert.HardwareAddrToUint8Array(m.hostMac)
-	if err != nil {
-		return err
+	var err error
+	// host_underlay's slot is consumed by BPF as __be32 (compared to
+	// iph->daddr in node_ingress, used as the saddr rewrite source in
+	// pod_egress). Encode accordingly.
+	var nodeUnderlayBE uint32
+	if m.juNodeUnderlayIP != nil {
+		nodeUnderlayBE, err = convert.IPv4ToBPFNetworkOrder(m.juNodeUnderlayIP)
+		if err != nil {
+			return fmt.Errorf("convert juneau_node underlay IP: %w", err)
+		}
 	}
 
-	m.podEgress, err = program.NewPodEgress(m.pinPath, m.hostIfindex, hostMac)
+	m.podEgress, err = program.NewPodEgress(m.pinPath, nodeUnderlayBE)
 	if err != nil {
 		return fmt.Errorf("load pod egress program: %w", err)
 	}
 
-	m.hostEgress, err = program.NewHostEgress(m.pinPath, m.hostIfindex, m.vxlanIfindex)
+	m.podIngress, err = program.NewPodIngress(m.pinPath)
 	if err != nil {
-		return fmt.Errorf("load host egress program: %w", err)
+		return fmt.Errorf("load pod ingress program: %w", err)
 	}
-	zap.S().Infof("attached TC program to host interface (ifindex: %d)", m.hostIfindex)
 
 	m.vxlanIngress, err = program.NewVxlanIngress(m.pinPath, m.vxlanIfindex)
 	if err != nil {
@@ -101,19 +128,30 @@ func (m *Manager) Start(ctx context.Context) error {
 }
 
 func (m *Manager) startReconcilers(ctx context.Context) error {
-	m.subnetRunner = runner.New(reconciler.NewSubnet(m.client, m.hostEgress, m.hostMac))
+	subnetReconciler := reconciler.NewSubnet(m.client, m.podEgress)
+	m.subnetRunner = runner.New(subnetReconciler)
 	if err := m.subnetRunner.Watch(m.subnetInformer, runner.MetaNamespaceKey); err != nil {
 		return fmt.Errorf("watch Subnet: %w", err)
 	}
+	if m.vpcInformer != nil {
+		if err := m.subnetRunner.WatchFanOut(m.vpcInformer, subnetReconciler.FanOutVpcToSubnets); err != nil {
+			return fmt.Errorf("watch Vpc (subnet fan-out): %w", err)
+		}
+	}
+	if m.rtInformer != nil {
+		if err := m.subnetRunner.WatchFanOut(m.rtInformer, subnetReconciler.FanOutRouteTableToSubnets); err != nil {
+			return fmt.Errorf("watch RouteTable (subnet fan-out): %w", err)
+		}
+	}
 	m.subnetRunner.Start(ctx, 1)
 
-	m.arpRunner = runner.New(reconciler.NewArp(m.client, m.hostEgress))
+	m.arpRunner = runner.New(reconciler.NewArp(m.client, m.podEgress))
 	if err := m.arpRunner.Watch(m.nwepInformer, runner.MetaNamespaceKey); err != nil {
 		return fmt.Errorf("watch NWEP (arp): %w", err)
 	}
 	m.arpRunner.Start(ctx, 1)
 
-	m.fdbRunner = runner.New(reconciler.NewFdb(m.client, m.hostEgress, m.vxlanIngress, m.nodeName))
+	m.fdbRunner = runner.New(reconciler.NewFdb(m.client, m.podEgress, m.vxlanIngress, m.nodeName))
 	if err := m.fdbRunner.Watch(m.nwepInformer, runner.MetaNamespaceKey); err != nil {
 		return fmt.Errorf("watch NWEP (fdb): %w", err)
 	}
@@ -125,7 +163,7 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	}
 	m.podIfaceRunner.Start(ctx, 1)
 
-	m.podAttacher = link.NewPodAttacher(m.client, m.podEgress, m.nodeName)
+	m.podAttacher = link.NewPodAttacher(m.client, m.podEgress, m.podIngress, m.nodeName)
 	m.podAttacherRunner = runner.New(m.podAttacher)
 	if err := m.podAttacherRunner.Watch(m.nwepInformer, runner.MetaNamespaceKey); err != nil {
 		return fmt.Errorf("watch NWEP (pod-attacher): %w", err)
@@ -162,12 +200,99 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	m.bgpPoolRunner.Enqueue(runner.SingletonKey)
 	m.bgpPoolRunner.Start(ctx, 1)
 
+	if m.externalNetworkAttachmentInformer != nil {
+		m.napt = reconciler.NewNapt(m.client, m.podEgress, m.nodeName)
+		m.naptRunner = runner.New(m.napt)
+		if err := m.naptRunner.Watch(m.externalNetworkAttachmentInformer, runner.MetaNamespaceKey); err != nil {
+			return fmt.Errorf("watch ExternalNetworkAttachment: %w", err)
+		}
+		if m.natGatewayInformer != nil {
+			if err := m.naptRunner.WatchFanOut(m.natGatewayInformer, m.napt.FanOutAllAttachments); err != nil {
+				return fmt.Errorf("watch NATGateway (napt fan-out): %w", err)
+			}
+		}
+		m.naptRunner.Start(ctx, 1)
+	}
+
+	// juneau_node iface: register ifindex_subnet / arp_table / fdb so
+	// pods in the default Subnet can reach (and reply to) the host's
+	// pseudo-pod IP. The reconciler is keyed on the default Subnet
+	// and waits for its VNI to be allocated.
+	if m.juNodeIfindex != 0 && m.juNodeHostMAC != nil && m.juNodeAssignedIP != nil {
+		juNode, err := reconciler.NewJuneauNode(m.client, m.podEgress, "default",
+			uint32(m.juNodeIfindex), m.juNodeHostMAC, m.juNodeAssignedIP, m.juNodeUnderlayIP)
+		if err != nil {
+			return fmt.Errorf("init juneau_node reconciler: %w", err)
+		}
+		m.juNode = juNode
+		m.juNodeRunner = runner.New(m.juNode)
+		if err := m.juNodeRunner.Watch(m.subnetInformer, runner.MetaNamespaceKey); err != nil {
+			return fmt.Errorf("watch Subnet (juneau_node): %w", err)
+		}
+		m.juNodeRunner.Start(ctx, 1)
+
+		// Attach pod_egress / pod_ingress to juneau_node so the
+		// host's outbound and inbound packets traverse the
+		// in-eBPF data plane like a normal Pod.
+		attacher, err := link.AttachJuneauNode(m.podEgress, m.podIngress, m.juNodeIfindex)
+		if err != nil {
+			return fmt.Errorf("attach juneau_node BPF programs: %w", err)
+		}
+		m.juNodeAttacher = attacher
+	}
+
+	if m.serviceInformer != nil && m.endpointSliceInformer != nil {
+		svc := reconciler.NewService(m.client, m.podEgress)
+		m.serviceRunner = runner.New(svc)
+		if err := m.serviceRunner.Watch(m.serviceInformer, runner.MetaNamespaceKey); err != nil {
+			return fmt.Errorf("watch Service: %w", err)
+		}
+		if err := m.serviceRunner.WatchFanOut(m.endpointSliceInformer, svc.FanOutEndpointSliceToService); err != nil {
+			return fmt.Errorf("watch EndpointSlice (service fan-out): %w", err)
+		}
+		// Subnet changes can shift which Pods are valid backends (a Pod
+		// may move into/out of the Service's owning VPC).
+		if err := m.serviceRunner.WatchFanOut(m.subnetInformer, svc.FanOutAllServices); err != nil {
+			return fmt.Errorf("watch Subnet (service fan-out): %w", err)
+		}
+		// Vpc.spec.enableService toggle and VpcID allocation propagate
+		// to every Service this VPC owns.
+		if m.vpcInformer != nil {
+			if err := m.serviceRunner.WatchFanOut(m.vpcInformer, svc.FanOutAllServices); err != nil {
+				return fmt.Errorf("watch Vpc (service fan-out): %w", err)
+			}
+		}
+		m.serviceRunner.Start(ctx, 1)
+	}
+
+	m.startConntrackGC(ctx)
+
 	return nil
+}
+
+// startConntrackGC spawns the periodic ct_map garbage collector. It is
+// not informer-driven (no resource events to react to), so it lives
+// outside the Runner abstraction as a plain goroutine.
+func (m *Manager) startConntrackGC(ctx context.Context) {
+	gc := reconciler.NewConntrack(m.podEgress.Objs.CtMap, reconciler.ConntrackGCInterval)
+	cctx, cancel := context.WithCancel(ctx)
+	m.conntrackCancel = cancel
+	m.conntrackDone = make(chan struct{})
+	go func() {
+		defer close(m.conntrackDone)
+		gc.Run(cctx)
+	}()
 }
 
 func (m *Manager) Stop() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if m.conntrackCancel != nil {
+		m.conntrackCancel()
+		<-m.conntrackDone
+		m.conntrackCancel = nil
+	}
 
 	if m.podAttacher != nil {
 		if err := m.podAttacher.CloseAll(); err != nil {
@@ -185,6 +310,27 @@ func (m *Manager) Stop() error {
 			return err
 		}
 	}
+	if m.podIngress != nil {
+		if err := m.podIngress.Close(); err != nil {
+			return err
+		}
+	}
+
+	if m.napt != nil {
+		if err := m.napt.CloseAll(); err != nil {
+			return err
+		}
+	}
+	if m.juNode != nil {
+		if err := m.juNode.CloseAll(); err != nil {
+			return err
+		}
+	}
+	if m.juNodeAttacher != nil {
+		if err := m.juNodeAttacher.Close(); err != nil {
+			return err
+		}
+	}
 
 	runners := []*runner.Runner{
 		m.subnetRunner,
@@ -195,6 +341,9 @@ func (m *Manager) Stop() error {
 		m.fibRunner,
 		m.natRunner,
 		m.bgpPoolRunner,
+		m.serviceRunner,
+		m.naptRunner,
+		m.juNodeRunner,
 	}
 	for _, rn := range runners {
 		if rn == nil {
@@ -205,11 +354,6 @@ func (m *Manager) Stop() error {
 		}
 	}
 
-	if m.hostEgress != nil {
-		if err := m.hostEgress.Close(); err != nil {
-			return err
-		}
-	}
 	if m.vxlanIngress != nil {
 		if err := m.vxlanIngress.Close(); err != nil {
 			return err
@@ -234,26 +378,42 @@ func NewManager(
 	bgpAdvertisementInformer cache.Informer,
 	rtInformer cache.Informer,
 	subnetInformer cache.Informer,
+	vpcInformer cache.Informer,
+	serviceInformer cache.Informer,
+	endpointSliceInformer cache.Informer,
+	externalNetworkAttachmentInformer cache.Informer,
+	natGatewayInformer cache.Informer,
 	nodeName string,
 	vxlanIfindex int,
 	hostIfindex int,
 	nodeIngressIfindex int,
 	pinPath string,
 	defaultGatewayMac net.HardwareAddr,
+	juNodeAssignedIP net.IP,
+	juNodeUnderlayIP net.IP,
 ) *Manager {
 	return &Manager{
-		client:                   cl,
-		nwepInformer:             nwepInformer,
-		eipaInformer:             eipaInformer,
-		addressPoolInformer:      addressPoolInformer,
-		bgpAdvertisementInformer: bgpAdvertisementInformer,
-		rtInformer:               rtInformer,
-		subnetInformer:           subnetInformer,
-		nodeName:                 nodeName,
-		vxlanIfindex:             vxlanIfindex,
-		hostIfindex:              hostIfindex,
-		nodeIngressIfindex:       nodeIngressIfindex,
-		pinPath:                  pinPath,
-		hostMac:                  defaultGatewayMac,
+		client:                            cl,
+		nwepInformer:                      nwepInformer,
+		eipaInformer:                      eipaInformer,
+		addressPoolInformer:               addressPoolInformer,
+		bgpAdvertisementInformer:          bgpAdvertisementInformer,
+		rtInformer:                        rtInformer,
+		subnetInformer:                    subnetInformer,
+		vpcInformer:                       vpcInformer,
+		serviceInformer:                   serviceInformer,
+		endpointSliceInformer:             endpointSliceInformer,
+		externalNetworkAttachmentInformer: externalNetworkAttachmentInformer,
+		natGatewayInformer:                natGatewayInformer,
+		nodeName:                          nodeName,
+		vxlanIfindex:                      vxlanIfindex,
+		hostIfindex:                       hostIfindex,
+		nodeIngressIfindex:                nodeIngressIfindex,
+		pinPath:                           pinPath,
+		hostMac:                           defaultGatewayMac,
+		juNodeIfindex:                     hostIfindex, // juneau_node IS the BPF-attached side returned in HostIfaceInfo
+		juNodeHostMAC:                     defaultGatewayMac,
+		juNodeAssignedIP:                  juNodeAssignedIP,
+		juNodeUnderlayIP:                  juNodeUnderlayIP,
 	}
 }

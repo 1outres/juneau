@@ -132,3 +132,77 @@ roleRef:
   kind: ClusterRole
   name: juneau-bgpadvertisement-viewer-role
   apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cni-daemon-natgateway-viewer-binding
+subjects:
+  - kind: ServiceAccount
+    name: cni-daemon
+    namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: juneau-natgateway-viewer-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cni-daemon-externalnetworkattachment-viewer-binding
+subjects:
+  - kind: ServiceAccount
+    name: cni-daemon
+    namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: juneau-externalnetworkattachment-viewer-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cni-daemon-allocationclaim-viewer-binding
+subjects:
+  - kind: ServiceAccount
+    name: cni-daemon
+    namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: juneau-allocationclaim-viewer-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# Cluster Service / EndpointSlice access lets the Service reconciler
+# populate service_map and backend_map for ClusterIP routing.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cni-daemon-service-viewer-role
+rules:
+  - apiGroups: [""]
+    resources:
+      - services
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups: ["discovery.k8s.io"]
+    resources:
+      - endpointslices
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cni-daemon-service-viewer-binding
+subjects:
+  - kind: ServiceAccount
+    name: cni-daemon
+    namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: cni-daemon-service-viewer-role
+  apiGroup: rbac.authorization.k8s.io

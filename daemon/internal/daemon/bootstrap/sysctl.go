@@ -9,8 +9,9 @@ import (
 )
 
 func ConfigureSysctl() error {
-	if err := writeSysctl("/proc/sys/net/ipv4/conf/cni_host/send_redirects", "0"); err != nil {
-		return fmt.Errorf("failed to set send_redirects: %w", err)
+	// Match the rename of cni_host → juneau_node_h (Phase 4b-4).
+	if err := writeSysctl("/proc/sys/net/ipv4/conf/"+JuneauNodeHostIfaceName+"/send_redirects", "0"); err != nil {
+		return fmt.Errorf("failed to set send_redirects on %s: %w", JuneauNodeHostIfaceName, err)
 	}
 
 	ipForward, err := readSysctl("/proc/sys/net/ipv4/ip_forward")

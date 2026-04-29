@@ -21,6 +21,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"net"
+	"net/netip"
 	"reflect"
 	"time"
 
@@ -38,6 +39,20 @@ import (
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
+
+const (
+	// subnetIPAllocationPoolPrefix prefixes the auto-generated AllocationPool
+	// name that backs Pod IP assignment for a Subnet. Distinct from the
+	// AddressPool-derived ("addr-…") namespace so the two never collide.
+	subnetIPAllocationPoolPrefix = "subnet-ip-"
+)
+
+// SubnetIPAllocationPoolName returns the AllocationPool name that backs the
+// given Subnet. Exported so the NetworkInterface reconciler can reference
+// it without duplicating the naming rule.
+func SubnetIPAllocationPoolName(subnetName string) string {
+	return subnetIPAllocationPoolPrefix + subnetName
+}
 
 const (
 	subnetReasonDeleting           = "Deleting"
@@ -151,7 +166,7 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	updated.Status.Gateway = nextGateway(cidr)
 
-	if updated.Name != "default" && updated.Status.GatewayMAC == "" {
+	if updated.Status.GatewayMAC == "" {
 		randMac, err := newLAA()
 		if err != nil {
 			if updateErr := r.updateStatus(ctx, &resource, resource.Status.VNI, resource.Status.Gateway, resource.Status.GatewayMAC, metav1.ConditionFalse, subnetReasonReconcileFailed, "failed to generate gateway MAC address"); updateErr != nil {
@@ -163,11 +178,147 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		updated.Status.GatewayMAC = randMac.String()
 	}
 
+	if err := r.ensureIPAllocationPool(ctx, &resource, updated.Status.Gateway); err != nil {
+		if updateErr := r.updateStatus(ctx, &resource, updated.Status.VNI, updated.Status.Gateway, updated.Status.GatewayMAC, metav1.ConditionFalse, subnetReasonReconcileFailed, fmt.Sprintf("failed to ensure IP allocation pool: %v", err)); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{}, err
+	}
+
 	if err := r.updateStatus(ctx, &resource, updated.Status.VNI, updated.Status.Gateway, updated.Status.GatewayMAC, metav1.ConditionTrue, subnetReasonReconcileSucceeded, ""); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// ensureIPAllocationPool maintains the per-subnet AllocationPool that
+// AllocationClaims for Pod IPs target. The pool is owned by the Subnet so
+// it is GC'd automatically. The excluded list mirrors the legacy allocator
+// (gateway plus the historically reserved .2 / .3 entries), trimmed to
+// addresses that actually fall inside the prefix.
+func (r *SubnetReconciler) ensureIPAllocationPool(ctx context.Context, subnet *juneauv1alpha1.Subnet, gateway string) error {
+	prefix, err := netip.ParsePrefix(subnet.Spec.CIDR)
+	if err != nil {
+		return fmt.Errorf("parse subnet CIDR: %w", err)
+	}
+	prefix = prefix.Masked()
+
+	excluded := computeSubnetExcluded(prefix, gateway)
+
+	desiredSpec := juneauv1alpha1.AllocationPoolSpec{
+		Type:     juneauv1alpha1.AllocationTypeIP,
+		Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+		IP: &juneauv1alpha1.AllocationPoolIPSpec{
+			CIDRs:    []string{subnet.Spec.CIDR},
+			Excluded: excluded,
+		},
+	}
+
+	name := SubnetIPAllocationPoolName(subnet.Name)
+	var existing juneauv1alpha1.AllocationPool
+	getErr := r.Get(ctx, client.ObjectKey{Name: name}, &existing)
+	switch {
+	case errors.IsNotFound(getErr):
+		pool := &juneauv1alpha1.AllocationPool{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec:       desiredSpec,
+		}
+		if err := controllerutil.SetControllerReference(subnet, pool, r.Scheme); err != nil {
+			return fmt.Errorf("set owner reference: %w", err)
+		}
+		if err := r.Create(ctx, pool); err != nil && !errors.IsAlreadyExists(err) {
+			return fmt.Errorf("create AllocationPool: %w", err)
+		}
+		return nil
+	case getErr != nil:
+		return fmt.Errorf("get AllocationPool: %w", getErr)
+	}
+
+	updated := existing.DeepCopy()
+	if err := controllerutil.SetControllerReference(subnet, updated, r.Scheme); err != nil {
+		return fmt.Errorf("set owner reference: %w", err)
+	}
+	updated.Spec = desiredSpec
+	if reflect.DeepEqual(existing.Spec, updated.Spec) &&
+		reflect.DeepEqual(existing.OwnerReferences, updated.OwnerReferences) {
+		return nil
+	}
+	return r.Update(ctx, updated)
+}
+
+// computeSubnetExcluded returns the address strings that the per-subnet
+// AllocationPool must exclude. The legacy allocator skipped .1 (gateway),
+// .2 and .3; we keep that behaviour but only include addresses that fall
+// inside the prefix's usable range. Network and broadcast addresses are
+// automatically skipped by the IP allocator and need not be listed.
+func computeSubnetExcluded(prefix netip.Prefix, gateway string) []string {
+	if !prefix.IsValid() {
+		return nil
+	}
+	out := make([]string, 0, 3)
+	seen := make(map[netip.Addr]struct{}, 3)
+
+	add := func(addr netip.Addr) {
+		if !addr.IsValid() || !prefix.Contains(addr) {
+			return
+		}
+		if !addressIsUsableInPrefix(addr, prefix) {
+			return
+		}
+		if _, ok := seen[addr]; ok {
+			return
+		}
+		seen[addr] = struct{}{}
+		out = append(out, addr.String())
+	}
+
+	if gw, err := netip.ParseAddr(gateway); err == nil {
+		add(gw)
+	}
+
+	// Reserved .2 / .3 to mirror the legacy allocator.
+	cursor := prefix.Addr().Next() // .1
+	cursor = cursor.Next()         // .2
+	add(cursor)
+	cursor = cursor.Next() // .3
+	add(cursor)
+
+	return out
+}
+
+// addressIsUsableInPrefix mirrors the IP allocator's view of which
+// addresses are eligible (not the network or broadcast address for /29 and
+// wider IPv4 prefixes).
+func addressIsUsableInPrefix(addr netip.Addr, p netip.Prefix) bool {
+	if addr == p.Addr() {
+		// Network address is never usable for prefixes that have a
+		// distinct network address (i.e. prefixes wider than /31).
+		bits := p.Bits()
+		switch addr.BitLen() {
+		case 32:
+			if bits >= 31 {
+				return true
+			}
+		case 128:
+			if bits >= 127 {
+				return true
+			}
+		}
+		return false
+	}
+	bits := p.Bits()
+	switch addr.BitLen() {
+	case 32:
+		if bits >= 31 {
+			return true
+		}
+	case 128:
+		if bits >= 127 {
+			return true
+		}
+	}
+	return addr != lastAddrInPrefix(p)
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -195,9 +346,9 @@ func (r *SubnetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func (r *SubnetReconciler) ensureNumberClaim(ctx context.Context, subnet *juneauv1alpha1.Subnet, poolName string, gvk schema.GroupVersionKind, attribute string) (*juneauv1alpha1.AllocationClaim, error) {
-	claim := newAllocationClaim(poolName, gvk, subnet.Name, attribute)
+	claim := newAllocationClaim(poolName, gvk, "", subnet.Name, attribute)
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, claim, func() error {
-		claim.Spec = newAllocationClaim(poolName, gvk, subnet.Name, attribute).Spec
+		claim.Spec = newAllocationClaim(poolName, gvk, "", subnet.Name, attribute).Spec
 		return controllerutil.SetControllerReference(subnet, claim, r.Scheme)
 	})
 	if err != nil {

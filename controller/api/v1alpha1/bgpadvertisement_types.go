@@ -27,6 +27,20 @@ type BGPAdvertisementSpec struct {
 	// +kubebuilder:validation:items:MinLength=1
 	// +listType=set
 	AddressPools []string `json:"addressPools"`
+
+	// NodeName, if non-empty, scopes the advertisement to a single
+	// node: only the bgp-speaker on the matching node emits the BGP
+	// route. When empty, every bgp-speaker advertises the configured
+	// prefixes.
+	// +optional
+	NodeName string `json:"nodeName,omitempty"`
+
+	// Prefix, if non-empty, restricts the advertisement to a single
+	// CIDR prefix instead of advertising every CIDR backing the
+	// referenced AddressPool(s). The prefix must be contained in one
+	// of the referenced AddressPools' CIDRs.
+	// +optional
+	Prefix string `json:"prefix,omitempty"`
 }
 
 // BGPAdvertisementStatus defines the observed state of BGPAdvertisement.

@@ -97,7 +97,7 @@ var _ = Describe("BGP e2e", Ordered, func() {
 	// valid reverse path; that is the minimum workaround required for kind.
 	DescribeTable("S3: wires ElasticIP attachment for a Pod",
 		func(workerIndex int) {
-			Expect(workerNodes).To(HaveLen(2))
+			Expect(len(workerNodes)).To(BeNumerically(">=", 2), "S3 needs at least 2 worker nodes")
 			node := workerNodes[workerIndex]
 
 			By("creating ExternalNetwork referencing the BGP pool")
