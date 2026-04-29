@@ -35,6 +35,14 @@ var repoRoot string
 var workerNodes []string
 var currentCase *caseContext
 
+// testFixtureImages are the third-party container images used by
+// behavioral specs. They are pre-loaded into kind during BeforeSuite so
+// per-spec Pod creation doesn't block on a registry pull.
+var testFixtureImages = []string{
+	"nginx:1.27",
+	"curlimages/curl:8.12.1",
+}
+
 const (
 	defaultWorkerNodeCount = 2
 )
@@ -99,6 +107,17 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	}
 
 	for _, image := range []string{controllerImage, webhookCertJobImage, daemonImage, bgpSpeakerImage} {
+		mustRun(root, "kind", "load", "docker-image", image, "--name", clusterName)
+	}
+
+	// Pre-load the third-party fixture images on every kind node so each
+	// connectivity / probe / NAT spec doesn't pay a registry pull on first
+	// Pod create. We re-tag through buildx (single-platform) to strip the
+	// multi-arch manifest list — kind v0.29 + Docker 29's containerd image
+	// store rejects `kind load docker-image` on multi-arch images otherwise
+	// ("ctr ... content digest ... not found").
+	for _, image := range testFixtureImages {
+		Expect(retagSinglePlatform(root, image)).To(Succeed())
 		mustRun(root, "kind", "load", "docker-image", image, "--name", clusterName)
 	}
 
@@ -244,6 +263,20 @@ func dockerImageExists(image string) bool {
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	return cmd.Run() == nil
+}
+
+// retagSinglePlatform rebuilds an upstream image as a single-platform
+// (linux/amd64) image with the same tag. This strips the multi-platform
+// manifest list so `kind load docker-image` succeeds on Docker 29's
+// containerd image store; see the call site in SynchronizedBeforeSuite
+// for the underlying ctr / digest issue.
+func retagSinglePlatform(dir, image string) error {
+	dockerfile := fmt.Sprintf("FROM %s\n", image)
+	return runWithStdin(dir, dockerfile, "docker", "buildx", "build", "--load",
+		"--platform", "linux/amd64",
+		"-t", image,
+		"-",
+	)
 }
 
 func discoverWorkerNodes(dir string) ([]string, error) {
