@@ -43,7 +43,11 @@ const (
 
 	// backend_val.kind values; mirror BACKEND_KIND_* in daemon/bpf/maps.h.
 	// The reconciler decides which kind a host-network endpoint gets by
-	// comparing endpoint.nodeName to this daemon's nodeName.
+	// comparing the endpoint's address to this daemon's own underlay IP.
+	// IP equality is the primary signal because EndpointSlice.nodeName is
+	// not always populated — kube-apiserver self-manages the kubernetes
+	// Service Endpoints and omits nodeName, so a nodeName-based check
+	// would slip through and mis-classify a same-node backend as REMOTE.
 	backendKindPod        uint8 = 0
 	backendKindHostRemote uint8 = 1
 	backendKindHostLocal  uint8 = 2
@@ -57,7 +61,10 @@ const (
 type Service struct {
 	client    client.Client
 	podEgress *program.PodEgress
-	nodeName  string
+	// nodeIP is this daemon's NodeInternalIP. Used to classify a
+	// host-network backend as HOST_LOCAL when its address matches.
+	// Same source-of-truth as the host_underlay BPF map slot.
+	nodeIP net.IP
 
 	mu        sync.Mutex
 	snapshots map[string]serviceSnapshot // service "ns/name" -> entries we wrote
@@ -71,11 +78,11 @@ type serviceSnapshot struct {
 	backendKeys []bpf.PodEgressBackendKey
 }
 
-func NewService(cl client.Client, podEgress *program.PodEgress, nodeName string) *Service {
+func NewService(cl client.Client, podEgress *program.PodEgress, nodeIP net.IP) *Service {
 	return &Service{
 		client:    cl,
 		podEgress: podEgress,
-		nodeName:  nodeName,
+		nodeIP:    nodeIP.To4(),
 		snapshots: make(map[string]serviceSnapshot),
 	}
 }
@@ -166,14 +173,14 @@ func (r *Service) upsert(ctx context.Context, key string, svc *corev1.Service) e
 
 			// Endpoints that don't map to a NetworkInterface live on the
 			// underlay (host-network Pods or non-Pod endpoints such as
-			// kube-apiserver). HOST_LOCAL when the endpoint is on this
-			// daemon's Node — same-node host-network targets need a
-			// SNAT-less DNAT path because SNATing to NodeIP would loop
-			// the reply through lo where no BPF reverse hook lives.
-			// HOST_REMOTE otherwise.
+			// kube-apiserver). HOST_LOCAL when the endpoint's address is
+			// this daemon's own underlay IP — same-node host-network
+			// targets need a SNAT-less DNAT path because SNATing to
+			// NodeIP would loop the reply through lo where no BPF
+			// reverse hook lives. HOST_REMOTE otherwise.
 			if iface == nil {
 				kind := backendKindHostRemote
-				if ep.nodeName != "" && ep.nodeName == r.nodeName {
+				if r.nodeIP != nil && backendIP.Equal(r.nodeIP) {
 					kind = backendKindHostLocal
 				}
 				backendsByPort[port] = append(backendsByPort[port], bpf.PodEgressBackendVal{
@@ -331,7 +338,6 @@ type endpointInfo struct {
 	port      int32
 	portName  string
 	targetRef *corev1.ObjectReference
-	nodeName  string
 }
 
 func (r *Service) collectEndpoints(ctx context.Context, svc *corev1.Service) ([]endpointInfo, error) {
@@ -350,10 +356,6 @@ func (r *Service) collectEndpoints(ctx context.Context, svc *corev1.Service) ([]
 			if ep.Conditions.Ready != nil && !*ep.Conditions.Ready {
 				continue
 			}
-			var epNode string
-			if ep.NodeName != nil {
-				epNode = *ep.NodeName
-			}
 			for _, addr := range ep.Addresses {
 				for _, p := range slice.Ports {
 					info := endpointInfo{
@@ -361,7 +363,6 @@ func (r *Service) collectEndpoints(ctx context.Context, svc *corev1.Service) ([]
 						port:      portValue(p.Port),
 						portName:  portName(p.Name),
 						targetRef: ep.TargetRef,
-						nodeName:  epNode,
 					}
 					out = append(out, info)
 				}
