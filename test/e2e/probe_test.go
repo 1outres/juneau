@@ -85,6 +85,7 @@ metadata:
     app: %s
 spec:
   nodeName: %s
+  terminationGracePeriodSeconds: 0
   containers:
     - name: server
       image: nginx:1.27

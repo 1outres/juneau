@@ -244,6 +244,10 @@ func podManifest(namespace string, name string, nodeName string, subnet string, 
         - containerPort: 80`
 	}
 
+	// terminationGracePeriodSeconds: 0 lets `kubectl delete namespace` (and
+	// implicit pod GC) complete in seconds instead of waiting out nginx's
+	// default 30s graceful shutdown — the dominant tail latency in the
+	// connectivity matrix and similar specs.
 	return fmt.Sprintf(`apiVersion: v1
 kind: Pod
 metadata:
@@ -253,6 +257,7 @@ metadata:
     app: %s
 %sspec:
   nodeName: %s
+  terminationGracePeriodSeconds: 0
   containers:
 %s
 `, namespace, name, name, annotation, nodeName, container)
