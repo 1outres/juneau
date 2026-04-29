@@ -20,9 +20,17 @@ Pod作成時にVPCやSubnetを指定するannotationが存在しない場合、�
 
 そのため、明示的にネットワークを分けない限り、クラスタ内のワークロードはまず `default` Vpcを利用することになります。
 
-##ルートテーブル
+## ルートテーブル
 
 すべてのVpcには、メインルートテーブルが1つ存在します。
 
 Subnetごとに個別のルートテーブルでoverrideしない場合、そのVpcのメインルートテーブルが利用されます。
 つまり、Vpcのメインルートテーブルは、そのVpcに属するSubnetに対するデフォルトの経路制御を表します。
+
+## Serviceの有効化
+
+`spec.enableService`を`true`にすると、そのVpcに属するPodが同じVpc内のServiceに到達できるようになります。default以外のVpcでServiceを扱うには、このフィールドを明示的に有効化する必要があります。
+
+`spec.enableService`が有効なVpcでは、そのメインルートテーブルにService CIDR向けの経路が自動で注入されます。
+
+具体的な構築手順は[VPCでServiceを利用する](../guides/custom-vpc-service.md)を参照してください。

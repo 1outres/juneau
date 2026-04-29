@@ -5,6 +5,10 @@ ElasticIPは、外部から到達可能なIPアドレスを表すリソースで
 `spec.externalNetwork`で参照したExternalNetworkに紐づくAddressPoolから1つのアドレスが選ばれます。
 ElasticIPで利用されるAddressPoolは`spec.advertiseMode=bgp`である必要があります。
 
+`spec.requestedIP`は省略可能で、指定した場合はそのIPv4アドレスをElasticIPとして要求します。
+指定するアドレスは、`spec.externalNetwork`で参照したExternalNetworkに紐づくAddressPoolのいずれかに含まれている必要があります。
+省略した場合は、利用可能なアドレスから1つが自動的に選ばれます。
+
 ## Phase
 
 - Pending:参照先ExternalNetworkとAddressPoolは解決できたが、利用可能なアドレスがまだ選ばれていない状態
