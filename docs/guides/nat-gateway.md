@@ -12,7 +12,7 @@ Juneauでは、NATGatewayを使うことでVpc内のPodがVpc外（クラスタ�
 - 専用Vpc (`egress-vpc`) とSubnet (`egress-subnet`, `10.90.0.0/24`)
 - NATGateway (`egress-natgw`)
 - VpcのRouteTableに`0.0.0.0/0`を`via.type: natGateway`で追加
-- Podから`curl https://ifconfig.me`で外部に到達し、戻ってきたIPがNATGatewayの払い出したNAPTソースIPと一致
+- Podから`curl https://1.1.1.1/cdn-cgi/trace`で外部に到達し、戻ってきた`ip=`行がNATGatewayの払い出したNAPTソースIPと一致
 
 ## 前提条件
 
@@ -182,14 +182,20 @@ spec:
 
 ### 10. 外部からの送信元IPを確認
 
-Podから外部に出るときのソースIPアドレスを、外部の応答サービスで確認します。
+Podから外部に出るときのソースIPアドレスを、外部の応答サービスで確認します。custom VpcのPodからはCoreDNSが利用できないため、IP直指定で叩ける応答サービスを使います。
 
 ```console
-$ kubectl exec curl -- curl -sS https://ifconfig.me
-10.225.53.5
+$ kubectl exec curl -- curl -sS https://1.1.1.1/cdn-cgi/trace
+fl=...
+h=1.1.1.1
+ip=10.225.53.5
+ts=...
+visit_scheme=https
+uag=curl/8.7.1
+...
 ```
 
-返ってきたIPアドレスが、Pod が動作しているNodeに対応するExternalNetworkAttachmentの`status.assignedIP`と一致していれば、NATGateway経由のN:1 NAPTで外部に出ている状態です。
+応答の`ip=`行が、Podが動作しているNodeに対応するExternalNetworkAttachmentの`status.assignedIP`と一致していれば、NATGateway経由のN:1 NAPTで外部に出ている状態です。
 
 ## うまくいかないとき
 
