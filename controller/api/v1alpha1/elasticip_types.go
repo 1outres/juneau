@@ -25,6 +25,13 @@ type ElasticIPSpec struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	ExternalNetwork string `json:"externalNetwork"`
+
+	// RequestedIP optionally pins a specific address. The address must
+	// fall inside one of the AddressPools attached to the referenced
+	// ExternalNetwork. When unset (empty string) the controller picks
+	// the first available address.
+	// +optional
+	RequestedIP string `json:"requestedIP,omitempty"`
 }
 
 type ElasticIPPhase string

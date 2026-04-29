@@ -24,6 +24,13 @@ import (
 type SubnetSpec struct {
 	Vpc  string `json:"vpc"`
 	CIDR string `json:"cidr"`
+
+	// RouteTable selects which RouteTable governs traffic from Pods in
+	// this Subnet. Empty means "use the owning Vpc's main RouteTable",
+	// which preserves the original behaviour. The referenced RouteTable
+	// must belong to the same Vpc.
+	// +optional
+	RouteTable string `json:"routeTable,omitempty"`
 }
 
 // SubnetStatus defines the observed state of Subnet.

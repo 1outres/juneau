@@ -56,8 +56,20 @@ func ensureBGPRouter(nodes []string) (*bgpRouterInstance, error) {
 	// L4 multipath hash policy ensures successive curls hash to different
 	// next-hops even when the src/dst IP pair is fixed, so the test reaches
 	// the node that actually hosts the target Pod within Eventually retries.
-	entrypoint := "apk add --no-cache bird curl iproute2 >/dev/null && " +
-		"until [ -f /etc/bird.conf ]; do sleep 0.5; done && " +
+	// httpd needs -f -v: -f keeps it in the foreground so the access
+	// log stays attached to the shell's stderr (and thus to `docker
+	// logs`); without -f the daemonized child detaches and the log
+	// disappears. The trailing `&` runs httpd as a shell child while
+	// the shell execs bird, so both processes share the container's
+	// stderr stream and the NAT egress spec can read the SNAT'd
+	// source IP from the access log.
+	// Use ';' between phases so the trailing `&` only backgrounds httpd,
+	// not the whole chain (which would race ahead of `exec bird`).
+	entrypoint := "set -e; " +
+		"apk add --no-cache bird curl iproute2 busybox-extras >/dev/null; " +
+		"mkdir -p /www && echo ok > /www/index.html; " +
+		"httpd -f -v -p 80 -h /www & " +
+		"until [ -f /etc/bird.conf ]; do sleep 0.5; done; " +
 		"exec bird -f -c /etc/bird.conf"
 	if err := run(repoRoot, "docker", "create",
 		"--name", inst.name,
@@ -310,4 +322,25 @@ func dockerOutput(args ...string) (string, error) {
 		_, _ = GinkgoWriter.Write(stderr.Bytes())
 	}
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+// dockerLogsCombined returns docker logs with stdout AND stderr merged.
+// `docker logs` writes a container's stdout to its own stdout and the
+// container's stderr to its own stderr; busybox httpd -v puts the
+// access log on stderr, so the default split would hide it from
+// callers reading only stdout.
+func dockerLogsCombined(container string) (string, error) {
+	cmd := exec.Command("docker", "logs", container)
+	cmd.Dir = repoRoot
+	cmd.Env = os.Environ()
+
+	var combined bytes.Buffer
+	cmd.Stdout = &combined
+	cmd.Stderr = &combined
+
+	_, _ = fmt.Fprintf(GinkgoWriter, "running: docker logs %s (combined)\n", container)
+	if err := cmd.Run(); err != nil {
+		return strings.TrimSpace(combined.String()), fmt.Errorf("docker logs %s failed: %w", container, err)
+	}
+	return strings.TrimSpace(combined.String()), nil
 }

@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -104,8 +105,8 @@ func (v *AllocationClaimCustomValidator) ValidateUpdate(ctx context.Context, old
 
 	var errs field.ErrorList
 	specPath := field.NewPath("spec")
-	if allocationclaim.Spec.PoolRef.Name != oldClaim.Spec.PoolRef.Name {
-		errs = append(errs, field.Invalid(specPath.Child("poolRef", "name"), allocationclaim.Spec.PoolRef.Name, "spec.poolRef.name is immutable"))
+	if !reflect.DeepEqual(allocationclaim.Spec.PoolRefs, oldClaim.Spec.PoolRefs) {
+		errs = append(errs, field.Invalid(specPath.Child("poolRefs"), allocationclaim.Spec.PoolRefs, "spec.poolRefs is immutable"))
 	}
 	if allocationclaim.Spec.ResourceRef != oldClaim.Spec.ResourceRef {
 		errs = append(errs, field.Invalid(specPath.Child("resourceRef"), allocationclaim.Spec.ResourceRef, "spec.resourceRef is immutable"))
@@ -117,6 +118,14 @@ func (v *AllocationClaimCustomValidator) ValidateUpdate(ctx context.Context, old
 		errs = append(errs, field.Invalid(specPath.Child("requestedNumber"), allocationclaim.Spec.RequestedNumber, "spec.requestedNumber is immutable"))
 	} else if allocationclaim.Spec.RequestedNumber != nil && oldClaim.Spec.RequestedNumber != nil && *allocationclaim.Spec.RequestedNumber != *oldClaim.Spec.RequestedNumber {
 		errs = append(errs, field.Invalid(specPath.Child("requestedNumber"), *allocationclaim.Spec.RequestedNumber, "spec.requestedNumber is immutable"))
+	}
+	if (allocationclaim.Spec.RequestedIP == nil) != (oldClaim.Spec.RequestedIP == nil) {
+		errs = append(errs, field.Invalid(specPath.Child("requestedIP"), allocationclaim.Spec.RequestedIP, "spec.requestedIP is immutable"))
+	} else if allocationclaim.Spec.RequestedIP != nil && oldClaim.Spec.RequestedIP != nil && *allocationclaim.Spec.RequestedIP != *oldClaim.Spec.RequestedIP {
+		errs = append(errs, field.Invalid(specPath.Child("requestedIP"), *allocationclaim.Spec.RequestedIP, "spec.requestedIP is immutable"))
+	}
+	if !reflect.DeepEqual(allocationclaim.Spec.AllocationFilter, oldClaim.Spec.AllocationFilter) {
+		errs = append(errs, field.Invalid(specPath.Child("allocationFilter"), allocationclaim.Spec.AllocationFilter, "spec.allocationFilter is immutable"))
 	}
 	if len(errs) > 0 {
 		err := apierrors.NewInvalid(schema.GroupKind{Group: juneauloutresmev1alpha1.GroupVersion.Group, Kind: "AllocationClaim"}, allocationclaim.Name, errs)

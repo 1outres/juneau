@@ -170,9 +170,9 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
-      path: /mutate-juneau-loutres-me-v1alpha1-iplease
+      path: /mutate-juneau-loutres-me-v1alpha1-externalnetworkattachment
   failurePolicy: Fail
-  name: miplease-v1alpha1.kb.io
+  name: mexternalnetworkattachment-v1alpha1.kb.io
   rules:
   - apiGroups:
     - juneau.loutres.me
@@ -182,7 +182,27 @@ webhooks:
     - CREATE
     - UPDATE
     resources:
-    - ipleases
+    - externalnetworkattachments
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-juneau-loutres-me-v1alpha1-natgateway
+  failurePolicy: Fail
+  name: mnatgateway-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - natgateways
   sideEffects: None
 - admissionReviewVersions:
   - v1
@@ -337,6 +357,26 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /validate-juneau-loutres-me-v1alpha1-allocationlease
+  failurePolicy: Fail
+  name: vallocationlease-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - allocationleases
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /validate-juneau-loutres-me-v1alpha1-allocationpool
   failurePolicy: Fail
   name: vallocationpool-v1alpha1.kb.io
@@ -460,9 +500,9 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
-      path: /validate-juneau-loutres-me-v1alpha1-iplease
+      path: /validate-juneau-loutres-me-v1alpha1-externalnetworkattachment
   failurePolicy: Fail
-  name: viplease-v1alpha1.kb.io
+  name: vexternalnetworkattachment-v1alpha1.kb.io
   rules:
   - apiGroups:
     - juneau.loutres.me
@@ -472,7 +512,28 @@ webhooks:
     - CREATE
     - UPDATE
     resources:
-    - ipleases
+    - externalnetworkattachments
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-juneau-loutres-me-v1alpha1-natgateway
+  failurePolicy: Fail
+  name: vnatgateway-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    - DELETE
+    resources:
+    - natgateways
   sideEffects: None
 - admissionReviewVersions:
   - v1
@@ -531,8 +592,29 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
+    - DELETE
     resources:
     - routetables
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate--v1-service
+  failurePolicy: Fail
+  name: vservice-juneau-loutres-me.kb.io
+  rules:
+  - apiGroups:
+    - ""
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - services
   sideEffects: None
 - admissionReviewVersions:
   - v1

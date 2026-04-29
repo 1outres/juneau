@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"net/netip"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -161,7 +162,14 @@ func (v *AllocationPoolCustomValidator) ValidateDelete(ctx context.Context, obj 
 		if claim.DeletionTimestamp != nil {
 			continue
 		}
-		if claim.Spec.PoolRef.Name != allocationpool.Name {
+		referenced := false
+		for _, ref := range claim.Spec.PoolRefs {
+			if ref.Name == allocationpool.Name {
+				referenced = true
+				break
+			}
+		}
+		if !referenced {
 			continue
 		}
 		return nil, apierrors.NewForbidden(
@@ -187,7 +195,8 @@ func validateAllocationPool(pool *juneauloutresmev1alpha1.AllocationPool) error 
 
 func validateAllocationPoolFields(pool *juneauloutresmev1alpha1.AllocationPool, errs *field.ErrorList) error {
 	specPath := field.NewPath("spec")
-	if pool.Spec.Type == juneauloutresmev1alpha1.AllocationTypeNumber {
+	switch pool.Spec.Type {
+	case juneauloutresmev1alpha1.AllocationTypeNumber:
 		if pool.Spec.Number == nil {
 			*errs = append(*errs, field.Required(specPath.Child("number"), "spec.number is required for type=number"))
 			return nil
@@ -195,10 +204,38 @@ func validateAllocationPoolFields(pool *juneauloutresmev1alpha1.AllocationPool, 
 		if pool.Spec.Number.Min > pool.Spec.Number.Max {
 			*errs = append(*errs, field.Invalid(specPath.Child("number", "min"), pool.Spec.Number.Min, "spec.number.min must be less than or equal to spec.number.max"))
 		}
+		if pool.Spec.IP != nil {
+			*errs = append(*errs, field.Invalid(specPath.Child("ip"), pool.Spec.IP, "spec.ip is not supported for type=number"))
+		}
+		return nil
+	case juneauloutresmev1alpha1.AllocationTypeIP:
+		if pool.Spec.IP == nil {
+			*errs = append(*errs, field.Required(specPath.Child("ip"), "spec.ip is required for type=ip"))
+			return nil
+		}
+		if len(pool.Spec.IP.CIDRs) == 0 {
+			*errs = append(*errs, field.Required(specPath.Child("ip", "cidrs"), "spec.ip.cidrs must contain at least one entry"))
+		}
+		for i, raw := range pool.Spec.IP.CIDRs {
+			if _, err := netip.ParsePrefix(raw); err != nil {
+				*errs = append(*errs, field.Invalid(specPath.Child("ip", "cidrs").Index(i), raw, fmt.Sprintf("invalid CIDR: %v", err)))
+			}
+		}
+		for i, raw := range pool.Spec.IP.Excluded {
+			if _, err := netip.ParseAddr(raw); err != nil {
+				*errs = append(*errs, field.Invalid(specPath.Child("ip", "excluded").Index(i), raw, fmt.Sprintf("invalid IP: %v", err)))
+			}
+		}
+		if pool.Spec.Number != nil {
+			*errs = append(*errs, field.Invalid(specPath.Child("number"), pool.Spec.Number, "spec.number is not supported for type=ip"))
+		}
 		return nil
 	}
 	if pool.Spec.Number != nil {
 		*errs = append(*errs, field.Invalid(specPath.Child("number"), pool.Spec.Number, fmt.Sprintf("spec.number is not supported for type=%q", pool.Spec.Type)))
+	}
+	if pool.Spec.IP != nil {
+		*errs = append(*errs, field.Invalid(specPath.Child("ip"), pool.Spec.IP, fmt.Sprintf("spec.ip is not supported for type=%q", pool.Spec.Type)))
 	}
 	return nil
 }

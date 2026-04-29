@@ -1,0 +1,428 @@
+package reconciler
+
+import (
+	"context"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"net"
+	"sync"
+
+	"github.com/cilium/ebpf"
+	"go.uber.org/zap"
+	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/labels"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	bpf "github.com/1outres/juneau/daemon/internal/daemon/bpf"
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/program"
+)
+
+const (
+	// ServiceAnnotationVpc names the Vpc that owns the Service. Absent or
+	// empty annotation means the Service belongs to the default Vpc.
+	ServiceAnnotationVpc = "juneau.loutres.me/vpc"
+	defaultServiceVpc    = "default"
+
+	// kubernetesServiceLabel links an EndpointSlice to its parent Service
+	// and is the canonical Kubernetes selector for the relationship.
+	kubernetesServiceLabel = "kubernetes.io/service-name"
+
+	// backendSubnetIDUnderlay is the sentinel written into
+	// backend_val.backend_subnet_id when an endpoint lives on the
+	// underlay (a non-Pod target such as kube-apiserver, or a
+	// hostNetwork Pod we don't manage). The data plane treats this
+	// value as "host-network NAPT path" rather than "Pod backend with
+	// VNI 0". Subnet VNIs always start at >=1 (subnet-vni
+	// AllocationPool min=2 except the default Subnet which uses 1),
+	// so 0 is unambiguously available as a sentinel.
+	backendSubnetIDUnderlay uint32 = 0
+)
+
+// Service keeps service_map and backend_map in sync with Kubernetes
+// Service / EndpointSlice resources. A Service maps a ClusterIP+port to
+// a set of backend Pods; the reconciler resolves each Pod's IP to a
+// NetworkInterface so it can record the backend's Subnet VNI for the
+// VXLAN forwarding step in pod_egress.
+type Service struct {
+	client    client.Client
+	podEgress *program.PodEgress
+
+	mu        sync.Mutex
+	snapshots map[string]serviceSnapshot // service "ns/name" -> entries we wrote
+}
+
+// serviceSnapshot remembers the eBPF map keys this reconciler installed
+// for a given Service so deletion / port-set changes can drop stale
+// entries.
+type serviceSnapshot struct {
+	serviceKeys []bpf.PodEgressServiceKey
+	backendKeys []bpf.PodEgressBackendKey
+}
+
+func NewService(cl client.Client, podEgress *program.PodEgress) *Service {
+	return &Service{
+		client:    cl,
+		podEgress: podEgress,
+		snapshots: make(map[string]serviceSnapshot),
+	}
+}
+
+func (r *Service) Name() string { return "service" }
+
+func (r *Service) Reconcile(ctx context.Context, key string) error {
+	ns, name, ok := splitNamespacedKey(key)
+	if !ok {
+		return fmt.Errorf("invalid service key %q", key)
+	}
+
+	var svc corev1.Service
+	err := r.client.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &svc)
+	if apierrors.IsNotFound(err) {
+		return r.delete(key)
+	}
+	if err != nil {
+		return err
+	}
+	return r.upsert(ctx, key, &svc)
+}
+
+func (r *Service) upsert(ctx context.Context, key string, svc *corev1.Service) error {
+	if svc.Spec.Type == corev1.ServiceTypeExternalName {
+		return r.delete(key)
+	}
+	if len(svc.Spec.ClusterIPs) == 0 || svc.Spec.ClusterIP == corev1.ClusterIPNone || svc.Spec.ClusterIP == "" {
+		return r.delete(key)
+	}
+
+	vpcName := svc.Annotations[ServiceAnnotationVpc]
+	if vpcName == "" {
+		vpcName = defaultServiceVpc
+	}
+
+	var vpc juneauv1alpha1.Vpc
+	if err := r.client.Get(ctx, client.ObjectKey{Name: vpcName}, &vpc); err != nil {
+		if apierrors.IsNotFound(err) {
+			zap.S().Warnf("service: vpc %q not found for %s, deleting entries", vpcName, key)
+			return r.delete(key)
+		}
+		return err
+	}
+	if vpc.Status.VpcID == 0 {
+		// Vpc still being reconciled; skip until it has an ID.
+		return nil
+	}
+	if !vpc.Spec.EnableService {
+		return r.delete(key)
+	}
+
+	clusterIP := net.ParseIP(svc.Spec.ClusterIP).To4()
+	if clusterIP == nil {
+		zap.S().Warnf("service: %s has non-IPv4 ClusterIP %q", key, svc.Spec.ClusterIP)
+		return r.delete(key)
+	}
+	clusterIPHost := binary.BigEndian.Uint32(clusterIP)
+
+	endpoints, err := r.collectEndpoints(ctx, svc)
+	if err != nil {
+		return err
+	}
+
+	// Resolve each endpoint to a backend Pod's NetworkInterface so we can
+	// pick the Subnet VNI used for VXLAN encap on the egress side.
+	backendsByPort := map[corev1.ServicePort][]bpf.PodEgressBackendVal{}
+
+	for _, port := range svc.Spec.Ports {
+		matchedEndpoints := matchEndpointsForPort(endpoints, port)
+		for _, ep := range matchedEndpoints {
+			backendIPStr := ep.address
+			if backendIPStr == "" {
+				continue
+			}
+			backendIP := net.ParseIP(backendIPStr).To4()
+			if backendIP == nil {
+				continue
+			}
+
+			var iface *juneauv1alpha1.NetworkInterface
+			if ep.targetRef != nil && ep.targetRef.Kind == "Pod" {
+				iface, err = r.findInterfaceForPod(ctx, ep.targetRef.Namespace, ep.targetRef.Name)
+				if err != nil {
+					return err
+				}
+			}
+
+			// Endpoints that don't map to a NetworkInterface live on the
+			// underlay (host-network Pods or non-Pod endpoints such as
+			// kube-apiserver). Mark them with the underlay sentinel; the
+			// data plane recognises it as the host-network NAPT path.
+			if iface == nil {
+				backendsByPort[port] = append(backendsByPort[port], bpf.PodEgressBackendVal{
+					BackendIp:       binary.BigEndian.Uint32(backendIP),
+					BackendPort:     uint16(ep.port),
+					BackendSubnetId: backendSubnetIDUnderlay,
+				})
+				continue
+			}
+
+			subnetName := iface.Spec.Subnet
+			var subnet juneauv1alpha1.Subnet
+			if err := r.client.Get(ctx, client.ObjectKey{Name: subnetName}, &subnet); err != nil {
+				if apierrors.IsNotFound(err) {
+					continue
+				}
+				return err
+			}
+			if subnet.Spec.Vpc != vpcName {
+				// VPC scope enforcement: ignore backends outside the
+				// Service's owning VPC.
+				continue
+			}
+			if subnet.Status.VNI == 0 {
+				continue
+			}
+
+			backendsByPort[port] = append(backendsByPort[port], bpf.PodEgressBackendVal{
+				BackendIp:       binary.BigEndian.Uint32(backendIP),
+				BackendPort:     uint16(ep.port),
+				BackendSubnetId: subnet.Status.VNI,
+			})
+		}
+	}
+
+	now := serviceSnapshot{}
+	for _, port := range svc.Spec.Ports {
+		proto := protoToU8(port.Protocol)
+		if proto == 0 {
+			continue
+		}
+		key := bpf.PodEgressServiceKey{
+			ClusterIp: clusterIPHost,
+			Port:      uint16(port.Port),
+			Proto:     proto,
+		}
+		val := bpf.PodEgressServiceVal{
+			OwnerVpcId:   vpc.Status.VpcID,
+			BackendCount: uint32(len(backendsByPort[port])),
+		}
+		if err := r.podEgress.Objs.ServiceMap.Update(&key, &val, ebpf.UpdateAny); err != nil {
+			return fmt.Errorf("update ServiceMap: %w", err)
+		}
+		now.serviceKeys = append(now.serviceKeys, key)
+
+		for idx, bv := range backendsByPort[port] {
+			bk := bpf.PodEgressBackendKey{
+				ClusterIp: clusterIPHost,
+				Port:      uint16(port.Port),
+				Proto:     proto,
+				Index:     uint32(idx),
+			}
+			if err := r.podEgress.Objs.BackendMap.Update(&bk, &bv, ebpf.UpdateAny); err != nil {
+				return fmt.Errorf("update BackendMap: %w", err)
+			}
+			now.backendKeys = append(now.backendKeys, bk)
+		}
+	}
+
+	// Drop stale entries from the previous reconcile pass.
+	r.mu.Lock()
+	old := r.snapshots[key]
+	r.snapshots[key] = now
+	r.mu.Unlock()
+
+	for _, sk := range old.serviceKeys {
+		if !containsServiceKey(now.serviceKeys, sk) {
+			if err := r.podEgress.Objs.ServiceMap.Delete(&sk); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+				zap.S().Warnf("service: delete stale ServiceMap entry: %v", err)
+			}
+		}
+	}
+	for _, bk := range old.backendKeys {
+		if !containsBackendKey(now.backendKeys, bk) {
+			if err := r.podEgress.Objs.BackendMap.Delete(&bk); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+				zap.S().Warnf("service: delete stale BackendMap entry: %v", err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (r *Service) delete(key string) error {
+	r.mu.Lock()
+	old, ok := r.snapshots[key]
+	if ok {
+		delete(r.snapshots, key)
+	}
+	r.mu.Unlock()
+	if !ok {
+		return nil
+	}
+
+	for _, sk := range old.serviceKeys {
+		if err := r.podEgress.Objs.ServiceMap.Delete(&sk); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			zap.S().Warnf("service: delete ServiceMap entry: %v", err)
+		}
+	}
+	for _, bk := range old.backendKeys {
+		if err := r.podEgress.Objs.BackendMap.Delete(&bk); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			zap.S().Warnf("service: delete BackendMap entry: %v", err)
+		}
+	}
+	return nil
+}
+
+// FanOutEndpointSliceToService is a keys-func for Runner.WatchFanOut: an
+// EndpointSlice change re-enqueues the Service it advertises (the
+// "kubernetes.io/service-name" label).
+func (r *Service) FanOutEndpointSliceToService(obj any) []string {
+	es, ok := obj.(*discoveryv1.EndpointSlice)
+	if !ok {
+		return nil
+	}
+	svcName := es.Labels[kubernetesServiceLabel]
+	if svcName == "" {
+		return nil
+	}
+	return []string{es.Namespace + "/" + svcName}
+}
+
+// FanOutAllServices re-enqueues every Service. Used when an upstream
+// signal (e.g. NetworkInterface change) cannot be tied to a single
+// Service.
+func (r *Service) FanOutAllServices(any) []string {
+	var svcs corev1.ServiceList
+	if err := r.client.List(context.Background(), &svcs); err != nil {
+		zap.S().Warnf("service: list services for fan-out: %v", err)
+		return nil
+	}
+	keys := make([]string, 0, len(svcs.Items))
+	for i := range svcs.Items {
+		keys = append(keys, svcs.Items[i].Namespace+"/"+svcs.Items[i].Name)
+	}
+	return keys
+}
+
+// endpointInfo flattens a single (address, port, targetRef) tuple from an
+// EndpointSlice so the reconciler can iterate without nested loops.
+type endpointInfo struct {
+	address   string
+	port      int32
+	portName  string
+	targetRef *corev1.ObjectReference
+}
+
+func (r *Service) collectEndpoints(ctx context.Context, svc *corev1.Service) ([]endpointInfo, error) {
+	var sliceList discoveryv1.EndpointSliceList
+	selector := labels.SelectorFromSet(labels.Set{kubernetesServiceLabel: svc.Name})
+	if err := r.client.List(ctx, &sliceList, client.InNamespace(svc.Namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
+		return nil, err
+	}
+
+	var out []endpointInfo
+	for _, slice := range sliceList.Items {
+		if slice.AddressType != discoveryv1.AddressTypeIPv4 {
+			continue
+		}
+		for _, ep := range slice.Endpoints {
+			if ep.Conditions.Ready != nil && !*ep.Conditions.Ready {
+				continue
+			}
+			for _, addr := range ep.Addresses {
+				for _, p := range slice.Ports {
+					info := endpointInfo{
+						address:   addr,
+						port:      portValue(p.Port),
+						portName:  portName(p.Name),
+						targetRef: ep.TargetRef,
+					}
+					out = append(out, info)
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
+func (r *Service) findInterfaceForPod(ctx context.Context, namespace, podName string) (*juneauv1alpha1.NetworkInterface, error) {
+	var ifaceList juneauv1alpha1.NetworkInterfaceList
+	if err := r.client.List(ctx, &ifaceList, client.InNamespace(namespace), client.MatchingFields{"spec.podRef.name": podName}); err != nil {
+		return nil, err
+	}
+	if len(ifaceList.Items) == 0 {
+		return nil, nil
+	}
+	// Prefer a Ready interface but fall back to the first one we find.
+	for i := range ifaceList.Items {
+		if ifaceList.Items[i].Status.Phase == juneauv1alpha1.NetworkInterfacePhaseReady {
+			return &ifaceList.Items[i], nil
+		}
+	}
+	return &ifaceList.Items[0], nil
+}
+
+func matchEndpointsForPort(endpoints []endpointInfo, svcPort corev1.ServicePort) []endpointInfo {
+	var matched []endpointInfo
+	wantName := svcPort.Name
+	for _, ep := range endpoints {
+		if wantName == "" || ep.portName == wantName || ep.portName == "" {
+			matched = append(matched, ep)
+		}
+	}
+	return matched
+}
+
+func protoToU8(proto corev1.Protocol) uint8 {
+	switch proto {
+	case corev1.ProtocolTCP, "":
+		return 6 // IPPROTO_TCP
+	case corev1.ProtocolUDP:
+		return 17 // IPPROTO_UDP
+	default:
+		return 0
+	}
+}
+
+func portValue(p *int32) int32 {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+func portName(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+func splitNamespacedKey(key string) (string, string, bool) {
+	for i := 0; i < len(key); i++ {
+		if key[i] == '/' {
+			return key[:i], key[i+1:], true
+		}
+	}
+	return "", "", false
+}
+
+func containsServiceKey(set []bpf.PodEgressServiceKey, k bpf.PodEgressServiceKey) bool {
+	for i := range set {
+		if set[i] == k {
+			return true
+		}
+	}
+	return false
+}
+
+func containsBackendKey(set []bpf.PodEgressBackendKey, k bpf.PodEgressBackendKey) bool {
+	for i := range set {
+		if set[i] == k {
+			return true
+		}
+	}
+	return false
+}

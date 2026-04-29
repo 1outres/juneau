@@ -24,10 +24,53 @@ type VxlanIngressArpTableVal struct {
 	Mac [6]uint8
 }
 
+type VxlanIngressBackendKey struct {
+	_         structs.HostLayout
+	ClusterIp uint32
+	Port      uint16
+	Proto     uint8
+	Pad       uint8
+	Index     uint32
+}
+
+type VxlanIngressBackendVal struct {
+	_               structs.HostLayout
+	BackendIp       uint32
+	BackendPort     uint16
+	Pad             [2]uint8
+	BackendSubnetId uint32
+}
+
 type VxlanIngressBgpAddressPoolsKey struct {
 	_         structs.HostLayout
 	Prefixlen uint32
 	Addr      uint32
+}
+
+type VxlanIngressCtKey struct {
+	_     structs.HostLayout
+	Scope uint32
+	Saddr uint32
+	Daddr uint32
+	Sport uint16
+	Dport uint16
+	Proto uint8
+	Pad   [3]uint8
+}
+
+type VxlanIngressCtVal struct {
+	_            structs.HostLayout
+	NewSaddr     uint32
+	NewDaddr     uint32
+	NewSport     uint16
+	NewDport     uint16
+	NextSubnetId uint32
+	Action       uint8
+	State        uint8
+	FlagsSeen    uint8
+	Pad          uint8
+	_            [4]byte
+	LastSeenNs   uint64
 }
 
 type VxlanIngressFdbKey struct {
@@ -59,13 +102,6 @@ type VxlanIngressFibVal struct {
 	Oif      uint32
 }
 
-type VxlanIngressHostIfaceVal struct {
-	_       structs.HostLayout
-	Ifindex uint32
-	Mac     [6]uint8
-	_       [2]byte
-}
-
 type VxlanIngressIfindexHostMacKey struct {
 	_       structs.HostLayout
 	Ifindex uint32
@@ -86,6 +122,16 @@ type VxlanIngressIfindexSubnetVal struct {
 	SubnetId uint32
 }
 
+type VxlanIngressNaptSrcKey struct {
+	_            structs.HostLayout
+	NatGatewayId uint32
+}
+
+type VxlanIngressNaptSrcVal struct {
+	_      structs.HostLayout
+	HostIp uint32
+}
+
 type VxlanIngressNatInside struct {
 	_        structs.HostLayout
 	SubnetId uint32
@@ -97,6 +143,22 @@ type VxlanIngressNatOutside struct {
 	Addr uint32
 }
 
+type VxlanIngressServiceKey struct {
+	_         structs.HostLayout
+	ClusterIp uint32
+	Port      uint16
+	Proto     uint8
+	Pad       uint8
+}
+
+type VxlanIngressServiceVal struct {
+	_            structs.HostLayout
+	OwnerVpcId   uint32
+	BackendCount uint32
+	AffinitySec  uint32
+	Pad          uint32
+}
+
 type VxlanIngressSubnetKey struct {
 	_        structs.HostLayout
 	SubnetId uint32
@@ -105,6 +167,7 @@ type VxlanIngressSubnetKey struct {
 type VxlanIngressSubnetVal struct {
 	_       structs.HostLayout
 	TableId uint32
+	VpcId   uint32
 	GwMac   [6]uint8
 	_       [2]byte
 	GwAddr  uint32
@@ -161,15 +224,19 @@ type VxlanIngressProgramSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type VxlanIngressMapSpecs struct {
 	ArpTable        *ebpf.MapSpec `ebpf:"arp_table"`
+	BackendMap      *ebpf.MapSpec `ebpf:"backend_map"`
 	BgpAddressPools *ebpf.MapSpec `ebpf:"bgp_address_pools"`
+	CtMap           *ebpf.MapSpec `ebpf:"ct_map"`
 	Fdb             *ebpf.MapSpec `ebpf:"fdb"`
 	FibInner        *ebpf.MapSpec `ebpf:"fib_inner"`
 	FibMap          *ebpf.MapSpec `ebpf:"fib_map"`
-	HostIface       *ebpf.MapSpec `ebpf:"host_iface"`
+	HostUnderlay    *ebpf.MapSpec `ebpf:"host_underlay"`
 	IfindexHostMac  *ebpf.MapSpec `ebpf:"ifindex_host_mac"`
 	IfindexSubnet   *ebpf.MapSpec `ebpf:"ifindex_subnet"`
+	NaptSrc         *ebpf.MapSpec `ebpf:"napt_src"`
 	NatDnatMap      *ebpf.MapSpec `ebpf:"nat_dnat_map"`
 	NatSnatMap      *ebpf.MapSpec `ebpf:"nat_snat_map"`
+	ServiceMap      *ebpf.MapSpec `ebpf:"service_map"`
 	SubnetMap       *ebpf.MapSpec `ebpf:"subnet_map"`
 	VxlanIfindex    *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
 }
@@ -201,15 +268,19 @@ func (o *VxlanIngressObjects) Close() error {
 // It can be passed to LoadVxlanIngressObjects or ebpf.CollectionSpec.LoadAndAssign.
 type VxlanIngressMaps struct {
 	ArpTable        *ebpf.Map `ebpf:"arp_table"`
+	BackendMap      *ebpf.Map `ebpf:"backend_map"`
 	BgpAddressPools *ebpf.Map `ebpf:"bgp_address_pools"`
+	CtMap           *ebpf.Map `ebpf:"ct_map"`
 	Fdb             *ebpf.Map `ebpf:"fdb"`
 	FibInner        *ebpf.Map `ebpf:"fib_inner"`
 	FibMap          *ebpf.Map `ebpf:"fib_map"`
-	HostIface       *ebpf.Map `ebpf:"host_iface"`
+	HostUnderlay    *ebpf.Map `ebpf:"host_underlay"`
 	IfindexHostMac  *ebpf.Map `ebpf:"ifindex_host_mac"`
 	IfindexSubnet   *ebpf.Map `ebpf:"ifindex_subnet"`
+	NaptSrc         *ebpf.Map `ebpf:"napt_src"`
 	NatDnatMap      *ebpf.Map `ebpf:"nat_dnat_map"`
 	NatSnatMap      *ebpf.Map `ebpf:"nat_snat_map"`
+	ServiceMap      *ebpf.Map `ebpf:"service_map"`
 	SubnetMap       *ebpf.Map `ebpf:"subnet_map"`
 	VxlanIfindex    *ebpf.Map `ebpf:"vxlan_ifindex"`
 }
@@ -217,15 +288,19 @@ type VxlanIngressMaps struct {
 func (m *VxlanIngressMaps) Close() error {
 	return _VxlanIngressClose(
 		m.ArpTable,
+		m.BackendMap,
 		m.BgpAddressPools,
+		m.CtMap,
 		m.Fdb,
 		m.FibInner,
 		m.FibMap,
-		m.HostIface,
+		m.HostUnderlay,
 		m.IfindexHostMac,
 		m.IfindexSubnet,
+		m.NaptSrc,
 		m.NatDnatMap,
 		m.NatSnatMap,
+		m.ServiceMap,
 		m.SubnetMap,
 		m.VxlanIfindex,
 	)
