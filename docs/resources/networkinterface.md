@@ -15,8 +15,6 @@ NetworkInterfaceは、Podに紐づく論理NICを表すリソースです。
 
 ## status
 
-`status.ipLease`は、このNetworkInterfaceに対して確保されたIPLeaseの名前です。
-
 `status.address`は、実際に割り当てられたIPv4アドレスとプレフィックス長です。
 
 `status.routes`は、Pod側に設定すべき経路情報です。

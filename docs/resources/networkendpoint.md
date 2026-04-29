@@ -8,6 +8,6 @@ NetworkEndpointは、daemonやCNIがPod側の接続事実を書き込むため�
 
 NetworkInterfaceは、Podに必要な論理NICの要求と割り当て状態を表します。
 
-それに対してNetworkEndpointは、実際にノード上で接続が作られた際に作成され、ifindexやmacアドレスといった情報を表します。
+それに対してNetworkEndpointは、実際にノード上で接続が作られた際に作成され、MACアドレスなどの接続情報を表します。
 
 そのため、NetworkInterfaceがReadyになるには、対応するNetworkEndpointが作成されている必要があります。

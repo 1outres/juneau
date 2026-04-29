@@ -1,0 +1,224 @@
+# NATGatewayでVPC外への通信を成立させる
+
+Juneauでは、NATGatewayを使うことでVpc内のPodがVpc外（クラスタ外を含む）へN:1のソースNATで出ていくegress経路を構築できます。各Nodeに1つずつNAPTソースIPアドレスが払い出され、Pod がVpc外へ通信する際は配置されているNodeに対応するアドレスがソースIPとして利用されます。
+
+このガイドでは、custom Vpcに対してBGPベースのNATGatewayを構築し、Podがクラスタ外まで疎通する手順を一通り示します。
+
+## このガイドで構築するもの
+
+- NAPTソースIP用のAddressPool (`nat-pool`, `10.225.53.0/24`)
+- 上流ルータ (AS 65002, `10.225.32.1`) とのBGPピアリング
+- BGPで広報するExternalNetwork (`nat-net`)
+- 専用Vpc (`egress-vpc`) とSubnet (`egress-subnet`, `10.90.0.0/24`)
+- NATGateway (`egress-natgw`)
+- VpcのRouteTableに`0.0.0.0/0`を`via.type: natGateway`で追加
+- Podから`curl https://ifconfig.me`で外部に到達し、戻ってきたIPがNATGatewayの払い出したNAPTソースIPと一致
+
+## 前提条件
+
+- Juneauのcontroller/daemon/bgp-speakerが動作しているクラスター
+- クラスターのAS番号（本ガイドでは **65001**）
+- 上流BGPルータ側でJuneauクラスターを受け入れる設定（AS **65002**、Juneauノード各IPとのピアリング）
+- 広報に使うCIDRが上流ネットワークで未使用であること（本ガイドでは `10.225.53.0/24`）
+- Pod がインターネットに出るための上流側の経路設定
+
+## 手順
+
+### 1. AddressPoolを作成
+
+NAPTソースIPを払い出すためのCIDRを定義します。
+
+```yaml
+apiVersion: juneau.loutres.me/v1alpha1
+kind: AddressPool
+metadata:
+  name: nat-pool
+spec:
+  advertiseMode: bgp
+  addresses:
+    - 10.225.53.0/24
+```
+
+`advertiseMode: bgp`は変更不可です。詳細は[AddressPool](../resources/addresspool.md)を参照してください。
+
+### 2. BGPPeerを作成
+
+上流ルータを宣言します。
+
+```yaml
+apiVersion: juneau.loutres.me/v1alpha1
+kind: BGPPeer
+metadata:
+  name: upstream
+spec:
+  myASN: 65001
+  peerASN: 65002
+  peerAddress: 10.225.32.1
+```
+
+この時点で各Nodeのbgp-speakerが`10.225.32.1`にBGPセッションを張りに行きます。詳細は[BGPPeer](../resources/bgppeer.md)を参照してください。
+
+### 3. BGPセッションの確立を確認
+
+```console
+$ kubectl get bgpnodestate
+NAME       READY   BIRD   BMP    AGE
+worker-1   True    True   True   2m
+worker-2   True    True   True   2m
+```
+
+すべての列が`True`になっていれば、そのNode上でbgp-speakerが正常に動作し、上流とのセッションが確立しています。詳細は[BGPNodeState](../resources/bgpnodestate.md)を参照してください。
+
+### 4. ExternalNetworkを作成
+
+AddressPoolを1つの論理的な外部ネットワークとしてまとめます。
+
+```yaml
+apiVersion: juneau.loutres.me/v1alpha1
+kind: ExternalNetwork
+metadata:
+  name: nat-net
+spec:
+  type: bgp
+  addressPools:
+    - nat-pool
+```
+
+`type: bgp`の場合、参照するAddressPoolは`advertiseMode: bgp`である必要があります。詳細は[ExternalNetwork](../resources/externalnetwork.md)を参照してください。
+
+### 5. Vpc/Subnetを作成
+
+NATGateway経由で外部に出るPodを置く専用のVpcとSubnetを用意します。
+
+```yaml
+apiVersion: juneau.loutres.me/v1alpha1
+kind: Vpc
+metadata:
+  name: egress-vpc
+---
+apiVersion: juneau.loutres.me/v1alpha1
+kind: Subnet
+metadata:
+  name: egress-subnet
+spec:
+  vpc: egress-vpc
+  cidr: 10.90.0.0/24
+```
+
+詳細は[Vpc](../resources/vpc.md) / [Subnet](../resources/subnet.md)を参照してください。
+
+### 6. NATGatewayを作成
+
+Vpcと出口となるExternalNetworkを参照するNATGatewayを作成します。
+
+```yaml
+apiVersion: juneau.loutres.me/v1alpha1
+kind: NATGateway
+metadata:
+  name: egress-natgw
+spec:
+  vpc: egress-vpc
+  externalNetwork: nat-net
+```
+
+```console
+$ kubectl get natgateway
+NAME           VPC          EXTERNALNETWORK   GATEWAYID   READY
+egress-natgw   egress-vpc   nat-net           1           True
+```
+
+`Ready: True`になればNATGatewayの基本的な準備は完了です。詳細は[NATGateway](../resources/natgateway.md)を参照してください。
+
+### 7. RouteTableに`0.0.0.0/0`ルートを追加
+
+VpcのメインRouteTableは自動生成されますが、Vpc外への経路はデフォルトでは含まれません。NATGateway向けのデフォルトルートを追記します。
+
+```yaml
+apiVersion: juneau.loutres.me/v1alpha1
+kind: RouteTable
+metadata:
+  name: egress-vpc
+spec:
+  vpc: egress-vpc
+  routes:
+    - dst: 0.0.0.0/0
+      via:
+        type: natGateway
+        natGateway: egress-natgw
+```
+
+RouteTableのメタ名はVpc名と同じです。このルートが無いとVpc内のPodからVpc外への経路が成立しません。詳細は[RouteTable](../resources/routetable.md)を参照してください。
+
+### 8. ExternalNetworkAttachmentが払い出されたことを確認
+
+NATGatewayを作成すると、対象ExternalNetworkに対してNodeごとに1つずつExternalNetworkAttachmentが自動的に作成され、それぞれにNAPTソースIPアドレスが割り当てられます。各assignedIPはBGPで上流に広報され、戻り通信が正しいNodeへ届くようになります。
+
+```console
+$ kubectl get externalnetworkattachment
+NAME                EXTERNALNETWORK   NODE       ASSIGNEDIP     READY
+nat-net--worker-1   nat-net           worker-1   10.225.53.5    True
+nat-net--worker-2   nat-net           worker-2   10.225.53.6    True
+```
+
+すべてのNodeに対して`READY: True`、`ASSIGNEDIP`が埋まっていれば、NAPTソースIPの払い出しは完了です。詳細は[ExternalNetworkAttachment](../resources/externalnetworkattachment.md)を参照してください。
+
+### 9. Podをデプロイ
+
+`egress-subnet`にcurl用のPodを配置します。
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: curl
+  annotations:
+    juneau.loutres.me/subnet: egress-subnet
+spec:
+  containers:
+    - name: curl
+      image: curlimages/curl:8.7.1
+      command: ["sleep", "infinity"]
+```
+
+### 10. 外部からの送信元IPを確認
+
+Podから外部に出るときのソースIPアドレスを、外部の応答サービスで確認します。
+
+```console
+$ kubectl exec curl -- curl -sS https://ifconfig.me
+10.225.53.5
+```
+
+返ってきたIPアドレスが、Pod が動作しているNodeに対応するExternalNetworkAttachmentの`status.assignedIP`と一致していれば、NATGateway経由のN:1 NAPTで外部に出ている状態です。
+
+## うまくいかないとき
+
+1. **NATGatewayが`Ready=False`のまま**
+    - `spec.vpc`で参照したVpcが存在するか
+    - `spec.externalNetwork`で参照したExternalNetworkが存在するか
+2. **`kubectl get externalnetworkattachment`が空、または対象NodeのAttachmentが無い**
+    - NATGatewayが`Ready=True`になっているか（Attachmentは、NATGatewayから参照されているExternalNetworkに対してのみ作成されます）
+    - 対象Nodeがクラスターに登録されているか
+3. **Attachmentの`assignedIP`が払い出されない（`READY=False`のまま）**
+    - 参照しているAddressPoolの`advertiseMode`が`bgp`か
+    - AddressPoolにIP在庫が残っているか（Node数より多くのIPが必要）
+4. **Podから外部に出られない**
+    - PodのSubnetが、NATGatewayと同じVpcに属しているか
+    - VpcのRouteTableに`0.0.0.0/0`を`via.type: natGateway`とするルートが入っているか
+    - `via.natGateway`の名前が、対象NATGatewayのname と一致しているか
+    - `kubectl get bgpnodestate`で、各NodeのassignedIPに対応する`/32`が`status.advertisements[].prefixes`に乗っているか
+5. **送信元IPが期待値と違う**
+    - Pod が動作しているNodeに対応するExternalNetworkAttachmentの`assignedIP`を改めて確認
+    - 上流ルータで、該当`/32`がそのNodeを次ホップに学習しているか
+
+## 参照
+
+- [AddressPool](../resources/addresspool.md)
+- [BGPPeer](../resources/bgppeer.md)
+- [BGPNodeState](../resources/bgpnodestate.md)
+- [ExternalNetwork](../resources/externalnetwork.md)
+- [ExternalNetworkAttachment](../resources/externalnetworkattachment.md)
+- [NATGateway](../resources/natgateway.md)
+- [Vpc](../resources/vpc.md)
+- [Subnet](../resources/subnet.md)
+- [RouteTable](../resources/routetable.md)
