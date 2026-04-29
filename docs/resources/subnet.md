@@ -25,10 +25,14 @@ Pod作成時にVpcやSubnetをアノテーションにより明示しない場�
 利用できるのはIPv4 CIDRだけです。
 プレフィックス長は `/16` から `/28` までに制限されます。
 
-## status
+## RouteTable のoverride
 
-`status.vni` は、そのSubnetに割り当てられたVXLAN Network Identifierです。
-Juneauはこれを使って、異なるSubnet同士のL2セグメントを識別します。
+`spec.routeTable` は省略可能で、指定した場合はそのRouteTableがこのSubnetに属するPodの経路制御に使われます。
+未指定の場合は、所属Vpcのメインルートテーブルが使われます。
+
+`spec.routeTable` で参照するRouteTableは、このSubnetと同じVpcに属している必要があります。
+
+## status
 
 `status.gateway` は、そのSubnetで利用するゲートウェイIPv4アドレスです。
 

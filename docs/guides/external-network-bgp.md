@@ -79,7 +79,7 @@ worker-1   True    True   True   2m
 worker-2   True    True   True   2m
 ```
 
-すべての列が`True`なら、birdが走っていてBMPに接続し、直近のreconcileも成功している状態です。詳細は以下で確認します。
+すべての列が`True`なら、そのNode上でbgp-speakerが正常に動作し、直近のreconcileも成功している状態です。詳細は以下で確認します。
 
 ```console
 $ kubectl get bgpnodestate worker-1 -o yaml
@@ -248,8 +248,8 @@ $ curl -sS http://10.225.51.5/
 ## うまくいかないとき
 
 1. **`kubectl get bgpnodestate`のREADYが`False`**
-    - `BirdRunning: False`ならbgp-speaker Podが起動していないか、birdプロセスが落ちている。Pod ログを確認
-    - `BMPConnected: False`ならbgp-speaker内のBMP接続が切れている。bird設定の再読み込み待ちか、ポート競合の可能性
+    - `BirdRunning: False`ならbgp-speaker Podが起動していない、またはBGPセッション処理が起動していない可能性。Pod ログを確認
+    - `BMPConnected: False`ならbgp-speakerのBGPセッション状態の監視経路が一時的に切れている。設定の反映待ちかポート競合の可能性
 2. **`bgpSessions[].state`が`Up`にならない**
     - `lastError`を確認。`administrative-shutdown`系なら対向側の設定、`remote-system-no-notification`系なら対向へのTCP到達性を疑う
     - `spec.peerAddress`と上流ルータのIPが一致しているか、AS番号が両側で揃っているかを確認

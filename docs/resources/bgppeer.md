@@ -16,4 +16,4 @@ BGPAdvertisementによって広報されるAddressPoolの経路は、ここで�
 
 BGPPeerを作成すると、各Node上のbgp-speakerがこのピアに対してBGPセッションを張ります。セッションの状態（Up/Down）、最終Established時刻、直近のPeerDown理由などは[BGPNodeState](bgpnodestate.md)の`status.bgpSessions[]`で観測できます。`BGPNodeState`の`peerAddress`が`BGPPeer.spec.peerAddress`と一致するエントリを参照してください。
 
-`kubectl get bgpnodestate`の`Ready`列が`True`になっていれば、そのNode上のbird・BMP・reconcileのすべてが正常で、設定されたBGPPeerとのセッションも期待どおりに確立しています。
+`kubectl get bgpnodestate`の`Ready`列が`True`になっていれば、そのNode上のbgp-speakerが正常に動作し、直近のreconcileも成功している状態で、設定されたBGPPeerとのセッションも期待どおりに確立しています。

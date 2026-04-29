@@ -2,7 +2,7 @@ site_name: Juneau
 site_url: https://1outres.github.io/juneau/
 repo_url: https://github.com/1outres/juneau
 repo_name: 1outres/juneau
-edit_uri: edit/main/docs/
+edit_uri: edit/develop/docs/
 docs_dir: docs
 
 theme:
@@ -39,20 +39,22 @@ markdown_extensions:
 nav:
   - Home: index.md
   - User Guide:
-    - BGP + ExternalNetwork: guides/external-network-bgp.md
+    - BGPを使ってExternalNetworkを構築する: guides/external-network-bgp.md
+    - VPCでServiceを利用する: guides/custom-vpc-service.md
+    - NATGatewayでVPC外への通信を成立させる: guides/nat-gateway.md
   - Resources:
     - VPC: resources/vpc.md
     - Subnet: resources/subnet.md
+    - RouteTable: resources/routetable.md
     - ExternalNetwork: resources/externalnetwork.md
+    - ExternalNetworkAttachment: resources/externalnetworkattachment.md
     - AddressPool: resources/addresspool.md
     - ElasticIP: resources/elasticip.md
     - ElasticIPAttachment: resources/elasticipattachment.md
-    - IPLease: resources/iplease.md
+    - NATGateway: resources/natgateway.md
     - NetworkInterface: resources/networkinterface.md
     - NetworkEndpoint: resources/networkendpoint.md
     - BGPAdvertisement: resources/bgpadvertisement.md
     - BGPPeer: resources/bgppeer.md
     - BGPNodeState: resources/bgpnodestate.md
-    - AllocationPool: resources/allocationpool.md
-    - AllocationClaim: resources/allocationclaim.md
   - API Reference: api-reference/v1alpha1.md
