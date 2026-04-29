@@ -14,6 +14,18 @@ func ConfigureSysctl() error {
 		return fmt.Errorf("failed to set send_redirects on %s: %w", JuneauNodeHostIfaceName, err)
 	}
 
+	// host-network Service backend が同居するノードでは pod_egress が
+	// (src=PodIP, dst=NodeIP) のまま TC_ACT_OK で local input に渡す。
+	// この packet は juneau_node 上に着信するが reverse path は
+	// juneau_node_h なので rp_filter=1 (strict) では drop される。
+	// rp_filter=2 (loose) に下げ、accept_local=1 で同経路を許可する。
+	if err := writeSysctl("/proc/sys/net/ipv4/conf/"+JuneauNodeIfaceName+"/rp_filter", "2"); err != nil {
+		return fmt.Errorf("failed to set rp_filter on %s: %w", JuneauNodeIfaceName, err)
+	}
+	if err := writeSysctl("/proc/sys/net/ipv4/conf/"+JuneauNodeIfaceName+"/accept_local", "1"); err != nil {
+		return fmt.Errorf("failed to set accept_local on %s: %w", JuneauNodeIfaceName, err)
+	}
+
 	ipForward, err := readSysctl("/proc/sys/net/ipv4/ip_forward")
 	if err != nil {
 		return fmt.Errorf("failed to read ip_forward: %w", err)

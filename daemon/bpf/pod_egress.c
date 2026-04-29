@@ -345,7 +345,102 @@ static __always_inline int dispatch_after_dnat(struct __sk_buff *skb,
   return TC_ACT_SHOT;
 }
 
-// handle_service_host_backend dispatches a Service flow whose chosen
+// handle_service_host_local dispatches a Service flow whose chosen
+// backend is host-network on *this* node (e.g. the local kube-apiserver
+// when the caller Pod happens to be co-located on the control plane).
+// SNAT would rewrite src=NodeIP making the reply (NodeIP→NodeIP) loop
+// through lo where no BPF reverse hook lives, so the local path skips
+// SNAT entirely: only DNAT to the backend's host IP+port. The packet
+// is then handed to the kernel (TC_ACT_OK) which delivers it to the
+// local socket. The reply leaves the host stack toward PodIP, crosses
+// juneau_node_h → juneau_node, and is reverse-rewritten by pod_egress
+// itself (apply_conntrack_svc_napt_in).
+static __always_inline int
+handle_service_host_local(struct __sk_buff *skb, struct ethhdr *eth,
+                          struct iphdr *iph, const struct subnet_val *subnet,
+                          const struct backend_val *bv) {
+  void *data_end = skb_data_end(skb);
+
+  if (iph->protocol != IPPROTO_TCP && iph->protocol != IPPROTO_UDP)
+    return TC_ACT_SHOT;
+
+  __be16 sport, dport;
+  if (read_l4_ports(iph, data_end, &sport, &dport) < 0)
+    return TC_ACT_SHOT;
+
+  // Resolve this Pod's Subnet ID via ifindex_subnet so the reverse CT
+  // entry can fdb-forward the response back to the originating Pod.
+  struct ifindex_subnet_key isk = {.ifindex = skb->ifindex};
+  const struct ifindex_subnet_val *isv =
+      bpf_map_lookup_elem(&ifindex_subnet, &isk);
+  if (!isv)
+    return TC_ACT_SHOT;
+  __u32 pod_subnet_id = isv->subnet_id;
+
+  __be32 backend_addr_be = bpf_htonl(bv->backend_ip);
+  __be16 backend_port_be = bpf_htons(bv->backend_port);
+  __be32 cluster_ip_be = iph->daddr;
+  __be32 pod_ip_be = iph->saddr;
+
+  __u8 init_state = CT_STATE_ESTABLISHED;
+  if (iph->protocol == IPPROTO_TCP) {
+    __u8 f;
+    if (ct_read_tcp_flags(iph, data_end, &f) == 0)
+      init_state = ct_initial_state_for_syn(f);
+  }
+
+  __u64 now = bpf_ktime_get_ns();
+
+  // No forward CT entry: an action=CT_ACTION_DNAT entry would short-
+  // circuit subsequent packets through apply_conntrack_dnat →
+  // dispatch_after_dnat, which then looks up dst=NodeIP in fib_map and
+  // SHOTs because the node's own IP isn't in the user-space FIB. Re-
+  // running handle_service per packet is cheap (a backend_map lookup
+  // and one BPF_ANY rewrite of the reverse CT) and keeps this path
+  // symmetric with the kernel's local-deliver semantics.
+
+  // Reverse CT entry keyed on what apiserver replies with on the way
+  // back to the Pod: (HOST, BackendIP, PodIP, BackendPort, sport, proto).
+  // pod_egress on juneau_node ingress reads this when the host stack
+  // routes the reply over the juneau_node_h → juneau_node veth.
+  struct ct_key rev_key = {
+      .scope = CT_SCOPE_HOST,
+      .saddr = backend_addr_be,
+      .daddr = pod_ip_be,
+      .sport = backend_port_be,
+      .dport = sport,
+      .proto = iph->protocol,
+  };
+  struct ct_val rev_val = {
+      .new_saddr = cluster_ip_be,
+      .new_daddr = pod_ip_be,
+      .new_sport = dport,
+      .new_dport = sport,
+      .next_subnet_id = pod_subnet_id,
+      .action = CT_ACTION_SVC_NAPT_IN,
+      .state = init_state,
+      .flags_seen = 0,
+      .last_seen_ns = now,
+  };
+  bpf_map_update_elem(&ct_map, &rev_key, &rev_val, BPF_ANY);
+
+  // DNAT only — leave src=PodIP intact so the reply naturally targets
+  // PodIP, which the host stack already has a connected route for via
+  // juneau_node_h.
+  if (rewrite_ipv4_addr(skb, /*is_source=*/false, backend_addr_be) < 0)
+    return TC_ACT_SHOT;
+  if (rewrite_l4_port(skb, /*is_source=*/false, backend_port_be) < 0)
+    return TC_ACT_SHOT;
+
+  // Hand to the kernel — dst is now NodeIP which is RTN_LOCAL on this
+  // node, so kernel local input dispatches to the listening socket.
+  // sysctl rp_filter=2 / accept_local=1 on juneau_node permits the
+  // (src=PodIP arriving on juneau_node) shape; without those a strict
+  // rp_filter would silently drop the packet here.
+  return TC_ACT_OK;
+}
+
+// handle_service_host_remote dispatches a Service flow whose chosen
 // backend lives on the underlay (no Pod / no NetworkInterface). The
 // packet is rewritten so dst becomes the backend's host IP and src
 // becomes this node's underlay IP — letting the kernel route the flow
@@ -353,10 +448,10 @@ static __always_inline int dispatch_after_dnat(struct __sk_buff *skb,
 // entries record the full 5-tuple translation so the response can be
 // reversed by node_ingress.
 static __always_inline int
-handle_service_host_backend(struct __sk_buff *skb, struct ethhdr *eth,
-                            struct iphdr *iph,
-                            const struct subnet_val *subnet,
-                            const struct backend_val *bv) {
+handle_service_host_remote(struct __sk_buff *skb, struct ethhdr *eth,
+                           struct iphdr *iph,
+                           const struct subnet_val *subnet,
+                           const struct backend_val *bv) {
   void *data_end = skb_data_end(skb);
 
   if (iph->protocol != IPPROTO_TCP && iph->protocol != IPPROTO_UDP)
@@ -556,13 +651,17 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
   if (!bv)
     return TC_ACT_SHOT;
 
-  // BACKEND_SUBNET_ID_UNDERLAY (0) marks an endpoint as living on the
-  // underlay (hostNetwork Pod or non-Pod target like kube-apiserver).
-  // Pod-backed endpoints always carry a VNI >= 1, so 0 is unambiguous
-  // as a sentinel. Routed via the host-network NAPT path so the packet
-  // leaves the node sourced from the local underlay IP.
-  if (bv->backend_subnet_id == BACKEND_SUBNET_ID_UNDERLAY)
-    return handle_service_host_backend(skb, eth, iph, subnet, bv);
+  // bv->kind is set by the user-space Service reconciler. POD (=0) is
+  // also the value old reconcilers leave behind, so we additionally
+  // honour the legacy backend_subnet_id == BACKEND_SUBNET_ID_UNDERLAY
+  // sentinel for backwards compat — but a reconciler that knows about
+  // kind always sets HOST_REMOTE / HOST_LOCAL explicitly.
+  if (bv->kind == BACKEND_KIND_HOST_LOCAL)
+    return handle_service_host_local(skb, eth, iph, subnet, bv);
+  if (bv->kind == BACKEND_KIND_HOST_REMOTE ||
+      (bv->kind == BACKEND_KIND_POD &&
+       bv->backend_subnet_id == BACKEND_SUBNET_ID_UNDERLAY))
+    return handle_service_host_remote(skb, eth, iph, subnet, bv);
 
   __be32 backend_addr_be = bpf_htonl(bv->backend_ip);
   __be16 backend_port_be = bpf_htons(bv->backend_port);
@@ -642,6 +741,90 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
 
   return dispatch_after_dnat(skb, new_eth, new_iph, subnet->table_id,
                              backend_addr_be);
+}
+
+// apply_conntrack_svc_napt_in handles the reply leg of a HOST_LOCAL
+// Service flow: apiserver → PodIP packets routed by the host stack via
+// the juneau_node_h → juneau_node veth pair surface here at TCX
+// ingress. We look up CT in the HOST scope keyed on the apiserver's
+// reply tuple; if SVC_NAPT_IN is recorded, rewrite src back to the
+// caller's ClusterIP+port and forward to the Pod's veth via fdb.
+//
+// Returns 1 if the packet was rewritten and dispatched (caller should
+// return its result), 0 if no matching entry, -1 on rewrite failure.
+static __always_inline int apply_conntrack_svc_napt_in(struct __sk_buff *skb,
+                                                       int *out_rc) {
+  struct iphdr *iph = load_iph(skb);
+  if (!iph)
+    return -1;
+  void *data_end = skb_data_end(skb);
+
+  if (iph->protocol != IPPROTO_TCP && iph->protocol != IPPROTO_UDP)
+    return 0;
+
+  __be16 sport, dport;
+  if (read_l4_ports(iph, data_end, &sport, &dport) < 0)
+    return 0;
+
+  struct ct_key ck = {
+      .scope = CT_SCOPE_HOST,
+      .saddr = iph->saddr,
+      .daddr = iph->daddr,
+      .sport = sport,
+      .dport = dport,
+      .proto = iph->protocol,
+  };
+  struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &ck);
+  if (!cv || cv->action != CT_ACTION_SVC_NAPT_IN)
+    return 0;
+
+  struct subnet_key sk = {.subnet_id = cv->next_subnet_id};
+  const struct subnet_val *subnet = bpf_map_lookup_elem(&subnet_map, &sk);
+  if (!subnet)
+    return -1;
+
+  struct arp_table_key ak = {
+      .subnet_id = cv->next_subnet_id,
+      .ipaddr = bpf_ntohl(cv->new_daddr),
+  };
+  const struct arp_table_val *av = bpf_map_lookup_elem(&arp_table, &ak);
+  if (!av)
+    return -1;
+
+  __u8 dst_mac[ETH_ALEN];
+  __u8 src_mac[ETH_ALEN];
+  __builtin_memcpy(dst_mac, av->mac, ETH_ALEN);
+  __builtin_memcpy(src_mac, subnet->gw_mac, ETH_ALEN);
+
+  __u8 tcp_flags = 0;
+  bool have_tcp_flags = false;
+  if (iph->protocol == IPPROTO_TCP) {
+    if (ct_read_tcp_flags(iph, data_end, &tcp_flags) == 0)
+      have_tcp_flags = true;
+  }
+
+  cv->last_seen_ns = bpf_ktime_get_ns();
+  __u32 next_subnet_id = cv->next_subnet_id;
+
+  if (nat_apply_napt_in_rewrite(skb, cv) < 0)
+    return -1;
+
+  if (have_tcp_flags) {
+    struct ct_val *cv2 = bpf_map_lookup_elem(&ct_map, &ck);
+    if (cv2)
+      ct_observe_tcp(&ck, cv2, tcp_flags);
+  }
+
+  void *data = (void *)(long)skb->data;
+  data_end = (void *)(long)skb->data_end;
+  struct ethhdr *eth = data;
+  if ((void *)(eth + 1) > data_end)
+    return -1;
+  __builtin_memcpy(eth->h_dest, dst_mac, ETH_ALEN);
+  __builtin_memcpy(eth->h_source, src_mac, ETH_ALEN);
+
+  *out_rc = forward_l2(skb, eth, next_subnet_id);
+  return 1;
 }
 
 // apply_conntrack_dnat looks up the conntrack table for the packet's
@@ -965,6 +1148,17 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
   // find the new next-hop. Reverse SNAT lives in pod_ingress on the
   // destination veth, so this program does nothing for non-DNAT packets.
   if (h_proto == ETH_P_IP) {
+    // host-network Service backend が同居するノードで、apiserver か
+    // らの reply (NodeIP→PodIP) は host stack 経由で
+    // juneau_node_h → juneau_node に着信する。reverse 書き戻しは
+    // この入口で完結させ、Pod の veth に fdb で配送する。
+    int snapt_rc = TC_ACT_OK;
+    int snapt_hit = apply_conntrack_svc_napt_in(skb, &snapt_rc);
+    if (snapt_hit < 0)
+      return TC_ACT_SHOT;
+    if (snapt_hit == 1)
+      return snapt_rc;
+
     int rc = apply_conntrack_dnat(skb, subnet->vpc_id);
     if (rc < 0)
       return TC_ACT_SHOT;
