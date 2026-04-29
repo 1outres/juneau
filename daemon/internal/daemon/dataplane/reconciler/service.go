@@ -40,6 +40,17 @@ const (
 	// AllocationPool min=2 except the default Subnet which uses 1),
 	// so 0 is unambiguously available as a sentinel.
 	backendSubnetIDUnderlay uint32 = 0
+
+	// backend_val.kind values; mirror BACKEND_KIND_* in daemon/bpf/maps.h.
+	// The reconciler decides which kind a host-network endpoint gets by
+	// comparing the endpoint's address to this daemon's own underlay IP.
+	// IP equality is the primary signal because EndpointSlice.nodeName is
+	// not always populated — kube-apiserver self-manages the kubernetes
+	// Service Endpoints and omits nodeName, so a nodeName-based check
+	// would slip through and mis-classify a same-node backend as REMOTE.
+	backendKindPod        uint8 = 0
+	backendKindHostRemote uint8 = 1
+	backendKindHostLocal  uint8 = 2
 )
 
 // Service keeps service_map and backend_map in sync with Kubernetes
@@ -50,6 +61,10 @@ const (
 type Service struct {
 	client    client.Client
 	podEgress *program.PodEgress
+	// nodeIP is this daemon's NodeInternalIP. Used to classify a
+	// host-network backend as HOST_LOCAL when its address matches.
+	// Same source-of-truth as the host_underlay BPF map slot.
+	nodeIP net.IP
 
 	mu        sync.Mutex
 	snapshots map[string]serviceSnapshot // service "ns/name" -> entries we wrote
@@ -63,10 +78,11 @@ type serviceSnapshot struct {
 	backendKeys []bpf.PodEgressBackendKey
 }
 
-func NewService(cl client.Client, podEgress *program.PodEgress) *Service {
+func NewService(cl client.Client, podEgress *program.PodEgress, nodeIP net.IP) *Service {
 	return &Service{
 		client:    cl,
 		podEgress: podEgress,
+		nodeIP:    nodeIP.To4(),
 		snapshots: make(map[string]serviceSnapshot),
 	}
 }
@@ -157,12 +173,20 @@ func (r *Service) upsert(ctx context.Context, key string, svc *corev1.Service) e
 
 			// Endpoints that don't map to a NetworkInterface live on the
 			// underlay (host-network Pods or non-Pod endpoints such as
-			// kube-apiserver). Mark them with the underlay sentinel; the
-			// data plane recognises it as the host-network NAPT path.
+			// kube-apiserver). HOST_LOCAL when the endpoint's address is
+			// this daemon's own underlay IP — same-node host-network
+			// targets need a SNAT-less DNAT path because SNATing to
+			// NodeIP would loop the reply through lo where no BPF
+			// reverse hook lives. HOST_REMOTE otherwise.
 			if iface == nil {
+				kind := backendKindHostRemote
+				if r.nodeIP != nil && backendIP.Equal(r.nodeIP) {
+					kind = backendKindHostLocal
+				}
 				backendsByPort[port] = append(backendsByPort[port], bpf.PodEgressBackendVal{
 					BackendIp:       binary.BigEndian.Uint32(backendIP),
 					BackendPort:     uint16(ep.port),
+					Kind:            kind,
 					BackendSubnetId: backendSubnetIDUnderlay,
 				})
 				continue
@@ -188,6 +212,7 @@ func (r *Service) upsert(ctx context.Context, key string, svc *corev1.Service) e
 			backendsByPort[port] = append(backendsByPort[port], bpf.PodEgressBackendVal{
 				BackendIp:       binary.BigEndian.Uint32(backendIP),
 				BackendPort:     uint16(ep.port),
+				Kind:            backendKindPod,
 				BackendSubnetId: subnet.Status.VNI,
 			})
 		}

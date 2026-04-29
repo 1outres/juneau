@@ -242,7 +242,7 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	}
 
 	if m.serviceInformer != nil && m.endpointSliceInformer != nil {
-		svc := reconciler.NewService(m.client, m.podEgress)
+		svc := reconciler.NewService(m.client, m.podEgress, m.juNodeUnderlayIP)
 		m.serviceRunner = runner.New(svc)
 		if err := m.serviceRunner.Watch(m.serviceInformer, runner.MetaNamespaceKey); err != nil {
 			return fmt.Errorf("watch Service: %w", err)

@@ -80,6 +80,15 @@
 // 0 is unambiguous.
 #define BACKEND_SUBNET_ID_UNDERLAY 0
 
+// backend_val.kind values. control-plane (Service reconciler) decides
+// the kind by comparing endpoint.nodeName to the daemon's nodeName so
+// the data plane never has to infer locality from FIB-lookup side
+// effects. POD == 0 keeps backward compat with old reconcilers that did
+// not set kind.
+#define BACKEND_KIND_POD         0
+#define BACKEND_KIND_HOST_REMOTE 1
+#define BACKEND_KIND_HOST_LOCAL  2
+
 #define CT_SCOPE_HOST 0
 
 // ct_state values mirror daemon/internal/daemon/dataplane/ctstate. Keep
@@ -310,7 +319,8 @@ struct backend_key {
 struct backend_val {
   __u32 backend_ip;
   __u16 backend_port;
-  __u8 _pad[2];
+  __u8 kind;        // BACKEND_KIND_*
+  __u8 _pad;
   __u32 backend_subnet_id;
 };
 
