@@ -15,11 +15,12 @@ const probeNamespace = "e2e-kubelet-probe"
 // overlay. Readiness probes are the most direct end-user signal that
 // this path works: a Pod that never becomes Ready means kubelet cannot
 // hit it. We assert both directions:
-//   J1α — a passing probe drives Ready=True (the path is reachable).
-//   J1β — a deliberately failing probe keeps Ready=False AND emits a
-//         "Readiness probe failed" event (the kubelet *did* probe; the
-//         result was just a 404). A purely static failure would never
-//         surface that event.
+//
+//	J1α — a passing probe drives Ready=True (the path is reachable).
+//	J1β — a deliberately failing probe keeps Ready=False AND emits a
+//	      "Readiness probe failed" event (the kubelet *did* probe; the
+//	      result was just a 404). A purely static failure would never
+//	      surface that event.
 var _ = Describe("Juneau kubelet readiness probe", Ordered, func() {
 	BeforeAll(func() {
 		createNamespace(probeNamespace)

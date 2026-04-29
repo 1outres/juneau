@@ -14,11 +14,11 @@ func TestShouldEvict(t *testing.T) {
 	const now uint64 = 24 * 60 * 60 * 1_000_000_000 // 1 day in ns; bigger than the longest TTL
 
 	cases := []struct {
-		name       string
-		state      uint8
-		proto      uint8
+		name         string
+		state        uint8
+		proto        uint8
 		ageBeforeNow time.Duration
-		want       bool
+		want         bool
 	}{
 		{"NEW within TTL stays", StateNew, protoTCP, 29 * time.Second, false},
 		{"NEW at TTL stays", StateNew, protoTCP, TTLNew, false},

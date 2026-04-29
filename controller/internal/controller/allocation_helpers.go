@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"fmt"
 	"regexp"
 	"strings"
 
@@ -59,15 +58,6 @@ func newAllocationClaim(poolName string, gvk schema.GroupVersionKind, namespace,
 	return claim
 }
 
-// primaryPoolRef returns the first poolRef name for compatibility with
-// reconcilers that operate on a single pool.
-func primaryPoolRef(claim *juneauv1alpha1.AllocationClaim) string {
-	if len(claim.Spec.PoolRefs) == 0 {
-		return ""
-	}
-	return claim.Spec.PoolRefs[0].Name
-}
-
 // claimReferencesPool reports whether the claim lists the given pool among
 // its candidates.
 func claimReferencesPool(claim *juneauv1alpha1.AllocationClaim, poolName string) bool {
@@ -77,18 +67,4 @@ func claimReferencesPool(claim *juneauv1alpha1.AllocationClaim, poolName string)
 		}
 	}
 	return false
-}
-
-// poolRefNamesFromClaim extracts the list of candidate pool names declared
-// on the claim, preserving order.
-func poolRefNamesFromClaim(claim *juneauv1alpha1.AllocationClaim) []string {
-	out := make([]string, 0, len(claim.Spec.PoolRefs))
-	for _, ref := range claim.Spec.PoolRefs {
-		out = append(out, ref.Name)
-	}
-	return out
-}
-
-func fmtClaimMissingPool(name string) string {
-	return fmt.Sprintf("pool %q not found", name)
 }

@@ -31,9 +31,9 @@ type Napt struct {
 	podEgress *program.PodEgress
 	nodeName  string
 
-	mu          sync.Mutex
-	bgpInstalled map[string]bpf.PodEgressBgpAddressPoolsKey       // attachment -> /32 key
-	srcInstalled map[string]map[uint32]struct{}                   // attachment -> set of installed NATGWIDs
+	mu           sync.Mutex
+	bgpInstalled map[string]bpf.PodEgressBgpAddressPoolsKey // attachment -> /32 key
+	srcInstalled map[string]map[uint32]struct{}             // attachment -> set of installed NATGWIDs
 }
 
 func NewNapt(cl client.Client, podEgress *program.PodEgress, nodeName string) *Napt {
