@@ -8,6 +8,12 @@
 #include "maps.h"
 #include "nat.h"
 
+// uapi/linux/if_packet.h pkt_type values. vmlinux.h does not export
+// these as enums, and we only need PACKET_HOST so define it locally.
+#ifndef PACKET_HOST
+#define PACKET_HOST 0
+#endif
+
 #define ETH_ALEN 6
 #define ETH_P_ARP 0x0806
 #define ETH_P_IP 0x0800
@@ -432,11 +438,22 @@ handle_service_host_local(struct __sk_buff *skb, struct ethhdr *eth,
   if (rewrite_l4_port(skb, /*is_source=*/false, backend_port_be) < 0)
     return TC_ACT_SHOT;
 
+  // The Pod sent the original packet to its default-gateway MAC
+  // (subnet gw_mac); eth_type_trans on the host-side veth therefore
+  // tags skb->pkt_type=PACKET_OTHERHOST. After DNAT to a local IP the
+  // kernel's ip_rcv_core would drop with reason=OTHERHOST unless we
+  // reset pkt_type, since ip_rcv looks at pkt_type before re-deriving
+  // it from the dst MAC.
+  if (bpf_skb_change_type(skb, PACKET_HOST) < 0)
+    return TC_ACT_SHOT;
+
   // Hand to the kernel — dst is now NodeIP which is RTN_LOCAL on this
-  // node, so kernel local input dispatches to the listening socket.
-  // sysctl rp_filter=2 / accept_local=1 on juneau_node permits the
-  // (src=PodIP arriving on juneau_node) shape; without those a strict
-  // rp_filter would silently drop the packet here.
+  // node, so the kernel's local input path dispatches to the listening
+  // socket. The packet enters the kernel via the Pod's host-side veth,
+  // but src=PodIP is only reverse-routable through juneau_node_h.
+  // bootstrap sets rp_filter=0 on `all` and per-Pod veth so this
+  // asymmetric path survives the reverse-path check; juneau_node has
+  // accept_local=1 for the reply leg (src=NodeIP=local).
   return TC_ACT_OK;
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"sync"
 	"syscall"
@@ -16,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	"github.com/1outres/juneau/daemon/internal/daemon/bootstrap"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/program"
 )
 
@@ -108,6 +110,22 @@ func (p *PodAttacher) attach(key string, ifindex int) error {
 		if errs := p.closeSnapshot(old); len(errs) > 0 {
 			return errors.Join(errs...)
 		}
+	}
+
+	// Loosen rp_filter / set accept_local on the Pod's host-side veth
+	// before pod_egress starts running. handle_service_host_local hands
+	// the rewritten packet to the kernel on this veth with src=PodIP,
+	// but PodIP is only reverse-routable via juneau_node_h — a strict
+	// per-iface rp_filter would drop it at ip_rcv_finish
+	// (LINUX_MIB_IPRPFILTER). The kernel evaluates max(all, iface), so
+	// the global "all" scope is set in ConfigureSysctl; this per-iface
+	// setting is what survives if a reload bumps `all` back to strict.
+	if iface, err := net.InterfaceByIndex(ifindex); err == nil {
+		if err := bootstrap.ConfigureLooseRPFilter(iface.Name); err != nil {
+			zap.S().Warnf("configure rp_filter on %s: %v", iface.Name, err)
+		}
+	} else {
+		zap.S().Warnf("lookup ifname for ifindex %d: %v", ifindex, err)
 	}
 
 	egressLink, err := attachTCX(p.podEgress.Objs.TcPodEgress, ifindex,
