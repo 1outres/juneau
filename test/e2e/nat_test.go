@@ -108,7 +108,7 @@ spec:
   vpc: %s
 `, natVpcName, natVpcName)
 		if err := runWithStdin(repoRoot, clearMain, "kubectl", "apply", "-f", "-"); err != nil {
-			fmt.Fprintf(GinkgoWriter, "best-effort clear of main RT routes failed: %v\n", err)
+			_, _ = fmt.Fprintf(GinkgoWriter, "best-effort clear of main RT routes failed: %v\n", err)
 		}
 
 		runBestEffort(repoRoot, "kubectl", "delete", "natgateway", natGatewayName, "--ignore-not-found=true")
@@ -197,10 +197,10 @@ spec:
 
 	It("N4: a NATGateway named 'default' triggers 0/0 auto-injection on the default VPC main RouteTable", func() {
 		const (
-			defaultExtNet      = "e2e-nat-default-extnet"
-			defaultPool        = "e2e-nat-default-pool"
-			defaultGW          = "default" // the literal name 'default' is what the controller looks for
-			defaultPoolCIDR    = "203.0.113.0/24"
+			defaultExtNet   = "e2e-nat-default-extnet"
+			defaultPool     = "e2e-nat-default-pool"
+			defaultGW       = "default" // the literal name 'default' is what the controller looks for
+			defaultPoolCIDR = "203.0.113.0/24"
 		)
 
 		DeferCleanup(func() {

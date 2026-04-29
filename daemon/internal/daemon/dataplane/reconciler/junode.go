@@ -34,8 +34,8 @@ type JuneauNode struct {
 	assignedIP  uint32 // network byte order
 	nodeIP      uint32 // network byte order
 
-	mu     sync.Mutex
-	last   *juneauNodeSnapshot
+	mu   sync.Mutex
+	last *juneauNodeSnapshot
 }
 
 type juneauNodeSnapshot struct {

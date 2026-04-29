@@ -3,7 +3,6 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	. "github.com/onsi/gomega"
 )
@@ -39,8 +38,8 @@ type externalNetworkAttachmentList struct {
 }
 
 type externalNetworkAttachmentMeta struct {
-	Name            string                                  `json:"name"`
-	OwnerReferences []externalNetworkAttachmentOwnerRef     `json:"ownerReferences,omitempty"`
+	Name            string                              `json:"name"`
+	OwnerReferences []externalNetworkAttachmentOwnerRef `json:"ownerReferences,omitempty"`
 }
 
 type externalNetworkAttachmentOwnerRef struct {
@@ -63,8 +62,8 @@ type routeTableObject struct {
 		Name string `json:"name"`
 	} `json:"metadata"`
 	Status struct {
-		TableID uint32                       `json:"tableID,omitempty"`
-		Routes  []routeTableRoute            `json:"routes,omitempty"`
+		TableID    uint32                       `json:"tableID,omitempty"`
+		Routes     []routeTableRoute            `json:"routes,omitempty"`
 		Conditions []bgpNodeStateConditionEntry `json:"conditions,omitempty"`
 	} `json:"status"`
 }
@@ -120,17 +119,6 @@ func listExternalNetworkAttachments() ([]externalNetworkAttachmentObject, error)
 		return nil, fmt.Errorf("decode externalnetworkattachments: %w", err)
 	}
 	return list.Items, nil
-}
-
-func waitExternalNetworkAttachmentReady(name string) {
-	Eventually(func(g Gomega) {
-		out, err := kubectlOutput(repoRoot, "get", "externalnetworkattachment", name, "-o", "json")
-		g.Expect(err).NotTo(HaveOccurred())
-		var obj externalNetworkAttachmentObject
-		g.Expect(json.Unmarshal([]byte(out), &obj)).To(Succeed())
-		g.Expect(strings.TrimSpace(obj.Status.AssignedIP)).NotTo(BeEmpty(), "attachment %s AssignedIP empty", name)
-		g.Expect(conditionStatus(obj.Status.Conditions, "Ready")).To(Equal("True"), "attachment %s Ready condition", name)
-	}).Should(Succeed())
 }
 
 func getRouteTableObject(name string) (*routeTableObject, error) {

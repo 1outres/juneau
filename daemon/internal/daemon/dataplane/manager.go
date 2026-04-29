@@ -50,15 +50,15 @@ type Manager struct {
 	naptRunner        *runner.Runner
 	juNodeRunner      *runner.Runner
 
-	napt    *reconciler.Napt
-	juNode  *reconciler.JuneauNode
+	napt   *reconciler.Napt
+	juNode *reconciler.JuneauNode
 
 	juNodeAttacher *link.JuneauNodeAttacher
 
-	juNodeIfindex     int
-	juNodeHostMAC     net.HardwareAddr
-	juNodeAssignedIP  net.IP
-	juNodeUnderlayIP  net.IP
+	juNodeIfindex    int
+	juNodeHostMAC    net.HardwareAddr
+	juNodeAssignedIP net.IP
+	juNodeUnderlayIP net.IP
 
 	conntrackCancel context.CancelFunc
 	conntrackDone   chan struct{}
