@@ -40,6 +40,13 @@ const (
 	// AllocationPool min=2 except the default Subnet which uses 1),
 	// so 0 is unambiguously available as a sentinel.
 	backendSubnetIDUnderlay uint32 = 0
+
+	// backend_val.kind values; mirror BACKEND_KIND_* in daemon/bpf/maps.h.
+	// The reconciler decides which kind a host-network endpoint gets by
+	// comparing endpoint.nodeName to this daemon's nodeName.
+	backendKindPod        uint8 = 0
+	backendKindHostRemote uint8 = 1
+	backendKindHostLocal  uint8 = 2
 )
 
 // Service keeps service_map and backend_map in sync with Kubernetes
@@ -50,6 +57,7 @@ const (
 type Service struct {
 	client    client.Client
 	podEgress *program.PodEgress
+	nodeName  string
 
 	mu        sync.Mutex
 	snapshots map[string]serviceSnapshot // service "ns/name" -> entries we wrote
@@ -63,10 +71,11 @@ type serviceSnapshot struct {
 	backendKeys []bpf.PodEgressBackendKey
 }
 
-func NewService(cl client.Client, podEgress *program.PodEgress) *Service {
+func NewService(cl client.Client, podEgress *program.PodEgress, nodeName string) *Service {
 	return &Service{
 		client:    cl,
 		podEgress: podEgress,
+		nodeName:  nodeName,
 		snapshots: make(map[string]serviceSnapshot),
 	}
 }
@@ -157,12 +166,20 @@ func (r *Service) upsert(ctx context.Context, key string, svc *corev1.Service) e
 
 			// Endpoints that don't map to a NetworkInterface live on the
 			// underlay (host-network Pods or non-Pod endpoints such as
-			// kube-apiserver). Mark them with the underlay sentinel; the
-			// data plane recognises it as the host-network NAPT path.
+			// kube-apiserver). HOST_LOCAL when the endpoint is on this
+			// daemon's Node — same-node host-network targets need a
+			// SNAT-less DNAT path because SNATing to NodeIP would loop
+			// the reply through lo where no BPF reverse hook lives.
+			// HOST_REMOTE otherwise.
 			if iface == nil {
+				kind := backendKindHostRemote
+				if ep.nodeName != "" && ep.nodeName == r.nodeName {
+					kind = backendKindHostLocal
+				}
 				backendsByPort[port] = append(backendsByPort[port], bpf.PodEgressBackendVal{
 					BackendIp:       binary.BigEndian.Uint32(backendIP),
 					BackendPort:     uint16(ep.port),
+					Kind:            kind,
 					BackendSubnetId: backendSubnetIDUnderlay,
 				})
 				continue
@@ -188,6 +205,7 @@ func (r *Service) upsert(ctx context.Context, key string, svc *corev1.Service) e
 			backendsByPort[port] = append(backendsByPort[port], bpf.PodEgressBackendVal{
 				BackendIp:       binary.BigEndian.Uint32(backendIP),
 				BackendPort:     uint16(ep.port),
+				Kind:            backendKindPod,
 				BackendSubnetId: subnet.Status.VNI,
 			})
 		}
@@ -313,6 +331,7 @@ type endpointInfo struct {
 	port      int32
 	portName  string
 	targetRef *corev1.ObjectReference
+	nodeName  string
 }
 
 func (r *Service) collectEndpoints(ctx context.Context, svc *corev1.Service) ([]endpointInfo, error) {
@@ -331,6 +350,10 @@ func (r *Service) collectEndpoints(ctx context.Context, svc *corev1.Service) ([]
 			if ep.Conditions.Ready != nil && !*ep.Conditions.Ready {
 				continue
 			}
+			var epNode string
+			if ep.NodeName != nil {
+				epNode = *ep.NodeName
+			}
 			for _, addr := range ep.Addresses {
 				for _, p := range slice.Ports {
 					info := endpointInfo{
@@ -338,6 +361,7 @@ func (r *Service) collectEndpoints(ctx context.Context, svc *corev1.Service) ([]
 						port:      portValue(p.Port),
 						portName:  portName(p.Name),
 						targetRef: ep.TargetRef,
+						nodeName:  epNode,
 					}
 					out = append(out, info)
 				}

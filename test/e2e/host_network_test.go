@@ -11,6 +11,12 @@ import (
 const (
 	hostNetTestNamespace = "e2e-host-net"
 	hostNetClientPod     = "curl"
+	// hostNetClientPodCP exercises the BACKEND_KIND_HOST_LOCAL path: a
+	// Pod co-located on the control plane (where kube-apiserver runs)
+	// must reach the kubernetes Service. The previous shape pinned
+	// every test Pod to a worker, which silently masked this case
+	// because remote backends took the SVC_NAPT_OUT/_IN underlay path.
+	hostNetClientPodCP = "curl-cp"
 )
 
 // Phase 4b-6 added the SVC_NAPT_OUT/IN path so that ClusterIP traffic
@@ -44,9 +50,27 @@ spec:
     - name: curl
       image: curlimages/curl:8.12.1
       command: ["sleep", "3600"]
-`, hostNetTestNamespace, hostNetClientPod, hostNetClientPod, workerNodes[0])
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: %s
+  name: %s
+  labels:
+    app: %s
+spec:
+  nodeName: %s-control-plane
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: curl
+      image: curlimages/curl:8.12.1
+      command: ["sleep", "3600"]
+`,
+			hostNetTestNamespace, hostNetClientPod, hostNetClientPod, workerNodes[0],
+			hostNetTestNamespace, hostNetClientPodCP, hostNetClientPodCP, clusterName)
 		Expect(applyManifest(manifest)).To(Succeed())
-		waitPodsReady(hostNetTestNamespace, hostNetClientPod)
+		waitPodsReady(hostNetTestNamespace, hostNetClientPod, hostNetClientPodCP)
 	})
 
 	AfterAll(func() {
@@ -63,6 +87,28 @@ spec:
 		// → host-net apiserver → reply on the SVC_NAPT_IN return path.
 		Eventually(func(g Gomega) {
 			out, err := kubectlOutput(repoRoot, "exec", "-n", hostNetTestNamespace, hostNetClientPod, "--",
+				"curl", "-skS", "--max-time", "5", "-w", "%{http_code}", "-o", "/dev/null",
+				fmt.Sprintf("https://%s/livez", strings.TrimSpace(clusterIP)))
+			g.Expect(err).NotTo(HaveOccurred(), "curl output: %s", out)
+			g.Expect(strings.TrimSpace(out)).To(Equal("200"))
+		}).Should(Succeed())
+	})
+
+	It("H3: a Pod on the control-plane node can reach the kubernetes Service (HOST_LOCAL backend)", func() {
+		// kube-apiserver lives on the control-plane node. A Pod
+		// co-located there exercises BACKEND_KIND_HOST_LOCAL: the
+		// pod_egress path must DNAT (without SNAT) and hand the packet
+		// to kernel local input, while the reply through
+		// juneau_node_h → juneau_node must hit the SVC_NAPT_IN reverse
+		// rewrite. Before the kind-aware redesign, FIB lookup on the
+		// rewritten dst (the node's own underlay IP) returned
+		// NOT_FWDED and the data plane SHOT-ed the packet.
+		clusterIP, err := kubectlJSONPath(repoRoot, "{.spec.clusterIP}", "-n", "default", "get", "service", "kubernetes")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.TrimSpace(clusterIP)).NotTo(BeEmpty())
+
+		Eventually(func(g Gomega) {
+			out, err := kubectlOutput(repoRoot, "exec", "-n", hostNetTestNamespace, hostNetClientPodCP, "--",
 				"curl", "-skS", "--max-time", "5", "-w", "%{http_code}", "-o", "/dev/null",
 				fmt.Sprintf("https://%s/livez", strings.TrimSpace(clusterIP)))
 			g.Expect(err).NotTo(HaveOccurred(), "curl output: %s", out)
