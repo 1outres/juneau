@@ -191,12 +191,6 @@ static __always_inline int handle_napt_in(struct __sk_buff *skb,
   __builtin_memcpy(dst_mac, av->mac, ETH_ALEN);
   __builtin_memcpy(src_mac, subnet->gw_mac, ETH_ALEN);
 
-  __be32 new_saddr = cv->new_saddr;
-  __be16 new_sport = cv->new_sport;
-  __be32 new_daddr = cv->new_daddr;
-  __be16 new_dport = cv->new_dport;
-  __u8 action = cv->action;
-
   __u8 tcp_flags = 0;
   bool have_tcp_flags = false;
   if (iph->protocol == IPPROTO_TCP) {
@@ -206,16 +200,7 @@ static __always_inline int handle_napt_in(struct __sk_buff *skb,
 
   cv->last_seen_ns = bpf_ktime_get_ns();
 
-  if (action == CT_ACTION_SVC_NAPT_IN) {
-    if (nat_rewrite_ipv4_addr(skb, /*is_source=*/true, new_saddr) < 0)
-      return TC_ACT_SHOT;
-    if (nat_rewrite_l4_port(skb, /*is_source=*/true, new_sport) < 0)
-      return TC_ACT_SHOT;
-  }
-
-  if (nat_rewrite_ipv4_addr(skb, /*is_source=*/false, new_daddr) < 0)
-    return TC_ACT_SHOT;
-  if (nat_rewrite_l4_port(skb, /*is_source=*/false, new_dport) < 0)
+  if (nat_apply_napt_in_rewrite(skb, cv) < 0)
     return TC_ACT_SHOT;
 
   if (have_tcp_flags) {

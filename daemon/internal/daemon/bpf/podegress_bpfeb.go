@@ -37,7 +37,8 @@ type PodEgressBackendVal struct {
 	_               structs.HostLayout
 	BackendIp       uint32
 	BackendPort     uint16
-	Pad             [2]uint8
+	Kind            uint8
+	Pad             uint8
 	BackendSubnetId uint32
 }
 

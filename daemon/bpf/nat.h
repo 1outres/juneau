@@ -225,4 +225,30 @@ static __always_inline int nat_rewrite_l4_port(struct __sk_buff *skb,
   return 0;
 }
 
+// nat_apply_napt_in_rewrite performs the reverse rewrite for both
+// CT_ACTION_NAPT_IN and CT_ACTION_SVC_NAPT_IN. The rewrite is structurally
+// the same: dst is always rewritten back to the original caller; src is
+// only rewritten for SVC_NAPT_IN (NAPT_IN sets new_saddr/new_sport=0,
+// which the rewrite skips so caller-visible src stays intact).
+//
+// The function is a *pure rewriter*: it does not touch L2 nor decide
+// where to forward the packet next. Callers issue forward_l2 (or any
+// other dispatch) themselves, which is what lets the same helper run at
+// both eth0 ingress (node_ingress) and juneau_node ingress (pod_egress).
+static __always_inline int nat_apply_napt_in_rewrite(struct __sk_buff *skb,
+                                                     struct ct_val *cv) {
+  if (cv->action == CT_ACTION_SVC_NAPT_IN) {
+    if (nat_rewrite_ipv4_addr(skb, /*is_source=*/true, cv->new_saddr) < 0)
+      return -1;
+    if (nat_rewrite_l4_port(skb, /*is_source=*/true, cv->new_sport) < 0)
+      return -1;
+  }
+
+  if (nat_rewrite_ipv4_addr(skb, /*is_source=*/false, cv->new_daddr) < 0)
+    return -1;
+  if (nat_rewrite_l4_port(skb, /*is_source=*/false, cv->new_dport) < 0)
+    return -1;
+  return 0;
+}
+
 #endif // JUNEAU_BPF_NAT_H
