@@ -132,21 +132,24 @@ verify: lint test images ## Run CI verification targets.
 .PHONY: images
 images: image-controller image-webhookcertjob image-daemon image-bgp-speaker ## Build all runtime images.
 
+# `buildx build --load` engages BuildKit so the Dockerfiles' cache mounts
+# (/go/pkg/mod, /root/.cache/go-build) actually persist across runs, which
+# is what makes incremental rebuilds for E2E finish in seconds.
 .PHONY: image-controller
 image-controller: ## Build the controller image.
-	$(DOCKER) build -f controller/Dockerfile -t $(CONTROLLER_IMAGE) controller
+	$(DOCKER) buildx build --load -f controller/Dockerfile -t $(CONTROLLER_IMAGE) controller
 
 .PHONY: image-webhookcertjob
 image-webhookcertjob: ## Build the webhook cert job image.
-	$(DOCKER) build -f controller/Dockerfile.webhookcertjob -t $(WEBHOOKCERTJOB_IMAGE) controller
+	$(DOCKER) buildx build --load -f controller/Dockerfile.webhookcertjob -t $(WEBHOOKCERTJOB_IMAGE) controller
 
 .PHONY: image-daemon
 image-daemon: ## Build the daemon image.
-	$(DOCKER) build -f daemon/Dockerfile -t $(DAEMON_IMAGE) .
+	$(DOCKER) buildx build --load -f daemon/Dockerfile -t $(DAEMON_IMAGE) .
 
 .PHONY: image-bgp-speaker
 image-bgp-speaker: ## Build the BGP speaker image.
-	$(DOCKER) build -f bgp-speaker/Dockerfile -t $(BGP_SPEAKER_IMAGE) .
+	$(DOCKER) buildx build --load -f bgp-speaker/Dockerfile -t $(BGP_SPEAKER_IMAGE) .
 
 .PHONY: publish
 publish: publish-controller publish-webhookcertjob publish-daemon publish-bgp-speaker ## Build and publish all runtime images.

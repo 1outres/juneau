@@ -46,6 +46,7 @@ metadata:
     app: %s
 spec:
   nodeName: %s
+  terminationGracePeriodSeconds: 0
   containers:
     - name: curl
       image: curlimages/curl:8.12.1
