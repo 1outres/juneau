@@ -26,7 +26,10 @@ const (
 
 var bgpRouter *bgpRouterInstance
 
-var _ = Describe("BGP e2e", Ordered, func() {
+// Serial because BGP and NAT both manage the shared juneau-e2e-bgp-peer
+// container and the kind-bridge RPF host workaround; running them in
+// parallel processes would race the docker rm -f / route replace calls.
+var _ = Describe("BGP e2e", Ordered, Serial, func() {
 	BeforeAll(func() {
 		By("starting opposing BGP router container")
 		router, err := ensureBGPRouter(workerNodes)
