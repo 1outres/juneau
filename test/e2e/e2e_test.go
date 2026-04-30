@@ -2,7 +2,12 @@ package e2e
 
 import . "github.com/onsi/ginkgo/v2"
 
-var _ = Describe("Juneau cluster connectivity", Ordered, func() {
+// Each table entry runs in an isolated namespace + VPC + subnet pair
+// (CIDRs are deterministically derived from the scenario name, see
+// cidrForScenario), so the matrix is safely parallelizable across
+// Ginkgo processes — Ordered would otherwise pin all 8 entries to a
+// single node.
+var _ = Describe("Juneau cluster connectivity", func() {
 	DescribeTable("connectivity matrix", func(s connectivityScenario) {
 		runConnectivityScenario(s)
 	},
