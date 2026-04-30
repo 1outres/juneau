@@ -96,6 +96,50 @@ var _ = Describe("Service webhook", func() {
 		})
 	})
 
+	It("rejects shared-service annotation on a non-default Vpc", func() {
+		vpcName := createWebhookServiceEnabledVpc()
+
+		err := webhookK8sClient.Create(context.Background(), &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      webhookUniqueTestName("svc"),
+				Namespace: "default",
+				Annotations: map[string]string{
+					ServiceAnnotationVpc:    vpcName,
+					ServiceAnnotationShared: "true",
+				},
+			},
+			Spec: corev1.ServiceSpec{
+				Ports:    []corev1.ServicePort{{Port: 80, TargetPort: intOrString(80)}},
+				Selector: map[string]string{"app": "x"},
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("shared-service annotation is only valid on Services owned by the default Vpc"))
+	})
+
+	It("accepts shared-service annotation on the default Vpc", func() {
+		name := webhookUniqueTestName("svc")
+		Expect(webhookK8sClient.Create(context.Background(), &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "default",
+				Annotations: map[string]string{
+					// Vpc annotation absent → default Vpc.
+					ServiceAnnotationShared: "true",
+				},
+			},
+			Spec: corev1.ServiceSpec{
+				Ports:    []corev1.ServicePort{{Port: 80, TargetPort: intOrString(80)}},
+				Selector: map[string]string{"app": "x"},
+			},
+		})).To(Succeed())
+		DeferCleanup(func() {
+			_ = webhookK8sClient.Delete(context.Background(), &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			})
+		})
+	})
+
 	It("does not re-validate Service updates that leave Juneau annotations unchanged", func() {
 		vpcName := createWebhookServiceEnabledVpc()
 		name := webhookUniqueTestName("svc")

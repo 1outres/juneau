@@ -27,7 +27,7 @@ import (
 // kind-agnostic; Kind exists for observability, validation
 // (kind-specific required fields), and provider-specific bookkeeping
 // (e.g. PodRef back-pointer for Kind=Pod).
-// +kubebuilder:validation:Enum=Pod;Node
+// +kubebuilder:validation:Enum=Pod;Node;ServiceNAT
 type EndpointKind string
 
 const (
@@ -39,6 +39,15 @@ const (
 	// veth that lets the host stack participate in the default Subnet's
 	// L2 overlay. Created by the daemon during bootstrap.
 	EndpointKindNode EndpointKind = "Node"
+
+	// EndpointKindServiceNAT represents the per-Node SNAT source IP
+	// used by the shared-Service path. Unlike Pod / Node endpoints there
+	// is no backing veth: the IP only ever appears as the destination of
+	// reply traffic from default-Vpc backends. The data plane resolves
+	// it via arp/fdb to deliver the reply to the originating Node, where
+	// the VXLAN-ingress hook reverses the SNAT and forwards the packet
+	// to the caller Pod via conntrack lookup.
+	EndpointKindServiceNAT EndpointKind = "ServiceNAT"
 )
 
 // NetworkEndpointAttachment describes the local kernel iface that

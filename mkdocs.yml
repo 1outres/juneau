@@ -41,6 +41,7 @@ nav:
   - User Guide:
     - BGPを使ってExternalNetworkを構築する: guides/external-network-bgp.md
     - VPCでServiceを利用する: guides/custom-vpc-service.md
+    - Vpcで共有Serviceを利用する: guides/shared-service.md
     - NATGatewayでVPC外への通信を成立させる: guides/nat-gateway.md
   - Resources:
     - VPC: resources/vpc.md
@@ -52,6 +53,7 @@ nav:
     - ElasticIP: resources/elasticip.md
     - ElasticIPAttachment: resources/elasticipattachment.md
     - NATGateway: resources/natgateway.md
+    - ServiceNATAttachment: resources/servicenatattachment.md
     - NetworkInterface: resources/networkinterface.md
     - NetworkEndpoint: resources/networkendpoint.md
     - BGPAdvertisement: resources/bgpadvertisement.md

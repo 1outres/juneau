@@ -92,7 +92,9 @@ static __always_inline void ct_build_opposite_key(const struct ct_key *self,
   opp->_pad[2] = 0;
 
   if (cv->action == CT_ACTION_SVC_NAPT_OUT ||
-      cv->action == CT_ACTION_SVC_NAPT_IN) {
+      cv->action == CT_ACTION_SVC_NAPT_IN ||
+      cv->action == CT_ACTION_SVC_SHARED_OUT ||
+      cv->action == CT_ACTION_SVC_SHARED_IN) {
     // Both src and dst are rewritten. The opposite tuple is the
     // mirror of the after-rewrite 5-tuple regardless of direction.
     opp->saddr = cv->new_daddr;
@@ -116,7 +118,15 @@ static __always_inline void ct_build_opposite_key(const struct ct_key *self,
       cv->action == CT_ACTION_SVC_NAPT_OUT) {
     opp->scope = CT_SCOPE_HOST;
   } else if (cv->action == CT_ACTION_NAPT_IN ||
-             cv->action == CT_ACTION_SVC_NAPT_IN) {
+             cv->action == CT_ACTION_SVC_NAPT_IN ||
+             cv->action == CT_ACTION_SVC_SHARED_OUT ||
+             cv->action == CT_ACTION_SVC_SHARED_IN) {
+    // For both shared-service directions the opposite entry's scope is
+    // the vpc_id of the next-hop Subnet:
+    //   SHARED_OUT.opp = SHARED_IN.self  (scope = target Vpc, e.g. default)
+    //   SHARED_IN.opp  = SHARED_OUT.self (scope = caller Vpc)
+    // next_subnet_id always points at the destination Subnet of the
+    // post-rewrite packet, which is exactly the vpc_id we need.
     struct subnet_key skey = {.subnet_id = cv->next_subnet_id};
     const struct subnet_val *subnet = bpf_map_lookup_elem(&subnet_map, &skey);
     if (subnet)

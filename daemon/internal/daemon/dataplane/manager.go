@@ -37,6 +37,7 @@ type Manager struct {
 	endpointSliceInformer             cache.Informer
 	externalNetworkAttachmentInformer cache.Informer
 	natGatewayInformer                cache.Informer
+	serviceNATAttachmentInformer      cache.Informer
 
 	subnetRunner      *runner.Runner
 	arpRunner         *runner.Runner
@@ -48,6 +49,7 @@ type Manager struct {
 	bgpPoolRunner     *runner.Runner
 	serviceRunner     *runner.Runner
 	naptRunner        *runner.Runner
+	serviceNATRunner  *runner.Runner
 
 	napt *reconciler.Napt
 
@@ -207,6 +209,15 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 		m.naptRunner.Start(ctx, 1)
 	}
 
+	if m.serviceNATAttachmentInformer != nil {
+		serviceNAT := reconciler.NewServiceNAT(m.client, m.podEgress, m.nodeName)
+		m.serviceNATRunner = runner.New(serviceNAT)
+		if err := m.serviceNATRunner.Watch(m.serviceNATAttachmentInformer, runner.MetaNamespaceKey); err != nil {
+			return fmt.Errorf("watch ServiceNATAttachment: %w", err)
+		}
+		m.serviceNATRunner.Start(ctx, 1)
+	}
+
 	if m.serviceInformer != nil && m.endpointSliceInformer != nil {
 		svc := reconciler.NewService(m.client, m.podEgress, m.juNodeUnderlayIP)
 		m.serviceRunner = runner.New(svc)
@@ -299,6 +310,7 @@ func (m *Manager) Stop() error {
 		m.bgpPoolRunner,
 		m.serviceRunner,
 		m.naptRunner,
+		m.serviceNATRunner,
 	}
 	for _, rn := range runners {
 		if rn == nil {
@@ -338,6 +350,7 @@ func NewManager(
 	endpointSliceInformer cache.Informer,
 	externalNetworkAttachmentInformer cache.Informer,
 	natGatewayInformer cache.Informer,
+	serviceNATAttachmentInformer cache.Informer,
 	nodeName string,
 	vxlanIfindex int,
 	hostIfindex int,
@@ -359,6 +372,7 @@ func NewManager(
 		endpointSliceInformer:             endpointSliceInformer,
 		externalNetworkAttachmentInformer: externalNetworkAttachmentInformer,
 		natGatewayInformer:                natGatewayInformer,
+		serviceNATAttachmentInformer:      serviceNATAttachmentInformer,
 		nodeName:                          nodeName,
 		vxlanIfindex:                      vxlanIfindex,
 		hostIfindex:                       hostIfindex,
