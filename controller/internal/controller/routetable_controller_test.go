@@ -43,13 +43,16 @@ var _ = Describe("RouteTable controller", func() {
 		Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.NetworkEndpoint{
 			ObjectMeta: metav1.ObjectMeta{Name: endpointName, Namespace: "default"},
 			Spec: juneauv1alpha1.NetworkEndpointSpec{
-				NodeName:       "node-a",
-				Subnet:         subnet.Name,
-				Address:        "10.200.0.10",
-				MACAddress:     "02:42:ac:10:00:01",
-				HostMACAddress: "02:42:ac:10:00:11",
-				Ifindex:        1,
-				PodRef: juneauv1alpha1.NetworkEndpointPodReference{
+				Kind:       juneauv1alpha1.EndpointKindPod,
+				NodeName:   "node-a",
+				Subnet:     subnet.Name,
+				Address:    "10.200.0.10/24",
+				MACAddress: "02:42:ac:10:00:01",
+				Attachment: &juneauv1alpha1.NetworkEndpointAttachment{
+					Ifindex:        1,
+					HostMACAddress: "02:42:ac:10:00:11",
+				},
+				PodRef: &juneauv1alpha1.NetworkEndpointPodReference{
 					UID:       fmt.Sprintf("uid-%s", endpointName),
 					Name:      "pod-a",
 					Interface: "net1",
@@ -96,13 +99,16 @@ var _ = Describe("RouteTable controller", func() {
 		Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.NetworkEndpoint{
 			ObjectMeta: metav1.ObjectMeta{Name: endpointName, Namespace: "default"},
 			Spec: juneauv1alpha1.NetworkEndpointSpec{
-				NodeName:       "node-a",
-				Subnet:         subnetB.Name,
-				Address:        "10.201.0.10",
-				MACAddress:     "02:42:ac:10:00:02",
-				HostMACAddress: "02:42:ac:10:00:12",
-				Ifindex:        1,
-				PodRef: juneauv1alpha1.NetworkEndpointPodReference{
+				Kind:       juneauv1alpha1.EndpointKindPod,
+				NodeName:   "node-a",
+				Subnet:     subnetB.Name,
+				Address:    "10.201.0.10/24",
+				MACAddress: "02:42:ac:10:00:02",
+				Attachment: &juneauv1alpha1.NetworkEndpointAttachment{
+					Ifindex:        1,
+					HostMACAddress: "02:42:ac:10:00:12",
+				},
+				PodRef: &juneauv1alpha1.NetworkEndpointPodReference{
 					UID:       fmt.Sprintf("uid-%s", endpointName),
 					Name:      "pod-b",
 					Interface: "net1",

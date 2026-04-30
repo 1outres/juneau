@@ -53,6 +53,14 @@ func NewApp() *cli.Command {
 				}},
 			},
 			&cli.StringFlag{
+				Name:  "pod-namespace",
+				Value: "kube-system",
+				Usage: "Namespace where the daemon writes per-Node NetworkEndpoint resources.",
+				Sources: cli.ValueSourceChain{Chain: []cli.ValueSource{
+					cli.EnvVar("POD_NAMESPACE"),
+				}},
+			},
+			&cli.StringFlag{
 				Name: "vxlan-parent-iface",
 			},
 			&cli.StringFlag{
@@ -76,6 +84,7 @@ func NewApp() *cli.Command {
 			cniBinDir := cmd.String("cni-bin-dir")
 			cniConfDir := cmd.String("cni-conf-dir")
 			nodeName := cmd.String("node-name")
+			podNamespace := cmd.String("pod-namespace")
 			vxlanParentIface := cmd.String("vxlan-parent-iface")
 			nodeIngressIfaceName := cmd.String("node-ingress-iface")
 			bpfPinPath := cmd.String("bpf-pin-path")
@@ -242,7 +251,7 @@ func NewApp() *cli.Command {
 				"spec.podRef.interface",
 				func(obj client.Object) []string {
 					nwep := obj.(*juneauv1alpha1.NetworkEndpoint)
-					if nwep.Spec.PodRef.Interface == "" {
+					if nwep.Spec.PodRef == nil || nwep.Spec.PodRef.Interface == "" {
 						return nil
 					}
 					return []string{nwep.Spec.PodRef.Interface}
@@ -256,7 +265,7 @@ func NewApp() *cli.Command {
 				"spec.podRef.name",
 				func(obj client.Object) []string {
 					nwep := obj.(*juneauv1alpha1.NetworkEndpoint)
-					if nwep.Spec.PodRef.Name == "" {
+					if nwep.Spec.PodRef == nil || nwep.Spec.PodRef.Name == "" {
 						return nil
 					}
 					return []string{nwep.Spec.PodRef.Name}
@@ -270,7 +279,7 @@ func NewApp() *cli.Command {
 				"spec.podRef.uid",
 				func(obj client.Object) []string {
 					nwep := obj.(*juneauv1alpha1.NetworkEndpoint)
-					if nwep.Spec.PodRef.UID == "" {
+					if nwep.Spec.PodRef == nil || nwep.Spec.PodRef.UID == "" {
 						return nil
 					}
 					return []string{nwep.Spec.PodRef.UID}
@@ -373,13 +382,22 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("lookup node ingress iface %q: %w", nodeIngressIfaceName, err)
 			}
 
-			bpfManager := dataplane.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, vpcInformer, serviceInformer, endpointSliceInformer, externalNetworkAttachmentInformer, natGatewayInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, bpfPinPath, hostIfaceInfo.MAC, juneauNodeIfaceInfo.AssignedIP, nodeUnderlayIP)
+			bpfManager := dataplane.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, vpcInformer, serviceInformer, endpointSliceInformer, externalNetworkAttachmentInformer, natGatewayInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, bpfPinPath, hostIfaceInfo.MAC, nodeUnderlayIP)
 			if err := bpfManager.Start(ctx); err != nil {
 				return fmt.Errorf("initialize BPF manager: %w", err)
 			}
 			defer func() {
 				_ = bpfManager.Stop()
 			}()
+
+			// Publish the per-Node juneau_node NetworkEndpoint so the
+			// data plane reconcilers (arp/fdb/pod-iface/attacher) can
+			// program the maps. Other nodes also pick it up to populate
+			// their fdb (remote) entries pointing at this node's
+			// juneau_node MAC.
+			if err := bootstrap.EnsureJuneauNodeEndpoint(ctx, cl, podNamespace, nodeName, juneauNodeIfaceInfo, "default"); err != nil {
+				return fmt.Errorf("ensure juneau_node NetworkEndpoint: %w", err)
+			}
 
 			grpcServer := grpc.NewServer(cl)
 			defer grpcServer.Stop()

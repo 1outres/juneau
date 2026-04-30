@@ -21,15 +21,18 @@ import (
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/program"
 )
 
-// PodAttacher attaches the PodEgress and PodIngress TC programs to each
-// local pod interface and detaches them when the endpoint is deleted or
-// migrates off this node.
+// PodAttacher attaches the PodEgress and PodIngress TC programs to
+// every local NetworkEndpoint's iface (NodeName==self with Attachment
+// populated) and detaches them when the endpoint is deleted, migrates
+// off this node, or loses its Attachment. It is kind-agnostic and
+// handles every NWEP variant — Pod veths, the per-Node juneau_node
+// pseudo-pod, etc.
 //
 // PodEgress runs at the host-side veth peer's ingress (packets leaving
-// the Pod) and applies forward DNAT for Service flows. PodIngress runs
-// at the egress (packets entering the Pod) and applies the reverse SNAT
-// recorded in conntrack so Service responses carry the original
-// ClusterIP.
+// the endpoint) and applies forward DNAT for Service flows. PodIngress
+// runs at the egress (packets entering the endpoint) and applies the
+// reverse SNAT recorded in conntrack so Service responses carry the
+// original ClusterIP.
 //
 // Unlike map reconcilers, PodAttacher owns file descriptors (ebpflink.Link
 // handles) rather than eBPF map entries. It still implements the
@@ -77,10 +80,10 @@ func (p *PodAttacher) Reconcile(ctx context.Context, key string) error {
 		return err
 	}
 
-	if nwep.Spec.NodeName != p.nodeName {
+	if nwep.Spec.NodeName != p.nodeName || nwep.Spec.Attachment == nil {
 		return p.detach(key)
 	}
-	return p.attach(key, nwep.Spec.Ifindex)
+	return p.attach(key, nwep.Spec.Attachment.Ifindex)
 }
 
 // CloseAll detaches every tracked link. Used by Manager on shutdown.

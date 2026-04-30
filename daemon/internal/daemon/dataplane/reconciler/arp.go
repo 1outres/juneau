@@ -19,7 +19,9 @@ import (
 )
 
 // Arp keeps hostEgress.ArpTable in sync with NetworkEndpoint objects.
-// Keyed by NWEP namespace/name.
+// Keyed by NWEP namespace/name. Operates on L2 identity only
+// (subnet+address+macAddress); does not depend on Kind, PodRef, or
+// Attachment, so it handles every endpoint variant (Pod, Node, …).
 type Arp struct {
 	client     client.Client
 	hostEgress *program.PodEgress
