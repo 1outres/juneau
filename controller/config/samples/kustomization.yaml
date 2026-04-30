@@ -13,4 +13,5 @@ resources:
 - v1alpha1_allocationlease.yaml
 - v1alpha1_natgateway.yaml
 - v1alpha1_externalnetworkattachment.yaml
+- v1alpha1_servicenatattachment.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

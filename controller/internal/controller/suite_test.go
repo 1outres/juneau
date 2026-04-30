@@ -138,6 +138,11 @@ var _ = BeforeSuite(func() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr)).To(Succeed())
+	Expect((&ServiceNATAttachmentReconciler{
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		EndpointNamespace: "kube-system",
+	}).SetupWithManager(mgr)).To(Succeed())
 	// NetworkInterfaceReconciler and ElasticIPReconciler are exercised
 	// directly in their own _test.go files rather than through the
 	// manager, so that other controllers' tests (notably the

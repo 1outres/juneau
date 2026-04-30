@@ -34,3 +34,7 @@ Subnetごとに個別のルートテーブルでoverrideしない場合、その
 `spec.enableService`が有効なVpcでは、そのメインルートテーブルにService CIDR向けの経路が自動で注入されます。
 
 具体的な構築手順は[VPCでServiceを利用する](../guides/custom-vpc-service.md)を参照してください。
+
+## 共有Serviceとの関係
+
+`spec.enableService=true`が設定されたVpcは、default Vpcで公開された共有ServiceにClusterIP経由で到達できます。共有Serviceの公開と利用については[Vpcで共有Serviceを利用する](../guides/shared-service.md)を参照してください。
