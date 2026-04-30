@@ -82,6 +82,13 @@ func (v *NetworkEndpointCustomValidator) ValidateCreate(ctx context.Context, obj
 	}
 	networkendpointlog.Info("Validation for NetworkEndpoint upon creation", "name", networkendpoint.GetName())
 
+	specPath := field.NewPath("spec")
+	errs := validatePodRefForKind(specPath, networkendpoint.Spec.Kind, networkendpoint.Spec.PodRef)
+	if len(errs) > 0 {
+		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "NetworkEndpoint"}, networkendpoint.Name, errs)
+		networkendpointlog.Info("Validation failed for NetworkEndpoint", "name", networkendpoint.GetName(), "error", err)
+		return nil, err
+	}
 	return nil, nil
 }
 
@@ -101,6 +108,15 @@ func (v *NetworkEndpointCustomValidator) ValidateUpdate(ctx context.Context, old
 	specPath := field.NewPath("spec")
 	podRefPath := specPath.Child("podRef")
 
+	// Identity fields (kind, nodeName, subnet, address, macAddress) and
+	// PodRef are immutable: they describe who this endpoint is.
+	// Attachment (ifindex / hostMACAddress) is intentionally mutable —
+	// it is the daemon's view of the local kernel iface and may legally
+	// change across daemon restarts (e.g. ifindex re-assignment after
+	// host reboot).
+	if networkendpoint.Spec.Kind != oldNetworkEndpoint.Spec.Kind {
+		errs = append(errs, field.Invalid(specPath.Child("kind"), networkendpoint.Spec.Kind, "spec.kind is immutable"))
+	}
 	if networkendpoint.Spec.NodeName != oldNetworkEndpoint.Spec.NodeName {
 		errs = append(errs, field.Invalid(specPath.Child("nodeName"), networkendpoint.Spec.NodeName, "spec.nodeName is immutable"))
 	}
@@ -113,21 +129,8 @@ func (v *NetworkEndpointCustomValidator) ValidateUpdate(ctx context.Context, old
 	if networkendpoint.Spec.MACAddress != oldNetworkEndpoint.Spec.MACAddress {
 		errs = append(errs, field.Invalid(specPath.Child("macAddress"), networkendpoint.Spec.MACAddress, "spec.macAddress is immutable"))
 	}
-	if networkendpoint.Spec.HostMACAddress != oldNetworkEndpoint.Spec.HostMACAddress {
-		errs = append(errs, field.Invalid(specPath.Child("hostMACAddress"), networkendpoint.Spec.HostMACAddress, "spec.hostMACAddress is immutable"))
-	}
-	if networkendpoint.Spec.Ifindex != oldNetworkEndpoint.Spec.Ifindex {
-		errs = append(errs, field.Invalid(specPath.Child("ifindex"), networkendpoint.Spec.Ifindex, "spec.ifindex is immutable"))
-	}
-	if networkendpoint.Spec.PodRef.UID != oldNetworkEndpoint.Spec.PodRef.UID {
-		errs = append(errs, field.Invalid(podRefPath.Child("uid"), networkendpoint.Spec.PodRef.UID, "spec.podRef.uid is immutable"))
-	}
-	if networkendpoint.Spec.PodRef.Name != oldNetworkEndpoint.Spec.PodRef.Name {
-		errs = append(errs, field.Invalid(podRefPath.Child("name"), networkendpoint.Spec.PodRef.Name, "spec.podRef.name is immutable"))
-	}
-	if networkendpoint.Spec.PodRef.Interface != oldNetworkEndpoint.Spec.PodRef.Interface {
-		errs = append(errs, field.Invalid(podRefPath.Child("interface"), networkendpoint.Spec.PodRef.Interface, "spec.podRef.interface is immutable"))
-	}
+	errs = append(errs, validatePodRefImmutable(podRefPath, oldNetworkEndpoint.Spec.PodRef, networkendpoint.Spec.PodRef)...)
+	errs = append(errs, validatePodRefForKind(specPath, networkendpoint.Spec.Kind, networkendpoint.Spec.PodRef)...)
 
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "NetworkEndpoint"}, networkendpoint.Name, errs)
@@ -147,4 +150,44 @@ func (v *NetworkEndpointCustomValidator) ValidateDelete(ctx context.Context, obj
 	networkendpointlog.Info("Validation for NetworkEndpoint upon deletion", "name", networkendpoint.GetName())
 
 	return nil, nil
+}
+
+// validatePodRefImmutable enforces immutability of PodRef. Adding or
+// removing a PodRef on update is also disallowed: PodRef presence is
+// kind-scoped (Pod requires it, others forbid it), and Kind itself is
+// immutable.
+func validatePodRefImmutable(path *field.Path, oldRef, newRef *juneauv1alpha1.NetworkEndpointPodReference) field.ErrorList {
+	if oldRef == nil && newRef == nil {
+		return nil
+	}
+	if oldRef == nil || newRef == nil {
+		return field.ErrorList{field.Invalid(path, newRef, "spec.podRef presence is immutable")}
+	}
+	var errs field.ErrorList
+	if newRef.UID != oldRef.UID {
+		errs = append(errs, field.Invalid(path.Child("uid"), newRef.UID, "spec.podRef.uid is immutable"))
+	}
+	if newRef.Name != oldRef.Name {
+		errs = append(errs, field.Invalid(path.Child("name"), newRef.Name, "spec.podRef.name is immutable"))
+	}
+	if newRef.Interface != oldRef.Interface {
+		errs = append(errs, field.Invalid(path.Child("interface"), newRef.Interface, "spec.podRef.interface is immutable"))
+	}
+	return errs
+}
+
+// validatePodRefForKind enforces the kind/podRef invariant: Pod kind
+// requires PodRef, all other kinds forbid it.
+func validatePodRefForKind(specPath *field.Path, kind juneauv1alpha1.EndpointKind, ref *juneauv1alpha1.NetworkEndpointPodReference) field.ErrorList {
+	switch kind {
+	case juneauv1alpha1.EndpointKindPod:
+		if ref == nil {
+			return field.ErrorList{field.Required(specPath.Child("podRef"), "spec.podRef is required when spec.kind=Pod")}
+		}
+	default:
+		if ref != nil {
+			return field.ErrorList{field.Forbidden(specPath.Child("podRef"), fmt.Sprintf("spec.podRef must be omitted when spec.kind=%s", kind))}
+		}
+	}
+	return nil
 }

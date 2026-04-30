@@ -16,7 +16,20 @@ spec:
     singular: networkendpoint
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.kind
+      name: Kind
+      type: string
+    - jsonPath: .spec.nodeName
+      name: Node
+      type: string
+    - jsonPath: .spec.subnet
+      name: Subnet
+      type: string
+    - jsonPath: .spec.address
+      name: Address
+      type: string
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: NetworkEndpoint is the Schema for the networkendpoints API.
@@ -42,18 +55,50 @@ spec:
             description: NetworkEndpointSpec defines the desired state of NetworkEndpoint.
             properties:
               address:
+                description: Address is the L3 identity in CIDR form (e.g. "10.0.0.5/24").
                 type: string
-              hostMACAddress:
+              attachment:
+                description: |-
+                  Attachment describes the local kernel iface that backs this
+                  endpoint on Spec.NodeName. Populated by the local daemon.
+                properties:
+                  hostMACAddress:
+                    description: |-
+                      HostMACAddress is the MAC of the host-side veth peer (the side
+                      that faces the host network stack on Spec.NodeName). Used by the
+                      data plane to populate ifindex_host_mac.
+                    minLength: 1
+                    type: string
+                  ifindex:
+                    description: Ifindex is the BPF-attached side of the veth pair
+                      on Spec.NodeName.
+                    minimum: 1
+                    type: integer
+                required:
+                - hostMACAddress
+                - ifindex
+                type: object
+              kind:
+                description: Kind identifies what produced this endpoint.
+                enum:
+                - Pod
+                - Node
+                - ServiceNAT
                 type: string
-              ifindex:
-                minimum: 1
-                type: integer
               macAddress:
+                description: |-
+                  MACAddress is the L2 identity used as the destination MAC for
+                  this endpoint on the overlay. Always required for endpoints that
+                  participate in arp/fdb (i.e. all Kind=Pod and Kind=Node).
                 type: string
               nodeName:
+                description: |-
+                  NodeName pins the endpoint to a specific node. The daemon on
+                  this node owns the Attachment fields.
                 minLength: 1
                 type: string
               podRef:
+                description: PodRef is required when Kind=Pod and otherwise omitted.
                 properties:
                   interface:
                     minLength: 1
@@ -70,17 +115,21 @@ spec:
                 - uid
                 type: object
               subnet:
+                description: Subnet is the L2 segment this endpoint participates in.
                 minLength: 1
                 type: string
             required:
+            - kind
             - nodeName
-            - podRef
             - subnet
             type: object
           status:
             description: NetworkEndpointStatus defines the observed state of NetworkEndpoint.
             properties:
               nodeIP:
+                description: |-
+                  NodeIP is the underlay IP of Spec.NodeName, populated by the
+                  controller. Used by remote daemons to populate fdb VTEP entries.
                 type: string
             type: object
         type: object

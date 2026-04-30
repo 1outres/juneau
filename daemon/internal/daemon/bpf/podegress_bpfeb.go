@@ -157,7 +157,7 @@ type PodEgressServiceVal struct {
 	OwnerVpcId   uint32
 	BackendCount uint32
 	AffinitySec  uint32
-	Pad          uint32
+	Flags        uint32
 }
 
 type PodEgressSubnetKey struct {
@@ -238,6 +238,7 @@ type PodEgressMapSpecs struct {
 	NatDnatMap      *ebpf.MapSpec `ebpf:"nat_dnat_map"`
 	NatSnatMap      *ebpf.MapSpec `ebpf:"nat_snat_map"`
 	ServiceMap      *ebpf.MapSpec `ebpf:"service_map"`
+	ServiceNatIp    *ebpf.MapSpec `ebpf:"service_nat_ip"`
 	SubnetMap       *ebpf.MapSpec `ebpf:"subnet_map"`
 	VxlanIfindex    *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
 }
@@ -282,6 +283,7 @@ type PodEgressMaps struct {
 	NatDnatMap      *ebpf.Map `ebpf:"nat_dnat_map"`
 	NatSnatMap      *ebpf.Map `ebpf:"nat_snat_map"`
 	ServiceMap      *ebpf.Map `ebpf:"service_map"`
+	ServiceNatIp    *ebpf.Map `ebpf:"service_nat_ip"`
 	SubnetMap       *ebpf.Map `ebpf:"subnet_map"`
 	VxlanIfindex    *ebpf.Map `ebpf:"vxlan_ifindex"`
 }
@@ -302,6 +304,7 @@ func (m *PodEgressMaps) Close() error {
 		m.NatDnatMap,
 		m.NatSnatMap,
 		m.ServiceMap,
+		m.ServiceNatIp,
 		m.SubnetMap,
 		m.VxlanIfindex,
 	)

@@ -19,9 +19,11 @@ import (
 )
 
 // Fdb keeps the FDB maps in sync with NetworkEndpoint objects. Local
-// endpoints go to vxlanIngress.Fdb (ifindex-valued), remote endpoints go
-// to hostEgress.Fdb (VTEP IP-valued). The snapshot tracks which side an
-// entry was written to so delete/move can clean up the right map.
+// endpoints (NodeName==self with Attachment populated) go to
+// vxlanIngress.Fdb (ifindex-valued); remote endpoints go to
+// hostEgress.Fdb (VTEP IP-valued). Kind-agnostic: handles every NWEP
+// variant uniformly. The snapshot tracks which side an entry was
+// written to so delete/move can clean up the right map.
 type Fdb struct {
 	client       client.Client
 	hostEgress   *program.PodEgress
@@ -91,11 +93,14 @@ func (r *Fdb) upsert(ctx context.Context, key string, nwep *juneauv1alpha1.Netwo
 
 	var desired *fdbDesired
 	switch {
-	case isLocal:
+	case isLocal && nwep.Spec.Attachment != nil:
 		desired = &fdbDesired{
 			snap: fdbSnapshot{vni: subnet.Status.VNI, mac: mac, isLocal: true},
-			val:  bpf.PodEgressFdbVal{Ifindex: uint32(nwep.Spec.Ifindex)},
+			val:  bpf.PodEgressFdbVal{Ifindex: uint32(nwep.Spec.Attachment.Ifindex)},
 		}
+	case isLocal:
+		// Attachment not yet populated by the local daemon; skip until
+		// it appears. The reconciler will be re-driven by the watch.
 	case nwep.Status.NodeIP != "":
 		netNodeAddr := net.ParseIP(nwep.Status.NodeIP)
 		if netNodeAddr == nil {

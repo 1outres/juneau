@@ -22,6 +22,7 @@ import (
 	"reflect"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -57,6 +58,8 @@ type VpcReconciler struct {
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=vpcs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=vpcs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=vpcs/finalizers,verbs=update
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=servicenatattachments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -160,6 +163,20 @@ func (r *VpcReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, nil
 	}
 
+	if resource.Name == defaultVpcName {
+		// default Vpc fans out per-Node ServiceNATAttachments. They
+		// preallocate the SNAT source IPs that other Vpcs need for
+		// reaching shared Services in the default Vpc; allocating up
+		// front keeps the cross-Vpc flow ready the moment a Vpc opts
+		// in via spec.enableService=true.
+		if err := r.ensureServiceNATAttachments(ctx, &resource); err != nil {
+			if updateErr := r.updateStatus(ctx, &resource, mainRouteTableName, vpcID, metav1.ConditionFalse, vpcReasonReconcileFailed, fmt.Sprintf("failed to reconcile ServiceNATAttachments: %v", err)); updateErr != nil {
+				return ctrl.Result{}, updateErr
+			}
+			return ctrl.Result{}, err
+		}
+	}
+
 	if err := r.updateStatus(ctx, &resource, mainRouteTableName, vpcID, metav1.ConditionTrue, vpcReasonReconcileSucceeded, ""); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -167,12 +184,67 @@ func (r *VpcReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	return ctrl.Result{}, nil
 }
 
+// ensureServiceNATAttachments creates one ServiceNATAttachment per Node.
+// Existing attachments owned by the default Vpc but missing from the Node
+// list are deleted so that drained Nodes don't leak SNAT IP allocations.
+func (r *VpcReconciler) ensureServiceNATAttachments(ctx context.Context, vpc *juneauv1alpha1.Vpc) error {
+	var nodes corev1.NodeList
+	if err := r.List(ctx, &nodes); err != nil {
+		return fmt.Errorf("list Nodes: %w", err)
+	}
+
+	desired := make(map[string]struct{}, len(nodes.Items))
+	for i := range nodes.Items {
+		nodeName := nodes.Items[i].Name
+		desired[nodeName] = struct{}{}
+
+		attachment := &juneauv1alpha1.ServiceNATAttachment{
+			ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+		}
+		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, attachment, func() error {
+			// Spec is immutable per the webhook, so only set on create
+			// (when the resource has no UID yet).
+			if attachment.ObjectMeta.UID == "" {
+				attachment.Spec = juneauv1alpha1.ServiceNATAttachmentSpec{NodeName: nodeName}
+			}
+			return controllerutil.SetControllerReference(vpc, attachment, r.Scheme)
+		})
+		if err != nil {
+			return fmt.Errorf("ensure ServiceNATAttachment %q: %w", nodeName, err)
+		}
+	}
+
+	var attachments juneauv1alpha1.ServiceNATAttachmentList
+	if err := r.List(ctx, &attachments); err != nil {
+		return fmt.Errorf("list ServiceNATAttachments: %w", err)
+	}
+	for i := range attachments.Items {
+		attachment := &attachments.Items[i]
+		if !metav1.IsControlledBy(attachment, vpc) {
+			continue
+		}
+		if _, kept := desired[attachment.Name]; kept {
+			continue
+		}
+		if !attachment.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if err := r.Delete(ctx, attachment); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("delete stale ServiceNATAttachment %q: %w", attachment.Name, err)
+		}
+	}
+
+	return nil
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *VpcReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&juneauv1alpha1.Vpc{}).
+		Owns(&juneauv1alpha1.ServiceNATAttachment{}).
 		Watches(&juneauv1alpha1.RouteTable{}, handler.EnqueueRequestsFromMapFunc(r.mapRouteTableToVpcs)).
 		Watches(&juneauv1alpha1.AllocationClaim{}, handler.EnqueueRequestsFromMapFunc(r.mapClaimToVpcs)).
+		Watches(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(r.mapNodeToDefaultVpc)).
 		Named("vpc").
 		Complete(r)
 }
@@ -250,4 +322,11 @@ func (r *VpcReconciler) mapClaimToVpcs(ctx context.Context, obj client.Object) [
 		return nil
 	}
 	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: claim.Spec.ResourceRef.Name}}}
+}
+
+// mapNodeToDefaultVpc enqueues the default Vpc whenever a Node is added,
+// removed, or labelled. The default Vpc reconciler is the only consumer
+// of Node events because it owns the per-Node ServiceNATAttachment fan-out.
+func (r *VpcReconciler) mapNodeToDefaultVpc(_ context.Context, _ client.Object) []reconcile.Request {
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: defaultVpcName}}}
 }

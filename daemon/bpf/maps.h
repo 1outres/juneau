@@ -72,6 +72,16 @@
 // reverse direction undoes both rewrites on the way back.
 #define CT_ACTION_SVC_NAPT_OUT 5
 #define CT_ACTION_SVC_NAPT_IN 6
+// SVC_SHARED_OUT / SVC_SHARED_IN: combined DNAT+SNAT for shared Services
+// hosted in the default Vpc. Callers in non-default Vpcs (with
+// EnableService=true) reach the ClusterIP through this path: egress
+// rewrites dst to the backend Pod IP (DNAT) and src to this Node's
+// SNAT IP (SNAT, port-allocated to keep reverse-CT keys unique across
+// concurrent callers). The response from the backend matches the
+// SVC_SHARED_IN entry, which mirrors both rewrites back so the original
+// caller sees a reply from the ClusterIP.
+#define CT_ACTION_SVC_SHARED_OUT 7
+#define CT_ACTION_SVC_SHARED_IN 8
 
 // BACKEND_SUBNET_ID_UNDERLAY is the sentinel value the user-space
 // service reconciler writes into backend_val.backend_subnet_id when an
@@ -207,6 +217,19 @@ struct {
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } host_underlay SEC(".maps");
 
+// service_nat_ip holds this node's per-Node SNAT source IP for the
+// shared-Service path (in network byte order). Populated by the daemon
+// from the local ServiceNATAttachment.status.assignedIP. A value of 0
+// means "no SNAT IP available", in which case the shared-Service path
+// drops the packet rather than emitting traffic with a zero source.
+struct {
+  __uint(type, BPF_MAP_TYPE_ARRAY);
+  __uint(max_entries, 1);
+  __type(key, __u32);
+  __type(value, __u32);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} service_nat_ip SEC(".maps");
+
 struct fib_key {
   __u32 prefixlen;
   __u32 dst;
@@ -289,11 +312,17 @@ struct service_key {
   __u8 _pad;
 };
 
+// SVC_FLAG_SHARED marks a Service as reachable from any Vpc with
+// EnableService=true, regardless of owner_vpc_id. The data plane treats
+// shared Services as if owner_vpc_id matched and routes them through
+// the SNAT-aware shared path.
+#define SVC_FLAG_SHARED (1U << 0)
+
 struct service_val {
   __u32 owner_vpc_id;   // Vpc that owns the Service; checked against caller_vpc_id
   __u32 backend_count;
   __u32 affinity_sec;
-  __u32 _pad;
+  __u32 flags;          // bitmask: SVC_FLAG_*
 };
 
 struct {

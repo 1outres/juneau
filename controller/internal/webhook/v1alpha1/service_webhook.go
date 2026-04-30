@@ -41,6 +41,12 @@ const (
 	// ServiceAnnotationSubnet is intentionally rejected; Service is a
 	// VPC-scoped concept and cannot be tied to a single Subnet.
 	ServiceAnnotationSubnet = "juneau.loutres.me/subnet"
+	// ServiceAnnotationShared opts a Service in to cross-Vpc visibility:
+	// callers in any Vpc with spec.enableService=true can reach the
+	// ClusterIP through per-Node SNAT. Only Services owned by the
+	// default Vpc may set this annotation, since the data plane's
+	// shared-service path is anchored at default-Vpc backends.
+	ServiceAnnotationShared = "juneau.loutres.me/shared-service"
 
 	defaultServiceVpc = "default"
 )
@@ -98,7 +104,8 @@ func (v *ServiceCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 	}
 
 	if serviceVpc(newSvc) == serviceVpc(oldSvc) &&
-		newSvc.Annotations[ServiceAnnotationSubnet] == oldSvc.Annotations[ServiceAnnotationSubnet] {
+		newSvc.Annotations[ServiceAnnotationSubnet] == oldSvc.Annotations[ServiceAnnotationSubnet] &&
+		newSvc.Annotations[ServiceAnnotationShared] == oldSvc.Annotations[ServiceAnnotationShared] {
 		// Annotations relevant to Juneau are unchanged. Skip re-validation
 		// so that pre-existing Services keep working even if their VPC
 		// later loses enableService=true.
@@ -145,7 +152,22 @@ func (v *ServiceCustomValidator) validate(ctx context.Context, svc *corev1.Servi
 		errs = append(errs, field.Invalid(annPath.Key(ServiceAnnotationVpc), vpcName, fmt.Sprintf("Vpc %q does not have spec.enableService=true", vpcName)))
 	}
 
+	if isSharedServiceAnnotation(svc.Annotations[ServiceAnnotationShared]) && vpcName != defaultServiceVpc {
+		// Shared Services route into the default-Vpc fabric (backends and
+		// ServiceNATAttachment NetworkEndpoints both live there). Allowing
+		// non-default ownership would silently broken the return path.
+		errs = append(errs, field.Invalid(annPath.Key(ServiceAnnotationShared), svc.Annotations[ServiceAnnotationShared], "shared-service annotation is only valid on Services owned by the default Vpc"))
+	}
+
 	return errs, nil
+}
+
+// isSharedServiceAnnotation reports whether the annotation value opts the
+// Service in to the shared-service path. Only the canonical "true" enables
+// it; any other value (including absent) is treated as opt-out so a
+// typo cannot accidentally widen the Service's reachability.
+func isSharedServiceAnnotation(value string) bool {
+	return value == "true"
 }
 
 // serviceVpc returns the Vpc that owns the Service. If the annotation is
