@@ -42,6 +42,7 @@ type NodeReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=bgpnodestates,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=allocationclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=networkendpoints,verbs=get;list;watch;delete
 
 // Reconcile creates a BGPNodeState for a Node and ensures an
 // AllocationClaim against the default Subnet's IP pool so the daemon
@@ -52,6 +53,15 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	var node corev1.Node
 	if err := r.Get(ctx, req.NamespacedName, &node); err != nil {
 		if errors.IsNotFound(err) {
+			// Node has been removed: clean up the associated
+			// kind=Node NetworkEndpoint(s). The AllocationClaim is
+			// GC'd via OwnerReferences (Node was its owner); NWEP is
+			// namespace-scoped and cannot reference a cluster-scoped
+			// owner directly, so we delete it here explicitly.
+			if cleanupErr := r.cleanupJuneauNodeEndpoints(ctx, req.Name); cleanupErr != nil {
+				logger.Error(cleanupErr, "cleanup juneau_node NetworkEndpoints", "node", req.Name)
+				return ctrl.Result{}, cleanupErr
+			}
 			return ctrl.Result{}, nil
 		}
 		logger.Error(err, "unable to get Node", "name", req.NamespacedName)
@@ -113,6 +123,29 @@ const (
 func JuneauNodeClaimName(nodeName string) string {
 	gvk := schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Node"}
 	return allocationClaimName(SubnetIPAllocationPoolName(JuneauNodeDefaultSubnet), gvk, "", nodeName, JuneauNodeAllocationAttribute)
+}
+
+// cleanupJuneauNodeEndpoints removes every NetworkEndpoint that was
+// created for the named Node's juneau_node iface. Lists across all
+// namespaces because the daemon namespace is operator-configurable.
+func (r *NodeReconciler) cleanupJuneauNodeEndpoints(ctx context.Context, nodeName string) error {
+	var list juneauv1alpha1.NetworkEndpointList
+	if err := r.List(ctx, &list); err != nil {
+		return err
+	}
+	for i := range list.Items {
+		ep := &list.Items[i]
+		if ep.Spec.Kind != juneauv1alpha1.EndpointKindNode {
+			continue
+		}
+		if ep.Spec.NodeName != nodeName {
+			continue
+		}
+		if err := r.Delete(ctx, ep); err != nil && !errors.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
