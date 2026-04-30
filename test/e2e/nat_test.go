@@ -24,7 +24,9 @@ const (
 // hostGateway/MASQUERADE setup. The specs below cover that chain end to
 // end. N1/N1.5/N2/N4 run without an external BGP router; the N3+B1
 // DescribeTable that follows opts in via E2E_BGP_ROUTER=true.
-var _ = Describe("Juneau NATGateway", Ordered, func() {
+// Serial — see the matching note on the BGP suite. Both share the
+// opposing BGP router container and host-side RPF workaround.
+var _ = Describe("Juneau NATGateway", Ordered, Serial, func() {
 	BeforeAll(func() {
 		By("ensuring an opposing BGP router container is running")
 		if bgpRouter == nil {

@@ -188,13 +188,20 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	workerNodes = nodes
 })
 
-var _ = SynchronizedAfterSuite(func() {
+// SynchronizedAfterSuite's argument order is inverse of BeforeSuite:
+// the FIRST function runs on every parallel process, the SECOND runs
+// ONCE on process 1 after every other process has finished. The cluster
+// teardown belongs in the second slot — when running with -ginkgo.procs>1,
+// putting it in the first would make every process race to delete the
+// kind cluster while the serial bgp/nat specs are still executing on
+// process 1.
+var _ = SynchronizedAfterSuite(func() {}, func() {
 	if strings.EqualFold(os.Getenv("E2E_KEEP_CLUSTER"), "true") {
 		return
 	}
 	teardownBGPRouter()
 	Expect(run(repoRoot, "kind", "delete", "cluster", "--name", clusterName)).To(Succeed())
-}, func() {})
+})
 
 var _ = AfterEach(func() {
 	if !CurrentSpecReport().Failed() {

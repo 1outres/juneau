@@ -1,8 +1,12 @@
 .PHONY: test up down
 
 # Run the full E2E suite (default: 2 workers, no BGP router unless tests start it).
+# Uses the Ginkgo CLI so we can spawn worker processes; --procs=4 spreads
+# parallelizable specs (connectivity matrix, probe, host-network, allocation,
+# subnet-routetable, service-vpc) across 4 procs while the bgp/nat blocks
+# are Serial-tagged and stay on Node 1.
 test:
-	go test ./... -v -ginkgo.v -timeout 60m
+	go run github.com/onsi/ginkgo/v2/ginkgo --procs=4 -v --timeout=60m ./...
 
 # Bring up just the kind cluster + controllers/daemons (no behavioral specs).
 # Knobs (env vars):
