@@ -313,6 +313,9 @@ func (r *NetworkInterfaceReconciler) updateAllocatedStatus(ctx context.Context, 
 
 	hasMatchingEndpoint := false
 	for _, ep := range nwepList.Items {
+		if ep.Spec.PodRef == nil {
+			continue
+		}
 		if ep.Spec.PodRef.Interface == resource.Spec.PodRef.Interface &&
 			ep.Spec.PodRef.Name == resource.Spec.PodRef.Name &&
 			ep.Spec.PodRef.UID == resource.Spec.PodRef.UID {

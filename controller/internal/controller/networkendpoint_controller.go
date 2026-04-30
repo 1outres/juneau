@@ -92,7 +92,7 @@ func (r *NetworkEndpointReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		"spec.podRef.name",
 		func(obj client.Object) []string {
 			nwep := obj.(*juneauv1alpha1.NetworkEndpoint)
-			if nwep.Spec.PodRef.Name == "" {
+			if nwep.Spec.PodRef == nil || nwep.Spec.PodRef.Name == "" {
 				return nil
 			}
 			return []string{nwep.Spec.PodRef.Name}
@@ -106,7 +106,7 @@ func (r *NetworkEndpointReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		"spec.podRef.interface",
 		func(obj client.Object) []string {
 			nwep := obj.(*juneauv1alpha1.NetworkEndpoint)
-			if nwep.Spec.PodRef.Interface == "" {
+			if nwep.Spec.PodRef == nil || nwep.Spec.PodRef.Interface == "" {
 				return nil
 			}
 			return []string{nwep.Spec.PodRef.Interface}
@@ -120,7 +120,7 @@ func (r *NetworkEndpointReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		"spec.podRef.uid",
 		func(obj client.Object) []string {
 			nwep := obj.(*juneauv1alpha1.NetworkEndpoint)
-			if nwep.Spec.PodRef.UID == "" {
+			if nwep.Spec.PodRef == nil || nwep.Spec.PodRef.UID == "" {
 				return nil
 			}
 			return []string{nwep.Spec.PodRef.UID}

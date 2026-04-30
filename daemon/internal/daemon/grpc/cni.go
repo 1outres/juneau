@@ -238,17 +238,20 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 			},
 		},
 		Spec: juneauv1alpha1.NetworkEndpointSpec{
-			PodRef: juneauv1alpha1.NetworkEndpointPodReference{
+			Kind: juneauv1alpha1.EndpointKindPod,
+			PodRef: &juneauv1alpha1.NetworkEndpointPodReference{
 				Name:      podName,
 				Interface: req.Ifname,
 				UID:       podUID,
 			},
-			NodeName:       nwiface.Spec.NodeName,
-			Subnet:         nwiface.Spec.Subnet,
-			Address:        nwiface.Status.Address,
-			MACAddress:     vethPeer.HardwareAddr.String(),
-			HostMACAddress: vethHost.HardwareAddr.String(),
-			Ifindex:        vethHost.Index,
+			NodeName:   nwiface.Spec.NodeName,
+			Subnet:     nwiface.Spec.Subnet,
+			Address:    nwiface.Status.Address,
+			MACAddress: vethPeer.HardwareAddr.String(),
+			Attachment: &juneauv1alpha1.NetworkEndpointAttachment{
+				Ifindex:        vethHost.Index,
+				HostMACAddress: vethHost.HardwareAddr.String(),
+			},
 		},
 		Status: juneauv1alpha1.NetworkEndpointStatus{},
 	}
@@ -513,9 +516,13 @@ func (c *CNIServer) createNetworkEndpoint(ctx context.Context, nwep *juneauv1alp
 	if getErr := c.client.Get(ctx, client.ObjectKeyFromObject(nwep), existing); getErr != nil {
 		return false, fmt.Errorf("fetch existing NetworkEndpoint %s/%s: %w", nwep.Namespace, nwep.Name, getErr)
 	}
-	if existing.Spec.PodRef.UID != podUID {
+	if existing.Spec.PodRef == nil || existing.Spec.PodRef.UID != podUID {
+		var existingUID string
+		if existing.Spec.PodRef != nil {
+			existingUID = existing.Spec.PodRef.UID
+		}
 		return false, fmt.Errorf("NetworkEndpoint %s/%s exists for pod UID %q but ADD is for UID %q",
-			existing.Namespace, existing.Name, existing.Spec.PodRef.UID, podUID)
+			existing.Namespace, existing.Name, existingUID, podUID)
 	}
 
 	zap.S().Infof("reusing existing NetworkEndpoint %s/%s for pod UID %s", existing.Namespace, existing.Name, podUID)

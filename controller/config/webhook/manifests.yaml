@@ -622,6 +622,26 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /validate-juneau-loutres-me-v1alpha1-servicenatattachment
+  failurePolicy: Fail
+  name: vservicenatattachment-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - servicenatattachments
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /validate-juneau-loutres-me-v1alpha1-subnet
   failurePolicy: Fail
   name: vsubnet-v1alpha1.kb.io

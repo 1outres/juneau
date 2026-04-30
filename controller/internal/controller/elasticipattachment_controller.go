@@ -282,6 +282,9 @@ func (r *ElasticIPAttachmentReconciler) findMatchingNetworkEndpoints(
 	matches := make([]juneauloutresmev1alpha1.NetworkEndpoint, 0, 1)
 	for i := range networkEndpointList.Items {
 		item := networkEndpointList.Items[i]
+		if item.Spec.PodRef == nil {
+			continue
+		}
 		if item.Spec.PodRef.UID != podRef.UID {
 			continue
 		}
@@ -372,6 +375,9 @@ func (r *ElasticIPAttachmentReconciler) mapNetworkEndpointToAttachments(ctx cont
 
 	requests := make([]reconcile.Request, 0)
 	seen := make(map[client.ObjectKey]struct{})
+	if networkEndpoint.Spec.PodRef == nil {
+		return nil
+	}
 	for i := range networkInterfaceList.Items {
 		networkInterface := networkInterfaceList.Items[i]
 		if networkInterface.Spec.PodRef.UID != networkEndpoint.Spec.PodRef.UID {

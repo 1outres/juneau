@@ -110,9 +110,10 @@ var _ = Describe("ElasticIPAttachment controller", func() {
 		Expect(k8sClient.Create(ctx, &juneauv1alpha1.NetworkEndpoint{
 			ObjectMeta: metav1.ObjectMeta{Name: uniqueTestName("networkendpoint"), Namespace: "default"},
 			Spec: juneauv1alpha1.NetworkEndpointSpec{
+				Kind:     juneauv1alpha1.EndpointKindPod,
 				NodeName: "node-a",
 				Subnet:   "default",
-				PodRef: juneauv1alpha1.NetworkEndpointPodReference{
+				PodRef: &juneauv1alpha1.NetworkEndpointPodReference{
 					UID:       "pod-uid-4",
 					Name:      "pod-d",
 					Interface: "net1",
@@ -154,9 +155,10 @@ var _ = Describe("ElasticIPAttachment controller", func() {
 			Expect(k8sClient.Create(ctx, &juneauv1alpha1.NetworkEndpoint{
 				ObjectMeta: metav1.ObjectMeta{Name: uniqueTestName("networkendpoint"), Namespace: "default"},
 				Spec: juneauv1alpha1.NetworkEndpointSpec{
+					Kind:     juneauv1alpha1.EndpointKindPod,
 					NodeName: "node-a",
 					Subnet:   "default",
-					PodRef: juneauv1alpha1.NetworkEndpointPodReference{
+					PodRef: &juneauv1alpha1.NetworkEndpointPodReference{
 						UID:       "pod-uid-5",
 						Name:      "pod-e",
 						Interface: "net1",

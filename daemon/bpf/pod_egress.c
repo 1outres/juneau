@@ -627,6 +627,175 @@ handle_service_host_remote(struct __sk_buff *skb, struct ethhdr *eth,
   return bpf_redirect(fib_params.ifindex, 0);
 }
 
+// handle_service_shared dispatches a shared-Service flow. The caller
+// lives in a non-default Vpc with EnableService=true; the backend lives
+// in the default Vpc. We rewrite the packet with both DNAT (dst →
+// backend Pod) and SNAT (src → this Node's SNAT IP, allocated to a
+// previously-unused source port to keep reverse CT keys unique across
+// concurrent callers), record forward and reverse ct_map entries, and
+// dispatch through dispatch_after_dnat against the backend's Subnet so
+// the rewritten packet flows over the default Vpc fabric.
+static __always_inline int
+handle_service_shared(struct __sk_buff *skb, struct iphdr *iph,
+                      const struct subnet_val *caller_subnet,
+                      const struct backend_val *bv, __be16 sport, __be16 dport,
+                      __u8 init_state, __u8 init_flags) {
+  void *data_end = skb_data_end(skb);
+  if (iph->protocol != IPPROTO_TCP && iph->protocol != IPPROTO_UDP)
+    return TC_ACT_SHOT;
+
+  // Resolve this Node's SNAT IP. service_nat_ip is a single-entry array
+  // populated by the daemon from the local ServiceNATAttachment status;
+  // a zero value means the attachment is not yet ready.
+  __u32 snat_key = 0;
+  const __u32 *snat_ip_be = bpf_map_lookup_elem(&service_nat_ip, &snat_key);
+  if (!snat_ip_be || *snat_ip_be == 0)
+    return TC_ACT_SHOT;
+  __be32 snat_ip = *snat_ip_be;
+
+  // Resolve the caller Pod's Subnet ID via ifindex_subnet so the reverse
+  // entry can fdb-forward the reply back to the caller. caller_subnet
+  // gives us vpc_id but not subnet_id, which is what the reverse
+  // dispatch needs.
+  struct ifindex_subnet_key isk = {.ifindex = skb->ifindex};
+  const struct ifindex_subnet_val *isv =
+      bpf_map_lookup_elem(&ifindex_subnet, &isk);
+  if (!isv)
+    return TC_ACT_SHOT;
+  __u32 caller_subnet_id = isv->subnet_id;
+
+  __be32 backend_addr_be = bpf_htonl(bv->backend_ip);
+  __be16 backend_port_be = bpf_htons(bv->backend_port);
+  __be32 cluster_ip_be = iph->daddr;
+  __be32 pod_ip_be = iph->saddr;
+
+  __u64 now = bpf_ktime_get_ns();
+  __u32 caller_vpc_id = caller_subnet->vpc_id;
+
+  // Forward CT key (caller's Vpc-scoped 5-tuple before rewrite). Reuse a
+  // pre-existing allocation when the same flow re-enters this hook.
+  struct ct_key fwd_key = {
+      .scope = caller_vpc_id,
+      .saddr = pod_ip_be,
+      .daddr = cluster_ip_be,
+      .sport = sport,
+      .dport = dport,
+      .proto = iph->protocol,
+  };
+  struct ct_val *existing = bpf_map_lookup_elem(&ct_map, &fwd_key);
+  __be16 alloc_port = 0;
+  if (existing && existing->action == CT_ACTION_SVC_SHARED_OUT) {
+    existing->last_seen_ns = now;
+    alloc_port = existing->new_sport;
+  } else {
+    // Linear-probe port allocation under the SNAT IP. Seed with the
+    // 5-tuple hash so initial candidates spread across the port space.
+    __u32 seed =
+        hash_tuple(pod_ip_be, cluster_ip_be, sport, dport, iph->protocol);
+    bool installed = false;
+
+#pragma unroll
+    for (int i = 0; i < NAPT_PROBE_LIMIT; i++) {
+      __u32 candidate_host = 1024 + ((seed + i) % (65536 - 1024));
+      __be16 candidate = bpf_htons((__u16)candidate_host);
+
+      struct ct_key rev_key = {
+          // The reverse entry lives in the target Vpc's keyspace
+          // (default Vpc, where backends and SNAT IPs live).
+          .scope = bv->backend_subnet_id ? caller_vpc_id : caller_vpc_id,
+          .saddr = backend_addr_be,
+          .daddr = snat_ip,
+          .sport = backend_port_be,
+          .dport = candidate,
+          .proto = iph->protocol,
+      };
+      // Resolve the backend's Vpc id from its Subnet so the reverse
+      // entry's scope matches what the backend's pod_egress / our
+      // vxlan_ingress will use when looking it up.
+      struct subnet_key bsk = {.subnet_id = bv->backend_subnet_id};
+      const struct subnet_val *backend_subnet =
+          bpf_map_lookup_elem(&subnet_map, &bsk);
+      if (!backend_subnet)
+        return TC_ACT_SHOT;
+      rev_key.scope = backend_subnet->vpc_id;
+
+      struct ct_val rev_val = {
+          .new_saddr = cluster_ip_be,
+          .new_daddr = pod_ip_be,
+          .new_sport = dport,
+          .new_dport = sport,
+          .next_subnet_id = caller_subnet_id,
+          .action = CT_ACTION_SVC_SHARED_IN,
+          .state = init_state,
+          .flags_seen = 0,
+          .last_seen_ns = now,
+      };
+      long rc = bpf_map_update_elem(&ct_map, &rev_key, &rev_val, BPF_NOEXIST);
+      if (rc == 0) {
+        alloc_port = candidate;
+        installed = true;
+        break;
+      }
+      seed = napt_rotate_left(seed + 0x9e3779b1, 7);
+    }
+
+    if (!installed)
+      return TC_ACT_SHOT;
+
+    struct ct_val fwd_val = {
+        .new_saddr = snat_ip,
+        .new_daddr = backend_addr_be,
+        .new_sport = alloc_port,
+        .new_dport = backend_port_be,
+        .next_subnet_id = bv->backend_subnet_id,
+        .action = CT_ACTION_SVC_SHARED_OUT,
+        .state = init_state,
+        .flags_seen = init_flags,
+        .last_seen_ns = now,
+    };
+    bpf_map_update_elem(&ct_map, &fwd_key, &fwd_val, BPF_ANY);
+  }
+
+  __u8 tcp_flags = 0;
+  bool have_tcp_flags = false;
+  if (iph->protocol == IPPROTO_TCP) {
+    if (ct_read_tcp_flags(iph, data_end, &tcp_flags) == 0)
+      have_tcp_flags = true;
+  }
+
+  if (rewrite_ipv4_addr(skb, /*is_source=*/true, snat_ip) < 0)
+    return TC_ACT_SHOT;
+  if (rewrite_l4_port(skb, /*is_source=*/true, alloc_port) < 0)
+    return TC_ACT_SHOT;
+  if (rewrite_ipv4_addr(skb, /*is_source=*/false, backend_addr_be) < 0)
+    return TC_ACT_SHOT;
+  if (rewrite_l4_port(skb, /*is_source=*/false, backend_port_be) < 0)
+    return TC_ACT_SHOT;
+
+  if (have_tcp_flags) {
+    struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &fwd_key);
+    if (cv)
+      ct_observe_tcp(&fwd_key, cv, tcp_flags);
+  }
+
+  // Dispatch in the *backend's* Vpc routing table so the rewritten
+  // packet finds the connected route to the backend Pod.
+  struct subnet_key bsk = {.subnet_id = bv->backend_subnet_id};
+  const struct subnet_val *backend_subnet =
+      bpf_map_lookup_elem(&subnet_map, &bsk);
+  if (!backend_subnet)
+    return TC_ACT_SHOT;
+
+  struct iphdr *new_iph = load_iph(skb);
+  if (!new_iph)
+    return TC_ACT_SHOT;
+  struct ethhdr *new_eth =
+      (struct ethhdr *)((void *)new_iph - sizeof(struct ethhdr));
+
+  return dispatch_after_dnat(skb, new_eth, new_iph, backend_subnet->table_id,
+                             backend_addr_be);
+}
+
 // handle_service performs the Service DNAT path. It enforces VPC ownership
 // (caller and Service owner must share a Vpc), picks a backend by hashing
 // the 5-tuple, installs forward and reverse CT entries, rewrites the
@@ -650,7 +819,11 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
   const struct service_val *sv = bpf_map_lookup_elem(&service_map, &sk);
   if (!sv)
     return TC_ACT_SHOT;
-  if (sv->owner_vpc_id != subnet->vpc_id)
+  // Cross-Vpc access is only allowed for Services explicitly opted in to
+  // the shared path. caller_vpc != owner_vpc otherwise drops, preserving
+  // the strict per-Vpc isolation that ordinary Services rely on.
+  bool is_shared = (sv->flags & SVC_FLAG_SHARED) != 0;
+  if (sv->owner_vpc_id != subnet->vpc_id && !is_shared)
     return TC_ACT_SHOT;
   if (sv->backend_count == 0)
     return TC_ACT_SHOT;
@@ -696,6 +869,15 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
       init_flags = f & TCP_FLAG_TRACKED;
       init_state = ct_initial_state_for_syn(f);
     }
+  }
+
+  // Cross-Vpc shared-Service path: caller and Service owner differ but
+  // the Service is annotated for sharing. Apply DNAT+SNAT through the
+  // shared NAT IP so the backend can route the reply back to the
+  // originating Node.
+  if (sv->owner_vpc_id != subnet->vpc_id) {
+    return handle_service_shared(skb, iph, subnet, bv, sport, dport,
+                                 init_state, init_flags);
   }
 
   // Forward CT entry: caller -> ClusterIP keyed tuple, action=DNAT.
@@ -812,6 +994,105 @@ static __always_inline int apply_conntrack_svc_napt_in(struct __sk_buff *skb,
   __u8 src_mac[ETH_ALEN];
   __builtin_memcpy(dst_mac, av->mac, ETH_ALEN);
   __builtin_memcpy(src_mac, subnet->gw_mac, ETH_ALEN);
+
+  __u8 tcp_flags = 0;
+  bool have_tcp_flags = false;
+  if (iph->protocol == IPPROTO_TCP) {
+    if (ct_read_tcp_flags(iph, data_end, &tcp_flags) == 0)
+      have_tcp_flags = true;
+  }
+
+  cv->last_seen_ns = bpf_ktime_get_ns();
+  __u32 next_subnet_id = cv->next_subnet_id;
+
+  if (nat_apply_napt_in_rewrite(skb, cv) < 0)
+    return -1;
+
+  if (have_tcp_flags) {
+    struct ct_val *cv2 = bpf_map_lookup_elem(&ct_map, &ck);
+    if (cv2)
+      ct_observe_tcp(&ck, cv2, tcp_flags);
+  }
+
+  void *data = (void *)(long)skb->data;
+  data_end = (void *)(long)skb->data_end;
+  struct ethhdr *eth = data;
+  if ((void *)(eth + 1) > data_end)
+    return -1;
+  __builtin_memcpy(eth->h_dest, dst_mac, ETH_ALEN);
+  __builtin_memcpy(eth->h_source, src_mac, ETH_ALEN);
+
+  *out_rc = forward_l2(skb, eth, next_subnet_id);
+  return 1;
+}
+
+// apply_conntrack_svc_shared_in handles the same-Node reply leg of a
+// shared-Service flow: a default-Vpc backend Pod replies to the SNAT IP
+// of the originating Node, and that reply enters the backend Pod's
+// veth-peer ingress (this very pod_egress hook). When the originating
+// caller is co-located on this Node, the SVC_SHARED_IN ct_val installed
+// by handle_service_shared lives in the *same* Node's ct_map; we can
+// rewrite both halves and redirect the packet straight to the caller's
+// veth without ever touching the VXLAN underlay.
+//
+// On a different Node, the ct_map lookup misses and this function falls
+// through (return 0). The packet then flows out to fdb-driven VXLAN
+// forwarding, lands at the originating Node's vxlan_ingress hook, and
+// the same SVC_SHARED_IN entry — present on *that* Node's ct_map —
+// completes the rewrite there.
+//
+// Returns 1 if the packet was rewritten and dispatched (caller should
+// return *out_rc), 0 on no matching entry, -1 on rewrite failure.
+static __always_inline int apply_conntrack_svc_shared_in(struct __sk_buff *skb,
+                                                         const struct subnet_val *backend_subnet,
+                                                         int *out_rc) {
+  struct iphdr *iph = load_iph(skb);
+  if (!iph)
+    return -1;
+  void *data_end = skb_data_end(skb);
+
+  if (iph->protocol != IPPROTO_TCP && iph->protocol != IPPROTO_UDP)
+    return 0;
+
+  __be16 sport, dport;
+  if (read_l4_ports(iph, data_end, &sport, &dport) < 0)
+    return 0;
+
+  // The ct_map entry is keyed by the backend Pod's reply tuple: scope is
+  // the backend's Vpc (= default Vpc for shared Services), saddr is the
+  // backend Pod IP, daddr is the SNAT IP, dport is the alloc_port chosen
+  // when the forward path installed the entry.
+  struct ct_key ck = {
+      .scope = backend_subnet->vpc_id,
+      .saddr = iph->saddr,
+      .daddr = iph->daddr,
+      .sport = sport,
+      .dport = dport,
+      .proto = iph->protocol,
+  };
+  struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &ck);
+  if (!cv || cv->action != CT_ACTION_SVC_SHARED_IN)
+    return 0;
+
+  // Resolve the caller-side Subnet so we can rewrite L2 to terminate at
+  // the caller Pod's veth.
+  struct subnet_key sk = {.subnet_id = cv->next_subnet_id};
+  const struct subnet_val *caller_subnet = bpf_map_lookup_elem(&subnet_map, &sk);
+  if (!caller_subnet)
+    return -1;
+
+  struct arp_table_key ak = {
+      .subnet_id = cv->next_subnet_id,
+      .ipaddr = bpf_ntohl(cv->new_daddr),
+  };
+  const struct arp_table_val *av = bpf_map_lookup_elem(&arp_table, &ak);
+  if (!av)
+    return -1;
+
+  __u8 dst_mac[ETH_ALEN];
+  __u8 src_mac[ETH_ALEN];
+  __builtin_memcpy(dst_mac, av->mac, ETH_ALEN);
+  __builtin_memcpy(src_mac, caller_subnet->gw_mac, ETH_ALEN);
 
   __u8 tcp_flags = 0;
   bool have_tcp_flags = false;
@@ -1175,6 +1456,17 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
       return TC_ACT_SHOT;
     if (snapt_hit == 1)
       return snapt_rc;
+
+    // Same-Node reply leg of a shared-Service flow: backend Pod is
+    // sending to a SNAT IP that the same Node minted on the forward
+    // path. Reverse the rewrite here so the reply skips VXLAN entirely
+    // and terminates at the caller Pod's veth via fdb.
+    int shared_rc = TC_ACT_OK;
+    int shared_hit = apply_conntrack_svc_shared_in(skb, subnet, &shared_rc);
+    if (shared_hit < 0)
+      return TC_ACT_SHOT;
+    if (shared_hit == 1)
+      return shared_rc;
 
     int rc = apply_conntrack_dnat(skb, subnet->vpc_id);
     if (rc < 0)

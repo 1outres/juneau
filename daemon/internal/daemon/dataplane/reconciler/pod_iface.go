@@ -19,9 +19,12 @@ import (
 )
 
 // PodIface keeps podEgress.IfindexSubnet and podEgress.IfindexHostMac in
-// sync with local NetworkEndpoint objects. Remote endpoints are ignored
-// (but any stale local entry from a previous reconcile is cleaned up if
-// the endpoint is reassigned to another node).
+// sync with local NetworkEndpoint objects (NodeName==self with
+// Attachment populated). Remote endpoints and Attachment-less endpoints
+// are ignored; any stale local entry from a previous reconcile is
+// cleaned up if the endpoint is reassigned to another node or its
+// attachment disappears. Kind-agnostic: any endpoint with a real local
+// veth (Pod, Node, …) is handled here.
 type PodIface struct {
 	client    client.Client
 	podEgress *program.PodEgress
@@ -57,7 +60,7 @@ func (r *PodIface) Reconcile(ctx context.Context, key string) error {
 		return err
 	}
 
-	if nwep.Spec.NodeName != r.nodeName {
+	if nwep.Spec.NodeName != r.nodeName || nwep.Spec.Attachment == nil {
 		return r.delete(key)
 	}
 	return r.upsert(ctx, key, &nwep)
@@ -69,7 +72,7 @@ func (r *PodIface) upsert(ctx context.Context, key string, nwep *juneauv1alpha1.
 		return err
 	}
 
-	hostMAC, err := net.ParseMAC(nwep.Spec.HostMACAddress)
+	hostMAC, err := net.ParseMAC(nwep.Spec.Attachment.HostMACAddress)
 	if err != nil {
 		return err
 	}
@@ -78,7 +81,7 @@ func (r *PodIface) upsert(ctx context.Context, key string, nwep *juneauv1alpha1.
 		return err
 	}
 
-	newIfindex := uint32(nwep.Spec.Ifindex)
+	newIfindex := uint32(nwep.Spec.Attachment.Ifindex)
 
 	r.mu.Lock()
 	oldIfindex, hadOld := r.snapshots[key]

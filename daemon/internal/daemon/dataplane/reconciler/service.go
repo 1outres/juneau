@@ -25,7 +25,24 @@ const (
 	// ServiceAnnotationVpc names the Vpc that owns the Service. Absent or
 	// empty annotation means the Service belongs to the default Vpc.
 	ServiceAnnotationVpc = "juneau.loutres.me/vpc"
-	defaultServiceVpc    = "default"
+	// ServiceAnnotationShared opts a default-Vpc Service in to cross-Vpc
+	// reachability via the shared-Service path. Mirrors the constant in
+	// the controller's webhook package; we duplicate it here to keep the
+	// daemon free of the webhook import.
+	ServiceAnnotationShared = "juneau.loutres.me/shared-service"
+	defaultServiceVpc       = "default"
+
+	// kubernetesServiceNamespace and kubernetesServiceName identify the
+	// canonical "kubernetes" Service in the default namespace. It is
+	// implicitly treated as shared so Pods in any Vpc can reach the
+	// apiserver via its ClusterIP, regardless of opt-in annotation.
+	kubernetesServiceNamespace = "default"
+	kubernetesServiceName      = "kubernetes"
+
+	// svcFlagShared mirrors SVC_FLAG_SHARED in daemon/bpf/maps.h. Setting
+	// it on service_val.flags lets pod_egress.handle_service treat
+	// caller_vpc != owner_vpc as a shared-Service hit instead of a drop.
+	svcFlagShared uint32 = 1 << 0
 
 	// kubernetesServiceLabel links an EndpointSlice to its parent Service
 	// and is the canonical Kubernetes selector for the relationship.
@@ -232,6 +249,7 @@ func (r *Service) upsert(ctx context.Context, key string, svc *corev1.Service) e
 		val := bpf.PodEgressServiceVal{
 			OwnerVpcId:   vpc.Status.VpcID,
 			BackendCount: uint32(len(backendsByPort[port])),
+			Flags:        serviceFlags(svc),
 		}
 		if err := r.podEgress.Objs.ServiceMap.Update(&key, &val, ebpf.UpdateAny); err != nil {
 			return fmt.Errorf("update ServiceMap: %w", err)
@@ -387,6 +405,24 @@ func (r *Service) findInterfaceForPod(ctx context.Context, namespace, podName st
 		}
 	}
 	return &ifaceList.Items[0], nil
+}
+
+// serviceFlags returns the SVC_FLAG_* bitmask written to service_val.flags
+// for the given Service. Currently only the shared bit is exposed; it is
+// set when the user opts in via annotation, and is set unconditionally
+// for the canonical kubernetes Service so cross-Vpc apiserver access
+// works without additional configuration.
+func serviceFlags(svc *corev1.Service) uint32 {
+	if svc == nil {
+		return 0
+	}
+	if svc.Namespace == kubernetesServiceNamespace && svc.Name == kubernetesServiceName {
+		return svcFlagShared
+	}
+	if svc.Annotations[ServiceAnnotationShared] == "true" {
+		return svcFlagShared
+	}
+	return 0
 }
 
 func matchEndpointsForPort(endpoints []endpointInfo, svcPort corev1.ServicePort) []endpointInfo {
