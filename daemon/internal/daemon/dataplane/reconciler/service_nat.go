@@ -20,8 +20,11 @@ import (
 // into the service_nat_ip BPF map so pod_egress.handle_service_shared
 // can stamp shared-Service flows with this Node's SNAT source IP.
 //
-// The map is a single-entry array, so the reconciler simply overwrites
-// slot 0 on every Reconcile. Other Nodes' attachments are ignored.
+// The map is a single-entry array shared across the whole dataplane
+// for this Node. The reconciler only writes the slot for events keyed
+// to its own Node; cluster-wide informer fan-out for other Nodes'
+// attachments is filtered out by planAction so we don't clobber our
+// own slot when reacting to unrelated objects.
 type ServiceNAT struct {
 	client    client.Client
 	podEgress *program.PodEgress
@@ -41,45 +44,86 @@ func NewServiceNAT(cl client.Client, podEgress *program.PodEgress, nodeName stri
 
 func (r *ServiceNAT) Name() string { return "service_nat" }
 
+// natAction enumerates the possible reactions to a ServiceNATAttachment
+// event. Decoupling the decision from the side effect lets planAction
+// be unit-tested without touching the eBPF map.
+type natAction uint8
+
+const (
+	natNoop natAction = iota
+	natWrite
+	natClear
+)
+
+// planAction decides what to do with an incoming reconcile event.
+//
+// The shared informer delivers events for every Node's
+// ServiceNATAttachment, but each daemon only owns one slot in
+// service_nat_ip (its own Node's). Events for other Nodes are
+// completely irrelevant to that slot, so they must be a no-op —
+// in particular, calling clear() on them would wipe the slot we just
+// filled for our own Node.
+//
+// When the event IS for our Node:
+//   - missing object → clear (the attachment was deleted)
+//   - spec.NodeName moved to a different Node → clear (defensive: the
+//     name<->NodeName convention should keep this from happening, but
+//     if it does, we're no longer the owner)
+//   - empty assignedIP → clear (controller hasn't allocated yet)
+//   - valid IPv4 assignedIP → write
+//   - non-IPv4 assignedIP → error (caller decides whether to retry)
+func planAction(key, ourNode string, attachment *juneauv1alpha1.ServiceNATAttachment, notFound bool) (natAction, string, error) {
+	if key != ourNode {
+		return natNoop, "", nil
+	}
+	if notFound {
+		return natClear, "", nil
+	}
+	if attachment.Spec.NodeName != ourNode {
+		return natClear, "", nil
+	}
+	address := strings.TrimSpace(attachment.Status.AssignedIP)
+	if address == "" {
+		return natClear, "", nil
+	}
+	parsed := net.ParseIP(address)
+	if parsed == nil || parsed.To4() == nil {
+		return natNoop, "", fmt.Errorf("invalid assignedIP %q on ServiceNATAttachment %q", address, key)
+	}
+	return natWrite, address, nil
+}
+
 func (r *ServiceNAT) Reconcile(ctx context.Context, key string) error {
 	var attachment juneauv1alpha1.ServiceNATAttachment
 	err := r.client.Get(ctx, client.ObjectKey{Name: key}, &attachment)
-	if apierrors.IsNotFound(err) {
-		return r.clear(key)
+	notFound := apierrors.IsNotFound(err)
+	if err != nil && !notFound {
+		return err
 	}
+
+	action, address, err := planAction(key, r.nodeName, &attachment, notFound)
 	if err != nil {
 		return err
 	}
 
-	if attachment.Spec.NodeName != r.nodeName {
-		// Not for this Node; clear any stale local entry that the
-		// reconciler may have written for the same key earlier (the
-		// attachment name is the Node name, so this normally never
-		// happens — but the guard keeps the map authoritative).
+	switch action {
+	case natNoop:
+		return nil
+	case natClear:
 		return r.clear(key)
+	case natWrite:
+		hostIP, err := convert.IPv4ToBPFNetworkOrder(net.ParseIP(address))
+		if err != nil {
+			return fmt.Errorf("parse assignedIP %q: %w", address, err)
+		}
+		if err := r.podEgress.Objs.ServiceNatIp.Update(uint32(0), hostIP, ebpf.UpdateAny); err != nil {
+			return fmt.Errorf("update service_nat_ip: %w", err)
+		}
+		r.mu.Lock()
+		r.installed = true
+		r.mu.Unlock()
+		return nil
 	}
-
-	address := strings.TrimSpace(attachment.Status.AssignedIP)
-	if address == "" {
-		return r.clear(key)
-	}
-
-	parsed := net.ParseIP(address)
-	if parsed == nil || parsed.To4() == nil {
-		return fmt.Errorf("invalid assignedIP %q on ServiceNATAttachment %q", address, key)
-	}
-	hostIP, err := convert.IPv4ToBPFNetworkOrder(parsed)
-	if err != nil {
-		return fmt.Errorf("parse assignedIP %q: %w", address, err)
-	}
-
-	if err := r.podEgress.Objs.ServiceNatIp.Update(uint32(0), hostIP, ebpf.UpdateAny); err != nil {
-		return fmt.Errorf("update service_nat_ip: %w", err)
-	}
-
-	r.mu.Lock()
-	r.installed = true
-	r.mu.Unlock()
 	return nil
 }
 
