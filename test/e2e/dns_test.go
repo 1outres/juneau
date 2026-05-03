@@ -12,12 +12,12 @@ import (
 // Juneau virtual DNS resolver E2E. Each spec exercises a different
 // piece of the policy contract spelled out in the design doc:
 //
-//   * Pod in custom VPC resolves same-VPC Service        (basic happy path)
-//   * Cross-VPC isolation: non-shared Service is NXDOMAIN from another VPC
-//   * Shared Service is resolvable from any EnableService VPC
-//   * EnableService=false VPC cannot resolve svc.cluster.local
-//   * External names are forwarded to upstream resolvers
-//   * TCP fallback works (forced +tcp resolution)
+//   - Pod in custom VPC resolves same-VPC Service        (basic happy path)
+//   - Cross-VPC isolation: non-shared Service is NXDOMAIN from another VPC
+//   - Shared Service is resolvable from any EnableService VPC
+//   - EnableService=false VPC cannot resolve svc.cluster.local
+//   - External names are forwarded to upstream resolvers
+//   - TCP fallback works (forced +tcp resolution)
 //
 // All specs reuse the same client probe pattern: exec `nslookup` from a
 // curl Pod (busybox-based, ships nslookup) and inspect the address /

@@ -75,7 +75,7 @@ func (r *VpcReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, err
 	}
 
-	if !resource.ObjectMeta.DeletionTimestamp.IsZero() {
+	if !resource.DeletionTimestamp.IsZero() {
 		if err := r.updateStatus(ctx, &resource, resource.Status.MainRouteTable, resource.Status.VpcID, metav1.ConditionFalse, vpcReasonDeleting, "VPC is being deleted"); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -204,7 +204,7 @@ func (r *VpcReconciler) ensureServiceNATAttachments(ctx context.Context, vpc *ju
 		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, attachment, func() error {
 			// Spec is immutable per the webhook, so only set on create
 			// (when the resource has no UID yet).
-			if attachment.ObjectMeta.UID == "" {
+			if attachment.UID == "" {
 				attachment.Spec = juneauv1alpha1.ServiceNATAttachmentSpec{NodeName: nodeName}
 			}
 			return controllerutil.SetControllerReference(vpc, attachment, r.Scheme)

@@ -77,7 +77,7 @@ func (r *AllocationClaimReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	if !resource.ObjectMeta.DeletionTimestamp.IsZero() {
+	if !resource.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, r.handleDeletion(ctx, &resource)
 	}
 
@@ -183,7 +183,7 @@ func (r *AllocationClaimReconciler) handleDeletion(ctx context.Context, claim *j
 	} else {
 		if claim.Spec.ReleaseAfter != nil && claim.Spec.ReleaseAfter.Duration > 0 {
 			now := metav1.Now()
-			ttl := int32(claim.Spec.ReleaseAfter.Duration.Seconds())
+			ttl := int32(claim.Spec.ReleaseAfter.Seconds())
 			if lease.Spec.OwnerDeletionTimestamp == nil || lease.Spec.TTLSeconds == nil || *lease.Spec.TTLSeconds != ttl {
 				lease.Spec.OwnerDeletionTimestamp = &now
 				lease.Spec.TTLSeconds = &ttl
@@ -607,7 +607,7 @@ func (r *AllocationClaimReconciler) updateStatus(ctx context.Context, resource *
 			return err
 		}
 		resource.Status = fresh.Status
-		resource.ObjectMeta.ResourceVersion = fresh.ObjectMeta.ResourceVersion
+		resource.ResourceVersion = fresh.ResourceVersion
 		return nil
 	})
 }

@@ -77,7 +77,7 @@ func (r *AddressPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// AddressPool deletion is handled by the AllocationPool's OwnerRef GC,
 	// so no finalizer is required here.
-	if !addressPool.ObjectMeta.DeletionTimestamp.IsZero() {
+	if !addressPool.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil
 	}
 

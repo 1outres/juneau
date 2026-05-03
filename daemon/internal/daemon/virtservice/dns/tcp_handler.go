@@ -78,7 +78,7 @@ func (h *TCPHandler) AcceptLoop(ctx context.Context, l net.Listener, tenant virt
 }
 
 func (h *TCPHandler) handleConn(ctx context.Context, conn net.Conn, tenant virtservice.TenantID) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	clientIP, clientPort := splitTCPAddr(conn.RemoteAddr())
 	for {

@@ -3,7 +3,6 @@ package packetplane
 import (
 	"encoding/binary"
 	"fmt"
-	"net"
 	"net/netip"
 )
 
@@ -67,7 +66,7 @@ func BuildUDPResponse(flow Flow, payload []byte) ([]byte, error) {
 	binary.BigEndian.PutUint16(ip[4:6], 0)      // identification: 0 — DF set, no fragmentation
 	binary.BigEndian.PutUint16(ip[6:8], 0x4000) // flags=DF, frag offset=0
 	ip[8] = 64                                  // TTL
-	ip[9] = byte(flow.Proto)                    // IPPROTO_UDP for UDP
+	ip[9] = flow.Proto                          // IPPROTO_UDP for UDP
 	binary.BigEndian.PutUint16(ip[10:12], 0)    // checksum filled in below
 	srcIP := flow.ServiceIP.As4()
 	dstIP := flow.ClientIP.As4()
@@ -148,15 +147,4 @@ func addrFromBytes(b []byte) netip.Addr {
 	var arr [4]byte
 	copy(arr[:], b)
 	return netip.AddrFrom4(arr)
-}
-
-// macFromBytes copies a 6-byte slice into a fresh net.HardwareAddr.
-// Returns nil when len != 6 so callers can fail-fast.
-func macFromBytes(b []byte) net.HardwareAddr {
-	if len(b) != 6 {
-		return nil
-	}
-	out := make(net.HardwareAddr, 6)
-	copy(out, b)
-	return out
 }
