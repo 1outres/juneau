@@ -11,9 +11,9 @@ import (
 )
 
 type stubVPCResolver struct {
-	name           string
-	enableService  bool
-	ok             bool
+	name          string
+	enableService bool
+	ok            bool
 }
 
 func (s stubVPCResolver) LookupByID(_ context.Context, _ uint32) (string, bool, bool) {
@@ -143,7 +143,7 @@ func TestHandlerServerFailureWhenVPCUnknown(t *testing.T) {
 	wire := packQuery(t, "demo.ns1.svc.cluster.local.", dnsmessage.TypeA, 0x1234, 0)
 	resp := &captureResponder{}
 	req := virtservice.PacketRequest{
-		Tenant: virtservice.TenantID{VPCID: 9999},
+		Tenant:  virtservice.TenantID{VPCID: 9999},
 		Payload: wire,
 	}
 	if err := h.HandlePacket(context.Background(), req, resp); err != nil {
@@ -181,7 +181,7 @@ func TestHandlerTruncatesOversizedResponse(t *testing.T) {
 	wire := packQuery(t, "demo.ns1.svc.cluster.local.", dnsmessage.TypeA, 1, 0)
 	resp := &captureResponder{}
 	if err := h.HandlePacket(context.Background(), virtservice.PacketRequest{
-		Tenant: virtservice.TenantID{VPCID: 1, SubnetID: 1},
+		Tenant:  virtservice.TenantID{VPCID: 1, SubnetID: 1},
 		Payload: wire,
 	}, resp); err != nil {
 		t.Fatalf("HandlePacket: %v", err)

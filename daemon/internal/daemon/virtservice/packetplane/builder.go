@@ -64,7 +64,7 @@ func BuildUDPResponse(flow Flow, payload []byte) ([]byte, error) {
 	ip[0] = 0x45 // version 4, IHL 5
 	ip[1] = 0    // DSCP / ECN
 	binary.BigEndian.PutUint16(ip[2:4], uint16(totalIP))
-	binary.BigEndian.PutUint16(ip[4:6], 0) // identification: 0 — DF set, no fragmentation
+	binary.BigEndian.PutUint16(ip[4:6], 0)      // identification: 0 — DF set, no fragmentation
 	binary.BigEndian.PutUint16(ip[6:8], 0x4000) // flags=DF, frag offset=0
 	ip[8] = 64                                  // TTL
 	ip[9] = byte(flow.Proto)                    // IPPROTO_UDP for UDP

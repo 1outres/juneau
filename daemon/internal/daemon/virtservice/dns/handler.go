@@ -94,13 +94,13 @@ func (h *Handler) HandlePacket(ctx context.Context, req virtservice.PacketReques
 // parsedQuery holds the bits of the inbound DNS message the encoder
 // needs to echo back (id, opcode, RD bit, original question section).
 type parsedQuery struct {
-	id              uint16
-	opcode          dnsmessage.OpCode
-	rd              bool
-	question        dnsmessage.Question
-	questionName    string
-	questionType    QueryType
-	questionClass   QueryClass
+	id            uint16
+	opcode        dnsmessage.OpCode
+	rd            bool
+	question      dnsmessage.Question
+	questionName  string
+	questionType  QueryType
+	questionClass QueryClass
 
 	// EDNS0 buffer size advertised by the client (0 if no OPT record).
 	udpBufSize uint16
@@ -127,13 +127,13 @@ func (h *Handler) parseQuery(req virtservice.PacketRequest) (parsedQuery, error)
 	}
 
 	parsed := parsedQuery{
-		id:              hdr.ID,
-		opcode:          hdr.OpCode,
-		rd:              hdr.RecursionDesired,
-		question:        q,
-		questionName:    strings.ToLower(q.Name.String()),
-		questionType:    QueryType(q.Type),
-		questionClass:   QueryClass(q.Class),
+		id:            hdr.ID,
+		opcode:        hdr.OpCode,
+		rd:            hdr.RecursionDesired,
+		question:      q,
+		questionName:  strings.ToLower(q.Name.String()),
+		questionType:  QueryType(q.Type),
+		questionClass: QueryClass(q.Class),
 	}
 
 	// Walk the additional section to find an OPT record carrying the

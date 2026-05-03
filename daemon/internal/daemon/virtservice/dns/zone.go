@@ -21,16 +21,16 @@ import (
 //
 // Naming scheme supported (the kubernetes-conventional one):
 //
-//   <svc>.<ns>.svc.<cluster-domain>          → A record(s) for the
-//                                              ClusterIP, subject to
-//                                              VPC policy.
+//	<svc>.<ns>.svc.<cluster-domain>          → A record(s) for the
+//	                                           ClusterIP, subject to
+//	                                           VPC policy.
 //
 // Other forms (PTR, SRV, etc.) currently return NXDOMAIN; we add them
 // as use cases come in.
 type ClusterZone struct {
-	client      client.Client
-	suffix      string // dot-suffixed; e.g. "cluster.local."
-	defaultTTL  uint32
+	client     client.Client
+	suffix     string // dot-suffixed; e.g. "cluster.local."
+	defaultTTL uint32
 }
 
 // ErrNotInZone signals that the queried name is outside the zone's

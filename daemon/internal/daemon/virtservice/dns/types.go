@@ -3,13 +3,13 @@
 //
 // The package is split into:
 //
-//   * service.go   – lifecycle: Subnet informer → registry binding,
-//                    constructs the resolver chain.
-//   * handler.go   – PacketHandler implementation: parse → resolve →
-//                    write response. Owns the wire format.
-//   * zone.go      – cluster.local zone view: VPC-aware Service lookup
-//                    backed by the daemon's Kubernetes cache.
-//   * forwarder.go – upstream UDP forwarder for non-cluster names.
+//   - service.go   – lifecycle: Subnet informer → registry binding,
+//     constructs the resolver chain.
+//   - handler.go   – PacketHandler implementation: parse → resolve →
+//     write response. Owns the wire format.
+//   - zone.go      – cluster.local zone view: VPC-aware Service lookup
+//     backed by the daemon's Kubernetes cache.
+//   - forwarder.go – upstream UDP forwarder for non-cluster names.
 //
 // The split keeps wire-level logic (handler) independent of resolution
 // logic (zone + forwarder), so a future control-plane feature (e.g.
@@ -48,8 +48,8 @@ const (
 type Query struct {
 	// Name is the lower-cased FQDN with the trailing dot. e.g.
 	// "kubernetes.default.svc.cluster.local."
-	Name string
-	Type QueryType
+	Name  string
+	Type  QueryType
 	Class QueryClass
 
 	// CallerVPC is the Vpc resource name of the Pod that asked the
@@ -87,8 +87,8 @@ type Answer struct {
 // "valid empty response" (e.g. NODATA); the wire layer translates
 // non-zero RCode into the corresponding dnsmessage.RCode.
 type Response struct {
-	RCode     RCode
-	Answers   []Answer
+	RCode   RCode
+	Answers []Answer
 	// Authoritative reflects the AA bit on the wire. True for
 	// cluster.local records served from the local Service cache;
 	// false for forwarded responses.

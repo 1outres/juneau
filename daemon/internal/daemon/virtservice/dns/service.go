@@ -31,19 +31,19 @@ type Service struct {
 	tcpHandler *TCPHandler
 	rootCtx    context.Context
 
-	mu        sync.Mutex
-	bindings  map[string]subnetBinding // subnet name -> binding
+	mu       sync.Mutex
+	bindings map[string]subnetBinding // subnet name -> binding
 }
 
 type subnetBinding struct {
-	addr           virtservice.VirtualAddr
-	tcpAddr        virtservice.VirtualAddr // same VIP, proto=TCP
-	tenant         virtservice.TenantID
-	serviceMAC     net.HardwareAddr
-	udpUnregister  virtservice.Unregister
-	tcpUnregister  virtservice.Unregister
-	tcpAcceptStop  context.CancelFunc
-	tcpAcceptDone  chan struct{}
+	addr          virtservice.VirtualAddr
+	tcpAddr       virtservice.VirtualAddr // same VIP, proto=TCP
+	tenant        virtservice.TenantID
+	serviceMAC    net.HardwareAddr
+	udpUnregister virtservice.Unregister
+	tcpUnregister virtservice.Unregister
+	tcpAcceptStop context.CancelFunc
+	tcpAcceptDone chan struct{}
 }
 
 // New constructs a DNS Service over the supplied registry and resolver
@@ -323,4 +323,3 @@ func macsEqual(a, b net.HardwareAddr) bool {
 	}
 	return true
 }
-

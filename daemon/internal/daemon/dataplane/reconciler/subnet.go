@@ -42,8 +42,8 @@ type Subnet struct {
 // reconcile (or delete) can clean up the right keys even when the
 // in-memory Subnet object is no longer available.
 type subnetSnapshot struct {
-	vni    uint32
-	dnsIP  uint32 // host byte order; 0 means "no DNS entry written"
+	vni   uint32
+	dnsIP uint32 // host byte order; 0 means "no DNS entry written"
 }
 
 func NewSubnet(cl client.Client, hostEgress *program.PodEgress) *Subnet {

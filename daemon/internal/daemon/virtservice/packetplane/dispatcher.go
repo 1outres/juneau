@@ -48,9 +48,9 @@ type TCPHandler func(ctx context.Context, flow Flow, ipPacket []byte) error
 // One Dispatcher serves one TAP. The intent is one TAP per node, so a
 // single Dispatcher routes every virtual service.
 type Dispatcher struct {
-	tap        *TAP
-	flowTable  *FlowTable
-	bufSize    int
+	tap       *TAP
+	flowTable *FlowTable
+	bufSize   int
 
 	mu          sync.RWMutex
 	handlers    map[HandlerKey]UDPHandler

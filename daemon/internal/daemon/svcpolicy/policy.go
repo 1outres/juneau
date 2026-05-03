@@ -4,11 +4,11 @@
 //
 // The same rules apply at two layers:
 //
-//   * BPF backend programming (daemon/internal/daemon/dataplane/reconciler/service.go)
+//   - BPF backend programming (daemon/internal/daemon/dataplane/reconciler/service.go)
 //     decides whether to populate service_map / backend_map for a Service
 //     so the data plane forwards Pod → ClusterIP traffic.
 //
-//   * Virtual DNS resolution (daemon/internal/daemon/virtservice/dns)
+//   - Virtual DNS resolution (daemon/internal/daemon/virtservice/dns)
 //     decides whether to answer A queries for `<svc>.<ns>.svc.cluster.local`.
 //
 // Without a shared helper the two paths inevitably drift, producing
@@ -72,14 +72,14 @@ func IsShared(svc *corev1.Service) bool {
 // resolve / reach svc, given whether that Vpc has EnableService set.
 //
 // Rules (in order):
-//   1. If the caller Vpc does not have EnableService, no Service is
-//      resolvable. This mirrors the BPF data plane, which won't
-//      forward Pod → ClusterIP traffic from such a Vpc.
-//   2. If the Service is owned by the same Vpc as the caller, it is
-//      resolvable.
-//   3. If the Service is shared (annotation or kubernetes Service),
-//      it is resolvable from any EnableService Vpc.
-//   4. Otherwise no.
+//  1. If the caller Vpc does not have EnableService, no Service is
+//     resolvable. This mirrors the BPF data plane, which won't
+//     forward Pod → ClusterIP traffic from such a Vpc.
+//  2. If the Service is owned by the same Vpc as the caller, it is
+//     resolvable.
+//  3. If the Service is shared (annotation or kubernetes Service),
+//     it is resolvable from any EnableService Vpc.
+//  4. Otherwise no.
 func ResolvableFrom(svc *corev1.Service, callerVpc string, callerEnableService bool) bool {
 	if svc == nil {
 		return false

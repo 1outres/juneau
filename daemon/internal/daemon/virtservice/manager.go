@@ -71,8 +71,8 @@ func NewManager(virtServiceMap, virtServiceFlowMap *ebpf.Map, opts ManagerOption
 		opts.TAPMtu = 1450
 	}
 	return &Manager{
-		opts:   opts,
-		bpfMap: virtServiceMap,
+		opts:      opts,
+		bpfMap:    virtServiceMap,
 		flowTable: packetplane.NewFlowTable(virtServiceFlowMap),
 	}, nil
 }

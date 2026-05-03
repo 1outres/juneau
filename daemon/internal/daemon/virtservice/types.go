@@ -7,23 +7,24 @@
 // stdlib-shaped APIs (net.Conn, net.PacketConn) without ever importing
 // BPF or AF_PACKET internals:
 //
-//   1. BPF classifier (pod_egress.c) catches Pod packets to known
-//      virtual VIPs and redirects them to a TAP device, capturing
-//      tenant + return-path metadata in virtual_service_flow_map.
+//  1. BPF classifier (pod_egress.c) catches Pod packets to known
+//     virtual VIPs and redirects them to a TAP device, capturing
+//     tenant + return-path metadata in virtual_service_flow_map.
 //
-//   2. The packet plane (subpackage packetplane) reads the redirected
-//      frames from TAP, looks up the captured metadata, dispatches to
-//      handlers, and sends responses straight back via AF_PACKET on the
-//      Pod's host-side veth — never via the host routing table, which
-//      has no native vpc_id dimension.
+//  2. The packet plane (subpackage packetplane) reads the redirected
+//     frames from TAP, looks up the captured metadata, dispatches to
+//     handlers, and sends responses straight back via AF_PACKET on the
+//     Pod's host-side veth — never via the host routing table, which
+//     has no native vpc_id dimension.
 //
-//   3. Built-in services (subpackage dns and friends) plug into the
-//      packet plane via the Registry interface in this package, so the
-//      service code never sees a TAP fd, an ifindex, or a BPF map.
+//  3. Built-in services (subpackage dns and friends) plug into the
+//     packet plane via the Registry interface in this package, so the
+//     service code never sees a TAP fd, an ifindex, or a BPF map.
 //
 // Doc handoff:
-//   /tmp/juneau-virtual-service-plane-dns-handoff.md (in tree only as a
-//   design reference; the file lives under /tmp by convention).
+//
+//	/tmp/juneau-virtual-service-plane-dns-handoff.md (in tree only as a
+//	design reference; the file lives under /tmp by convention).
 package virtservice
 
 import (
@@ -98,10 +99,10 @@ type PacketHandler interface {
 type PacketRequest struct {
 	Tenant     TenantID
 	Service    ServiceID
-	Addr       VirtualAddr        // service-side address (dst of the request)
-	ClientIP   netip.Addr         // Pod-side source IP
-	ClientPort uint16             // Pod-side source port
-	Payload    []byte             // L4 payload only; no IP / UDP headers
+	Addr       VirtualAddr // service-side address (dst of the request)
+	ClientIP   netip.Addr  // Pod-side source IP
+	ClientPort uint16      // Pod-side source port
+	Payload    []byte      // L4 payload only; no IP / UDP headers
 }
 
 // Responder is what handlers use to send a single response payload
