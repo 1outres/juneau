@@ -20,20 +20,31 @@ type FlowKey struct {
 	SrcPort  uint16 // network byte order
 	DstPort  uint16
 	Proto    uint8
-	_pad     [3]byte
+	// Pad must be exported: cilium/ebpf decodes via encoding/binary's
+	// reflection path, which panics on unexported fields.
+	Pad [3]byte
 }
 
 // FlowVal mirrors virtual_service_flow_val. Only the fields the
 // userspace dispatcher needs to build the response are exported in
 // the higher-level Flow type below.
 type FlowVal struct {
-	VPCID       uint32
-	ServiceID   uint32
-	PodIfindex  uint32
-	PodMAC      [6]byte
-	ServiceMAC  [6]byte
-	_pad        [2]byte
-	LastSeenNS  uint64
+	VPCID      uint32
+	ServiceID  uint32
+	PodIfindex uint32
+	PodMAC     [6]byte
+	ServiceMAC [6]byte
+	// Pad mirrors the C struct's explicit 2-byte padding.
+	Pad [2]byte
+	// AlignPad is the implicit 6-byte tail padding the C compiler
+	// inserts so LastSeenNS lands on an 8-byte boundary. Without it,
+	// our struct is 34 bytes but the BPF map value is 40, and
+	// cilium/ebpf reports "doesn't consume all data".
+	AlignPad [6]byte
+	// All padding fields must be exported because cilium/ebpf decodes
+	// via encoding/binary's reflection path, which panics on unexported
+	// fields.
+	LastSeenNS uint64
 }
 
 // Flow is the dispatcher-friendly view of a single flow_map entry.
