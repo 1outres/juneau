@@ -24,19 +24,33 @@ import (
 // allocation propagates into subnet_map.vpc_id; without that, packets
 // from this Subnet would carry vpc_id=0 and fail the owner_vpc_id check
 // in handle_service.
+//
+// Beyond subnet_map, this reconciler is also the canonical writer of the
+// per-Subnet virtual-service ARP entry: arp_table[(vni, dns_vip)] =
+// dns_mac. Pod ARP for the DNS VIP is answered out of arp_table by
+// handle_arp in pod_egress.c, so without this entry every Pod ARP for
+// .2 would fail before the daemon ever saw a DNS query.
 type Subnet struct {
 	client     client.Client
 	hostEgress *program.PodEgress
 
 	mu        sync.Mutex
-	snapshots map[string]uint32 // subnet name -> VNI used at last write
+	snapshots map[string]subnetSnapshot
+}
+
+// subnetSnapshot remembers what we wrote to BPF for a Subnet so a later
+// reconcile (or delete) can clean up the right keys even when the
+// in-memory Subnet object is no longer available.
+type subnetSnapshot struct {
+	vni   uint32
+	dnsIP uint32 // host byte order; 0 means "no DNS entry written"
 }
 
 func NewSubnet(cl client.Client, hostEgress *program.PodEgress) *Subnet {
 	return &Subnet{
 		client:     cl,
 		hostEgress: hostEgress,
-		snapshots:  make(map[string]uint32),
+		snapshots:  make(map[string]subnetSnapshot),
 	}
 }
 
@@ -118,10 +132,79 @@ func (r *Subnet) upsert(ctx context.Context, subnet *juneauv1alpha1.Subnet) erro
 		return fmt.Errorf("update SubnetMap: %w", err)
 	}
 
+	// Reconcile the per-Subnet DNS VIP ARP entry. Empty DNS / DNSMAC
+	// indicates the Subnet is too narrow for a `.2` (e.g. /31) and the
+	// virtual DNS service is intentionally absent for it.
+	dnsIPHost, err := r.upsertDNSARP(subnet)
+	if err != nil {
+		return err
+	}
+
 	r.mu.Lock()
-	r.snapshots[subnet.Name] = subnet.Status.VNI
+	prev := r.snapshots[subnet.Name]
+	r.snapshots[subnet.Name] = subnetSnapshot{vni: subnet.Status.VNI, dnsIP: dnsIPHost}
 	r.mu.Unlock()
 
+	// If a prior reconcile wrote a DNS ARP entry for a different VNI/IP
+	// that we no longer want (Subnet renumbered, DNS removed), drop the
+	// stale entry now. We keep this logic outside the snapshot mutex to
+	// avoid holding it across a BPF syscall.
+	if prev.dnsIP != 0 && (prev.vni != subnet.Status.VNI || prev.dnsIP != dnsIPHost) {
+		if err := r.deleteDNSARP(prev.vni, prev.dnsIP); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// upsertDNSARP writes (or refreshes) the arp_table entry that lets
+// pod_egress.handle_arp reply to Pod ARPs for this Subnet's DNS VIP. The
+// returned host-byte-order DNS IP is recorded in the snapshot so future
+// reconciles know exactly which key to clean up. Returns 0 when the
+// Subnet has no DNS VIP (status.dns is empty) or DNS is not yet ready.
+func (r *Subnet) upsertDNSARP(subnet *juneauv1alpha1.Subnet) (uint32, error) {
+	if subnet.Status.DNS == "" || subnet.Status.DNSMAC == "" {
+		return 0, nil
+	}
+
+	dnsAddr := net.ParseIP(subnet.Status.DNS)
+	if dnsAddr == nil {
+		return 0, fmt.Errorf("failed to parse DNS IP: %s", subnet.Status.DNS)
+	}
+	dnsHost, err := convert.IPv4ToUint32(dnsAddr)
+	if err != nil {
+		return 0, fmt.Errorf("convert DNS IP: %w", err)
+	}
+
+	dnsMAC, err := net.ParseMAC(subnet.Status.DNSMAC)
+	if err != nil {
+		return 0, fmt.Errorf("parse DNS MAC: %w", err)
+	}
+	dnsMACArr, err := convert.HardwareAddrToUint8Array(dnsMAC)
+	if err != nil {
+		return 0, fmt.Errorf("convert DNS MAC: %w", err)
+	}
+
+	if err := r.hostEgress.Objs.ArpTable.Update(
+		&bpf.PodEgressArpTableKey{SubnetId: subnet.Status.VNI, Ipaddr: dnsHost},
+		&bpf.PodEgressArpTableVal{Mac: dnsMACArr},
+		ebpf.UpdateAny,
+	); err != nil {
+		return 0, fmt.Errorf("update ArpTable for DNS VIP: %w", err)
+	}
+	return dnsHost, nil
+}
+
+func (r *Subnet) deleteDNSARP(vni, dnsHost uint32) error {
+	if vni == 0 || dnsHost == 0 {
+		return nil
+	}
+	if err := r.hostEgress.Objs.ArpTable.Delete(
+		&bpf.PodEgressArpTableKey{SubnetId: vni, Ipaddr: dnsHost},
+	); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+		return fmt.Errorf("delete ArpTable DNS VIP entry: %w", err)
+	}
 	return nil
 }
 
@@ -188,16 +271,20 @@ func (r *Subnet) FanOutRouteTableToSubnets(obj any) []string {
 
 func (r *Subnet) delete(key string) error {
 	r.mu.Lock()
-	vni, ok := r.snapshots[key]
+	snap, ok := r.snapshots[key]
 	r.mu.Unlock()
 	if !ok {
 		return nil
 	}
 
-	zap.S().Infof("subnet: deleting %s (VNI=%d)", key, vni)
+	zap.S().Infof("subnet: deleting %s (VNI=%d)", key, snap.vni)
 
-	if err := r.hostEgress.Objs.SubnetMap.Delete(&bpf.PodEgressSubnetKey{SubnetId: vni}); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+	if err := r.hostEgress.Objs.SubnetMap.Delete(&bpf.PodEgressSubnetKey{SubnetId: snap.vni}); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 		return fmt.Errorf("delete SubnetMap: %w", err)
+	}
+
+	if err := r.deleteDNSARP(snap.vni, snap.dnsIP); err != nil {
+		return err
 	}
 
 	r.mu.Lock()

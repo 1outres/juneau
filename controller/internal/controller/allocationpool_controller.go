@@ -57,7 +57,7 @@ func (r *AllocationPoolReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	if resource.ObjectMeta.DeletionTimestamp.IsZero() {
+	if resource.DeletionTimestamp.IsZero() {
 		if msg := validateAllocationPoolForStatus(&resource); msg != "" {
 			if err := r.updateStatus(ctx, &resource, metav1.ConditionFalse, allocationPoolReasonInvalid, msg); err != nil {
 				logger.Error(err, "unable to update AllocationPool status", "name", req.Name)
@@ -109,7 +109,7 @@ func (r *AllocationPoolReconciler) updateStatus(ctx context.Context, resource *j
 			return err
 		}
 		resource.Status = fresh.Status
-		resource.ObjectMeta.ResourceVersion = fresh.ObjectMeta.ResourceVersion
+		resource.ResourceVersion = fresh.ResourceVersion
 		return nil
 	})
 }

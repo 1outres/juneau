@@ -88,7 +88,7 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	if !resource.ObjectMeta.DeletionTimestamp.IsZero() {
+	if !resource.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, r.handleDeletion(ctx, &resource)
 	}
 

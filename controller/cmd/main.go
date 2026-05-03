@@ -44,10 +44,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	"github.com/1outres/juneau/controller/internal/controller"
-	webhookjuneauloutresmev1alpha1 "github.com/1outres/juneau/controller/internal/webhook/v1alpha1"
 	webhookjuneauv1alpha1 "github.com/1outres/juneau/controller/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
@@ -61,9 +59,6 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(juneauv1alpha1.AddToScheme(scheme))
-	utilruntime.Must(juneauv1alpha1.AddToScheme(scheme))
-	utilruntime.Must(juneauv1alpha1.AddToScheme(scheme))
-	utilruntime.Must(juneauloutresmev1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -278,6 +273,13 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err = webhookjuneauv1alpha1.SetupPodWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "Pod")
+			os.Exit(1)
+		}
+	}
 	if err = (&controller.NetworkInterfaceReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
@@ -344,28 +346,28 @@ func main() {
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookjuneauloutresmev1alpha1.SetupAddressPoolWebhookWithManager(mgr); err != nil {
+		if err = webhookjuneauv1alpha1.SetupAddressPoolWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "AddressPool")
 			os.Exit(1)
 		}
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookjuneauloutresmev1alpha1.SetupBGPAdvertisementWebhookWithManager(mgr); err != nil {
+		if err = webhookjuneauv1alpha1.SetupBGPAdvertisementWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "BGPAdvertisement")
 			os.Exit(1)
 		}
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookjuneauloutresmev1alpha1.SetupBGPPeerWebhookWithManager(mgr); err != nil {
+		if err = webhookjuneauv1alpha1.SetupBGPPeerWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "BGPPeer")
 			os.Exit(1)
 		}
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookjuneauloutresmev1alpha1.SetupExternalNetworkWebhookWithManager(mgr); err != nil {
+		if err = webhookjuneauv1alpha1.SetupExternalNetworkWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "ExternalNetwork")
 			os.Exit(1)
 		}
@@ -386,21 +388,21 @@ func main() {
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookjuneauloutresmev1alpha1.SetupElasticIPWebhookWithManager(mgr); err != nil {
+		if err = webhookjuneauv1alpha1.SetupElasticIPWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "ElasticIP")
 			os.Exit(1)
 		}
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookjuneauloutresmev1alpha1.SetupElasticIPAttachmentWebhookWithManager(mgr); err != nil {
+		if err = webhookjuneauv1alpha1.SetupElasticIPAttachmentWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "ElasticIPAttachment")
 			os.Exit(1)
 		}
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookjuneauloutresmev1alpha1.SetupRouteTableWebhookWithManager(mgr); err != nil {
+		if err = webhookjuneauv1alpha1.SetupRouteTableWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "RouteTable")
 			os.Exit(1)
 		}
@@ -421,14 +423,14 @@ func main() {
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookjuneauloutresmev1alpha1.SetupAllocationPoolWebhookWithManager(mgr); err != nil {
+		if err = webhookjuneauv1alpha1.SetupAllocationPoolWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "AllocationPool")
 			os.Exit(1)
 		}
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookjuneauloutresmev1alpha1.SetupAllocationClaimWebhookWithManager(mgr); err != nil {
+		if err = webhookjuneauv1alpha1.SetupAllocationClaimWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "AllocationClaim")
 			os.Exit(1)
 		}
@@ -442,7 +444,7 @@ func main() {
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookjuneauloutresmev1alpha1.SetupAllocationLeaseWebhookWithManager(mgr); err != nil {
+		if err = webhookjuneauv1alpha1.SetupAllocationLeaseWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "AllocationLease")
 			os.Exit(1)
 		}
@@ -456,7 +458,7 @@ func main() {
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookjuneauloutresmev1alpha1.SetupNATGatewayWebhookWithManager(mgr); err != nil {
+		if err = webhookjuneauv1alpha1.SetupNATGatewayWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "NATGateway")
 			os.Exit(1)
 		}
@@ -470,7 +472,7 @@ func main() {
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookjuneauloutresmev1alpha1.SetupExternalNetworkAttachmentWebhookWithManager(mgr); err != nil {
+		if err = webhookjuneauv1alpha1.SetupExternalNetworkAttachmentWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "ExternalNetworkAttachment")
 			os.Exit(1)
 		}
@@ -485,7 +487,7 @@ func main() {
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookjuneauloutresmev1alpha1.SetupServiceNATAttachmentWebhookWithManager(mgr); err != nil {
+		if err = webhookjuneauv1alpha1.SetupServiceNATAttachmentWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "ServiceNATAttachment")
 			os.Exit(1)
 		}

@@ -65,7 +65,7 @@ func (r *AllocationLeaseReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	if !resource.ObjectMeta.DeletionTimestamp.IsZero() {
+	if !resource.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil
 	}
 
@@ -138,7 +138,7 @@ func (r *AllocationLeaseReconciler) updateStatus(ctx context.Context, resource *
 			return err
 		}
 		resource.Status = fresh.Status
-		resource.ObjectMeta.ResourceVersion = fresh.ObjectMeta.ResourceVersion
+		resource.ResourceVersion = fresh.ResourceVersion
 		return nil
 	})
 }

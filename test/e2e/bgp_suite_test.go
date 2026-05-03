@@ -105,47 +105,47 @@ spec:
 
 func applyAddressPool(name string, addresses []string) error {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf(`apiVersion: juneau.loutres.me/v1alpha1
+	fmt.Fprintf(&b, `apiVersion: juneau.loutres.me/v1alpha1
 kind: AddressPool
 metadata:
   name: %s
 spec:
   advertiseMode: bgp
   addresses:
-`, name))
+`, name)
 	for _, a := range addresses {
-		b.WriteString(fmt.Sprintf("    - %s\n", a))
+		fmt.Fprintf(&b, "    - %s\n", a)
 	}
 	return applyManifest(b.String())
 }
 
 func applyBGPAdvertisement(name string, pools []string) error {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf(`apiVersion: juneau.loutres.me/v1alpha1
+	fmt.Fprintf(&b, `apiVersion: juneau.loutres.me/v1alpha1
 kind: BGPAdvertisement
 metadata:
   name: %s
 spec:
   addressPools:
-`, name))
+`, name)
 	for _, p := range pools {
-		b.WriteString(fmt.Sprintf("    - %s\n", p))
+		fmt.Fprintf(&b, "    - %s\n", p)
 	}
 	return applyManifest(b.String())
 }
 
 func applyExternalNetwork(name string, pools []string) error {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf(`apiVersion: juneau.loutres.me/v1alpha1
+	fmt.Fprintf(&b, `apiVersion: juneau.loutres.me/v1alpha1
 kind: ExternalNetwork
 metadata:
   name: %s
 spec:
   type: bgp
   addressPools:
-`, name))
+`, name)
 	for _, p := range pools {
-		b.WriteString(fmt.Sprintf("    - %s\n", p))
+		fmt.Fprintf(&b, "    - %s\n", p)
 	}
 	return applyManifest(b.String())
 }

@@ -99,7 +99,7 @@ func (r *ElasticIPReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
-	if !resource.ObjectMeta.DeletionTimestamp.IsZero() {
+	if !resource.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, r.handleDeletion(ctx, &resource)
 	}
 
