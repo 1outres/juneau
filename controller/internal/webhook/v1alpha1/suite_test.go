@@ -92,6 +92,7 @@ var _ = BeforeSuite(func() {
 	Expect(SetupAddressPoolWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupSubnetWebhookWithManager(mgr, testServiceCIDR)).To(Succeed())
 	Expect(SetupServiceWebhookWithManager(mgr)).To(Succeed())
+	Expect(SetupPodWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupNetworkInterfaceWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupElasticIPAttachmentWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupNetworkEndpointWebhookWithManager(mgr)).To(Succeed())

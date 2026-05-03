@@ -53,6 +53,14 @@
 #define MAX_NAPT_SRC 4096
 #endif
 
+#ifndef MAX_VIRTUAL_SERVICE_MAP
+#define MAX_VIRTUAL_SERVICE_MAP 16384
+#endif
+
+#ifndef MAX_VIRTUAL_SERVICE_FLOW_MAP
+#define MAX_VIRTUAL_SERVICE_FLOW_MAP 131072
+#endif
+
 #define FIB_ROUTE_TYPE_CONNECTED 1
 #define FIB_ROUTE_TYPE_ENDPOINT 2
 #define FIB_ROUTE_TYPE_INTERNET_GATEWAY 3
@@ -424,5 +432,79 @@ struct {
   __type(value, struct napt_src_val);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } napt_src SEC(".maps");
+
+// virtual_service_map dispatches Pod traffic destined to a per-Subnet
+// virtual service (DNS today; arbitrary L7 services in the future) to
+// the daemon's userspace packet plane. Keyed by the (subnet_id, dst IP,
+// dst port, proto) tuple so multiple Subnets can share the same VIP
+// (.2 in each Subnet's CIDR) without collision. The control-plane writes
+// one entry per (Subnet × {UDP/53, TCP/53}) for DNS; the data plane only
+// matches entries whose `tap_ifindex` is non-zero (so a half-initialised
+// service — e.g. registered before the TAP exists — never causes a
+// silent black hole).
+struct virtual_service_key {
+  __u32 subnet_id;
+  __be32 dst_ip;       // network byte order; matches iph->daddr directly
+  __be16 dst_port;     // network byte order; matches udp/tcp dst port
+  __u8 proto;          // IPPROTO_UDP / IPPROTO_TCP
+  __u8 _pad;
+};
+
+// VIRTSVC_FLAG_* describe per-entry behaviour. None defined yet; the
+// flags slot is reserved so we can opt new services in to behaviours
+// (e.g. "skip flow recording", "drop on missing TAP") without rev-ing
+// the value layout.
+#define VIRTSVC_FLAG_NONE 0
+
+struct virtual_service_val {
+  __u32 service_id;
+  __u32 tap_ifindex;     // 0 means "service registered but TAP not ready"
+  __u8 service_mac[6];
+  __u8 _pad[2];
+  __u32 flags;
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_VIRTUAL_SERVICE_MAP);
+  __type(key, struct virtual_service_key);
+  __type(value, struct virtual_service_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} virtual_service_map SEC(".maps");
+
+// virtual_service_flow_map records per-flow return-path metadata so the
+// daemon can deliver responses straight to the originating Pod's veth
+// without consulting the host routing table (Pod IPs may overlap across
+// VPCs; Linux has no native vpc_id dimension). Populated on every Pod
+// → service packet that hits virtual_service_map; the daemon reads it
+// to build the AF_PACKET sockaddr_ll for the response. Keyed by the
+// 5-tuple plus subnet_id so VPC isolation is preserved.
+struct virtual_service_flow_key {
+  __u32 subnet_id;
+  __be32 src_ip;
+  __be32 dst_ip;
+  __be16 src_port;
+  __be16 dst_port;
+  __u8 proto;
+  __u8 _pad[3];
+};
+
+struct virtual_service_flow_val {
+  __u32 vpc_id;
+  __u32 service_id;
+  __u32 pod_ifindex;        // host-side veth ifindex for AF_PACKET sockaddr_ll
+  __u8 pod_mac[6];          // Pod's host-side veth MAC (response dst)
+  __u8 service_mac[6];      // service MAC observed on the request (response src)
+  __u8 _pad[2];
+  __u64 last_seen_ns;       // userspace GC timestamp
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_LRU_HASH);
+  __uint(max_entries, MAX_VIRTUAL_SERVICE_FLOW_MAP);
+  __type(key, struct virtual_service_flow_key);
+  __type(value, struct virtual_service_flow_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} virtual_service_flow_map SEC(".maps");
 
 #endif // JUNEAU_BPF_MAPS_H

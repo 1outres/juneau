@@ -1414,6 +1414,122 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
   return TC_ACT_SHOT;
 }
 
+// handle_virtual_service classifies Pod egress packets destined for a
+// per-Subnet virtual service (DNS today; arbitrary L7 services in the
+// future) and hands them off to the daemon's userspace packet plane via
+// the TAP device whose ifindex was programmed into virtual_service_map
+// at registration time.
+//
+// On a hit, return-path metadata (Pod ifindex, Pod MAC, service MAC,
+// vpc_id) is captured into virtual_service_flow_map so the daemon can
+// build the AF_PACKET sockaddr_ll for the response without consulting
+// the host routing table — required because Pod IPs may overlap across
+// VPCs and Linux has no native vpc_id dimension.
+//
+// Return value semantics:
+//   * `1`  — packet was dispatched (caller MUST return *out as the TC verdict)
+//   * `0`  — no virtual service matched; caller continues with its
+//            existing dispatch (gw-MAC / forward_l2)
+//   * `<0` — fatal parse error; caller MUST return TC_ACT_SHOT
+static __always_inline int
+handle_virtual_service(struct __sk_buff *skb, struct ethhdr *eth,
+                       struct iphdr *iph, void *data_end, __u32 subnet_id,
+                       __u32 vpc_id, int *out) {
+  __u8 proto = iph->protocol;
+  if (proto != IPPROTO_UDP && proto != IPPROTO_TCP)
+    return 0;
+
+  __u32 ihl = iph->ihl;
+  if (ihl < 5)
+    return -1;
+
+  // Bail on fragments other than the first: we cannot read L4 ports so
+  // dispatch by 5-tuple is impossible. Letting these fall through to
+  // the L2 path drops them via the absent FDB entry without surprising
+  // the caller.
+  if ((bpf_ntohs(iph->frag_off) & IP_OFFSET) != 0)
+    return 0;
+
+  void *l4 = (void *)iph + ihl * 4;
+  __be16 dport;
+  __be16 sport;
+  if (proto == IPPROTO_UDP) {
+    struct udphdr *udp = l4;
+    if ((void *)(udp + 1) > data_end)
+      return -1;
+    sport = udp->source;
+    dport = udp->dest;
+  } else {
+    struct tcphdr *tcp = l4;
+    if ((void *)(tcp + 1) > data_end)
+      return -1;
+    sport = tcp->source;
+    dport = tcp->dest;
+  }
+
+  struct virtual_service_key vk = {
+      .subnet_id = subnet_id,
+      .dst_ip = iph->daddr,
+      .dst_port = dport,
+      .proto = proto,
+      ._pad = 0,
+  };
+  const struct virtual_service_val *vv =
+      bpf_map_lookup_elem(&virtual_service_map, &vk);
+  if (!vv)
+    return 0;
+
+  // tap_ifindex == 0 marks a half-initialised registration (entry
+  // written before the daemon's packet plane finished bringing up the
+  // TAP). Fall through rather than redirect to ifindex 0 and silently
+  // drop.
+  if (vv->tap_ifindex == 0)
+    return 0;
+
+  struct virtual_service_flow_key fk = {
+      .subnet_id = subnet_id,
+      .src_ip = iph->saddr,
+      .dst_ip = iph->daddr,
+      .src_port = sport,
+      .dst_port = dport,
+      .proto = proto,
+  };
+  struct virtual_service_flow_val fv = {
+      .vpc_id = vpc_id,
+      .service_id = vv->service_id,
+      .pod_ifindex = skb->ifindex,
+      .last_seen_ns = bpf_ktime_get_ns(),
+  };
+  __builtin_memcpy(fv.pod_mac, eth->h_source, ETH_ALEN);
+  __builtin_memcpy(fv.service_mac, vv->service_mac, ETH_ALEN);
+  // BPF_ANY: refresh on every packet so the daemon's GC sees recent
+  // last_seen_ns even for long-lived UDP "flows".
+  bpf_map_update_elem(&virtual_service_flow_map, &fk, &fv, BPF_ANY);
+
+  // Stamp subnet_id into iph->id before redirect. The TAP carries no
+  // tenant metadata of its own and Pod IPs may overlap across VPCs,
+  // so the daemon's dispatcher needs an unambiguous subnet_id to key
+  // the flow_map lookup. iph->id is normally a counter for IP
+  // fragment reassembly; the daemon never reassembles or forwards the
+  // original packet (it builds a fresh response), so overwriting id
+  // is safe. MAX_SUBNET caps VNIs at 16384, well within 16 bits.
+  //
+  // We don't bother updating iph->check — userspace parses bytes
+  // directly without csum validation, and BPF redirect doesn't
+  // invoke kernel csum verification.
+  if (subnet_id <= 0xFFFF) {
+    __be16 sid_be = bpf_htons((__u16)subnet_id);
+    if (bpf_skb_store_bytes(skb,
+                            sizeof(struct ethhdr) +
+                                __builtin_offsetof(struct iphdr, id),
+                            &sid_be, sizeof(sid_be), 0) < 0)
+      return -1;
+  }
+
+  *out = bpf_redirect(vv->tap_ifindex, 0);
+  return 1;
+}
+
 static __always_inline int handle_l2(struct __sk_buff *skb) {
   void *data = (void *)(long)skb->data;
   void *data_end = skb_data_end(skb);
@@ -1482,6 +1598,20 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
 
     if (rc == 1)
       return dispatch_after_dnat(skb, eth, iph, subnet->table_id, iph->daddr);
+
+    // Virtual service classifier runs after Service-DNAT but before the
+    // gw-MAC / forward_l2 split. DNS and any future Subnet-local
+    // virtual service VIPs use a per-Subnet service MAC distinct from
+    // gw_mac, so they would otherwise fall through to forward_l2 and
+    // get dropped on the missing FDB entry.
+    int virt_rc = TC_ACT_OK;
+    int virt_hit = handle_virtual_service(skb, eth, iph, data_end,
+                                          val->subnet_id, subnet->vpc_id,
+                                          &virt_rc);
+    if (virt_hit < 0)
+      return TC_ACT_SHOT;
+    if (virt_hit == 1)
+      return virt_rc;
   }
 
   bool is_gw = true;

@@ -91,7 +91,7 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	if !resource.ObjectMeta.DeletionTimestamp.IsZero() {
-		if err := r.updateStatus(ctx, &resource, resource.Status.VNI, resource.Status.Gateway, resource.Status.GatewayMAC, metav1.ConditionFalse, subnetReasonDeleting, "subnet is being deleted"); err != nil {
+		if err := r.updateStatus(ctx, &resource, resource.Status, metav1.ConditionFalse, subnetReasonDeleting, "subnet is being deleted"); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
@@ -100,12 +100,12 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	var vpc juneauv1alpha1.Vpc
 	if err := r.Get(ctx, client.ObjectKey{Name: resource.Spec.Vpc}, &vpc); err != nil {
 		if errors.IsNotFound(err) {
-			if updateErr := r.updateStatus(ctx, &resource, resource.Status.VNI, resource.Status.Gateway, resource.Status.GatewayMAC, metav1.ConditionFalse, subnetReasonVpcNotFound, fmt.Sprintf("referenced VPC %q not found", resource.Spec.Vpc)); updateErr != nil {
+			if updateErr := r.updateStatus(ctx, &resource, resource.Status, metav1.ConditionFalse, subnetReasonVpcNotFound, fmt.Sprintf("referenced VPC %q not found", resource.Spec.Vpc)); updateErr != nil {
 				return ctrl.Result{}, updateErr
 			}
 			return ctrl.Result{}, nil
 		}
-		if updateErr := r.updateStatus(ctx, &resource, resource.Status.VNI, resource.Status.Gateway, resource.Status.GatewayMAC, metav1.ConditionFalse, subnetReasonReconcileFailed, fmt.Sprintf("failed to fetch referenced VPC %q", resource.Spec.Vpc)); updateErr != nil {
+		if updateErr := r.updateStatus(ctx, &resource, resource.Status, metav1.ConditionFalse, subnetReasonReconcileFailed, fmt.Sprintf("failed to fetch referenced VPC %q", resource.Spec.Vpc)); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
 		return ctrl.Result{}, err
@@ -113,7 +113,7 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	vpcReady := meta.FindStatusCondition(vpc.Status.Conditions, juneauv1alpha1.VpcStatusReady)
 	if vpcReady == nil {
-		if err := r.updateStatus(ctx, &resource, resource.Status.VNI, resource.Status.Gateway, resource.Status.GatewayMAC, metav1.ConditionFalse, subnetReasonVpcNotReady, fmt.Sprintf("referenced VPC %q has no Ready condition", resource.Spec.Vpc)); err != nil {
+		if err := r.updateStatus(ctx, &resource, resource.Status, metav1.ConditionFalse, subnetReasonVpcNotReady, fmt.Sprintf("referenced VPC %q has no Ready condition", resource.Spec.Vpc)); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
@@ -123,69 +123,90 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		if message == "" {
 			message = fmt.Sprintf("reason=%s status=%s", vpcReady.Reason, vpcReady.Status)
 		}
-		if err := r.updateStatus(ctx, &resource, resource.Status.VNI, resource.Status.Gateway, resource.Status.GatewayMAC, metav1.ConditionFalse, subnetReasonVpcNotReady, fmt.Sprintf("referenced VPC %q is not ready: %s", resource.Spec.Vpc, message)); err != nil {
+		if err := r.updateStatus(ctx, &resource, resource.Status, metav1.ConditionFalse, subnetReasonVpcNotReady, fmt.Sprintf("referenced VPC %q is not ready: %s", resource.Spec.Vpc, message)); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
 	}
 
-	updated := resource.DeepCopy()
+	desired := resource.Status.DeepCopy()
 
-	if updated.Name == "default" {
-		updated.Status.VNI = 1
-	} else if updated.Status.VNI == 0 {
+	if resource.Name == "default" {
+		desired.VNI = 1
+	} else if desired.VNI == 0 {
 		claim, err := r.ensureNumberClaim(ctx, &resource, allocationPoolSubnetVNI, schema.GroupVersionKind{Group: juneauv1alpha1.GroupVersion.Group, Version: juneauv1alpha1.GroupVersion.Version, Kind: "Subnet"}, "status.vni")
 		if err != nil {
-			if updateErr := r.updateStatus(ctx, &resource, resource.Status.VNI, resource.Status.Gateway, resource.Status.GatewayMAC, metav1.ConditionFalse, subnetReasonReconcileFailed, fmt.Sprintf("failed to ensure VNI allocation claim: %v", err)); updateErr != nil {
+			if updateErr := r.updateStatus(ctx, &resource, *desired, metav1.ConditionFalse, subnetReasonReconcileFailed, fmt.Sprintf("failed to ensure VNI allocation claim: %v", err)); updateErr != nil {
 				return ctrl.Result{}, updateErr
 			}
 			return ctrl.Result{}, err
 		}
 		if claim.Status.Phase != juneauv1alpha1.AllocationClaimPhaseAllocated || claim.Status.Value.Number == 0 {
-			if err := r.updateStatus(ctx, &resource, resource.Status.VNI, resource.Status.Gateway, resource.Status.GatewayMAC, metav1.ConditionFalse, subnetReasonNotReady, "waiting for VNI allocation"); err != nil {
+			if err := r.updateStatus(ctx, &resource, *desired, metav1.ConditionFalse, subnetReasonNotReady, "waiting for VNI allocation"); err != nil {
 				return ctrl.Result{}, err
 			}
 			return ctrl.Result{RequeueAfter: 100 * time.Millisecond}, nil
 		}
 		if claim.Status.Value.Number > 0xFFFFFF {
-			if err := r.updateStatus(ctx, &resource, resource.Status.VNI, resource.Status.Gateway, resource.Status.GatewayMAC, metav1.ConditionFalse, subnetReasonNotImplemented, fmt.Sprintf("allocated VNI %d exceeds supported range", claim.Status.Value.Number)); err != nil {
+			if err := r.updateStatus(ctx, &resource, *desired, metav1.ConditionFalse, subnetReasonNotImplemented, fmt.Sprintf("allocated VNI %d exceeds supported range", claim.Status.Value.Number)); err != nil {
 				return ctrl.Result{}, err
 			}
 			return ctrl.Result{}, nil
 		}
-		updated.Status.VNI = uint32(claim.Status.Value.Number)
+		desired.VNI = uint32(claim.Status.Value.Number)
 	}
 
-	_, cidr, err := net.ParseCIDR(updated.Spec.CIDR)
+	_, cidr, err := net.ParseCIDR(resource.Spec.CIDR)
 	if err != nil {
-		if err := r.updateStatus(ctx, &resource, resource.Status.VNI, resource.Status.Gateway, resource.Status.GatewayMAC, metav1.ConditionFalse, subnetReasonReconcileFailed, fmt.Sprintf("failed to parse CIDR %q", updated.Spec.CIDR)); err != nil {
+		if err := r.updateStatus(ctx, &resource, *desired, metav1.ConditionFalse, subnetReasonReconcileFailed, fmt.Sprintf("failed to parse CIDR %q", resource.Spec.CIDR)); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
 	}
 
-	updated.Status.Gateway = nextGateway(cidr)
+	desired.Gateway = nextGateway(cidr)
 
-	if updated.Status.GatewayMAC == "" {
+	if desired.GatewayMAC == "" {
 		randMac, err := newLAA()
 		if err != nil {
-			if updateErr := r.updateStatus(ctx, &resource, resource.Status.VNI, resource.Status.Gateway, resource.Status.GatewayMAC, metav1.ConditionFalse, subnetReasonReconcileFailed, "failed to generate gateway MAC address"); updateErr != nil {
+			if updateErr := r.updateStatus(ctx, &resource, *desired, metav1.ConditionFalse, subnetReasonReconcileFailed, "failed to generate gateway MAC address"); updateErr != nil {
 				return ctrl.Result{}, updateErr
 			}
 			return ctrl.Result{}, err
 		}
 
-		updated.Status.GatewayMAC = randMac.String()
+		desired.GatewayMAC = randMac.String()
 	}
 
-	if err := r.ensureIPAllocationPool(ctx, &resource, updated.Status.Gateway); err != nil {
-		if updateErr := r.updateStatus(ctx, &resource, updated.Status.VNI, updated.Status.Gateway, updated.Status.GatewayMAC, metav1.ConditionFalse, subnetReasonReconcileFailed, fmt.Sprintf("failed to ensure IP allocation pool: %v", err)); updateErr != nil {
+	// DNS VIP is the second usable address in the prefix (.2). Stays
+	// empty when the prefix is too small for a `.2` (e.g. /31 or /32),
+	// which leaves the rest of the data plane to skip the virtual DNS
+	// service for that Subnet entirely.
+	desired.DNS = nextDNSAddress(cidr)
+
+	if desired.DNS != "" && desired.DNSMAC == "" {
+		dnsMac, err := newLAA()
+		if err != nil {
+			if updateErr := r.updateStatus(ctx, &resource, *desired, metav1.ConditionFalse, subnetReasonReconcileFailed, "failed to generate DNS MAC address"); updateErr != nil {
+				return ctrl.Result{}, updateErr
+			}
+			return ctrl.Result{}, err
+		}
+		desired.DNSMAC = dnsMac.String()
+	}
+	if desired.DNS == "" {
+		// Keep status consistent: never advertise a DNSMAC without a DNS IP.
+		desired.DNSMAC = ""
+	}
+
+	if err := r.ensureIPAllocationPool(ctx, &resource, desired.Gateway, desired.DNS); err != nil {
+		if updateErr := r.updateStatus(ctx, &resource, *desired, metav1.ConditionFalse, subnetReasonReconcileFailed, fmt.Sprintf("failed to ensure IP allocation pool: %v", err)); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
 		return ctrl.Result{}, err
 	}
 
-	if err := r.updateStatus(ctx, &resource, updated.Status.VNI, updated.Status.Gateway, updated.Status.GatewayMAC, metav1.ConditionTrue, subnetReasonReconcileSucceeded, ""); err != nil {
+	if err := r.updateStatus(ctx, &resource, *desired, metav1.ConditionTrue, subnetReasonReconcileSucceeded, ""); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -194,17 +215,17 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 // ensureIPAllocationPool maintains the per-subnet AllocationPool that
 // AllocationClaims for Pod IPs target. The pool is owned by the Subnet so
-// it is GC'd automatically. The excluded list mirrors the legacy allocator
-// (gateway plus the historically reserved .2 / .3 entries), trimmed to
-// addresses that actually fall inside the prefix.
-func (r *SubnetReconciler) ensureIPAllocationPool(ctx context.Context, subnet *juneauv1alpha1.Subnet, gateway string) error {
+// it is GC'd automatically. The excluded list reserves the gateway plus
+// the per-Subnet virtual service slot (DNS at `.2`) and a future-proofing
+// slot at `.3`, trimmed to addresses that actually fall inside the prefix.
+func (r *SubnetReconciler) ensureIPAllocationPool(ctx context.Context, subnet *juneauv1alpha1.Subnet, gateway, dns string) error {
 	prefix, err := netip.ParsePrefix(subnet.Spec.CIDR)
 	if err != nil {
 		return fmt.Errorf("parse subnet CIDR: %w", err)
 	}
 	prefix = prefix.Masked()
 
-	excluded := computeSubnetExcluded(prefix, gateway)
+	excluded := computeSubnetExcluded(prefix, gateway, dns)
 
 	desiredSpec := juneauv1alpha1.AllocationPoolSpec{
 		Type:     juneauv1alpha1.AllocationTypeIP,
@@ -248,11 +269,19 @@ func (r *SubnetReconciler) ensureIPAllocationPool(ctx context.Context, subnet *j
 }
 
 // computeSubnetExcluded returns the address strings that the per-subnet
-// AllocationPool must exclude. The legacy allocator skipped .1 (gateway),
-// .2 and .3; we keep that behaviour but only include addresses that fall
-// inside the prefix's usable range. Network and broadcast addresses are
-// automatically skipped by the IP allocator and need not be listed.
-func computeSubnetExcluded(prefix netip.Prefix, gateway string) []string {
+// AllocationPool must exclude. The reservation set is:
+//
+//   - .1 (gateway, passed in as `gateway` so we honour whatever the
+//     reconciler computed instead of hard-coding the offset).
+//   - .2 (per-Subnet virtual DNS resolver IP, passed in as `dns`).
+//   - .3 (held for additional virtual services we may expose in the
+//     future; reserving it now avoids handing it out as a Pod IP and
+//     having to migrate later).
+//
+// Addresses that fall outside the prefix's usable range are dropped.
+// Network and broadcast addresses are automatically skipped by the IP
+// allocator and need not be listed.
+func computeSubnetExcluded(prefix netip.Prefix, gateway, dns string) []string {
 	if !prefix.IsValid() {
 		return nil
 	}
@@ -276,12 +305,16 @@ func computeSubnetExcluded(prefix netip.Prefix, gateway string) []string {
 	if gw, err := netip.ParseAddr(gateway); err == nil {
 		add(gw)
 	}
+	if dnsAddr, err := netip.ParseAddr(dns); err == nil {
+		add(dnsAddr)
+	}
 
-	// Reserved .2 / .3 to mirror the legacy allocator.
+	// .3 is currently unassigned but reserved for a future virtual
+	// service. Keep it out of the Pod IP pool so we never have to
+	// reclaim it from a running workload.
 	cursor := prefix.Addr().Next() // .1
 	cursor = cursor.Next()         // .2
-	add(cursor)
-	cursor = cursor.Next() // .3
+	cursor = cursor.Next()         // .3
 	add(cursor)
 
 	return out
@@ -384,12 +417,16 @@ func (r *SubnetReconciler) mapClaimToSubnets(ctx context.Context, obj client.Obj
 	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: claim.Spec.ResourceRef.Name}}}
 }
 
-func (r *SubnetReconciler) updateStatus(ctx context.Context, subnet *juneauv1alpha1.Subnet, vni uint32, gateway, gatewayMAC string, status metav1.ConditionStatus, reason, message string) error {
+// updateStatus writes the desired SubnetStatus to the apiserver, after
+// folding in ObservedGeneration and the Ready condition. The full status
+// is passed in as a value so every reconcile branch carries an explicit,
+// auditable view of what status it intends to publish — adding new fields
+// (DNS, DNSMAC, ...) does not require touching every call site.
+func (r *SubnetReconciler) updateStatus(ctx context.Context, subnet *juneauv1alpha1.Subnet, desired juneauv1alpha1.SubnetStatus, status metav1.ConditionStatus, reason, message string) error {
 	updated := subnet.DeepCopy()
+	updated.Status = desired
+	updated.Status.Conditions = subnet.Status.Conditions // start from existing conditions to preserve transition times
 	updated.Status.ObservedGeneration = updated.Generation
-	updated.Status.VNI = vni
-	updated.Status.Gateway = gateway
-	updated.Status.GatewayMAC = gatewayMAC
 	meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
 		Type:               juneauv1alpha1.SubnetStatusReady,
 		Status:             status,
@@ -402,6 +439,8 @@ func (r *SubnetReconciler) updateStatus(ctx context.Context, subnet *juneauv1alp
 		updated.Status.VNI == subnet.Status.VNI &&
 		updated.Status.Gateway == subnet.Status.Gateway &&
 		updated.Status.GatewayMAC == subnet.Status.GatewayMAC &&
+		updated.Status.DNS == subnet.Status.DNS &&
+		updated.Status.DNSMAC == subnet.Status.DNSMAC &&
 		reflect.DeepEqual(updated.Status.Conditions, subnet.Status.Conditions) {
 		return nil
 	}
@@ -419,6 +458,33 @@ func nextGateway(cidr *net.IPNet) string {
 		}
 	}
 	return ip.String()
+}
+
+// nextDNSAddress returns the per-Subnet virtual DNS resolver IP — the
+// second usable address in the prefix, conventionally `.2`. The empty
+// string is returned when the prefix is too narrow for a `.2` to fall
+// within its usable range (e.g. /31 or /32, where there is no room for
+// anything beyond the gateway / point-to-point endpoints). Callers
+// treat empty as "this Subnet has no virtual DNS service".
+func nextDNSAddress(cidr *net.IPNet) string {
+	if cidr == nil || cidr.IP.To4() == nil {
+		return ""
+	}
+	prefix, err := netip.ParsePrefix(cidr.String())
+	if err != nil {
+		return ""
+	}
+	prefix = prefix.Masked()
+
+	// .1 (gateway), .2 (DNS).
+	addr := prefix.Addr().Next().Next()
+	if !prefix.Contains(addr) {
+		return ""
+	}
+	if !addressIsUsableInPrefix(addr, prefix) {
+		return ""
+	}
+	return addr.String()
 }
 
 func newLAA() (net.HardwareAddr, error) {
