@@ -19,25 +19,17 @@ import (
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	bpf "github.com/1outres/juneau/daemon/internal/daemon/bpf"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/program"
+	"github.com/1outres/juneau/daemon/internal/daemon/svcpolicy"
 )
 
 const (
-	// ServiceAnnotationVpc names the Vpc that owns the Service. Absent or
-	// empty annotation means the Service belongs to the default Vpc.
-	ServiceAnnotationVpc = "juneau.loutres.me/vpc"
-	// ServiceAnnotationShared opts a default-Vpc Service in to cross-Vpc
-	// reachability via the shared-Service path. Mirrors the constant in
-	// the controller's webhook package; we duplicate it here to keep the
-	// daemon free of the webhook import.
-	ServiceAnnotationShared = "juneau.loutres.me/shared-service"
-	defaultServiceVpc       = "default"
-
-	// kubernetesServiceNamespace and kubernetesServiceName identify the
-	// canonical "kubernetes" Service in the default namespace. It is
-	// implicitly treated as shared so Pods in any Vpc can reach the
-	// apiserver via its ClusterIP, regardless of opt-in annotation.
-	kubernetesServiceNamespace = "default"
-	kubernetesServiceName      = "kubernetes"
+	// ServiceAnnotationVpc and ServiceAnnotationShared are kept as
+	// re-exports so existing callers (including controller-side tests)
+	// continue to compile; the canonical home for these constants is
+	// the svcpolicy package, which both the data plane and the virtual
+	// DNS resolver import.
+	ServiceAnnotationVpc    = svcpolicy.AnnotationVpc
+	ServiceAnnotationShared = svcpolicy.AnnotationShared
 
 	// svcFlagShared mirrors SVC_FLAG_SHARED in daemon/bpf/maps.h. Setting
 	// it on service_val.flags lets pod_egress.handle_service treat
@@ -131,10 +123,7 @@ func (r *Service) upsert(ctx context.Context, key string, svc *corev1.Service) e
 		return r.delete(key)
 	}
 
-	vpcName := svc.Annotations[ServiceAnnotationVpc]
-	if vpcName == "" {
-		vpcName = defaultServiceVpc
-	}
+	vpcName := svcpolicy.OwningVpc(svc)
 
 	var vpc juneauv1alpha1.Vpc
 	if err := r.client.Get(ctx, client.ObjectKey{Name: vpcName}, &vpc); err != nil {
@@ -408,18 +397,11 @@ func (r *Service) findInterfaceForPod(ctx context.Context, namespace, podName st
 }
 
 // serviceFlags returns the SVC_FLAG_* bitmask written to service_val.flags
-// for the given Service. Currently only the shared bit is exposed; it is
-// set when the user opts in via annotation, and is set unconditionally
-// for the canonical kubernetes Service so cross-Vpc apiserver access
-// works without additional configuration.
+// for the given Service. Currently only the shared bit is exposed; the
+// shared decision lives in svcpolicy so the BPF backend programmer and
+// the virtual DNS resolver answer the same question identically.
 func serviceFlags(svc *corev1.Service) uint32 {
-	if svc == nil {
-		return 0
-	}
-	if svc.Namespace == kubernetesServiceNamespace && svc.Name == kubernetesServiceName {
-		return svcFlagShared
-	}
-	if svc.Annotations[ServiceAnnotationShared] == "true" {
+	if svcpolicy.IsShared(svc) {
 		return svcFlagShared
 	}
 	return 0

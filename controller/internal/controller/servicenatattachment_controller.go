@@ -104,7 +104,7 @@ func (r *ServiceNATAttachmentReconciler) Reconcile(ctx context.Context, req ctrl
 		return ctrl.Result{}, err
 	}
 
-	if !resource.ObjectMeta.DeletionTimestamp.IsZero() {
+	if !resource.DeletionTimestamp.IsZero() {
 		// AllocationClaim is owned by this attachment and gets GC'd
 		// automatically. NetworkEndpoint is namespace-scoped and cannot
 		// declare a cluster-scoped owner, so it is removed explicitly.
@@ -202,7 +202,7 @@ func (r *ServiceNATAttachmentReconciler) ensureEndpoint(ctx context.Context, res
 		// NetworkEndpoint webhook makes the identity fields immutable, so
 		// only set them on first creation. Updates after that point are
 		// no-ops at the spec level.
-		if endpoint.ObjectMeta.UID == "" {
+		if endpoint.UID == "" {
 			endpoint.Spec = juneauv1alpha1.NetworkEndpointSpec{
 				Kind:       juneauv1alpha1.EndpointKindServiceNAT,
 				NodeName:   resource.Spec.NodeName,

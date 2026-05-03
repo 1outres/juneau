@@ -7,15 +7,16 @@ import (
 	"os"
 	"sync"
 
+	"github.com/cilium/ebpf"
 	"go.uber.org/zap"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/convert"
-	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/runner"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/link"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/program"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/reconciler"
+	"github.com/1outres/juneau/daemon/internal/daemon/runner"
 )
 
 // Manager wires up every eBPF program, reconciler, and TC link attacher
@@ -334,6 +335,27 @@ func (m *Manager) Stop() error {
 
 	return nil
 }
+
+// VirtualServiceMaps returns the BPF map handles the virtual-service
+// plane needs (virtual_service_map for classifier programming and
+// virtual_service_flow_map for return-path metadata reads). Must only
+// be called after Start has loaded the pod_egress program.
+func (m *Manager) VirtualServiceMaps() (svc, flow *ebpf.Map) {
+	if m.podEgress == nil {
+		return nil, nil
+	}
+	return m.podEgress.Objs.VirtualServiceMap, m.podEgress.Objs.VirtualServiceFlowMap
+}
+
+// SubnetInformer exposes the cached Subnet informer so the
+// virtual-service plane can drive its own Subnet-based reconciler
+// (DNS bindings) off the same informer the dataplane already uses.
+func (m *Manager) SubnetInformer() cache.Informer { return m.subnetInformer }
+
+// VpcInformer exposes the cached Vpc informer for fan-out hooks in the
+// virtual-service plane (e.g. re-evaluate DNS bindings when a Vpc's
+// VpcID is allocated late).
+func (m *Manager) VpcInformer() cache.Informer { return m.vpcInformer }
 
 // NewManager constructs a Manager. The caller is responsible for driving
 // Start and Stop around the rest of the daemon's lifecycle.

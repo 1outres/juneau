@@ -85,7 +85,7 @@ func (r *ExternalNetworkAttachmentReconciler) Reconcile(ctx context.Context, req
 		return ctrl.Result{}, err
 	}
 
-	if !resource.ObjectMeta.DeletionTimestamp.IsZero() {
+	if !resource.DeletionTimestamp.IsZero() {
 		// AllocationClaim and BGPAdvertisement are owned by the
 		// ExternalNetworkAttachment; both are GC'd by Kubernetes
 		// when the attachment is deleted.

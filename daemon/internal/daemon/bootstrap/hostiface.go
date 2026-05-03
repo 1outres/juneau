@@ -226,12 +226,12 @@ func SetupDefaultGatewayIface(ctx context.Context, cl client.Client, nodeName st
 		if a.IPNet == nil {
 			continue
 		}
-		if a.IPNet.IP.Equal(want.IP) && bytes.Equal(a.IPNet.Mask, want.Mask) {
+		if a.IP.Equal(want.IP) && bytes.Equal(a.Mask, want.Mask) {
 			return info, nil
 		}
 		// Drop stale addresses: the per-node IP may have changed
 		// across daemon restarts (claim recreated, etc.).
-		if !a.IPNet.IP.IsLinkLocalUnicast() {
+		if !a.IP.IsLinkLocalUnicast() {
 			if delErr := netlink.AddrDel(vethPeer, &netlink.Addr{IPNet: a.IPNet}); delErr != nil {
 				zap.L().Warn("failed to delete stale address on juneau_node host-side peer", zap.Error(delErr))
 			}

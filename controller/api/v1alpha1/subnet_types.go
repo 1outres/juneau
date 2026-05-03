@@ -42,6 +42,19 @@ type SubnetStatus struct {
 
 	Gateway    string `json:"gateway,omitempty"`
 	GatewayMAC string `json:"gatewayMAC,omitempty"`
+
+	// DNS is the per-Subnet virtual DNS resolver IP (the second usable
+	// address in the prefix, conventionally `.2`). The juneau daemon
+	// terminates UDP/53 and TCP/53 destined for this address inside its
+	// virtual service plane and never bridges it to the underlay. Empty
+	// when the Subnet's prefix has no usable `.2`.
+	DNS string `json:"dns,omitempty"`
+
+	// DNSMAC is the locally-administered Ethernet address that ARP for
+	// the DNS VIP resolves to. Distinct from GatewayMAC so the data
+	// plane can demultiplex virtual-service traffic by destination MAC
+	// before consulting the FIB. Empty when DNS is empty.
+	DNSMAC string `json:"dnsMAC,omitempty"`
 }
 
 // +kubebuilder:object:root=true

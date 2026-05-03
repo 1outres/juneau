@@ -175,6 +175,47 @@ type NodeIngressSubnetVal struct {
 	Mask    uint32
 }
 
+type NodeIngressVirtualServiceFlowKey struct {
+	_        structs.HostLayout
+	SubnetId uint32
+	SrcIp    uint32
+	DstIp    uint32
+	SrcPort  uint16
+	DstPort  uint16
+	Proto    uint8
+	Pad      [3]uint8
+}
+
+type NodeIngressVirtualServiceFlowVal struct {
+	_          structs.HostLayout
+	VpcId      uint32
+	ServiceId  uint32
+	PodIfindex uint32
+	PodMac     [6]uint8
+	ServiceMac [6]uint8
+	Pad        [2]uint8
+	_          [6]byte
+	LastSeenNs uint64
+}
+
+type NodeIngressVirtualServiceKey struct {
+	_        structs.HostLayout
+	SubnetId uint32
+	DstIp    uint32
+	DstPort  uint16
+	Proto    uint8
+	Pad      uint8
+}
+
+type NodeIngressVirtualServiceVal struct {
+	_          structs.HostLayout
+	ServiceId  uint32
+	TapIfindex uint32
+	ServiceMac [6]uint8
+	Pad        [2]uint8
+	Flags      uint32
+}
+
 // LoadNodeIngress returns the embedded CollectionSpec for NodeIngress.
 func LoadNodeIngress() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_NodeIngressBytes)
@@ -224,23 +265,25 @@ type NodeIngressProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type NodeIngressMapSpecs struct {
-	ArpTable        *ebpf.MapSpec `ebpf:"arp_table"`
-	BackendMap      *ebpf.MapSpec `ebpf:"backend_map"`
-	BgpAddressPools *ebpf.MapSpec `ebpf:"bgp_address_pools"`
-	CtMap           *ebpf.MapSpec `ebpf:"ct_map"`
-	Fdb             *ebpf.MapSpec `ebpf:"fdb"`
-	FibInner        *ebpf.MapSpec `ebpf:"fib_inner"`
-	FibMap          *ebpf.MapSpec `ebpf:"fib_map"`
-	HostUnderlay    *ebpf.MapSpec `ebpf:"host_underlay"`
-	IfindexHostMac  *ebpf.MapSpec `ebpf:"ifindex_host_mac"`
-	IfindexSubnet   *ebpf.MapSpec `ebpf:"ifindex_subnet"`
-	NaptSrc         *ebpf.MapSpec `ebpf:"napt_src"`
-	NatDnatMap      *ebpf.MapSpec `ebpf:"nat_dnat_map"`
-	NatSnatMap      *ebpf.MapSpec `ebpf:"nat_snat_map"`
-	ServiceMap      *ebpf.MapSpec `ebpf:"service_map"`
-	ServiceNatIp    *ebpf.MapSpec `ebpf:"service_nat_ip"`
-	SubnetMap       *ebpf.MapSpec `ebpf:"subnet_map"`
-	VxlanIfindex    *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
+	ArpTable              *ebpf.MapSpec `ebpf:"arp_table"`
+	BackendMap            *ebpf.MapSpec `ebpf:"backend_map"`
+	BgpAddressPools       *ebpf.MapSpec `ebpf:"bgp_address_pools"`
+	CtMap                 *ebpf.MapSpec `ebpf:"ct_map"`
+	Fdb                   *ebpf.MapSpec `ebpf:"fdb"`
+	FibInner              *ebpf.MapSpec `ebpf:"fib_inner"`
+	FibMap                *ebpf.MapSpec `ebpf:"fib_map"`
+	HostUnderlay          *ebpf.MapSpec `ebpf:"host_underlay"`
+	IfindexHostMac        *ebpf.MapSpec `ebpf:"ifindex_host_mac"`
+	IfindexSubnet         *ebpf.MapSpec `ebpf:"ifindex_subnet"`
+	NaptSrc               *ebpf.MapSpec `ebpf:"napt_src"`
+	NatDnatMap            *ebpf.MapSpec `ebpf:"nat_dnat_map"`
+	NatSnatMap            *ebpf.MapSpec `ebpf:"nat_snat_map"`
+	ServiceMap            *ebpf.MapSpec `ebpf:"service_map"`
+	ServiceNatIp          *ebpf.MapSpec `ebpf:"service_nat_ip"`
+	SubnetMap             *ebpf.MapSpec `ebpf:"subnet_map"`
+	VirtualServiceFlowMap *ebpf.MapSpec `ebpf:"virtual_service_flow_map"`
+	VirtualServiceMap     *ebpf.MapSpec `ebpf:"virtual_service_map"`
+	VxlanIfindex          *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
 }
 
 // NodeIngressVariableSpecs contains global variables before they are loaded into the kernel.
@@ -269,23 +312,25 @@ func (o *NodeIngressObjects) Close() error {
 //
 // It can be passed to LoadNodeIngressObjects or ebpf.CollectionSpec.LoadAndAssign.
 type NodeIngressMaps struct {
-	ArpTable        *ebpf.Map `ebpf:"arp_table"`
-	BackendMap      *ebpf.Map `ebpf:"backend_map"`
-	BgpAddressPools *ebpf.Map `ebpf:"bgp_address_pools"`
-	CtMap           *ebpf.Map `ebpf:"ct_map"`
-	Fdb             *ebpf.Map `ebpf:"fdb"`
-	FibInner        *ebpf.Map `ebpf:"fib_inner"`
-	FibMap          *ebpf.Map `ebpf:"fib_map"`
-	HostUnderlay    *ebpf.Map `ebpf:"host_underlay"`
-	IfindexHostMac  *ebpf.Map `ebpf:"ifindex_host_mac"`
-	IfindexSubnet   *ebpf.Map `ebpf:"ifindex_subnet"`
-	NaptSrc         *ebpf.Map `ebpf:"napt_src"`
-	NatDnatMap      *ebpf.Map `ebpf:"nat_dnat_map"`
-	NatSnatMap      *ebpf.Map `ebpf:"nat_snat_map"`
-	ServiceMap      *ebpf.Map `ebpf:"service_map"`
-	ServiceNatIp    *ebpf.Map `ebpf:"service_nat_ip"`
-	SubnetMap       *ebpf.Map `ebpf:"subnet_map"`
-	VxlanIfindex    *ebpf.Map `ebpf:"vxlan_ifindex"`
+	ArpTable              *ebpf.Map `ebpf:"arp_table"`
+	BackendMap            *ebpf.Map `ebpf:"backend_map"`
+	BgpAddressPools       *ebpf.Map `ebpf:"bgp_address_pools"`
+	CtMap                 *ebpf.Map `ebpf:"ct_map"`
+	Fdb                   *ebpf.Map `ebpf:"fdb"`
+	FibInner              *ebpf.Map `ebpf:"fib_inner"`
+	FibMap                *ebpf.Map `ebpf:"fib_map"`
+	HostUnderlay          *ebpf.Map `ebpf:"host_underlay"`
+	IfindexHostMac        *ebpf.Map `ebpf:"ifindex_host_mac"`
+	IfindexSubnet         *ebpf.Map `ebpf:"ifindex_subnet"`
+	NaptSrc               *ebpf.Map `ebpf:"napt_src"`
+	NatDnatMap            *ebpf.Map `ebpf:"nat_dnat_map"`
+	NatSnatMap            *ebpf.Map `ebpf:"nat_snat_map"`
+	ServiceMap            *ebpf.Map `ebpf:"service_map"`
+	ServiceNatIp          *ebpf.Map `ebpf:"service_nat_ip"`
+	SubnetMap             *ebpf.Map `ebpf:"subnet_map"`
+	VirtualServiceFlowMap *ebpf.Map `ebpf:"virtual_service_flow_map"`
+	VirtualServiceMap     *ebpf.Map `ebpf:"virtual_service_map"`
+	VxlanIfindex          *ebpf.Map `ebpf:"vxlan_ifindex"`
 }
 
 func (m *NodeIngressMaps) Close() error {
@@ -306,6 +351,8 @@ func (m *NodeIngressMaps) Close() error {
 		m.ServiceMap,
 		m.ServiceNatIp,
 		m.SubnetMap,
+		m.VirtualServiceFlowMap,
+		m.VirtualServiceMap,
 		m.VxlanIfindex,
 	)
 }

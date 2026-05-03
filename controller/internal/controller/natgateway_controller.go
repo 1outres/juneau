@@ -76,7 +76,7 @@ func (r *NATGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
-	if !resource.ObjectMeta.DeletionTimestamp.IsZero() {
+	if !resource.DeletionTimestamp.IsZero() {
 		// AllocationClaim has the NATGateway as its OwnerRef, so it
 		// will be GC'd by Kubernetes once the NATGateway disappears.
 		return ctrl.Result{}, nil

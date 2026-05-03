@@ -67,7 +67,7 @@ func (r *ExternalNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	if !externalNetwork.ObjectMeta.DeletionTimestamp.IsZero() {
+	if !externalNetwork.DeletionTimestamp.IsZero() {
 		// Owned attachments are GC'd by Kubernetes once the
 		// ExternalNetwork is removed.
 		return ctrl.Result{}, nil
@@ -123,7 +123,7 @@ func (r *ExternalNetworkReconciler) ensureAttachment(ctx context.Context, extern
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, attachment, func() error {
 		// Spec is immutable per the webhook, so only set on create
 		// (when the resource has no UID yet).
-		if attachment.ObjectMeta.UID == "" {
+		if attachment.UID == "" {
 			attachment.Spec = juneauv1alpha1.ExternalNetworkAttachmentSpec{
 				ExternalNetwork: externalNetwork.Name,
 				NodeName:        nodeName,
