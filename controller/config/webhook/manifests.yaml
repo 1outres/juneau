@@ -250,6 +250,25 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /mutate--v1-pod
+  failurePolicy: Ignore
+  name: mpod-juneau-loutres-me.kb.io
+  rules:
+  - apiGroups:
+    - ""
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    resources:
+    - pods
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /mutate-juneau-loutres-me-v1alpha1-routetable
   failurePolicy: Fail
   name: mroutetable-v1alpha1.kb.io

@@ -8,12 +8,16 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	"github.com/1outres/juneau/daemon/internal/daemon/bootstrap"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane"
 	"github.com/1outres/juneau/daemon/internal/daemon/grpc"
+	"github.com/1outres/juneau/daemon/internal/daemon/runner"
+	"github.com/1outres/juneau/daemon/internal/daemon/virtservice"
+	"github.com/1outres/juneau/daemon/internal/daemon/virtservice/dns"
 	"github.com/urfave/cli/v3"
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
@@ -71,6 +75,19 @@ func NewApp() *cli.Command {
 				Name:  "bpf-pin-path",
 				Value: "/juneau-bpf/juneau",
 			},
+			&cli.StringFlag{
+				Name:  "dns-upstream",
+				Value: "8.8.8.8:53,1.1.1.1:53",
+				Usage: "Comma-separated list of upstream DNS resolvers (host[:port]) the virtual DNS service forwards non-cluster names to.",
+				Sources: cli.ValueSourceChain{Chain: []cli.ValueSource{
+					cli.EnvVar("JUNEAU_DNS_UPSTREAM"),
+				}},
+			},
+			&cli.IntFlag{
+				Name:  "virtservice-tap-mtu",
+				Value: 1450,
+				Usage: "MTU for the virtual-service TAP. Default leaves headroom for VXLAN encapsulation on a 1500-byte underlay.",
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
@@ -88,6 +105,8 @@ func NewApp() *cli.Command {
 			vxlanParentIface := cmd.String("vxlan-parent-iface")
 			nodeIngressIfaceName := cmd.String("node-ingress-iface")
 			bpfPinPath := cmd.String("bpf-pin-path")
+			dnsUpstream := cmd.String("dns-upstream")
+			virtServiceTAPMTU := int(cmd.Int("virtservice-tap-mtu"))
 
 			zapcfg := zap.NewDevelopmentConfig()
 			logger, err := zapcfg.Build()
@@ -396,6 +415,37 @@ func NewApp() *cli.Command {
 				_ = bpfManager.Stop()
 			}()
 
+			// Bring up the virtual-service plane (TAP, AF_PACKET sender,
+			// dispatcher, registry) over the BPF maps the dataplane just
+			// loaded, then bind the per-Subnet DNS service into it.
+			vsServiceMap, vsFlowMap := bpfManager.VirtualServiceMaps()
+			if vsServiceMap == nil || vsFlowMap == nil {
+				return fmt.Errorf("virtual-service BPF maps unavailable after dataplane Start")
+			}
+			vsMgr, err := virtservice.NewManager(vsServiceMap, vsFlowMap, virtservice.ManagerOptions{TAPMtu: virtServiceTAPMTU})
+			if err != nil {
+				return fmt.Errorf("init virtservice manager: %w", err)
+			}
+			if err := vsMgr.Start(ctx); err != nil {
+				return fmt.Errorf("start virtservice manager: %w", err)
+			}
+			defer func() {
+				_ = vsMgr.Stop()
+			}()
+
+			dnsService, dnsRunner, err := startDNSService(ctx, cl, vsMgr.Registry(), bpfManager, dnsUpstream)
+			if err != nil {
+				return fmt.Errorf("start virtual DNS service: %w", err)
+			}
+			defer func() {
+				if dnsService != nil {
+					_ = dnsService.Stop()
+				}
+				if dnsRunner != nil {
+					_ = dnsRunner.Stop()
+				}
+			}()
+
 			// Publish the per-Node juneau_node NetworkEndpoint so the
 			// data plane reconcilers (arp/fdb/pod-iface/attacher) can
 			// program the maps. Other nodes also pick it up to populate
@@ -433,6 +483,45 @@ func NewApp() *cli.Command {
 			}
 		},
 	}
+}
+
+// startDNSService assembles the resolver chain (cluster zone +
+// upstream forwarder), constructs the dns.Service, and wires it into
+// a Runner driven by the dataplane's Subnet informer. Vpc events
+// fan out so a late VpcID allocation propagates into DNS bindings
+// without waiting for an unrelated Subnet event.
+//
+// Returns the Service and Runner so callers can defer Stop on each
+// in the right order (Service first to drop registry bindings before
+// the runner exits and stops feeding Reconcile calls).
+func startDNSService(ctx context.Context, cl client.Client, registry virtservice.Registry, bpfManager *dataplane.Manager, dnsUpstream string) (*dns.Service, *runner.Runner, error) {
+	resolvers := []dns.Resolver{dns.NewClusterZone(cl, dns.DefaultClusterDomain, 30)}
+	upstream := strings.Split(dnsUpstream, ",")
+	cleaned := upstream[:0]
+	for _, s := range upstream {
+		if t := strings.TrimSpace(s); t != "" {
+			cleaned = append(cleaned, t)
+		}
+	}
+	if len(cleaned) > 0 {
+		fwd, err := dns.NewUpstreamForwarder(cleaned, dns.DefaultUpstreamTimeout)
+		if err != nil {
+			return nil, nil, fmt.Errorf("configure DNS upstream forwarder: %w", err)
+		}
+		resolvers = append(resolvers, fwd)
+	}
+	chain := dns.NewChain(resolvers...)
+
+	svc := dns.New(ctx, cl, registry, chain, dns.NewCachedVPCResolver(cl))
+	r := runner.New(svc)
+	if err := r.Watch(bpfManager.SubnetInformer(), runner.MetaNamespaceKey); err != nil {
+		return nil, nil, fmt.Errorf("watch Subnet for DNS: %w", err)
+	}
+	if err := r.WatchFanOut(bpfManager.VpcInformer(), svc.FanOutVpcToSubnets); err != nil {
+		return nil, nil, fmt.Errorf("watch Vpc for DNS: %w", err)
+	}
+	r.Start(ctx, 1)
+	return svc, r, nil
 }
 
 func ensureBPFFSMounted(pinPath string) error {
