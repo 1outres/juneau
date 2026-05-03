@@ -195,6 +195,31 @@ spec:
 		}, 30*time.Second, time.Second).Should(Succeed())
 	})
 
+	It("leaves Pods in the default Vpc on kube-dns", func() {
+		base := sanitizeName("dns-default-vpc-skip")
+		namespace := "e2e-" + base
+		DeferCleanup(func() {
+			runBestEffort(repoRoot, "kubectl", "delete", "namespace", namespace, "--ignore-not-found=true", "--timeout=60s")
+		})
+		createNamespace(namespace)
+
+		// Empty subnet annotation → falls back to "default" Subnet,
+		// which is owned by the default Vpc. The webhook must leave
+		// dnsPolicy untouched so kube-dns keeps serving these Pods.
+		Expect(applyManifest(podManifest(namespace, clientPodName, workerNodes[0], "", false))).To(Succeed())
+		waitPodsReady(namespace, clientPodName)
+
+		dnsPolicy, err := kubectlJSONPath(repoRoot, `{.spec.dnsPolicy}`, "-n", namespace, "get", "pod", clientPodName)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.TrimSpace(dnsPolicy)).NotTo(Equal("None"),
+			"default-Vpc Pods must keep ClusterFirst (kube-dns), got dnsPolicy=%q", strings.TrimSpace(dnsPolicy))
+
+		dnsConfig, err := kubectlJSONPath(repoRoot, `{.spec.dnsConfig}`, "-n", namespace, "get", "pod", clientPodName)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.TrimSpace(dnsConfig)).To(BeEmpty(),
+			"default-Vpc Pods must not have dnsConfig injected, got %q", strings.TrimSpace(dnsConfig))
+	})
+
 	It("denies svc.cluster.local resolution from a VPC without enableService", func() {
 		base := sanitizeName("dns-disabled")
 		namespace := "e2e-" + base
