@@ -60,3 +60,5 @@ nav:
     - BGPPeer: resources/bgppeer.md
     - BGPNodeState: resources/bgpnodestate.md
   - API Reference: api-reference/v1alpha1.md
+  - Developer Guide:
+    - 仮想サービスを実装する: developer/virtual-service-plane.md
