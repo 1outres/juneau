@@ -62,11 +62,11 @@ func TestIsShared(t *testing.T) {
 
 func TestResolvableFrom(t *testing.T) {
 	type tcase struct {
-		name              string
-		svc               *corev1.Service
-		callerVpc         string
+		name                string
+		svc                 *corev1.Service
+		callerVpc           string
 		callerEnableService bool
-		want              bool
+		want                bool
 	}
 	tests := []tcase{
 		{

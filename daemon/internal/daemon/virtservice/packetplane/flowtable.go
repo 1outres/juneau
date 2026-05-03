@@ -151,4 +151,3 @@ func (t *FlowTable) Touch(subnetID uint32, srcIP, dstIP netip.Addr, srcPort, dst
 	}
 	return nil
 }
-

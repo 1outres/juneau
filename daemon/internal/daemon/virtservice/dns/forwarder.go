@@ -195,4 +195,3 @@ func decodeUpstreamResponse(wire []byte, q Query) (Response, error) {
 	}
 	return res, nil
 }
-

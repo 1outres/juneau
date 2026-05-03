@@ -1,21 +1,21 @@
 // Package netstack hides every gVisor type behind a small,
 // daemon-shaped facade. Two reasons:
 //
-//   1. gvisor.dev/gvisor/pkg/tcpip is intentionally not semver-stable.
-//      Pinning the import surface here means upgrades touch one
-//      package, not every L7 service.
+//  1. gvisor.dev/gvisor/pkg/tcpip is intentionally not semver-stable.
+//     Pinning the import surface here means upgrades touch one
+//     package, not every L7 service.
 //
-//   2. The daemon's tenant model (vpc_id + Pod return-path) doesn't
-//      cleanly map onto stack.NICOptions. Building the bridge once,
-//      here, avoids leaking gVisor concepts into the DNS resolver.
+//  2. The daemon's tenant model (vpc_id + Pod return-path) doesn't
+//     cleanly map onto stack.NICOptions. Building the bridge once,
+//     here, avoids leaking gVisor concepts into the DNS resolver.
 //
 // Operationally the facade owns:
 //
-//   * one shared stack.Stack (TCP + IPv4 only — UDP terminates in
+//   - one shared stack.Stack (TCP + IPv4 only — UDP terminates in
 //     the upstream packet plane, not gVisor);
-//   * one channel.Endpoint per VPC, exposed as a tcpip.NIC, with
+//   - one channel.Endpoint per VPC, exposed as a tcpip.NIC, with
 //     every Subnet's DNS VIP added as a per-NIC protocol address;
-//   * a per-NIC drain goroutine that pulls outbound segments out of
+//   - a per-NIC drain goroutine that pulls outbound segments out of
 //     channel.Endpoint, joins them with return-path metadata
 //     captured at request time, and ships them via AF_PACKET on the
 //     originating Pod's host-side veth.
@@ -52,9 +52,9 @@ type Facade struct {
 	stack  *stack.Stack
 	sender *packetplane.Sender
 
-	mu     sync.Mutex
-	nics   map[uint32]*vpcNIC          // vpc_id -> NIC bundle
-	flows  map[returnFlowKey]ReturnPath // outbound demux table
+	mu    sync.Mutex
+	nics  map[uint32]*vpcNIC           // vpc_id -> NIC bundle
+	flows map[returnFlowKey]ReturnPath // outbound demux table
 }
 
 // vpcNIC bundles everything tied to one VPC's NIC. The drain
@@ -336,9 +336,9 @@ func (f *Facade) handleOutbound(vpcID uint32, pkt *stack.PacketBuffer) error {
 
 	key := returnFlowKey{
 		VPCID:       vpcID,
-		PodIP:       dstIP,    // outbound dst → original src (Pod)
+		PodIP:       dstIP, // outbound dst → original src (Pod)
 		PodPort:     dstPort,
-		ServiceIP:   srcIP,    // outbound src → service VIP
+		ServiceIP:   srcIP, // outbound src → service VIP
 		ServicePort: srcPort,
 	}
 	f.mu.Lock()

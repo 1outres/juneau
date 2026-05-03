@@ -61,8 +61,8 @@ func CreateTAP(mtu int) (*TAP, error) {
 	}
 
 	tt := &netlink.Tuntap{
-		LinkAttrs:  netlink.LinkAttrs{Name: TAPName, MTU: mtu},
-		Mode:       netlink.TUNTAP_MODE_TAP,
+		LinkAttrs: netlink.LinkAttrs{Name: TAPName, MTU: mtu},
+		Mode:      netlink.TUNTAP_MODE_TAP,
 		// IFF_NO_PI: raw Ethernet frames, no 4-byte tun_pi prefix.
 		// IFF_VNET_HDR is intentionally NOT set — we don't speak the
 		// virtio_net header BPF wouldn't produce.

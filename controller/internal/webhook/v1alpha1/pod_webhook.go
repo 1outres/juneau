@@ -163,14 +163,14 @@ func (d *PodDNSDefaulter) Default(ctx context.Context, obj runtime.Object) error
 // supplied DNS VIP, preserving any user-supplied entries. The merge
 // rules are intentionally simple:
 //
-//   * Nameservers: VIP is prepended; duplicate Nameservers from the
+//   - Nameservers: VIP is prepended; duplicate Nameservers from the
 //     existing config are dropped. We cap the result at 3 entries
 //     (the kubelet enforces this; exceeding it would make Pod
 //     creation fail on validation).
-//   * Searches: replaced with the standard cluster set if the user
+//   - Searches: replaced with the standard cluster set if the user
 //     supplied none, otherwise left untouched (the user knows what
 //     they need).
-//   * Options: ndots=5 added if no ndots option already exists,
+//   - Options: ndots=5 added if no ndots option already exists,
 //     matching kubelet's ClusterFirst defaults.
 func mergeDNSConfig(existing *corev1.PodDNSConfig, dnsVIP, podNamespace string) *corev1.PodDNSConfig {
 	out := corev1.PodDNSConfig{}
