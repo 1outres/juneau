@@ -1,27 +1,34 @@
+version: "2"
 run:
-  timeout: 10m
   allow-parallel-runners: true
-
 linters:
-  disable-all: true
+  default: none
   enable:
     - copyloopvar
     - errcheck
-    - gofmt
-    - goimports
-    - gosimple
     - govet
     - ineffassign
     - revive
     - staticcheck
-    - typecheck
     - unconvert
     - unused
-
-issues:
-  exclude-use-default: false
-
-linters-settings:
-  revive:
-    rules:
-      - name: comment-spacings
+  settings:
+    revive:
+      rules:
+        - name: comment-spacings
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
