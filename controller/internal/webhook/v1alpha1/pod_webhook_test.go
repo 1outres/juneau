@@ -79,7 +79,9 @@ func customSubnetFixture() juneauv1alpha1.Subnet {
 	Expect(webhookK8sClient.Status().Update(context.Background(), &vpc)).To(Succeed())
 
 	subnetName := webhookUniqueTestName("subnet")
-	octet := time.Now().UnixNano()%200 + 30
+	// Avoid the Service CIDR 10.96.0.0/12 (10.96-111.x.x); Vpc enables Service so
+	// overlapping Subnets are rejected by the validating webhook.
+	octet := time.Now().UnixNano()%100 + 112
 	cidr := fmt.Sprintf("10.%d.0.0/24", octet)
 	dnsVIP := fmt.Sprintf("10.%d.0.2", octet)
 	gateway := fmt.Sprintf("10.%d.0.1", octet)

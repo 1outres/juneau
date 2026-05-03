@@ -239,7 +239,7 @@ func (h *Handler) encodeResponse(parsed parsedQuery, res Response) ([]byte, erro
 		// TCP. We keep the question section so the client can
 		// correlate, and drop all answers; clients implementing
 		// EDNS0 know to retry.
-		msg.Header.Truncated = true
+		msg.Truncated = true
 		msg.Answers = nil
 		wire, err = msg.Pack()
 		if err != nil {
@@ -263,7 +263,7 @@ func buildResource(ans Answer) (dnsmessage.Resource, error) {
 	switch ans.Type {
 	case TypeA:
 		if !ans.A.Is4() {
-			return dnsmessage.Resource{}, fmt.Errorf("A record needs IPv4, got %s", ans.A)
+			return dnsmessage.Resource{}, fmt.Errorf("a record needs IPv4, got %s", ans.A)
 		}
 		ip := ans.A.As4()
 		return dnsmessage.Resource{Header: hdr, Body: &dnsmessage.AResource{A: ip}}, nil

@@ -106,7 +106,7 @@ func NewApp() *cli.Command {
 			nodeIngressIfaceName := cmd.String("node-ingress-iface")
 			bpfPinPath := cmd.String("bpf-pin-path")
 			dnsUpstream := cmd.String("dns-upstream")
-			virtServiceTAPMTU := int(cmd.Int("virtservice-tap-mtu"))
+			virtServiceTAPMTU := cmd.Int("virtservice-tap-mtu")
 
 			zapcfg := zap.NewDevelopmentConfig()
 			logger, err := zapcfg.Build()

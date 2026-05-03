@@ -71,7 +71,7 @@ func (r *ElasticIPAttachmentReconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, err
 	}
 
-	if !resource.ObjectMeta.DeletionTimestamp.IsZero() {
+	if !resource.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil
 	}
 

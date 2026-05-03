@@ -36,8 +36,8 @@ func TestTCPHandlerRoundTrip(t *testing.T) {
 	h.IdleTimeout = 200 * time.Millisecond
 
 	server, client := net.Pipe()
-	defer server.Close()
-	defer client.Close()
+	defer func() { _ = server.Close() }()
+	defer func() { _ = client.Close() }()
 
 	go h.handleConn(context.Background(), server, virtservice.TenantID{VPCID: 7, SubnetID: 11})
 
@@ -87,7 +87,7 @@ func TestTCPHandlerIdleTimeoutClosesConnection(t *testing.T) {
 	h.IdleTimeout = 50 * time.Millisecond
 
 	server, client := net.Pipe()
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	done := make(chan struct{})
 	go func() {

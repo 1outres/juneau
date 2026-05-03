@@ -68,7 +68,7 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, err
 	}
 
-	if !node.ObjectMeta.DeletionTimestamp.IsZero() {
+	if !node.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil
 	}
 

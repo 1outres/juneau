@@ -93,7 +93,7 @@ func (f *UpstreamForwarder) queryOne(ctx context.Context, addr string, wire []by
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	if err := conn.SetDeadline(deadline); err != nil {
 		return nil, err

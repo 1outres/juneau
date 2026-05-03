@@ -59,7 +59,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, err
 	}
 
-	if !pod.ObjectMeta.DeletionTimestamp.IsZero() {
+	if !pod.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil
 	}
 

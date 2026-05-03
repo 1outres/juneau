@@ -73,7 +73,7 @@ var _ = Describe("Juneau allocator regression", Ordered, func() {
 			vpcNames = append(vpcNames, vpcName)
 			subnetNames = append(subnetNames, subnetA, subnetB)
 
-			manifest.WriteString(fmt.Sprintf(`apiVersion: juneau.loutres.me/v1alpha1
+			fmt.Fprintf(&manifest, `apiVersion: juneau.loutres.me/v1alpha1
 kind: Vpc
 metadata:
   name: %s
@@ -94,7 +94,7 @@ spec:
   vpc: %s
   cidr: 10.%d.0.0/24
 ---
-`, vpcName, subnetA, vpcName, cidrBase, subnetB, vpcName, cidrBase+1))
+`, vpcName, subnetA, vpcName, cidrBase, subnetB, vpcName, cidrBase+1)
 		}
 
 		DeferCleanup(func() {

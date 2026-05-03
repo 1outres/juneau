@@ -90,7 +90,7 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 
-	if !resource.ObjectMeta.DeletionTimestamp.IsZero() {
+	if !resource.DeletionTimestamp.IsZero() {
 		if err := r.updateStatus(ctx, &resource, resource.Status, metav1.ConditionFalse, subnetReasonDeleting, "subnet is being deleted"); err != nil {
 			return ctrl.Result{}, err
 		}

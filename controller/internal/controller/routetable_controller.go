@@ -85,7 +85,7 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
-	if !resource.ObjectMeta.DeletionTimestamp.IsZero() {
+	if !resource.DeletionTimestamp.IsZero() {
 		if err := r.updateStatus(ctx, &resource, resource.Status.Routes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonDeleting, "route table is being deleted"); err != nil {
 			return ctrl.Result{}, err
 		}
