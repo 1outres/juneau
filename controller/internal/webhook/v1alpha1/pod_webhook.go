@@ -25,6 +25,18 @@ import (
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
+// defaultVpcName names the implicit Vpc that holds Pods which do not
+// participate in any custom-VPC isolation. We deliberately leave its
+// Pods on kube-dns: the only functional value Juneau DNS provides is
+// VPC-scoped resolution (cross-VPC NXDOMAIN, shared-service routing,
+// per-Subnet upstream forwarding), none of which is meaningful inside
+// the default Vpc, and overriding kube-dns there would extend the
+// blast radius of any DNS-plane bug to the cluster's hot path.
+//
+// Kept as a private const to avoid coupling this package to svcpolicy
+// from the daemon module — the value is fixed by Vpc bootstrapping.
+const defaultVpcName = "default"
+
 const (
 	// PodAnnotationSubnet matches the per-Pod subnet selector used by
 	// pod_controller — kept in sync rather than re-imported so this
@@ -124,6 +136,15 @@ func (d *PodDNSDefaulter) Default(ctx context.Context, obj runtime.Object) error
 		}
 		return fmt.Errorf("get subnet %q: %w", subnetName, err)
 	}
+
+	// Pods whose Subnet belongs to the default Vpc keep talking to
+	// kube-dns — see the comment on defaultVpcName for the rationale.
+	// We compare on Subnet.Spec.Vpc (not the Pod annotation) so the
+	// rule is independent of how the Pod was authored.
+	if subnet.Spec.Vpc == defaultVpcName {
+		return nil
+	}
+
 	if subnet.Status.DNS == "" {
 		// Subnet is not (yet) advertising a DNS VIP — its prefix may
 		// be too narrow (/31, /32) or the controller has not
