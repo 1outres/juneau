@@ -43,6 +43,7 @@ nav:
     - VPCでServiceを利用する: guides/custom-vpc-service.md
     - Vpcで共有Serviceを利用する: guides/shared-service.md
     - NATGatewayでVPC外への通信を成立させる: guides/nat-gateway.md
+    - SecurityGroupでPodの通信を制限する: guides/security-group.md
   - Resources:
     - VPC: resources/vpc.md
     - Subnet: resources/subnet.md
@@ -56,6 +57,7 @@ nav:
     - ServiceNATAttachment: resources/servicenatattachment.md
     - NetworkInterface: resources/networkinterface.md
     - NetworkEndpoint: resources/networkendpoint.md
+    - SecurityGroup: resources/securitygroup.md
     - BGPAdvertisement: resources/bgpadvertisement.md
     - BGPPeer: resources/bgppeer.md
     - BGPNodeState: resources/bgpnodestate.md
