@@ -31,8 +31,7 @@ import (
 
 func NewApp() *cli.Command {
 	return &cli.Command{
-		Name:  "run",
-		Usage: "Run the juneaud dataplane manager (default).",
+		Name: "juneaud",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "uds-path",
@@ -479,7 +478,13 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("ensure juneau_node NetworkEndpoint: %w", err)
 			}
 
-			grpcServer := grpc.NewServer(cl, bpfManager.TraceBus(), bpfManager.TraceStore(), nodeName)
+			grpcServer := grpc.NewServer(grpc.ServerConfig{
+				Client:       cl,
+				TraceBus:     bpfManager.TraceBus(),
+				TraceStore:   bpfManager.TraceStore(),
+				NodeName:     nodeName,
+				DebugTCPAddr: grpc.DefaultDebugTCPAddr,
+			})
 			defer grpcServer.Stop()
 			grpcServer.StartBackground(ctx)
 

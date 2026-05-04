@@ -139,7 +139,7 @@ func (f *kubeFactory) nodeDialer() (nodeagent.Dialer, error) {
 			f.dialerErr = fmt.Errorf("build typed kube client: %w", err)
 			return
 		}
-		f.dialer = nodeagent.NewExecDialer(cfg, kc, f.streams, nodeagent.ExecDialerOptions{})
+		f.dialer = nodeagent.NewPortForwardDialer(cfg, kc, f.streams, nodeagent.PortForwardDialerOptions{})
 	})
 	return f.dialer, f.dialerErr
 }
