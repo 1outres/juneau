@@ -145,10 +145,19 @@ static __always_inline int apply_policy_egress(struct __sk_buff *skb,
   if (sg_v == SG_VERDICT_DENY)
     return -1;
 
-  // Install CT only when at least one layer affirmatively allowed.
-  // Two PASS verdicts mean neither layer is enforcing this flow, so
-  // a CT entry would only burn map space.
-  if (acl_v != ACL_VERDICT_ALLOW && sg_v != SG_VERDICT_ALLOW)
+  // CT install policy: any enforcing layer (ACL attached OR SG
+  // attached) is enough to warrant a CT entry. PASS verdicts on
+  // egress still install so the reverse leg's ingress eval — which
+  // may be SG_DIR_INGRESS-default-deny by AWS rules — short-circuits
+  // via CT. Cross-Node flows depend on this: the egress side's local
+  // CT carries the reverse entry that the *return* packet hits at
+  // its ingress hop on the other Node.
+  //
+  // When neither layer is enforcing, skip CT install to avoid
+  // burning map space on flows nobody is policing.
+  int acl_enforcing = (acl_id != 0);
+  int sg_enforcing = (self != NULL && self->count > 0);
+  if (!acl_enforcing && !sg_enforcing)
     return 0;
 
   __u8 init_flags = 0;
@@ -227,7 +236,13 @@ static __always_inline int apply_policy_ingress(struct __sk_buff *skb,
   if (sg_v == SG_VERDICT_DENY)
     return -1;
 
-  if (acl_v != ACL_VERDICT_ALLOW && sg_v != SG_VERDICT_ALLOW)
+  // Symmetric to apply_policy_egress: any enforcing layer warrants a
+  // CT entry, even on PASS verdicts, so the reverse leg's egress
+  // eval short-circuits and the flow's lifecycle (TCP state, GC)
+  // tracks correctly.
+  int acl_enforcing = (acl_id != 0);
+  int sg_enforcing = (self != NULL && self->count > 0);
+  if (!acl_enforcing && !sg_enforcing)
     return 0;
 
   __u8 init_flags = 0;
