@@ -323,17 +323,23 @@ trace_should_emit(const struct trace_config_val *cfg, __u32 capture_flag,
 // trace_emit_args is the container struct passed to trace_emit_full.
 // One pointer fits in a single register; callers fill the struct on
 // the stack at each call site.
+//
+// `hook` is u8 (TRACE_HOOK_* takes values 1..4) and `reason` is u16
+// (TRACE_REASON_* maxes out at 503) to shave bytes off the on-stack
+// allocation. The wire format (juneau_trace_event) keeps both as
+// u32 — trace_emit_full widens them on submit — so userspace
+// decoders are unaffected.
 struct trace_emit_args {
   __u32 trace_id;
-  __u32 reason;
-  __u32 hook;
-  __u32 ifindex;
-  __u32 vpc_id;
-  __u32 subnet_id;
+  __u16 reason;
+  __u8  hook;
   __u8  scope;
   __u8  proto;
   __u8  verdict;
-  __u8  _pad0;
+  __u8  _pad0[2];
+  __u32 ifindex;
+  __u32 vpc_id;
+  __u32 subnet_id;
   __be32 saddr;
   __be32 daddr;
   __be16 sport;
@@ -621,26 +627,30 @@ trace_read_l4_ports(const struct iphdr *iph, void *data_end, __be16 *sport,
 // trace_hook_ctx bundles the per-hook context callers pass to
 // trace_classify_and_emit_enter. Bundling keeps the subprogram's
 // argument count under BPF's 5-register limit.
+//
+// hook (u8) and reason (u16) are narrower than the wire format's
+// u32 to keep the on-stack allocation small; the subprogram widens
+// them when stamping the ringbuf event.
 struct trace_hook_ctx {
-  __u32 reason;
-  __u32 hook;
+  __u16 reason;
+  __u8  hook;
+  __u8  scope;
   __u32 vpc_id;
   __u32 subnet_id;
-  __u8  scope;
-  __u8  _pad[3];
 };
 
 // trace_nat_event bundles the args trace_observe_nat needs.
 // Bundling keeps the subprogram's argument count under BPF's
-// 5-register ceiling.
+// 5-register ceiling. hook (u8) / reason (u16) match the narrower
+// types in trace_hook_ctx for the same stack-pressure reason.
 struct trace_nat_event {
   __u32 vpc_id;
   __u32 subnet_id;
-  __u32 hook;
-  __u32 reason;
+  __u16 reason;
+  __u8  hook;
   __u8  scope;
   __u8  proto;
-  __u8  _pad[2];
+  __u8  _pad[3];
   __be32 before_saddr;
   __be32 before_daddr;
   __be16 before_sport;
@@ -676,25 +686,36 @@ trace_observe_nat(struct __sk_buff *skb, const struct trace_nat_event *e) {
   if (id == 0)
     return;
 
-  struct trace_emit_args a = {0};
-  a.trace_id = id;
-  a.reason = e->reason;
-  a.hook = e->hook;
-  a.ifindex = skb->ifindex;
-  a.vpc_id = e->vpc_id;
-  a.subnet_id = e->subnet_id;
-  a.scope = e->scope;
-  a.proto = e->proto;
-  a.verdict = TRACE_VERDICT_OK;
-  a.saddr = e->before_saddr;
-  a.daddr = e->before_daddr;
-  a.sport = e->before_sport;
-  a.dport = e->before_dport;
-  a.saddr2 = e->after_saddr;
-  a.daddr2 = e->after_daddr;
-  a.sport2 = e->after_sport;
-  a.dport2 = e->after_dport;
-  trace_emit_full(&a);
+  // Write directly into the ringbuf-reserved event rather than
+  // staging through a stack-allocated `struct trace_emit_args` —
+  // shaves trace_observe_nat's frame and frees up combined
+  // call-chain stack budget.
+  struct juneau_trace_event *ev =
+      bpf_ringbuf_reserve(&trace_events, sizeof(*ev), 0);
+  if (!ev)
+    return;
+  ev->_pad0 = 0;
+  ev->aux1 = 0;
+  ev->aux2 = 0;
+  ev->trace_id = id;
+  ev->reason = e->reason;
+  ev->hook = e->hook;
+  ev->ifindex = skb->ifindex;
+  ev->vpc_id = e->vpc_id;
+  ev->subnet_id = e->subnet_id;
+  ev->ts_ns = bpf_ktime_get_ns();
+  ev->saddr = e->before_saddr;
+  ev->daddr = e->before_daddr;
+  ev->sport = e->before_sport;
+  ev->dport = e->before_dport;
+  ev->proto = e->proto;
+  ev->verdict = TRACE_VERDICT_OK;
+  ev->scope = e->scope;
+  ev->saddr2 = e->after_saddr;
+  ev->daddr2 = e->after_daddr;
+  ev->sport2 = e->after_sport;
+  ev->dport2 = e->after_dport;
+  bpf_ringbuf_submit(ev, 0);
 
   // Install the post-NAT tuple locally so any further hook on this
   // same node (e.g. pod_ingress on the response leg) resolves the
@@ -758,36 +779,55 @@ trace_classify_and_emit_enter(struct __sk_buff *skb,
 // line.
 //
 // The skb-parse + ringbuf path is heavy enough that inlining each
-// call site (drop, redirect, map_miss) into pod_egress / node_ingress
-// blew through the verifier's 1M-insn budget once trace.h was
-// added. So the implementation lives once in the
-// trace_emit_l3 subprogram below; the public wrappers are tiny shims
-// that fill `trace_emit_l3_args` and CALL into the shared subprogram.
-// Net effect: each public call site costs ~one struct fill + one
-// CALL, regardless of which variant.
+// call site (drop, redirect, map_miss) into pod_egress blew through
+// the verifier's 1M-insn budget once trace.h was added. So the
+// implementation lives once in the trace_emit_l3 subprogram below.
+//
+// Args are passed packed into u32/u64 scalars so the shim sites do
+// not allocate a fresh struct on the host program's stack at every
+// call site — that 24-byte-per-site allocation was enough to push
+// pod_egress's combined call-chain stack past the kernel's
+// 512-byte ceiling.
 
-// trace_emit_l3_args bundles the shim → subprogram inputs. `verdict`
-// distinguishes drop / redirect / map-miss callers without needing
-// three near-identical subprograms; `aux1` carries target_ifindex
-// (redirect) or aux1 (map_miss), unused (zero) for drop.
-struct trace_emit_l3_args {
-  __u32 trace_id;
-  __u32 reason;
-  __u32 hook;
-  __u32 vpc_id;
-  __u32 subnet_id;
-  __u32 aux1;
-  __u8  scope;
-  __u8  verdict;
-  __u8  _pad[2];
-};
+// Bit layout helpers for trace_emit_l3's packed args.
+//
+//   pkt_a (u64): trace_id<<32 | reason
+//   pkt_b (u64): vpc_id<<32 | subnet_id
+//   pkt_c (u32): hook<<24 | scope<<16 | verdict<<8 | (reserved 8)
+//
+// hook / scope / verdict each fit in u8. trace_id, reason, vpc_id,
+// subnet_id are u32. aux1 (target_ifindex / map-miss aux) is the
+// 5th scalar arg.
+#define TRACE_L3_PACK_A(trace_id, reason)                                      \
+  (((__u64)(trace_id) << 32) | (__u32)(reason))
+#define TRACE_L3_PACK_B(vpc_id, subnet_id)                                     \
+  (((__u64)(vpc_id) << 32) | (__u32)(subnet_id))
+#define TRACE_L3_PACK_C(hook, scope, verdict)                                  \
+  (((__u32)(__u8)(hook) << 24) | ((__u32)(__u8)(scope) << 16) |                \
+   ((__u32)(__u8)(verdict) << 8))
+
+#define TRACE_L3_UNPACK_TRACE_ID(a) ((__u32)((a) >> 32))
+#define TRACE_L3_UNPACK_REASON(a)   ((__u32)((a) & 0xFFFFFFFFu))
+#define TRACE_L3_UNPACK_VPC_ID(b)   ((__u32)((b) >> 32))
+#define TRACE_L3_UNPACK_SUBNET_ID(b) ((__u32)((b) & 0xFFFFFFFFu))
+#define TRACE_L3_UNPACK_HOOK(c)    ((__u8)(((c) >> 24) & 0xFFu))
+#define TRACE_L3_UNPACK_SCOPE(c)   ((__u8)(((c) >> 16) & 0xFFu))
+#define TRACE_L3_UNPACK_VERDICT(c) ((__u8)(((c) >> 8) & 0xFFu))
 
 // trace_emit_l3 is the shared subprogram. Marked noinline so each
 // shim call site costs a single CALL rather than the full skb parse
-// + ringbuf reserve + memset + field copies.
+// + ringbuf reserve + memset + field copies. Args are packed
+// scalars (no caller-side stack struct).
+//
+// We write directly into the ringbuf-reserved event rather than
+// staging through a stack-allocated `struct trace_emit_args` —
+// otherwise this subprogram's frame grows past 100 bytes and pushes
+// pod_egress's combined call-chain stack past the 512-byte ceiling.
 static __juneau_bpf_subprog void
-trace_emit_l3(struct __sk_buff *skb, const struct trace_emit_l3_args *a) {
-  if (!a || a->trace_id == 0)
+trace_emit_l3(struct __sk_buff *skb, __u64 pkt_a, __u64 pkt_b, __u32 pkt_c,
+              __u32 aux1) {
+  __u32 trace_id = TRACE_L3_UNPACK_TRACE_ID(pkt_a);
+  if (trace_id == 0)
     return;
   void *data = trace_skb_data(skb);
   void *data_end = trace_skb_data_end(skb);
@@ -797,25 +837,35 @@ trace_emit_l3(struct __sk_buff *skb, const struct trace_emit_l3_args *a) {
   struct iphdr *iph = (void *)(eth + 1);
   if ((void *)(iph + 1) > data_end)
     return;
-  __be16 sport = 0, dport = 0;
-  trace_read_l4_ports(iph, data_end, &sport, &dport);
-
-  struct trace_emit_args ea = {0};
-  ea.trace_id = a->trace_id;
-  ea.reason = a->reason;
-  ea.hook = a->hook;
-  ea.ifindex = skb->ifindex;
-  ea.vpc_id = a->vpc_id;
-  ea.subnet_id = a->subnet_id;
-  ea.scope = a->scope;
-  ea.proto = iph->protocol;
-  ea.verdict = a->verdict;
-  ea.saddr = iph->saddr;
-  ea.daddr = iph->daddr;
-  ea.sport = sport;
-  ea.dport = dport;
-  ea.aux1 = a->aux1;
-  trace_emit_full(&ea);
+  struct juneau_trace_event *ev =
+      bpf_ringbuf_reserve(&trace_events, sizeof(*ev), 0);
+  if (!ev)
+    return;
+  // Initialize the second-tuple block + pad early so we never leak
+  // ringbuf garbage if any field below is conditionally skipped.
+  ev->_pad0 = 0;
+  ev->saddr2 = 0;
+  ev->daddr2 = 0;
+  ev->sport2 = 0;
+  ev->dport2 = 0;
+  ev->aux2 = 0;
+  ev->trace_id = trace_id;
+  ev->reason = TRACE_L3_UNPACK_REASON(pkt_a);
+  ev->hook = TRACE_L3_UNPACK_HOOK(pkt_c);
+  ev->ifindex = skb->ifindex;
+  ev->vpc_id = TRACE_L3_UNPACK_VPC_ID(pkt_b);
+  ev->subnet_id = TRACE_L3_UNPACK_SUBNET_ID(pkt_b);
+  ev->ts_ns = bpf_ktime_get_ns();
+  ev->saddr = iph->saddr;
+  ev->daddr = iph->daddr;
+  ev->sport = 0;
+  ev->dport = 0;
+  trace_read_l4_ports(iph, data_end, &ev->sport, &ev->dport);
+  ev->proto = iph->protocol;
+  ev->verdict = TRACE_L3_UNPACK_VERDICT(pkt_c);
+  ev->scope = TRACE_L3_UNPACK_SCOPE(pkt_c);
+  ev->aux1 = aux1;
+  bpf_ringbuf_submit(ev, 0);
 }
 
 static __always_inline void
@@ -823,15 +873,9 @@ trace_emit_drop_l3(struct __sk_buff *skb, __u32 trace_id, __u32 reason,
                    __u32 hook, __u8 scope, __u32 vpc_id, __u32 subnet_id) {
   if (trace_id == 0)
     return;
-  struct trace_emit_l3_args a = {0};
-  a.trace_id = trace_id;
-  a.reason = reason;
-  a.hook = hook;
-  a.vpc_id = vpc_id;
-  a.subnet_id = subnet_id;
-  a.scope = scope;
-  a.verdict = TRACE_VERDICT_DROP;
-  trace_emit_l3(skb, &a);
+  trace_emit_l3(skb, TRACE_L3_PACK_A(trace_id, reason),
+                TRACE_L3_PACK_B(vpc_id, subnet_id),
+                TRACE_L3_PACK_C(hook, scope, TRACE_VERDICT_DROP), 0);
 }
 
 static __always_inline void
@@ -840,16 +884,10 @@ trace_emit_redirect_l3(struct __sk_buff *skb, __u32 trace_id, __u32 reason,
                        __u32 target_ifindex) {
   if (trace_id == 0)
     return;
-  struct trace_emit_l3_args a = {0};
-  a.trace_id = trace_id;
-  a.reason = reason;
-  a.hook = hook;
-  a.vpc_id = vpc_id;
-  a.subnet_id = subnet_id;
-  a.aux1 = target_ifindex;
-  a.scope = scope;
-  a.verdict = TRACE_VERDICT_REDIRECT;
-  trace_emit_l3(skb, &a);
+  trace_emit_l3(skb, TRACE_L3_PACK_A(trace_id, reason),
+                TRACE_L3_PACK_B(vpc_id, subnet_id),
+                TRACE_L3_PACK_C(hook, scope, TRACE_VERDICT_REDIRECT),
+                target_ifindex);
 }
 
 static __always_inline void
@@ -858,16 +896,9 @@ trace_emit_map_miss_l3(struct __sk_buff *skb, __u32 trace_id, __u32 reason,
                        __u32 aux1) {
   if (trace_id == 0)
     return;
-  struct trace_emit_l3_args a = {0};
-  a.trace_id = trace_id;
-  a.reason = reason;
-  a.hook = hook;
-  a.vpc_id = vpc_id;
-  a.subnet_id = subnet_id;
-  a.aux1 = aux1;
-  a.scope = scope;
-  a.verdict = TRACE_VERDICT_OK;
-  trace_emit_l3(skb, &a);
+  trace_emit_l3(skb, TRACE_L3_PACK_A(trace_id, reason),
+                TRACE_L3_PACK_B(vpc_id, subnet_id),
+                TRACE_L3_PACK_C(hook, scope, TRACE_VERDICT_OK), aux1);
 }
 
 // trace_lookup_id_l3 is for sites that need a trace_id at decision

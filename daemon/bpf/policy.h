@@ -35,37 +35,37 @@
 // ct_install_policy_pass writes the bidirectional CT entries that
 // represent "policy admitted this flow". Both directions share the
 // same vpc_id-scoped namespace; the SG and ACL evaluations have
-// already run, so the caller only supplies what's needed to mint the
-// keys.
-static __always_inline void ct_install_policy_pass(__u32 vpc_id,
-                                                   __u8 proto,
-                                                   __be32 saddr, __be32 daddr,
-                                                   __u16 sport_h, __u16 dport_h,
-                                                   __u8 init_state, __u8 init_flags) {
+// already run, so the caller only supplies the forward ct_key
+// (already built for the established-flow short-circuit) plus the
+// initial CT state.
+//
+// Marked as a BPF-to-BPF subprogram (noinline) so the four 24-byte
+// struct allocations on its stack frame (the caller's fwd key
+// pointer is reused; the function adds the ct_val pair plus the
+// reverse ct_key) live in their own frame rather than ballooning
+// the caller's stack. Re-using the caller's fwd ct_key (built for
+// the established-flow short-circuit) instead of a separate args
+// struct saves the 24 bytes that pushed apply_policy_egress's
+// combined call-chain stack over the kernel's 512-byte ceiling.
+static __juneau_bpf_subprog void
+ct_install_policy_pass(const struct ct_key *fwd_key, __u8 init_state,
+                       __u8 init_flags) {
   __u64 now = bpf_ktime_get_ns();
-  struct ct_key fwd_key = {
-      .scope = vpc_id,
-      .saddr = saddr,
-      .daddr = daddr,
-      .sport = bpf_htons(sport_h),
-      .dport = bpf_htons(dport_h),
-      .proto = proto,
-  };
   struct ct_val fwd = {
       .action = CT_ACTION_POLICY_PASS,
       .state = init_state,
       .flags_seen = init_flags,
       .last_seen_ns = now,
   };
-  bpf_map_update_elem(&ct_map, &fwd_key, &fwd, BPF_ANY);
+  bpf_map_update_elem(&ct_map, fwd_key, &fwd, BPF_ANY);
 
   struct ct_key rev_key = {
-      .scope = vpc_id,
-      .saddr = daddr,
-      .daddr = saddr,
-      .sport = bpf_htons(dport_h),
-      .dport = bpf_htons(sport_h),
-      .proto = proto,
+      .scope = fwd_key->scope,
+      .saddr = fwd_key->daddr,
+      .daddr = fwd_key->saddr,
+      .sport = fwd_key->dport,
+      .dport = fwd_key->sport,
+      .proto = fwd_key->proto,
   };
   struct ct_val rev = {
       .action = CT_ACTION_POLICY_PASS,
@@ -85,14 +85,12 @@ static __always_inline void ct_install_policy_pass(__u32 vpc_id,
 //   -1: terminal DENY (caller must TC_ACT_SHOT)
 //   -2: internal error (caller must TC_ACT_SHOT)
 //
-// Marked as a BPF-to-BPF subprogram (noinline) so the verifier
-// explores its body once rather than once per call-site context. The
-// SG rule scan (sg.h) is the dominant state-explosion source; folding
-// the policy stage into a single subprogram keeps the verifier under
-// the 1M-insn budget once trace.h instrumentation expands the
-// surrounding host program.
-static __juneau_bpf_subprog int apply_policy_egress(struct __sk_buff *skb,
-                                                    __u32 vpc_id, __u32 acl_id) {
+// Inlined into the caller. The state-explosion pressure that used to
+// require a separate subprogram lives now in `acl_evaluate` and
+// `sg_eval` (both noinline subprograms): the rule-scan loops are the
+// real source, and isolating those is enough.
+static __always_inline int apply_policy_egress(struct __sk_buff *skb,
+                                               __u32 vpc_id, __u32 acl_id) {
   struct iphdr *iph = nat_load_iph(skb);
   if (!iph)
     return -2;
@@ -185,21 +183,20 @@ static __juneau_bpf_subprog int apply_policy_egress(struct __sk_buff *skb,
       init_state = ct_initial_state_for_syn(f);
     }
   }
-  ct_install_policy_pass(vpc_id, proto, iph->saddr, iph->daddr, sport, dport,
-                         init_state, init_flags);
+  ct_install_policy_pass(&ck, init_state, init_flags);
   return 1;
 }
 
 // apply_policy_ingress mirrors apply_policy_egress for inbound
 // traffic at a local Pod's veth. See the apply_policy_egress comment
-// for why this is a noinline subprogram.
+// for why this is inlined.
 //
 // Returns:
 //    0: admitted (or short-circuited via CT, or no enforcement)
 //   -1: terminal DENY (caller must TC_ACT_SHOT)
 //   -2: internal error (caller must TC_ACT_SHOT)
-static __juneau_bpf_subprog int apply_policy_ingress(struct __sk_buff *skb,
-                                                     __u32 vpc_id, __u32 acl_id) {
+static __always_inline int apply_policy_ingress(struct __sk_buff *skb,
+                                                __u32 vpc_id, __u32 acl_id) {
   struct iphdr *iph = nat_load_iph(skb);
   if (!iph)
     return -2;
@@ -279,8 +276,7 @@ static __juneau_bpf_subprog int apply_policy_ingress(struct __sk_buff *skb,
       init_state = ct_initial_state_for_syn(f);
     }
   }
-  ct_install_policy_pass(vpc_id, proto, iph->saddr, iph->daddr, sport, dport,
-                         init_state, init_flags);
+  ct_install_policy_pass(&ck, init_state, init_flags);
   return 0;
 }
 

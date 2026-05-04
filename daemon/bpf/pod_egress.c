@@ -37,6 +37,7 @@ struct arp_payload {
   __be32 tpa;
 } __attribute__((packed));
 
+
 static __always_inline int update_l4_csum(struct __sk_buff *skb,
                                           struct iphdr *iph, void *data_end,
                                           __be32 old_addr, __be32 new_addr) {
@@ -998,22 +999,15 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
       a.aux2 = sv->backend_count;
       trace_emit_full(&a);
 
-      struct trace_emit_args b = {0};
-      b.trace_id = __tid;
-      b.reason = TRACE_REASON_SERVICE_BACKEND_SELECTED;
-      b.hook = TRACE_HOOK_POD_EGRESS;
-      b.ifindex = skb->ifindex;
-      b.vpc_id = subnet->vpc_id;
-      b.scope = TRACE_SCOPE_VPC;
-      b.proto = iph->protocol;
-      b.verdict = TRACE_VERDICT_OK;
-      b.saddr = saddr;
-      b.daddr = daddr;
-      b.sport = sport;
-      b.dport = dport;
-      b.aux1 = idx;
-      b.aux2 = bv->backend_subnet_id;
-      trace_emit_full(&b);
+      // Reuse `a` for the second emit. trace_emit_args is a 56-byte
+      // struct on the host program's stack and clang has been
+      // observed not to share slots between these back-to-back
+      // declarations under -O2; collapsing them into one
+      // explicit reuse trims tc_pod_egress's stack frame.
+      a.reason = TRACE_REASON_SERVICE_BACKEND_SELECTED;
+      a.aux1 = idx;
+      a.aux2 = bv->backend_subnet_id;
+      trace_emit_full(&a);
     }
   }
 
