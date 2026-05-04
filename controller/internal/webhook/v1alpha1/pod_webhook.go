@@ -13,14 +13,19 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
@@ -49,6 +54,17 @@ const (
 	// expected to be the literal string "true".
 	PodAnnotationDNSInjectSkip = "juneau.loutres.me/dns-inject-skip"
 
+	// PodAnnotationSecurityGroups carries a comma-separated list of
+	// SecurityGroup names that should be attached to the Pod's
+	// NetworkInterface. The Pod controller transcribes this onto
+	// NetworkInterface.spec.securityGroups; this webhook validates it.
+	PodAnnotationSecurityGroups = "juneau.loutres.me/security-groups"
+
+	// PodSecurityGroupsMax matches NetworkInterface.spec.securityGroups
+	// MaxItems and the BPF MAX_SGS_PER_NIC ceiling. Exceeding this is a
+	// hard reject at admission so we never silently truncate.
+	PodSecurityGroupsMax = 2
+
 	// defaultClusterSearchDomains mirrors the search list kubelet
 	// composes for ClusterFirst Pods. We assemble it explicitly so
 	// dnsPolicy=None Pods keep working with relative names like
@@ -64,19 +80,24 @@ const (
 // nolint:unused
 var podlog = logf.Log.WithName("pod-resource")
 
-// SetupPodWebhookWithManager registers the Pod mutating webhook. The
-// webhook injects per-Subnet DNS configuration so cluster-internal
-// resolution flows through Juneau's virtual DNS service instead of
-// falling back to kube-dns / CoreDNS, which has no knowledge of
-// per-VPC isolation.
+// SetupPodWebhookWithManager registers the Pod webhook. Two distinct
+// concerns are layered behind a single webhook registration:
 //
-// Validation is intentionally not added here: any Pod we don't
-// understand (mirror, hostNetwork, missing subnet, …) is left
-// untouched rather than rejected, so a misconfigured webhook can't
-// take down the kubelet's Pod admission path.
+//   - PodDNSDefaulter (mutating): injects per-Subnet DNS config. Failure
+//     policy "Ignore" is deliberate — a misconfigured DNS plane should
+//     never break Pod admission.
+//   - PodSecurityGroupValidator (validating): rejects Pods whose
+//     security-groups annotation references missing SGs, references SGs
+//     in the wrong Vpc, or violates Vpc.spec.enforceSecurityGroups.
+//     Failure policy "Fail" is deliberate — silently admitting a Pod
+//     with a non-existent SG would be a real security hole.
+//
+// Both pieces share the same client; controller-runtime treats them as
+// separate webhook handlers under the same registration.
 func SetupPodWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&corev1.Pod{}).
 		WithDefaulter(&PodDNSDefaulter{Client: mgr.GetClient()}).
+		WithValidator(&PodSecurityGroupValidator{Client: mgr.GetClient()}).
 		Complete()
 }
 
@@ -214,4 +235,146 @@ func mergeDNSConfig(existing *corev1.PodDNSConfig, dnsVIP, podNamespace string) 
 	}
 
 	return &out
+}
+
+// +kubebuilder:webhook:path=/validate--v1-pod,mutating=false,failurePolicy=ignore,sideEffects=None,groups="",resources=pods,verbs=create,versions=v1,name=vpod-juneau-loutres-me.kb.io,admissionReviewVersions=v1
+
+// PodSecurityGroupValidator enforces SG-related admission rules:
+//
+//  1. The juneau.loutres.me/security-groups annotation, when present,
+//     parses into ≤ PodSecurityGroupsMax names.
+//  2. Every named SG exists.
+//  3. Every named SG belongs to the same Vpc as the Pod's Subnet.
+//  4. If the owning Vpc has spec.enforceSecurityGroups=true, the Pod
+//     must list at least one valid SG.
+//
+// Mirror Pods, hostNetwork Pods, and Pods whose Subnet cannot be
+// resolved are always exempt — admission must keep working when the
+// Juneau control plane is degraded.
+//
+// +kubebuilder:object:generate=false
+type PodSecurityGroupValidator struct {
+	client.Client
+}
+
+var _ webhook.CustomValidator = &PodSecurityGroupValidator{}
+
+func (v *PodSecurityGroupValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	pod, ok := obj.(*corev1.Pod)
+	if !ok {
+		return nil, fmt.Errorf("expected a Pod object but got %T", obj)
+	}
+	return v.validate(ctx, pod)
+}
+
+func (v *PodSecurityGroupValidator) ValidateUpdate(ctx context.Context, _, newObj runtime.Object) (admission.Warnings, error) {
+	pod, ok := newObj.(*corev1.Pod)
+	if !ok {
+		return nil, fmt.Errorf("expected a Pod object for newObj but got %T", newObj)
+	}
+	return v.validate(ctx, pod)
+}
+
+func (v *PodSecurityGroupValidator) ValidateDelete(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
+	return nil, nil
+}
+
+func (v *PodSecurityGroupValidator) validate(ctx context.Context, pod *corev1.Pod) (admission.Warnings, error) {
+	if pod.Spec.HostNetwork {
+		return nil, nil
+	}
+	if _, isMirror := pod.Annotations["kubernetes.io/config.mirror"]; isMirror {
+		return nil, nil
+	}
+
+	annotation := pod.Annotations[PodAnnotationSecurityGroups]
+	names := parsePodSGAnnotation(annotation)
+
+	annPath := field.NewPath("metadata", "annotations").Key(PodAnnotationSecurityGroups)
+	var errs field.ErrorList
+
+	if len(names) > PodSecurityGroupsMax {
+		errs = append(errs, field.Invalid(annPath, annotation,
+			fmt.Sprintf("at most %d security groups allowed (got %d)", PodSecurityGroupsMax, len(names))))
+	}
+
+	subnetName := pod.Annotations[PodAnnotationSubnet]
+	if subnetName == "" {
+		subnetName = dnsPodSubnetDefault
+	}
+
+	var subnet juneauv1alpha1.Subnet
+	if err := v.Get(ctx, client.ObjectKey{Name: subnetName}, &subnet); err != nil {
+		if apierrors.IsNotFound(err) {
+			// Subnet missing → Pod controller will surface a scheduling
+			// error; do not double-reject here.
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var vpc juneauv1alpha1.Vpc
+	if err := v.Get(ctx, client.ObjectKey{Name: subnet.Spec.Vpc}, &vpc); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	resolvedNames := names
+	if len(errs) == 0 {
+		resolvedNames = nil
+		for i, name := range names {
+			var sg juneauv1alpha1.SecurityGroup
+			if err := v.Get(ctx, client.ObjectKey{Name: name}, &sg); err != nil {
+				if apierrors.IsNotFound(err) {
+					errs = append(errs, field.Invalid(annPath, annotation,
+						fmt.Sprintf("entry [%d]: SecurityGroup %q does not exist", i, name)))
+					continue
+				}
+				return nil, err
+			}
+			if sg.Spec.Vpc != vpc.Name {
+				errs = append(errs, field.Invalid(annPath, annotation,
+					fmt.Sprintf("entry [%d]: SecurityGroup %q belongs to Vpc %q (expected %q to match the Pod's Subnet)", i, name, sg.Spec.Vpc, vpc.Name)))
+				continue
+			}
+			resolvedNames = append(resolvedNames, name)
+		}
+	}
+
+	if vpc.Spec.EnforceSecurityGroups && len(resolvedNames) == 0 {
+		errs = append(errs, field.Required(annPath,
+			fmt.Sprintf("Vpc %q has enforceSecurityGroups=true; the Pod must reference at least one SecurityGroup", vpc.Name)))
+	}
+
+	if len(errs) > 0 {
+		return nil, apierrors.NewInvalid(schema.GroupKind{Group: "", Kind: "Pod"}, pod.Name, errs)
+	}
+
+	return nil, nil
+}
+
+// parsePodSGAnnotation parses a comma-separated list, trimming and
+// deduplicating. Returns nil for empty input.
+func parsePodSGAnnotation(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	seen := make(map[string]struct{}, len(parts))
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		name := strings.TrimSpace(p)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }

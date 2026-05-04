@@ -13,6 +13,8 @@
 #include "ct.h"
 #include "maps.h"
 #include "nat.h"
+#include "policy.h"
+#include "sg.h"
 
 #define ETH_P_IP 0x0800
 
@@ -98,6 +100,15 @@ static __always_inline int handle(struct __sk_buff *skb) {
     return TC_ACT_OK;
 
   if (apply_reverse_snat(skb, subnet->vpc_id) < 0)
+    return TC_ACT_SHOT;
+
+  // Unified policy stage runs after reverse SNAT — the ACL and SG
+  // layers evaluate the peer the *Pod* sees, which is the rewritten
+  // src (= original ClusterIP for Service responses). Running this
+  // after the reverse SNAT keeps user-facing rules ("admit traffic
+  // from ClusterIP X") effective.
+  int policy_rc = apply_policy_ingress(skb, subnet->vpc_id, subnet->acl_id);
+  if (policy_rc == -1 || policy_rc == -2)
     return TC_ACT_SHOT;
 
   return TC_ACT_OK;

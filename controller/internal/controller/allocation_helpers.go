@@ -13,10 +13,12 @@ import (
 var allocationNameSanitizer = regexp.MustCompile(`[^a-z0-9.-]+`)
 
 const (
-	allocationPoolSubnetVNI    = "subnet-vni"
-	allocationPoolRouteTableID = "route-table-id"
-	allocationPoolVpcID        = "vpc-id"
-	allocationPoolNATGatewayID = "nat-gateway-id"
+	allocationPoolSubnetVNI       = "subnet-vni"
+	allocationPoolRouteTableID    = "route-table-id"
+	allocationPoolVpcID           = "vpc-id"
+	allocationPoolNATGatewayID    = "nat-gateway-id"
+	allocationPoolSecurityGroupID = "security-group-id"
+	allocationPoolNetworkACLID    = "network-acl-id"
 )
 
 // allocationClaimName composes a deterministic claim name from the

@@ -39,9 +39,11 @@ rules:
   - externalnetworkattachments
   - externalnetworks
   - natgateways
+  - networkacls
   - networkendpoints
   - networkinterfaces
   - routetables
+  - securitygroups
   - servicenatattachments
   - subnets
   - vpcs
@@ -67,9 +69,11 @@ rules:
   - externalnetworkattachments/finalizers
   - externalnetworks/finalizers
   - natgateways/finalizers
+  - networkacls/finalizers
   - networkendpoints/finalizers
   - networkinterfaces/finalizers
   - routetables/finalizers
+  - securitygroups/finalizers
   - servicenatattachments/finalizers
   - subnets/finalizers
   - vpcs/finalizers
@@ -89,9 +93,11 @@ rules:
   - externalnetworkattachments/status
   - externalnetworks/status
   - natgateways/status
+  - networkacls/status
   - networkendpoints/status
   - networkinterfaces/status
   - routetables/status
+  - securitygroups/status
   - servicenatattachments/status
   - subnets/status
   - vpcs/status

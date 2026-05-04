@@ -117,6 +117,11 @@ func (v *SubnetCustomValidator) ValidateCreate(ctx context.Context, obj runtime.
 		return nil, err
 	}
 	errs = append(errs, rtErrs...)
+	aclErrs, err := validateSubnetNetworkACL(ctx, v.Client, subnet, errPath.Child("networkACL"))
+	if err != nil {
+		return nil, err
+	}
+	errs = append(errs, aclErrs...)
 
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "Subnet"}, subnet.Name, errs)
@@ -155,6 +160,19 @@ func (v *SubnetCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newO
 		return nil, err
 	}
 	errs = append(errs, rtErrs...)
+
+	// Re-validate spec.networkACL only when its name changed. This
+	// avoids forcing a webhook lookup on every status-driven finalizer
+	// update and prevents a delete-ordering deadlock if the referenced
+	// ACL is being torn down concurrently with an unrelated Subnet
+	// edit.
+	if subnet.Spec.NetworkACL != oldSubnet.Spec.NetworkACL {
+		aclErrs, err := validateSubnetNetworkACL(ctx, v.Client, subnet, errPath.Child("networkACL"))
+		if err != nil {
+			return nil, err
+		}
+		errs = append(errs, aclErrs...)
+	}
 
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "Subnet"}, subnet.Name, errs)
@@ -280,6 +298,36 @@ func validateSubnetRouteTable(ctx context.Context, c client.Client, subnet *june
 
 	if rt.Spec.Vpc != subnet.Spec.Vpc {
 		return field.ErrorList{field.Invalid(path, subnet.Spec.RouteTable, fmt.Sprintf("RouteTable belongs to a different Vpc %q", rt.Spec.Vpc))}, nil
+	}
+
+	return nil, nil
+}
+
+// validateSubnetNetworkACL rejects a Subnet whose spec.networkACL
+// names a NetworkACL that does not exist or that belongs to a
+// different Vpc.
+//
+// We deliberately do NOT validate networkACL on every update — the
+// caller in ValidateUpdate compares old/new and skips the lookup when
+// the field is unchanged. Re-validating an immutable-ish field on
+// every update tends to deadlock finalizer-driven updates if the
+// referenced object is concurrently torn down.
+func validateSubnetNetworkACL(ctx context.Context, c client.Client, subnet *juneauv1alpha1.Subnet, path *field.Path) (field.ErrorList, error) {
+	if subnet.Spec.NetworkACL == "" {
+		return nil, nil
+	}
+
+	var acl juneauv1alpha1.NetworkACL
+	if err := c.Get(ctx, client.ObjectKey{Name: subnet.Spec.NetworkACL}, &acl); err != nil {
+		if errors.IsNotFound(err) {
+			return field.ErrorList{field.Invalid(path, subnet.Spec.NetworkACL, "referenced NetworkACL does not exist")}, nil
+		}
+		return nil, err
+	}
+
+	if acl.Spec.Vpc != subnet.Spec.Vpc {
+		return field.ErrorList{field.Invalid(path, subnet.Spec.NetworkACL,
+			fmt.Sprintf("NetworkACL belongs to Vpc %q (expected %q)", acl.Spec.Vpc, subnet.Spec.Vpc))}, nil
 	}
 
 	return nil, nil

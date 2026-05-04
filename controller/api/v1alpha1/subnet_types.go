@@ -31,6 +31,19 @@ type SubnetSpec struct {
 	// must belong to the same Vpc.
 	// +optional
 	RouteTable string `json:"routeTable,omitempty"`
+
+	// NetworkACL names the NetworkACL applied at this Subnet's
+	// boundary. The referenced ACL must belong to the same Vpc as the
+	// Subnet (webhook-enforced). Empty means "no ACL" — the Subnet
+	// boundary does not enforce policy and traffic flows straight to
+	// the per-Pod SecurityGroup layer.
+	//
+	// Mutability: the field is mutable. Switching the reference (or
+	// clearing it) re-converges the Subnet status and triggers
+	// daemon-side CT invalidation so flows pick up the new policy on
+	// their next packet.
+	// +optional
+	NetworkACL string `json:"networkACL,omitempty"`
 }
 
 // SubnetStatus defines the observed state of Subnet.
@@ -55,6 +68,42 @@ type SubnetStatus struct {
 	// plane can demultiplex virtual-service traffic by destination MAC
 	// before consulting the FIB. Empty when DNS is empty.
 	DNSMAC string `json:"dnsMAC,omitempty"`
+
+	// NetworkACL mirrors the resolved spec.networkACL reference. It
+	// carries the cluster-wide ACLID the daemon writes into the BPF
+	// subnet_map plus the ACL's RulesetVersion at the time the
+	// reference was resolved. Empty (nil) when spec.networkACL is
+	// unset or the named ACL does not yet exist.
+	// +optional
+	NetworkACL *SubnetNetworkACLRef `json:"networkACL,omitempty"`
+}
+
+// SubnetNetworkACLRef carries the resolved view of a Subnet's
+// NetworkACL attachment that the daemon needs to program the BPF
+// subnet_map. Distinct from spec.networkACL because it folds in fields
+// (ACLID, RulesetVersion) that the controller resolves at reconcile
+// time and that the daemon cannot recompute from the spec alone.
+type SubnetNetworkACLRef struct {
+	// Name mirrors spec.networkACL — the user-facing reference. Kept
+	// in status so daemons consume one struct without cross-checking
+	// spec.
+	// +required
+	Name string `json:"name"`
+
+	// ACLID is the resolved cluster-wide identifier from the
+	// referenced NetworkACL's status.aclID. Zero means "the ACL
+	// exists in spec but has not been allocated yet"; the daemon
+	// treats zero as "no ACL programmed" and falls back to default-allow
+	// until the controller publishes a non-zero value.
+	// +optional
+	ACLID uint32 `json:"aclID,omitempty"`
+
+	// RulesetVersion mirrors the referenced ACL's
+	// status.rulesetVersion at the moment the reference was resolved.
+	// Daemons compare this against their last-applied value to decide
+	// whether to flush CT entries.
+	// +optional
+	RulesetVersion uint64 `json:"rulesetVersion,omitempty"`
 }
 
 // +kubebuilder:object:root=true

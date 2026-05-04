@@ -1,0 +1,392 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: networkacls.juneau.loutres.me
+spec:
+  group: juneau.loutres.me
+  names:
+    kind: NetworkACL
+    listKind: NetworkACLList
+    plural: networkacls
+    shortNames:
+    - netacl
+    singular: networkacl
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.vpc
+      name: VPC
+      type: string
+    - jsonPath: .status.aclID
+      name: ACLID
+      type: integer
+    - jsonPath: .status.ingressRuleCount
+      name: Ingress
+      type: integer
+    - jsonPath: .status.egressRuleCount
+      name: Egress
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: NetworkACL is the Schema for the networkacls API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              NetworkACLSpec defines the desired state of NetworkACL.
+
+              Semantics:
+
+                - A NetworkACL is scoped to exactly one Vpc. Cross-Vpc references
+                  are rejected by webhook validation.
+                - Each direction (Ingress, Egress) is independently configured:
+                - nil (the field is omitted entirely) → default-allow for that
+                  direction. The Subnet boundary applies no policy and packets
+                  fall through to SecurityGroup unchanged.
+                - non-nil empty list ([]) → default-deny. With no rules to match,
+                  every packet hits the implicit terminal deny.
+                - non-empty list → rules evaluated in priority order; the first
+                  match's Action wins. Packets that match no rule fall to the
+                  implicit terminal deny.
+                - The nil-vs-[] convention mirrors SecurityGroup so operators can
+                  reason about both layers consistently.
+                - A Subnet attaches at most one NetworkACL via Subnet.spec.networkACL.
+                  Use rule priorities to compose multiple intents inside a single
+                  ACL rather than chaining several ACLs onto one Subnet.
+            properties:
+              egress:
+                description: |-
+                  Egress lists rules controlling traffic leaving Subnets that
+                  reference this ACL.
+                items:
+                  description: |-
+                    NetworkACLRule is a single ordered rule applied at the Subnet
+                    boundary.
+
+                    Unlike SecurityGroup, NetworkACL rules carry an explicit Priority and
+                    Action: rules run in priority order (low number first) and the first
+                    match decides the verdict. Peers are CIDR-only — Subnet-level ACLs
+                    describe address-based scopes; per-Pod identity matching belongs to
+                    SecurityGroup, which sits one stage downstream.
+                  properties:
+                    action:
+                      description: Action declares what to do when this rule matches.
+                      enum:
+                      - allow
+                      - deny
+                      type: string
+                    cidr:
+                      description: |-
+                        CIDR is the peer address scope this rule matches. IPv4 only.
+                        "0.0.0.0/0" matches any address.
+                      minLength: 1
+                      type: string
+                    description:
+                      description: |-
+                        Description is free-form metadata returned in API responses for
+                        operator clarity; ignored by the data plane.
+                      type: string
+                    ports:
+                      description: |-
+                        Ports list the L4 destination ports admitted by this rule. Empty
+                        matches every port for the chosen protocol. When Protocol is
+                        "icmp" or "all", Ports must be empty.
+                      items:
+                        description: |-
+                          NetworkACLPort selects an L4 destination port (or range).
+
+                          Either Port or PortRange must be set, never both. Webhook validation
+                          enforces this invariant. The struct mirrors SecurityGroupPort but is
+                          kept distinct so an accidental cross-kind assignment fails to compile.
+                        properties:
+                          port:
+                            description: Port matches a single L4 destination port.
+                            format: int32
+                            maximum: 65535
+                            minimum: 1
+                            type: integer
+                          portRange:
+                            description: PortRange matches a contiguous L4 destination
+                              port range.
+                            properties:
+                              from:
+                                format: int32
+                                maximum: 65535
+                                minimum: 1
+                                type: integer
+                              to:
+                                format: int32
+                                maximum: 65535
+                                minimum: 1
+                                type: integer
+                            required:
+                            - from
+                            - to
+                            type: object
+                        type: object
+                      type: array
+                    priority:
+                      description: |-
+                        Priority orders rules within their direction. Lower numbers run
+                        first; the first matching rule's Action wins. Priorities must be
+                        unique within each direction (webhook-enforced).
+                      format: int32
+                      maximum: 65535
+                      minimum: 1
+                      type: integer
+                    protocol:
+                      default: all
+                      description: Protocol selects the IP protocol. Defaults to "all"
+                        when empty.
+                      enum:
+                      - tcp
+                      - udp
+                      - icmp
+                      - all
+                      type: string
+                  required:
+                  - action
+                  - cidr
+                  - priority
+                  type: object
+                nullable: true
+                type: array
+              ingress:
+                description: |-
+                  Ingress lists rules controlling traffic entering Subnets that
+                  reference this ACL. Per-direction defaults follow the
+                  NetworkACLSpec nil-vs-[] convention.
+                items:
+                  description: |-
+                    NetworkACLRule is a single ordered rule applied at the Subnet
+                    boundary.
+
+                    Unlike SecurityGroup, NetworkACL rules carry an explicit Priority and
+                    Action: rules run in priority order (low number first) and the first
+                    match decides the verdict. Peers are CIDR-only — Subnet-level ACLs
+                    describe address-based scopes; per-Pod identity matching belongs to
+                    SecurityGroup, which sits one stage downstream.
+                  properties:
+                    action:
+                      description: Action declares what to do when this rule matches.
+                      enum:
+                      - allow
+                      - deny
+                      type: string
+                    cidr:
+                      description: |-
+                        CIDR is the peer address scope this rule matches. IPv4 only.
+                        "0.0.0.0/0" matches any address.
+                      minLength: 1
+                      type: string
+                    description:
+                      description: |-
+                        Description is free-form metadata returned in API responses for
+                        operator clarity; ignored by the data plane.
+                      type: string
+                    ports:
+                      description: |-
+                        Ports list the L4 destination ports admitted by this rule. Empty
+                        matches every port for the chosen protocol. When Protocol is
+                        "icmp" or "all", Ports must be empty.
+                      items:
+                        description: |-
+                          NetworkACLPort selects an L4 destination port (or range).
+
+                          Either Port or PortRange must be set, never both. Webhook validation
+                          enforces this invariant. The struct mirrors SecurityGroupPort but is
+                          kept distinct so an accidental cross-kind assignment fails to compile.
+                        properties:
+                          port:
+                            description: Port matches a single L4 destination port.
+                            format: int32
+                            maximum: 65535
+                            minimum: 1
+                            type: integer
+                          portRange:
+                            description: PortRange matches a contiguous L4 destination
+                              port range.
+                            properties:
+                              from:
+                                format: int32
+                                maximum: 65535
+                                minimum: 1
+                                type: integer
+                              to:
+                                format: int32
+                                maximum: 65535
+                                minimum: 1
+                                type: integer
+                            required:
+                            - from
+                            - to
+                            type: object
+                        type: object
+                      type: array
+                    priority:
+                      description: |-
+                        Priority orders rules within their direction. Lower numbers run
+                        first; the first matching rule's Action wins. Priorities must be
+                        unique within each direction (webhook-enforced).
+                      format: int32
+                      maximum: 65535
+                      minimum: 1
+                      type: integer
+                    protocol:
+                      default: all
+                      description: Protocol selects the IP protocol. Defaults to "all"
+                        when empty.
+                      enum:
+                      - tcp
+                      - udp
+                      - icmp
+                      - all
+                      type: string
+                  required:
+                  - action
+                  - cidr
+                  - priority
+                  type: object
+                nullable: true
+                type: array
+              vpc:
+                description: Vpc names the Vpc this NetworkACL belongs to. Immutable.
+                minLength: 1
+                type: string
+            required:
+            - vpc
+            type: object
+          status:
+            description: NetworkACLStatus reports observed state.
+            properties:
+              aclID:
+                description: |-
+                  ACLID is the cluster-wide identifier allocated for this ACL via
+                  an AllocationClaim. Daemons key acl_meta_map and acl_rule_table
+                  by this number; once assigned it never changes for the lifetime
+                  of the resource.
+                format: int32
+                type: integer
+              attachedSubnets:
+                description: |-
+                  AttachedSubnets enumerates Subnets currently referencing this
+                  NetworkACL via spec.networkACL. Updated by the controller from
+                  an informer; observability only and may lag briefly.
+                items:
+                  type: string
+                type: array
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              egressRuleCount:
+                format: int32
+                type: integer
+              hasEgressRules:
+                type: boolean
+              hasIngressRules:
+                description: |-
+                  HasIngressRules / HasEgressRules report whether the spec set the
+                  direction explicitly (nil → false, [] or non-empty → true).
+                  Daemons use these to choose between default-allow (no
+                  enforcement at all) and default-deny (rule list applies, fall
+                  through to deny).
+                type: boolean
+              ingressRuleCount:
+                description: |-
+                  IngressRuleCount and EgressRuleCount report the rule count per
+                  direction (0 when the direction is nil/empty). Observability;
+                  not a hard limit.
+                format: int32
+                type: integer
+              observedGeneration:
+                format: int64
+                type: integer
+              rulesetVersion:
+                description: |-
+                  RulesetVersion is bumped whenever the controller publishes a new
+                  effective ruleset summary. Daemons use this to invalidate stale
+                  CT entries when rules change.
+                format: int64
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

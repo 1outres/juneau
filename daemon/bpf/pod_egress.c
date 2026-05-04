@@ -7,6 +7,8 @@
 #include "ct.h"
 #include "maps.h"
 #include "nat.h"
+#include "sg.h"
+#include "policy.h"
 
 // uapi/linux/if_packet.h pkt_type values. vmlinux.h does not export
 // these as enums, and we only need PACKET_HOST so define it locally.
@@ -1583,6 +1585,16 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
       return TC_ACT_SHOT;
     if (shared_hit == 1)
       return shared_rc;
+
+    // Unified policy stage: NetworkACL → SecurityGroup → CT install.
+    // Runs BEFORE apply_conntrack_dnat so each layer evaluates the
+    // user-visible 5-tuple (e.g. Service ClusterIP), not the
+    // rewritten backend IP. -1/-2 are terminal DENY / internal error;
+    // 0 means "established flow short-circuited" or "no enforcement";
+    // 1 means "admitted on first packet, CT installed".
+    int policy_rc = apply_policy_egress(skb, subnet->vpc_id, subnet->acl_id);
+    if (policy_rc == -1 || policy_rc == -2)
+      return TC_ACT_SHOT;
 
     int rc = apply_conntrack_dnat(skb, subnet->vpc_id);
     if (rc < 0)

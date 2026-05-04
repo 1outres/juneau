@@ -27,6 +27,14 @@ type VpcSpec struct {
 	// belonging to this VPC, so Pods in the VPC can reach Services in it.
 	// +optional
 	EnableService bool `json:"enableService,omitempty"`
+
+	// EnforceSecurityGroups makes SecurityGroup attachment mandatory for
+	// every Pod placed in a Subnet of this Vpc. Pods without the
+	// juneau.loutres.me/security-groups annotation (or with a list that
+	// resolves to zero valid SGs) are rejected at admission. Existing
+	// Pods are not retroactively affected when this flag is toggled.
+	// +optional
+	EnforceSecurityGroups bool `json:"enforceSecurityGroups,omitempty"`
 }
 
 // VpcStatus defines the observed state of Vpc.

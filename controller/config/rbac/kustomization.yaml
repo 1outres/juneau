@@ -76,4 +76,10 @@ resources:
 - vpc_admin_role.yaml
 - vpc_editor_role.yaml
 - vpc_viewer_role.yaml
+- securitygroup_admin_role.yaml
+- securitygroup_editor_role.yaml
+- securitygroup_viewer_role.yaml
+- networkacl_admin_role.yaml
+- networkacl_editor_role.yaml
+- networkacl_viewer_role.yaml
 

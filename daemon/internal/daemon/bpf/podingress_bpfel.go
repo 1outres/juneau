@@ -13,6 +13,29 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type PodIngressAclMetaVal struct {
+	_               structs.HostLayout
+	IngressCount    uint32
+	EgressCount     uint32
+	RulesetVersion  uint64
+	HasIngressRules uint8
+	HasEgressRules  uint8
+	Pad             [6]uint8
+}
+
+type PodIngressAclRule struct {
+	_         structs.HostLayout
+	Direction uint8
+	Proto     uint8
+	PortLo    uint16
+	PortHi    uint16
+	Prefixlen uint8
+	Verdict   uint8
+	Priority  uint16
+	Pad       [2]uint8
+	PeerV4    uint32
+}
+
 type PodIngressArpTableKey struct {
 	_        structs.HostLayout
 	SubnetId uint32
@@ -160,6 +183,41 @@ type PodIngressServiceVal struct {
 	Flags        uint32
 }
 
+type PodIngressSgMembershipKey struct {
+	_     structs.HostLayout
+	VpcId uint32
+	Ipv4  uint32
+}
+
+type PodIngressSgMembershipVal struct {
+	_     structs.HostLayout
+	Count uint8
+	Pad   [3]uint8
+	Sgs   [2]uint32
+}
+
+type PodIngressSgMetaVal struct {
+	_              structs.HostLayout
+	IngressCount   uint32
+	EgressCount    uint32
+	RulesetVersion uint32
+	HasEgressRules uint8
+	Pad            [3]uint8
+}
+
+type PodIngressSgRule struct {
+	_             structs.HostLayout
+	Direction     uint8
+	Proto         uint8
+	PortLo        uint16
+	PortHi        uint16
+	PeerKind      uint8
+	PeerPrefixlen uint8
+	PeerV4        uint32
+	Verdict       uint8
+	Pad           [3]uint8
+}
+
 type PodIngressSubnetKey struct {
 	_        structs.HostLayout
 	SubnetId uint32
@@ -173,6 +231,7 @@ type PodIngressSubnetVal struct {
 	_       [2]byte
 	GwAddr  uint32
 	Mask    uint32
+	AclId   uint32
 }
 
 type PodIngressVirtualServiceFlowKey struct {
@@ -265,6 +324,9 @@ type PodIngressProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type PodIngressMapSpecs struct {
+	AclMetaMap            *ebpf.MapSpec `ebpf:"acl_meta_map"`
+	AclRuleTable          *ebpf.MapSpec `ebpf:"acl_rule_table"`
+	AclRulesInnerProto    *ebpf.MapSpec `ebpf:"acl_rules_inner_proto"`
 	ArpTable              *ebpf.MapSpec `ebpf:"arp_table"`
 	BackendMap            *ebpf.MapSpec `ebpf:"backend_map"`
 	BgpAddressPools       *ebpf.MapSpec `ebpf:"bgp_address_pools"`
@@ -280,6 +342,10 @@ type PodIngressMapSpecs struct {
 	NatSnatMap            *ebpf.MapSpec `ebpf:"nat_snat_map"`
 	ServiceMap            *ebpf.MapSpec `ebpf:"service_map"`
 	ServiceNatIp          *ebpf.MapSpec `ebpf:"service_nat_ip"`
+	SgMembershipMap       *ebpf.MapSpec `ebpf:"sg_membership_map"`
+	SgMetaMap             *ebpf.MapSpec `ebpf:"sg_meta_map"`
+	SgRuleTable           *ebpf.MapSpec `ebpf:"sg_rule_table"`
+	SgRulesInnerProto     *ebpf.MapSpec `ebpf:"sg_rules_inner_proto"`
 	SubnetMap             *ebpf.MapSpec `ebpf:"subnet_map"`
 	VirtualServiceFlowMap *ebpf.MapSpec `ebpf:"virtual_service_flow_map"`
 	VirtualServiceMap     *ebpf.MapSpec `ebpf:"virtual_service_map"`
@@ -312,6 +378,9 @@ func (o *PodIngressObjects) Close() error {
 //
 // It can be passed to LoadPodIngressObjects or ebpf.CollectionSpec.LoadAndAssign.
 type PodIngressMaps struct {
+	AclMetaMap            *ebpf.Map `ebpf:"acl_meta_map"`
+	AclRuleTable          *ebpf.Map `ebpf:"acl_rule_table"`
+	AclRulesInnerProto    *ebpf.Map `ebpf:"acl_rules_inner_proto"`
 	ArpTable              *ebpf.Map `ebpf:"arp_table"`
 	BackendMap            *ebpf.Map `ebpf:"backend_map"`
 	BgpAddressPools       *ebpf.Map `ebpf:"bgp_address_pools"`
@@ -327,6 +396,10 @@ type PodIngressMaps struct {
 	NatSnatMap            *ebpf.Map `ebpf:"nat_snat_map"`
 	ServiceMap            *ebpf.Map `ebpf:"service_map"`
 	ServiceNatIp          *ebpf.Map `ebpf:"service_nat_ip"`
+	SgMembershipMap       *ebpf.Map `ebpf:"sg_membership_map"`
+	SgMetaMap             *ebpf.Map `ebpf:"sg_meta_map"`
+	SgRuleTable           *ebpf.Map `ebpf:"sg_rule_table"`
+	SgRulesInnerProto     *ebpf.Map `ebpf:"sg_rules_inner_proto"`
 	SubnetMap             *ebpf.Map `ebpf:"subnet_map"`
 	VirtualServiceFlowMap *ebpf.Map `ebpf:"virtual_service_flow_map"`
 	VirtualServiceMap     *ebpf.Map `ebpf:"virtual_service_map"`
@@ -335,6 +408,9 @@ type PodIngressMaps struct {
 
 func (m *PodIngressMaps) Close() error {
 	return _PodIngressClose(
+		m.AclMetaMap,
+		m.AclRuleTable,
+		m.AclRulesInnerProto,
 		m.ArpTable,
 		m.BackendMap,
 		m.BgpAddressPools,
@@ -350,6 +426,10 @@ func (m *PodIngressMaps) Close() error {
 		m.NatSnatMap,
 		m.ServiceMap,
 		m.ServiceNatIp,
+		m.SgMembershipMap,
+		m.SgMetaMap,
+		m.SgRuleTable,
+		m.SgRulesInnerProto,
 		m.SubnetMap,
 		m.VirtualServiceFlowMap,
 		m.VirtualServiceMap,

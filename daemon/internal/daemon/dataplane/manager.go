@@ -14,6 +14,7 @@ import (
 
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/convert"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/link"
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/policy"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/program"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/reconciler"
 	"github.com/1outres/juneau/daemon/internal/daemon/runner"
@@ -39,18 +40,28 @@ type Manager struct {
 	externalNetworkAttachmentInformer cache.Informer
 	natGatewayInformer                cache.Informer
 	serviceNATAttachmentInformer      cache.Informer
+	networkInterfaceInformer          cache.Informer
+	securityGroupInformer             cache.Informer
+	networkACLInformer                cache.Informer
 
-	subnetRunner      *runner.Runner
-	arpRunner         *runner.Runner
-	fdbRunner         *runner.Runner
-	podIfaceRunner    *runner.Runner
-	podAttacherRunner *runner.Runner
-	fibRunner         *runner.Runner
-	natRunner         *runner.Runner
-	bgpPoolRunner     *runner.Runner
-	serviceRunner     *runner.Runner
-	naptRunner        *runner.Runner
-	serviceNATRunner  *runner.Runner
+	subnetRunner       *runner.Runner
+	arpRunner          *runner.Runner
+	fdbRunner          *runner.Runner
+	podIfaceRunner     *runner.Runner
+	podAttacherRunner  *runner.Runner
+	fibRunner          *runner.Runner
+	natRunner          *runner.Runner
+	bgpPoolRunner      *runner.Runner
+	serviceRunner      *runner.Runner
+	naptRunner         *runner.Runner
+	serviceNATRunner   *runner.Runner
+	sgRunner           *runner.Runner
+	sgMembershipRunner *runner.Runner
+	aclRunner          *runner.Runner
+
+	sgStore         *policy.SGStore
+	aclStore        *policy.ACLStore
+	membershipStore *policy.MembershipStore
 
 	napt *reconciler.Napt
 
@@ -139,6 +150,14 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 			return fmt.Errorf("watch RouteTable (subnet fan-out): %w", err)
 		}
 	}
+	if m.networkACLInformer != nil {
+		// NetworkACL.status.aclID changes (initial allocation) and
+		// rulesetVersion bumps must propagate into subnet_map.acl_id
+		// without waiting for an unrelated Subnet event.
+		if err := m.subnetRunner.WatchFanOut(m.networkACLInformer, subnetReconciler.FanOutNetworkACLToSubnets); err != nil {
+			return fmt.Errorf("watch NetworkACL (subnet fan-out): %w", err)
+		}
+	}
 	m.subnetRunner.Start(ctx, 1)
 
 	m.arpRunner = runner.New(reconciler.NewArp(m.client, m.podEgress))
@@ -217,6 +236,76 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 			return fmt.Errorf("watch ServiceNATAttachment: %w", err)
 		}
 		m.serviceNATRunner.Start(ctx, 1)
+	}
+
+	// SecurityGroup rule projection. Populates sg_rule_table + sg_meta_map
+	// from SecurityGroup CRDs. Runs even when networkInterfaceInformer is
+	// absent (e.g. unit-test harnesses) because SG metadata is independent
+	// of NetworkInterface bindings.
+	if m.securityGroupInformer != nil {
+		m.sgStore = policy.NewSGStore(
+			m.podEgress.Objs.SgMetaMap,
+			m.podEgress.Objs.SgRuleTable,
+			m.podEgress.MapSpecs.SgRulesInnerProto,
+		)
+		sg := reconciler.NewSecurityGroup(m.client, m.sgStore)
+		m.sgRunner = runner.New(sg)
+		if err := m.sgRunner.Watch(m.securityGroupInformer, runner.MetaNamespaceKey); err != nil {
+			return fmt.Errorf("watch SecurityGroup: %w", err)
+		}
+		// Peer-cross-references: a change to one SG re-evaluates every
+		// other SG in the same Vpc so newly-resolvable peer references
+		// propagate.
+		if err := m.sgRunner.WatchFanOut(m.securityGroupInformer, sg.FanOutVpcPeers); err != nil {
+			return fmt.Errorf("watch SecurityGroup (peer fan-out): %w", err)
+		}
+		m.sgRunner.Start(ctx, 1)
+	}
+
+	// NetworkACL rule projection. Populates acl_rule_table +
+	// acl_meta_map from NetworkACL CRDs. Independent of SG: ACLs
+	// attach to Subnets, not Pods, so we do not need
+	// networkInterfaceInformer here.
+	if m.networkACLInformer != nil {
+		m.aclStore = policy.NewACLStore(
+			m.podEgress.Objs.AclMetaMap,
+			m.podEgress.Objs.AclRuleTable,
+			m.podEgress.MapSpecs.AclRulesInnerProto,
+		)
+		acl := reconciler.NewNetworkACL(m.client, m.aclStore)
+		m.aclRunner = runner.New(acl)
+		if err := m.aclRunner.Watch(m.networkACLInformer, runner.MetaNamespaceKey); err != nil {
+			return fmt.Errorf("watch NetworkACL: %w", err)
+		}
+		m.aclRunner.Start(ctx, 1)
+	}
+
+	// SG membership table — (vpc_id, ipv4) → SG list — built from
+	// NetworkInterface.status.effectiveSecurityGroups. Cluster-wide so
+	// the data plane can resolve both self and peer.
+	if m.networkInterfaceInformer != nil {
+		m.membershipStore = policy.NewMembershipStore(m.podEgress.Objs.SgMembershipMap)
+		mem := reconciler.NewSGMembership(m.client, m.membershipStore)
+		m.sgMembershipRunner = runner.New(mem)
+		if err := m.sgMembershipRunner.Watch(m.networkInterfaceInformer, runner.MetaNamespaceKey); err != nil {
+			return fmt.Errorf("watch NetworkInterface (sg-membership): %w", err)
+		}
+		if m.subnetInformer != nil {
+			if err := m.sgMembershipRunner.WatchFanOut(m.subnetInformer, mem.FanOutSubnetToInterfaces); err != nil {
+				return fmt.Errorf("watch Subnet (sg-membership fan-out): %w", err)
+			}
+		}
+		if m.vpcInformer != nil {
+			if err := m.sgMembershipRunner.WatchFanOut(m.vpcInformer, mem.FanOutVpcToInterfaces); err != nil {
+				return fmt.Errorf("watch Vpc (sg-membership fan-out): %w", err)
+			}
+		}
+		if m.securityGroupInformer != nil {
+			if err := m.sgMembershipRunner.WatchFanOut(m.securityGroupInformer, mem.FanOutSGToInterfaces); err != nil {
+				return fmt.Errorf("watch SecurityGroup (sg-membership fan-out): %w", err)
+			}
+		}
+		m.sgMembershipRunner.Start(ctx, 1)
 	}
 
 	if m.serviceInformer != nil && m.endpointSliceInformer != nil {
@@ -300,6 +389,17 @@ func (m *Manager) Stop() error {
 		}
 	}
 
+	if m.sgStore != nil {
+		if err := m.sgStore.CloseAll(); err != nil {
+			return err
+		}
+	}
+	if m.aclStore != nil {
+		if err := m.aclStore.CloseAll(); err != nil {
+			return err
+		}
+	}
+
 	runners := []*runner.Runner{
 		m.subnetRunner,
 		m.arpRunner,
@@ -312,6 +412,9 @@ func (m *Manager) Stop() error {
 		m.serviceRunner,
 		m.naptRunner,
 		m.serviceNATRunner,
+		m.sgRunner,
+		m.sgMembershipRunner,
+		m.aclRunner,
 	}
 	for _, rn := range runners {
 		if rn == nil {
@@ -373,6 +476,9 @@ func NewManager(
 	externalNetworkAttachmentInformer cache.Informer,
 	natGatewayInformer cache.Informer,
 	serviceNATAttachmentInformer cache.Informer,
+	networkInterfaceInformer cache.Informer,
+	securityGroupInformer cache.Informer,
+	networkACLInformer cache.Informer,
 	nodeName string,
 	vxlanIfindex int,
 	hostIfindex int,
@@ -395,6 +501,9 @@ func NewManager(
 		externalNetworkAttachmentInformer: externalNetworkAttachmentInformer,
 		natGatewayInformer:                natGatewayInformer,
 		serviceNATAttachmentInformer:      serviceNATAttachmentInformer,
+		networkInterfaceInformer:          networkInterfaceInformer,
+		securityGroupInformer:             securityGroupInformer,
+		networkACLInformer:                networkACLInformer,
 		nodeName:                          nodeName,
 		vxlanIfindex:                      vxlanIfindex,
 		hostIfindex:                       hostIfindex,
