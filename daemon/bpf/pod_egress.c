@@ -154,6 +154,30 @@ static __always_inline int handle_snat(struct __sk_buff *skb,
   if ((void *)(iph + 1) > data_end)
     return TC_ACT_SHOT;
 
+  // Trace: 1:1 SNAT applied (ElasticIP egress). Reads ports best-
+  // effort; for ICMP they stay 0.
+  {
+    __be16 sport = 0, dport = 0;
+    trace_read_l4_ports(iph, data_end, &sport, &dport);
+    struct trace_nat_event __ne = {
+        .vpc_id = isv->subnet_id ? 0 : 0,  // unknown; lookup uses subnet_id below
+        .subnet_id = isv->subnet_id,
+        .hook = TRACE_HOOK_POD_EGRESS,
+        .reason = TRACE_REASON_SNAT_APPLIED,
+        .scope = TRACE_SCOPE_HOST,
+        .proto = iph->protocol,
+        .before_saddr = old_addr,
+        .before_daddr = iph->daddr,
+        .before_sport = sport,
+        .before_dport = dport,
+        .after_saddr = new_addr,
+        .after_daddr = iph->daddr,
+        .after_sport = sport,
+        .after_dport = dport,
+    };
+    trace_observe_nat(skb, &__ne);
+  }
+
   // Resolve next-hop at runtime via kernel FIB + neighbor table. Fixing the
   // MAC to the default gateway at daemon start breaks paths where the actual
   // next-hop differs (BGP-learned peers, multi-uplink, L2-adjacent peers).
@@ -246,20 +270,36 @@ static __always_inline int handle_arp(struct __sk_buff *skb, void *data_end,
 
 static __always_inline int forward_l2(struct __sk_buff *skb, struct ethhdr *eth,
                                       __u32 subnet_id) {
+  // Re-derive trace_id at this site rather than threading through the
+  // call chain. Cheap when no session is active (single map lookup).
+  __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, 0);
   struct fdb_key fk = {};
   fk.subnet_id = subnet_id;
   __builtin_memcpy(fk.mac, eth->h_dest, ETH_ALEN);
   const struct fdb_val *fv = bpf_map_lookup_elem(&fdb, &fk);
-  if (!fv)
+  if (!fv) {
+    trace_emit_map_miss_l3(skb, __tid, TRACE_REASON_MISS_FDB,
+                           TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, 0,
+                           subnet_id, subnet_id);
+    trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, 0, subnet_id);
     return TC_ACT_SHOT;
+  }
 
-  if (fv->ifindex != 0)
+  if (fv->ifindex != 0) {
+    trace_emit_redirect_l3(skb, __tid, TRACE_REASON_REDIRECT_IFINDEX,
+                           TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, 0,
+                           subnet_id, fv->ifindex);
     return bpf_redirect(fv->ifindex, 0);
+  }
 
   __u32 vx_key = 0;
   const __u32 *vx_if = bpf_map_lookup_elem(&vxlan_ifindex, &vx_key);
-  if (!vx_if)
+  if (!vx_if) {
+    trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, 0, subnet_id);
     return TC_ACT_SHOT;
+  }
 
   struct bpf_tunnel_key tkey = {};
   tkey.remote_ipv4 = fv->vtep_ip;
@@ -267,9 +307,15 @@ static __always_inline int forward_l2(struct __sk_buff *skb, struct ethhdr *eth,
   tkey.tunnel_ttl = 64;
   tkey.tunnel_tos = 0;
 
-  if (bpf_skb_set_tunnel_key(skb, &tkey, sizeof(tkey), 0) < 0)
+  if (bpf_skb_set_tunnel_key(skb, &tkey, sizeof(tkey), 0) < 0) {
+    trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, 0, subnet_id);
     return TC_ACT_SHOT;
+  }
 
+  trace_emit_redirect_l3(skb, __tid, TRACE_REASON_REDIRECT_VXLAN,
+                         TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, 0, subnet_id,
+                         *vx_if);
   return bpf_redirect(*vx_if, 0);
 }
 
@@ -433,6 +479,8 @@ handle_service_host_local(struct __sk_buff *skb, struct ethhdr *eth,
   };
   bpf_map_update_elem(&ct_map, &rev_key, &rev_val, BPF_ANY);
 
+  __u8 nat_proto_local = iph->protocol;
+
   // DNAT only — leave src=PodIP intact so the reply naturally targets
   // PodIP, which the host stack already has a connected route for via
   // juneau_node_h.
@@ -440,6 +488,28 @@ handle_service_host_local(struct __sk_buff *skb, struct ethhdr *eth,
     return TC_ACT_SHOT;
   if (rewrite_l4_port(skb, /*is_source=*/false, backend_port_be) < 0)
     return TC_ACT_SHOT;
+
+  // Trace: host-network Service DNAT (local backend variant). DNAT
+  // only — src is unchanged.
+  {
+    struct trace_nat_event __ne = {
+        .vpc_id = subnet->vpc_id,
+        .subnet_id = pod_subnet_id,
+        .hook = TRACE_HOOK_POD_EGRESS,
+        .reason = TRACE_REASON_DNAT_APPLIED,
+        .scope = TRACE_SCOPE_VPC,
+        .proto = nat_proto_local,
+        .before_saddr = pod_ip_be,
+        .before_daddr = cluster_ip_be,
+        .before_sport = sport,
+        .before_dport = dport,
+        .after_saddr = pod_ip_be,
+        .after_daddr = backend_addr_be,
+        .after_sport = sport,
+        .after_dport = backend_port_be,
+    };
+    trace_observe_nat(skb, &__ne);
+  }
 
   // The Pod sent the original packet to its default-gateway MAC
   // (subnet gw_mac); eth_type_trans on the host-side veth therefore
@@ -588,6 +658,9 @@ handle_service_host_remote(struct __sk_buff *skb, struct ethhdr *eth,
       have_tcp_flags = true;
   }
 
+  __be32 hr_pod_ip_be = iph->saddr;
+  __u8   hr_proto = iph->protocol;
+
   if (rewrite_ipv4_addr(skb, /*is_source=*/true, node_underlay_ip) < 0)
     return TC_ACT_SHOT;
   if (rewrite_l4_port(skb, /*is_source=*/true, alloc_port) < 0)
@@ -596,6 +669,29 @@ handle_service_host_remote(struct __sk_buff *skb, struct ethhdr *eth,
     return TC_ACT_SHOT;
   if (rewrite_l4_port(skb, /*is_source=*/false, backend_port_be) < 0)
     return TC_ACT_SHOT;
+
+  // Trace: host-network Service NAPT (remote backend variant).
+  // Combined SNAT+DNAT: src rewrites to node's underlay IP +
+  // alloc_port, dst rewrites to the backend host IP.
+  {
+    struct trace_nat_event __ne = {
+        .vpc_id = subnet->vpc_id,
+        .subnet_id = pod_subnet_id,
+        .hook = TRACE_HOOK_POD_EGRESS,
+        .reason = TRACE_REASON_SNAT_APPLIED,
+        .scope = TRACE_SCOPE_VPC,
+        .proto = hr_proto,
+        .before_saddr = hr_pod_ip_be,
+        .before_daddr = cluster_ip_be,
+        .before_sport = sport,
+        .before_dport = dport,
+        .after_saddr = node_underlay_ip,
+        .after_daddr = backend_addr_be,
+        .after_sport = alloc_port,
+        .after_dport = backend_port_be,
+    };
+    trace_observe_nat(skb, &__ne);
+  }
 
   if (have_tcp_flags) {
     struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &fwd_key);
@@ -766,6 +862,8 @@ handle_service_shared(struct __sk_buff *skb, struct iphdr *iph,
       have_tcp_flags = true;
   }
 
+  __u8 nat_proto = iph->protocol;
+
   if (rewrite_ipv4_addr(skb, /*is_source=*/true, snat_ip) < 0)
     return TC_ACT_SHOT;
   if (rewrite_l4_port(skb, /*is_source=*/true, alloc_port) < 0)
@@ -774,6 +872,29 @@ handle_service_shared(struct __sk_buff *skb, struct iphdr *iph,
     return TC_ACT_SHOT;
   if (rewrite_l4_port(skb, /*is_source=*/false, backend_port_be) < 0)
     return TC_ACT_SHOT;
+
+  // Trace: shared-Service combined SNAT+DNAT applied. before is the
+  // caller's view (Pod IP → ClusterIP); after is the backend's view
+  // (SNAT IP → backend Pod IP).
+  {
+    struct trace_nat_event __ne = {
+        .vpc_id = caller_vpc_id,
+        .subnet_id = bv->backend_subnet_id,
+        .hook = TRACE_HOOK_POD_EGRESS,
+        .reason = TRACE_REASON_SNAT_APPLIED,
+        .scope = TRACE_SCOPE_VPC,
+        .proto = nat_proto,
+        .before_saddr = pod_ip_be,
+        .before_daddr = cluster_ip_be,
+        .before_sport = sport,
+        .before_dport = dport,
+        .after_saddr = snat_ip,
+        .after_daddr = backend_addr_be,
+        .after_sport = alloc_port,
+        .after_dport = backend_port_be,
+    };
+    trace_observe_nat(skb, &__ne);
+  }
 
   if (have_tcp_flags) {
     struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &fwd_key);
@@ -841,8 +962,60 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
       .index = idx,
   };
   const struct backend_val *bv = bpf_map_lookup_elem(&backend_map, &bk);
-  if (!bv)
+  if (!bv) {
+    __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, subnet->vpc_id);
+    trace_emit_map_miss_l3(skb, __tid, TRACE_REASON_MISS_BACKEND,
+                           TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                           subnet->vpc_id, 0, idx);
+    trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                       subnet->vpc_id, 0);
     return TC_ACT_SHOT;
+  }
+
+  // Trace: service lookup hit + backend selected. The two emits give
+  // operators a clear "the service exists; backend N (kind X) was
+  // chosen" stop in the timeline before any rewrite happens.
+  {
+    __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, subnet->vpc_id);
+    if (__tid != 0) {
+      __be32 saddr = iph->saddr;
+      __be32 daddr = iph->daddr;
+      struct trace_emit_args a = {0};
+      a.trace_id = __tid;
+      a.reason = TRACE_REASON_SERVICE_LOOKUP_HIT;
+      a.hook = TRACE_HOOK_POD_EGRESS;
+      a.ifindex = skb->ifindex;
+      a.vpc_id = subnet->vpc_id;
+      a.scope = TRACE_SCOPE_VPC;
+      a.proto = iph->protocol;
+      a.verdict = TRACE_VERDICT_OK;
+      a.saddr = saddr;
+      a.daddr = daddr;
+      a.sport = sport;
+      a.dport = dport;
+      a.aux1 = sv->owner_vpc_id;
+      a.aux2 = sv->backend_count;
+      trace_emit_full(&a);
+
+      struct trace_emit_args b = {0};
+      b.trace_id = __tid;
+      b.reason = TRACE_REASON_SERVICE_BACKEND_SELECTED;
+      b.hook = TRACE_HOOK_POD_EGRESS;
+      b.ifindex = skb->ifindex;
+      b.vpc_id = subnet->vpc_id;
+      b.scope = TRACE_SCOPE_VPC;
+      b.proto = iph->protocol;
+      b.verdict = TRACE_VERDICT_OK;
+      b.saddr = saddr;
+      b.daddr = daddr;
+      b.sport = sport;
+      b.dport = dport;
+      b.aux1 = idx;
+      b.aux2 = bv->backend_subnet_id;
+      trace_emit_full(&b);
+    }
+  }
 
   // bv->kind is set by the user-space Service reconciler. POD (=0) is
   // also the value old reconcilers leave behind, so we additionally
@@ -1041,8 +1214,37 @@ static __always_inline int apply_conntrack_svc_napt_in(struct __sk_buff *skb,
   cv->last_seen_ns = bpf_ktime_get_ns();
   __u32 next_subnet_id = cv->next_subnet_id;
 
+  __be32 before_saddr = iph->saddr;
+  __be32 before_daddr = iph->daddr;
+  __u8   nat_proto    = iph->protocol;
+  __be32 after_saddr  = cv->new_saddr ? cv->new_saddr : before_saddr;
+  __be32 after_daddr  = cv->new_daddr;
+  __be16 after_sport  = cv->new_sport ? cv->new_sport : sport;
+  __be16 after_dport  = cv->new_dport ? cv->new_dport : dport;
+
   if (nat_apply_napt_in_rewrite(skb, cv) < 0)
     return -1;
+
+  // Trace: SVC_NAPT_IN reverse rewrite — host-network Service reply.
+  {
+    struct trace_nat_event __ne = {
+        .vpc_id = subnet->vpc_id,
+        .subnet_id = next_subnet_id,
+        .hook = TRACE_HOOK_POD_EGRESS,
+        .reason = TRACE_REASON_REVERSE_NAT_APPLIED,
+        .scope = TRACE_SCOPE_HOST,
+        .proto = nat_proto,
+        .before_saddr = before_saddr,
+        .before_daddr = before_daddr,
+        .before_sport = sport,
+        .before_dport = dport,
+        .after_saddr = after_saddr,
+        .after_daddr = after_daddr,
+        .after_sport = after_sport,
+        .after_dport = after_dport,
+    };
+    trace_observe_nat(skb, &__ne);
+  }
 
   if (have_tcp_flags) {
     struct ct_val *cv2 = bpf_map_lookup_elem(&ct_map, &ck);
@@ -1140,8 +1342,37 @@ static __always_inline int apply_conntrack_svc_shared_in(struct __sk_buff *skb,
   cv->last_seen_ns = bpf_ktime_get_ns();
   __u32 next_subnet_id = cv->next_subnet_id;
 
+  __be32 before_saddr = iph->saddr;
+  __be32 before_daddr = iph->daddr;
+  __u8   nat_proto    = iph->protocol;
+  __be32 after_saddr  = cv->new_saddr ? cv->new_saddr : before_saddr;
+  __be32 after_daddr  = cv->new_daddr;
+  __be16 after_sport  = cv->new_sport ? cv->new_sport : sport;
+  __be16 after_dport  = cv->new_dport ? cv->new_dport : dport;
+
   if (nat_apply_napt_in_rewrite(skb, cv) < 0)
     return -1;
+
+  // Trace: SVC_SHARED_IN reverse rewrite — same-node shared-Service reply.
+  {
+    struct trace_nat_event __ne = {
+        .vpc_id = caller_subnet->vpc_id,
+        .subnet_id = next_subnet_id,
+        .hook = TRACE_HOOK_POD_EGRESS,
+        .reason = TRACE_REASON_REVERSE_NAT_APPLIED,
+        .scope = TRACE_SCOPE_VPC,
+        .proto = nat_proto,
+        .before_saddr = before_saddr,
+        .before_daddr = before_daddr,
+        .before_sport = sport,
+        .before_dport = dport,
+        .after_saddr = after_saddr,
+        .after_daddr = after_daddr,
+        .after_sport = after_sport,
+        .after_dport = after_dport,
+    };
+    trace_observe_nat(skb, &__ne);
+  }
 
   if (have_tcp_flags) {
     struct ct_val *cv2 = bpf_map_lookup_elem(&ct_map, &ck);
@@ -1198,6 +1429,11 @@ static __always_inline int apply_conntrack_dnat(struct __sk_buff *skb,
   __be32 new_daddr = cv->new_daddr;
   __be16 new_dport = cv->new_dport;
 
+  // Capture pre-rewrite tuple for the trace event.
+  __be32 before_saddr = iph->saddr;
+  __be32 before_daddr = iph->daddr;
+  __u8 before_proto = iph->protocol;
+
   // Read TCP flags before rewriting L4 ports — the rewrite touches bytes
   // adjacent to the flags byte and forces an skb reload. Reading first
   // keeps the verifier happy.
@@ -1212,6 +1448,29 @@ static __always_inline int apply_conntrack_dnat(struct __sk_buff *skb,
     return -1;
   if (rewrite_l4_port(skb, false, new_dport) < 0)
     return -1;
+
+  // Trace: cached-path DNAT applied. Emits the same event shape the
+  // first-packet handle_service path emits, so the timeline shows the
+  // translation across the full flow lifetime — not just the SYN.
+  {
+    struct trace_nat_event __ne = {
+        .vpc_id = vpc_id,
+        .subnet_id = cv->next_subnet_id,
+        .hook = TRACE_HOOK_POD_EGRESS,
+        .reason = TRACE_REASON_DNAT_APPLIED,
+        .scope = TRACE_SCOPE_VPC,
+        .proto = before_proto,
+        .before_saddr = before_saddr,
+        .before_daddr = before_daddr,
+        .before_sport = sport,
+        .before_dport = dport,
+        .after_saddr = before_saddr,
+        .after_daddr = new_daddr,
+        .after_sport = sport,
+        .after_dport = new_dport,
+    };
+    trace_observe_nat(skb, &__ne);
+  }
 
   if (have_tcp_flags)
     ct_observe_tcp(&ck, cv, tcp_flags);
@@ -1355,10 +1614,38 @@ static __always_inline int handle_napt(struct __sk_buff *skb,
       have_tcp_flags = true;
   }
 
+  __be32 napt_before_saddr = iph->saddr;
+  __be32 napt_before_daddr = iph->daddr;
+  __be16 napt_before_sport = sport;
+  __be16 napt_before_dport = dport;
+  __u8   napt_proto        = iph->protocol;
+
   if (rewrite_ipv4_addr(skb, /*is_source=*/true, host_napt_ip) < 0)
     return TC_ACT_SHOT;
   if (rewrite_l4_port(skb, /*is_source=*/true, alloc_port) < 0)
     return TC_ACT_SHOT;
+
+  // Trace: NAPT_OUT — internet egress with src rewrite (NAPT). The
+  // after-tuple is host-scoped (the underlay sees host_napt_ip).
+  {
+    struct trace_nat_event __ne = {
+        .vpc_id = caller_vpc_id,
+        .subnet_id = 0,
+        .hook = TRACE_HOOK_POD_EGRESS,
+        .reason = TRACE_REASON_NAPT_ALLOCATED,
+        .scope = TRACE_SCOPE_VPC,
+        .proto = napt_proto,
+        .before_saddr = napt_before_saddr,
+        .before_daddr = napt_before_daddr,
+        .before_sport = napt_before_sport,
+        .before_dport = napt_before_dport,
+        .after_saddr = host_napt_ip,
+        .after_daddr = napt_before_daddr,
+        .after_sport = alloc_port,
+        .after_dport = napt_before_dport,
+    };
+    trace_observe_nat(skb, &__ne);
+  }
 
   if (have_tcp_flags) {
     struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &fwd_key);
@@ -1579,15 +1866,30 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
   };
   const struct ifindex_subnet_val *val =
       bpf_map_lookup_elem(&ifindex_subnet, &key);
-  if (!val)
+  if (!val) {
+    __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, 0);
+    trace_emit_map_miss_l3(skb, __tid, TRACE_REASON_MISS_IFINDEX_SUBNET,
+                           TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, 0, 0,
+                           skb->ifindex);
+    trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, 0, 0);
     return TC_ACT_SHOT;
+  }
 
   struct subnet_key skey = {
       .subnet_id = val->subnet_id,
   };
   const struct subnet_val *subnet = bpf_map_lookup_elem(&subnet_map, &skey);
-  if (!subnet)
+  if (!subnet) {
+    __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, 0);
+    trace_emit_map_miss_l3(skb, __tid, TRACE_REASON_MISS_SUBNET,
+                           TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, 0,
+                           val->subnet_id, val->subnet_id);
+    trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, 0,
+                       val->subnet_id);
     return TC_ACT_SHOT;
+  }
 
   __u16 h_proto = bpf_ntohs(eth->h_proto);
 
@@ -1595,7 +1897,10 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
   // __noinline subprogram (see trace.h) so the verifier counts the
   // call site as a single CALL rather than inlining the body —
   // critical for pod_egress, whose pre-trace insn count already
-  // sits near the verifier ceiling.
+  // sits near the verifier ceiling. We also keep the returned
+  // trace_id so downstream drop/redirect/policy sites can emit
+  // events without re-classifying.
+  __u32 __trace_id = 0;
   {
     struct trace_hook_ctx __ctx = {
         .reason = TRACE_REASON_ENTER_POD_EGRESS,
@@ -1604,7 +1909,7 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
         .subnet_id = val->subnet_id,
         .scope = TRACE_SCOPE_VPC,
     };
-    (void)trace_classify_and_emit_enter(skb, &__ctx);
+    __trace_id = trace_classify_and_emit_enter(skb, &__ctx);
   }
 
   if (h_proto == ETH_P_ARP)
@@ -1621,8 +1926,12 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
     // この入口で完結させ、Pod の veth に fdb で配送する。
     int snapt_rc = TC_ACT_OK;
     int snapt_hit = apply_conntrack_svc_napt_in(skb, &snapt_rc);
-    if (snapt_hit < 0)
+    if (snapt_hit < 0) {
+      trace_emit_drop_l3(skb, __trace_id, TRACE_REASON_DROP_SHOT,
+                         TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                         subnet->vpc_id, val->subnet_id);
       return TC_ACT_SHOT;
+    }
     if (snapt_hit == 1)
       return snapt_rc;
 
@@ -1632,8 +1941,12 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
     // and terminates at the caller Pod's veth via fdb.
     int shared_rc = TC_ACT_OK;
     int shared_hit = apply_conntrack_svc_shared_in(skb, subnet, &shared_rc);
-    if (shared_hit < 0)
+    if (shared_hit < 0) {
+      trace_emit_drop_l3(skb, __trace_id, TRACE_REASON_DROP_SHOT,
+                         TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                         subnet->vpc_id, val->subnet_id);
       return TC_ACT_SHOT;
+    }
     if (shared_hit == 1)
       return shared_rc;
 
@@ -1644,23 +1957,50 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
     // 0 means "established flow short-circuited" or "no enforcement";
     // 1 means "admitted on first packet, CT installed".
     int policy_rc = apply_policy_egress(skb, subnet->vpc_id, subnet->acl_id);
-    if (policy_rc == -1 || policy_rc == -2)
+    if (policy_rc == -1 || policy_rc == -2) {
+      // -1 = ACL deny, -2 = SG deny (or internal). Best-effort
+      // attribution: emit both reasons so timeline shows both
+      // layers were consulted; the renderer dedupes if needed.
+      __u32 reason = (policy_rc == -1) ? TRACE_REASON_POLICY_ACL_DROP
+                                       : TRACE_REASON_POLICY_SG_DROP;
+      trace_emit_drop_l3(skb, __trace_id, reason, TRACE_HOOK_POD_EGRESS,
+                         TRACE_SCOPE_VPC, subnet->vpc_id, val->subnet_id);
       return TC_ACT_SHOT;
+    }
 
     int rc = apply_conntrack_dnat(skb, subnet->vpc_id);
-    if (rc < 0)
+    if (rc < 0) {
+      trace_emit_drop_l3(skb, __trace_id, TRACE_REASON_DROP_SHOT,
+                         TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                         subnet->vpc_id, val->subnet_id);
       return TC_ACT_SHOT;
+    }
 
     // The helper reloaded skb->data internally, so refresh our local
     // eth/iph/data_end from skb before continuing with the dispatch.
     struct iphdr *iph = load_iph(skb);
-    if (!iph)
+    if (!iph) {
+      trace_emit_drop_l3(skb, __trace_id, TRACE_REASON_DROP_SHOT,
+                         TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                         subnet->vpc_id, val->subnet_id);
       return TC_ACT_SHOT;
+    }
     eth = (struct ethhdr *)((void *)iph - sizeof(struct ethhdr));
     data_end = skb_data_end(skb);
 
-    if (rc == 1)
+    if (rc == 1) {
+      // CT-cached DNAT applied. dispatch_after_dnat will redirect; we
+      // emit the DNAT_APPLIED event here since we no longer have the
+      // before-NAT tuple available downstream. The before-tuple was
+      // overwritten by apply_conntrack_dnat — we approximate by using
+      // the post-NAT tuple as both before and after; the more
+      // detailed emit happens at the actual NAT decision in
+      // handle_service / handle_service_shared.
+      trace_emit_drop_l3(skb, __trace_id, TRACE_REASON_DNAT_APPLIED,
+                         TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                         subnet->vpc_id, val->subnet_id);
       return dispatch_after_dnat(skb, eth, iph, subnet->table_id, iph->daddr);
+    }
 
     // Virtual service classifier runs after Service-DNAT but before the
     // gw-MAC / forward_l2 split. DNS and any future Subnet-local
@@ -1671,10 +2011,18 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
     int virt_hit = handle_virtual_service(skb, eth, iph, data_end,
                                           val->subnet_id, subnet->vpc_id,
                                           &virt_rc);
-    if (virt_hit < 0)
+    if (virt_hit < 0) {
+      trace_emit_drop_l3(skb, __trace_id, TRACE_REASON_DROP_SHOT,
+                         TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                         subnet->vpc_id, val->subnet_id);
       return TC_ACT_SHOT;
-    if (virt_hit == 1)
+    }
+    if (virt_hit == 1) {
+      trace_emit_redirect_l3(skb, __trace_id, TRACE_REASON_REDIRECT_IFINDEX,
+                             TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                             subnet->vpc_id, val->subnet_id, 0);
       return virt_rc;
+    }
   }
 
   bool is_gw = true;

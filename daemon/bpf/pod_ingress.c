@@ -30,7 +30,7 @@
 // Non-matching packets pass through unchanged. The function returns -1
 // only on packet rewrite failures.
 static __always_inline int apply_reverse_snat(struct __sk_buff *skb,
-                                              __u32 vpc_id) {
+                                              __u32 vpc_id, __u32 subnet_id) {
   struct iphdr *iph = nat_load_iph(skb);
   if (!iph)
     return 0;
@@ -58,6 +58,9 @@ static __always_inline int apply_reverse_snat(struct __sk_buff *skb,
   cv->last_seen_ns = bpf_ktime_get_ns();
   __be32 new_saddr = cv->new_saddr;
   __be16 new_sport = cv->new_sport;
+  __be32 before_saddr = iph->saddr;
+  __be32 before_daddr = iph->daddr;
+  __u8   before_proto = iph->protocol;
 
   __u8 tcp_flags = 0;
   bool have_tcp_flags = false;
@@ -70,6 +73,29 @@ static __always_inline int apply_reverse_snat(struct __sk_buff *skb,
     return -1;
   if (nat_rewrite_l4_port(skb, true, new_sport) < 0)
     return -1;
+
+  // Trace: reverse SNAT applied. before = (backend Pod IP, caller),
+  // after = (Service ClusterIP, caller). The learned tuple lets the
+  // pod's network namespace see "from ClusterIP" responses match.
+  {
+    struct trace_nat_event __ne = {
+        .vpc_id = vpc_id,
+        .subnet_id = subnet_id,
+        .hook = TRACE_HOOK_POD_INGRESS,
+        .reason = TRACE_REASON_REVERSE_NAT_APPLIED,
+        .scope = TRACE_SCOPE_VPC,
+        .proto = before_proto,
+        .before_saddr = before_saddr,
+        .before_daddr = before_daddr,
+        .before_sport = sport,
+        .before_dport = dport,
+        .after_saddr = new_saddr,
+        .after_daddr = before_daddr,
+        .after_sport = new_sport,
+        .after_dport = dport,
+    };
+    trace_observe_nat(skb, &__ne);
+  }
 
   if (have_tcp_flags)
     ct_observe_tcp(&ck, cv, tcp_flags);
@@ -100,14 +126,19 @@ static __always_inline int handle(struct __sk_buff *skb) {
   if (!subnet)
     return TC_ACT_OK;
 
-  // pod_ingress remains uninstrumented even with noinline subprograms:
-  // the call site adds enough verifier-counted instructions to push
-  // the program over the 1M-insn ceiling. pod_egress (the harder case)
-  // loads successfully — it is the most useful hook for the egress
-  // timeline anyway. Restoring instrumentation here requires further
-  // refactoring (likely tail-calling into a separate trace program).
+  // Hook-entry trace event.
+  {
+    struct trace_hook_ctx __ctx = {
+        .reason = TRACE_REASON_ENTER_POD_INGRESS,
+        .hook = TRACE_HOOK_POD_INGRESS,
+        .vpc_id = subnet->vpc_id,
+        .subnet_id = isv->subnet_id,
+        .scope = TRACE_SCOPE_VPC,
+    };
+    (void)trace_classify_and_emit_enter(skb, &__ctx);
+  }
 
-  if (apply_reverse_snat(skb, subnet->vpc_id) < 0)
+  if (apply_reverse_snat(skb, subnet->vpc_id, isv->subnet_id) < 0)
     return TC_ACT_SHOT;
 
   // Unified policy stage runs after reverse SNAT — the ACL and SG

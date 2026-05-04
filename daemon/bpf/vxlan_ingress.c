@@ -83,8 +83,40 @@ static __always_inline int apply_shared_service_reverse(
   cv->last_seen_ns = bpf_ktime_get_ns();
   __u32 caller_subnet_id = cv->next_subnet_id;
 
+  // Capture before/after tuple values for the trace event.
+  __be32 __nat_before_saddr = iph->saddr;
+  __be32 __nat_before_daddr = iph->daddr;
+  __be16 __nat_before_sport = sport;
+  __be16 __nat_before_dport = dport;
+  __u8   __nat_proto        = iph->protocol;
+  __be32 __nat_after_saddr  = cv->new_saddr;
+  __be32 __nat_after_daddr  = cv->new_daddr;
+  __be16 __nat_after_sport  = cv->new_sport;
+  __be16 __nat_after_dport  = cv->new_dport;
+
   if (nat_apply_napt_in_rewrite(skb, cv) < 0)
     return -1;
+
+  // Trace: shared-Service NAPT_IN reverse rewrite.
+  {
+    struct trace_nat_event __ne = {
+        .vpc_id = tunnel_subnet->vpc_id,
+        .subnet_id = caller_subnet_id,
+        .hook = TRACE_HOOK_VXLAN_INGRESS,
+        .reason = TRACE_REASON_REVERSE_NAT_APPLIED,
+        .scope = TRACE_SCOPE_VPC,
+        .proto = __nat_proto,
+        .before_saddr = __nat_before_saddr,
+        .before_daddr = __nat_before_daddr,
+        .before_sport = __nat_before_sport,
+        .before_dport = __nat_before_dport,
+        .after_saddr = __nat_after_saddr,
+        .after_daddr = __nat_after_daddr,
+        .after_sport = __nat_after_sport,
+        .after_dport = __nat_after_dport,
+    };
+    trace_observe_nat(skb, &__ne);
+  }
 
   if (have_tcp_flags) {
     struct ct_val *cv2 = bpf_map_lookup_elem(&ct_map, &ck);
@@ -132,12 +164,14 @@ static __always_inline int tc_vxlan_ingress(struct __sk_buff *skb) {
 
   struct subnet_key skey = {.subnet_id = subnet_id};
   const struct subnet_val *subnet = bpf_map_lookup_elem(&subnet_map, &skey);
-  if (!subnet)
+  if (!subnet) {
     return TC_ACT_SHOT;
+  }
 
   // Hook-entry trace event. Tunnel-decapsulated packets carry the
   // VPC-scoped tuple of the *destination* node, which is what the
   // user sees in the timeline at "vxlan_ingress" stops.
+  __u32 __trace_id = 0;
   {
     struct trace_hook_ctx __ctx = {
         .reason = TRACE_REASON_ENTER_VXLAN_INGRESS,
@@ -146,7 +180,7 @@ static __always_inline int tc_vxlan_ingress(struct __sk_buff *skb) {
         .subnet_id = subnet_id,
         .scope = TRACE_SCOPE_VPC,
     };
-    (void)trace_classify_and_emit_enter(skb, &__ctx);
+    __trace_id = trace_classify_and_emit_enter(skb, &__ctx);
   }
 
   // Cross-Node reply leg of the shared-Service path: a CT_ACTION_SVC_SHARED_IN
@@ -157,10 +191,19 @@ static __always_inline int tc_vxlan_ingress(struct __sk_buff *skb) {
   if (eth->h_proto == bpf_htons(ETH_P_IP)) {
     int shared_rc = TC_ACT_OK;
     int shared_hit = apply_shared_service_reverse(skb, subnet, &shared_rc);
-    if (shared_hit < 0)
+    if (shared_hit < 0) {
+      trace_emit_drop_l3(skb, __trace_id, TRACE_REASON_DROP_SHOT,
+                      TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC,
+                      subnet->vpc_id, subnet_id);
       return TC_ACT_SHOT;
-    if (shared_hit == 1)
+    }
+    if (shared_hit == 1) {
+      // shared_rc holds the redirect verdict.
+      trace_emit_redirect_l3(skb, __trace_id, TRACE_REASON_REDIRECT_IFINDEX,
+                          TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC,
+                          subnet->vpc_id, subnet_id, 0);
       return shared_rc;
+    }
   }
 
   // Service reverse SNAT lives in pod_ingress, attached to the
@@ -172,12 +215,26 @@ static __always_inline int tc_vxlan_ingress(struct __sk_buff *skb) {
   fk.subnet_id = subnet_id;
   __builtin_memcpy(fk.mac, eth->h_dest, ETH_ALEN);
   const struct fdb_val *fv = bpf_map_lookup_elem(&fdb, &fk);
-  if (!fv)
+  if (!fv) {
+    trace_emit_map_miss_l3(skb, __trace_id, TRACE_REASON_MISS_FDB,
+                        TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC,
+                        subnet->vpc_id, subnet_id, subnet_id);
+    trace_emit_drop_l3(skb, __trace_id, TRACE_REASON_DROP_SHOT,
+                    TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC,
+                    subnet->vpc_id, subnet_id);
     return TC_ACT_SHOT;
+  }
 
-  if (fv->ifindex != 0)
+  if (fv->ifindex != 0) {
+    trace_emit_redirect_l3(skb, __trace_id, TRACE_REASON_REDIRECT_IFINDEX,
+                        TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC,
+                        subnet->vpc_id, subnet_id, fv->ifindex);
     return bpf_redirect(fv->ifindex, 0);
+  }
 
+  trace_emit_drop_l3(skb, __trace_id, TRACE_REASON_DROP_SHOT,
+                  TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC,
+                  subnet->vpc_id, subnet_id);
   return TC_ACT_SHOT;
 }
 

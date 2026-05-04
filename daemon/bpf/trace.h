@@ -720,4 +720,103 @@ trace_classify_and_emit_enter(struct __sk_buff *skb,
   return id;
 }
 
+// ---- Terminal-verdict / map-miss helpers ----------------------------
+//
+// These helpers wrap the underlying trace_emit_drop / _redirect /
+// _map_miss with skb-side header parsing so callers can drop them in
+// at TC_ACT_SHOT / bpf_redirect / lookup-miss sites with a single
+// line. They are __always_inline; with the verifier limit relaxed,
+// the call site cost is borne directly by the host program.
+
+static __always_inline void
+trace_emit_drop_l3(struct __sk_buff *skb, __u32 trace_id, __u32 reason,
+                   __u32 hook, __u8 scope, __u32 vpc_id, __u32 subnet_id) {
+  if (trace_id == 0)
+    return;
+  void *data = (void *)(long)skb->data;
+  void *data_end = (void *)(long)skb->data_end;
+  struct ethhdr *eth = data;
+  if ((void *)(eth + 1) > data_end)
+    return;
+  struct iphdr *iph = (void *)(eth + 1);
+  if ((void *)(iph + 1) > data_end)
+    return;
+  __be16 sport = 0, dport = 0;
+  trace_read_l4_ports(iph, data_end, &sport, &dport);
+  trace_emit_drop(trace_id, reason, hook, skb->ifindex, vpc_id, subnet_id,
+                  scope, iph->protocol, iph->saddr, iph->daddr, sport, dport);
+}
+
+static __always_inline void
+trace_emit_redirect_l3(struct __sk_buff *skb, __u32 trace_id, __u32 reason,
+                       __u32 hook, __u8 scope, __u32 vpc_id, __u32 subnet_id,
+                       __u32 target_ifindex) {
+  if (trace_id == 0)
+    return;
+  void *data = (void *)(long)skb->data;
+  void *data_end = (void *)(long)skb->data_end;
+  struct ethhdr *eth = data;
+  if ((void *)(eth + 1) > data_end)
+    return;
+  struct iphdr *iph = (void *)(eth + 1);
+  if ((void *)(iph + 1) > data_end)
+    return;
+  __be16 sport = 0, dport = 0;
+  trace_read_l4_ports(iph, data_end, &sport, &dport);
+  trace_emit_redirect(trace_id, reason, hook, skb->ifindex, vpc_id, subnet_id,
+                      scope, iph->protocol, iph->saddr, iph->daddr, sport,
+                      dport, target_ifindex, 0);
+}
+
+static __always_inline void
+trace_emit_map_miss_l3(struct __sk_buff *skb, __u32 trace_id, __u32 reason,
+                       __u32 hook, __u8 scope, __u32 vpc_id, __u32 subnet_id,
+                       __u32 aux1) {
+  if (trace_id == 0)
+    return;
+  void *data = (void *)(long)skb->data;
+  void *data_end = (void *)(long)skb->data_end;
+  struct ethhdr *eth = data;
+  if ((void *)(eth + 1) > data_end)
+    return;
+  struct iphdr *iph = (void *)(eth + 1);
+  if ((void *)(iph + 1) > data_end)
+    return;
+  __be16 sport = 0, dport = 0;
+  trace_read_l4_ports(iph, data_end, &sport, &dport);
+  trace_emit_map_miss(trace_id, reason, hook, skb->ifindex, vpc_id, subnet_id,
+                      scope, iph->protocol, iph->saddr, iph->daddr, sport,
+                      dport, aux1);
+}
+
+// trace_lookup_id_l3 is for sites that need a trace_id at decision
+// points but were not classified at hook entry (e.g. terminal
+// verdicts in helpers that don't receive trace_id from the caller).
+// It re-derives the tuple and looks up the id.
+static __always_inline __u32
+trace_lookup_id_l3(struct __sk_buff *skb, __u8 scope, __u32 vpc_id) {
+  if (!trace_is_active())
+    return 0;
+  void *data = (void *)(long)skb->data;
+  void *data_end = (void *)(long)skb->data_end;
+  struct ethhdr *eth = data;
+  if ((void *)(eth + 1) > data_end)
+    return 0;
+  if (eth->h_proto != bpf_htons(0x0800))
+    return 0;
+  struct iphdr *iph = (void *)(eth + 1);
+  if ((void *)(iph + 1) > data_end)
+    return 0;
+  __be16 sport = 0, dport = 0;
+  trace_read_l4_ports(iph, data_end, &sport, &dport);
+  struct trace_tuple_key k = trace_make_key(scope, vpc_id, iph->protocol,
+                                            iph->saddr, iph->daddr, 0, dport);
+  __u32 id = trace_lookup_tuple(&k);
+  if (id == 0 && dport != 0) {
+    k.dport = 0;
+    id = trace_lookup_tuple(&k);
+  }
+  return id;
+}
+
 #endif // JUNEAU_BPF_TRACE_H
