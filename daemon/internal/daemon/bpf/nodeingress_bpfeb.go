@@ -13,6 +13,29 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type NodeIngressAclMetaVal struct {
+	_               structs.HostLayout
+	IngressCount    uint32
+	EgressCount     uint32
+	RulesetVersion  uint64
+	HasIngressRules uint8
+	HasEgressRules  uint8
+	Pad             [6]uint8
+}
+
+type NodeIngressAclRule struct {
+	_         structs.HostLayout
+	Direction uint8
+	Proto     uint8
+	PortLo    uint16
+	PortHi    uint16
+	Prefixlen uint8
+	Verdict   uint8
+	Priority  uint16
+	Pad       [2]uint8
+	PeerV4    uint32
+}
+
 type NodeIngressArpTableKey struct {
 	_        structs.HostLayout
 	SubnetId uint32
@@ -208,6 +231,7 @@ type NodeIngressSubnetVal struct {
 	_       [2]byte
 	GwAddr  uint32
 	Mask    uint32
+	AclId   uint32
 }
 
 type NodeIngressVirtualServiceFlowKey struct {
@@ -300,6 +324,9 @@ type NodeIngressProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type NodeIngressMapSpecs struct {
+	AclMetaMap            *ebpf.MapSpec `ebpf:"acl_meta_map"`
+	AclRuleTable          *ebpf.MapSpec `ebpf:"acl_rule_table"`
+	AclRulesInnerProto    *ebpf.MapSpec `ebpf:"acl_rules_inner_proto"`
 	ArpTable              *ebpf.MapSpec `ebpf:"arp_table"`
 	BackendMap            *ebpf.MapSpec `ebpf:"backend_map"`
 	BgpAddressPools       *ebpf.MapSpec `ebpf:"bgp_address_pools"`
@@ -351,6 +378,9 @@ func (o *NodeIngressObjects) Close() error {
 //
 // It can be passed to LoadNodeIngressObjects or ebpf.CollectionSpec.LoadAndAssign.
 type NodeIngressMaps struct {
+	AclMetaMap            *ebpf.Map `ebpf:"acl_meta_map"`
+	AclRuleTable          *ebpf.Map `ebpf:"acl_rule_table"`
+	AclRulesInnerProto    *ebpf.Map `ebpf:"acl_rules_inner_proto"`
 	ArpTable              *ebpf.Map `ebpf:"arp_table"`
 	BackendMap            *ebpf.Map `ebpf:"backend_map"`
 	BgpAddressPools       *ebpf.Map `ebpf:"bgp_address_pools"`
@@ -378,6 +408,9 @@ type NodeIngressMaps struct {
 
 func (m *NodeIngressMaps) Close() error {
 	return _NodeIngressClose(
+		m.AclMetaMap,
+		m.AclRuleTable,
+		m.AclRulesInnerProto,
 		m.ArpTable,
 		m.BackendMap,
 		m.BgpAddressPools,

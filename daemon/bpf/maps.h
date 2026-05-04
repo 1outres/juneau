@@ -121,11 +121,18 @@
 // caller sees a reply from the ClusterIP.
 #define CT_ACTION_SVC_SHARED_OUT 7
 #define CT_ACTION_SVC_SHARED_IN 8
-// SG_PASS marks a flow whose first packet was admitted by SecurityGroup
-// rule evaluation. Subsequent packets short-circuit the rule scan via a
-// CT lookup. Both directions of the flow are installed at admission
-// time so reply packets do not re-evaluate.
-#define CT_ACTION_SG_PASS 9
+// POLICY_PASS marks a flow whose first packet was admitted by every
+// applicable policy layer (NetworkACL at the Subnet boundary plus
+// SecurityGroup at the NetworkInterface). Subsequent packets short-
+// circuit the per-layer rule scans via a single CT lookup. Both
+// directions of the flow are installed at admission time so reply
+// packets do not re-evaluate any layer.
+//
+// The CT entry does not encode which layers were involved: if any
+// layer's ruleset changes the daemon-side reconciler is responsible for
+// flushing affected entries so re-evaluation occurs. See
+// daemon/internal/daemon/dataplane/policy for that bookkeeping.
+#define CT_ACTION_POLICY_PASS 9
 
 // BACKEND_SUBNET_ID_UNDERLAY is the sentinel value the user-space
 // service reconciler writes into backend_val.backend_subnet_id when an
@@ -195,6 +202,12 @@ struct subnet_val {
   __u8 gw_mac[6];
   __u32 gw_addr;
   __u32 mask;
+  // acl_id is the cluster-wide NetworkACL identifier programmed at
+  // this Subnet's boundary. 0 means "no ACL attached"; the data-plane
+  // policy stage skips ACL evaluation in that case and lets traffic
+  // flow straight to the SG layer. Daemon-side reconciler keeps this
+  // in sync with Subnet.status.networkACL.aclID.
+  __u32 acl_id;
 };
 
 struct {
@@ -573,10 +586,10 @@ struct {
 #define SG_VERDICT_DENY  0
 #define SG_VERDICT_ALLOW 1
 
-// SG_PROTO_ANY matches any IP protocol (used when the rule's protocol is
-// "all"). SG_PROTO_ICMP is encoded as IPPROTO_ICMP (1) so the BPF
-// evaluator can compare directly against iph->protocol.
-#define SG_PROTO_ANY 0
+// SG rules use POLICY_PROTO_ANY (defined in policy_match.h) for the
+// "protocol=all" wildcard, and IPPROTO_TCP / IPPROTO_UDP / IPPROTO_ICMP
+// for concrete protocols. The BPF evaluator therefore compares the
+// stored proto byte directly against iph->protocol.
 
 struct sg_membership_key {
   __u32 vpc_id;
@@ -620,7 +633,7 @@ struct {
 // peer_kind.
 struct sg_rule {
   __u8  direction;          // SG_DIR_*
-  __u8  proto;              // SG_PROTO_ANY or IPPROTO_*
+  __u8  proto;              // POLICY_PROTO_ANY or IPPROTO_*
   __u16 port_lo;            // host byte order
   __u16 port_hi;            // host byte order
   __u8  peer_kind;          // SG_PEER_KIND_*
@@ -647,5 +660,87 @@ struct {
   __uint(pinning, LIBBPF_PIN_BY_NAME);
   __array(values, struct sg_rules_inner);
 } sg_rule_table SEC(".maps");
+
+// ---- NetworkACL data-plane tables -----------------------------------
+//
+// The ACL plane mirrors the SG plane structurally and shares the L3/L4
+// matching primitives in policy_match.h. Differences:
+//
+//   * Attachment: ACLs are referenced by Subnet (subnet_map.acl_id),
+//     not by NetworkInterface. There is consequently no
+//     acl_membership_map analogue.
+//   * Rules carry explicit priority and Action. The daemon-side writer
+//     sorts rules by priority (ascending) so the BPF evaluator can scan
+//     front-to-back and short-circuit on the first match.
+//   * MAX_RULES_PER_ACL is larger than MAX_RULES_PER_SG because ACL
+//     rules are CIDR-only (no peer-set fan-out), so the post-expansion
+//     rule budget per ACL is more forgiving. Verifier pressure is
+//     dominated by SG, which sits downstream of ACL eval.
+
+#define MAX_RULES_PER_ACL 16
+#define MAX_NETWORK_ACLS  4096
+
+#define ACL_DIR_INGRESS 0
+#define ACL_DIR_EGRESS  1
+
+#define ACL_VERDICT_DENY  0
+#define ACL_VERDICT_ALLOW 1
+// ACL_VERDICT_PASS is the evaluator's "no ACL attached / direction
+// defaults to allow / no rule matched and direction is in default-
+// allow mode" signal. Distinct from ALLOW so callers know whether to
+// install CT.
+#define ACL_VERDICT_PASS  2
+
+struct acl_meta_val {
+  __u32 ingress_count;
+  __u32 egress_count;
+  __u64 ruleset_version;
+  __u8  has_ingress_rules;  // 0 → ingress is default-allow (no enforcement)
+  __u8  has_egress_rules;   // 0 → egress is default-allow
+  __u8  _pad[6];
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_NETWORK_ACLS);
+  __type(key, __u32);       // acl_id
+  __type(value, struct acl_meta_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} acl_meta_map SEC(".maps");
+
+// acl_rule encodes a single (peer × proto × ports) tuple after the
+// daemon-side writer expands and sorts the user-facing ruleset by
+// priority. priority is kept on the rule for observability /
+// debuggability (bpftool dumps); the eval loop relies on the slot
+// order, not the priority field.
+struct acl_rule {
+  __u8  direction;          // ACL_DIR_*
+  __u8  proto;              // POLICY_PROTO_ANY or IPPROTO_*
+  __u16 port_lo;            // host byte order
+  __u16 port_hi;            // host byte order
+  __u8  prefixlen;          // CIDR prefix length (0..32)
+  __u8  verdict;            // ACL_VERDICT_ALLOW or ACL_VERDICT_DENY
+  __u16 priority;           // host byte order; lower runs first
+  __u8  _pad[2];
+  __be32 peer_v4;           // CIDR base, network byte order
+};
+
+struct acl_rules_inner {
+  __uint(type, BPF_MAP_TYPE_ARRAY);
+  __uint(max_entries, MAX_RULES_PER_ACL);
+  __type(key, __u32);
+  __type(value, struct acl_rule);
+};
+
+struct acl_rules_inner acl_rules_inner_proto SEC(".maps");
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
+  __uint(max_entries, MAX_NETWORK_ACLS);
+  __type(key, __u32);       // acl_id
+  __type(value, __u32);     // inner map fd handle
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+  __array(values, struct acl_rules_inner);
+} acl_rule_table SEC(".maps");
 
 #endif // JUNEAU_BPF_MAPS_H

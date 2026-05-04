@@ -19,6 +19,7 @@ const (
 	defaultVpcIDPoolName           = "vpc-id"
 	defaultNATGatewayIDPoolName    = "nat-gateway-id"
 	defaultSecurityGroupIDPoolName = "security-group-id"
+	defaultNetworkACLIDPoolName    = "network-acl-id"
 )
 
 // EnsureDefaults creates default VPC and Subnet if they don't already exist.
@@ -91,6 +92,24 @@ func ensureDefaultAllocationPools(ctx context.Context, c client.Client, logger l
 			// these numbers must outlive transient Kubernetes object
 			// names. Min=1 keeps 0 as the "no SG" sentinel.
 			ObjectMeta: metav1.ObjectMeta{Name: defaultSecurityGroupIDPoolName},
+			Spec: juneauv1alpha1.AllocationPoolSpec{
+				Type:     juneauv1alpha1.AllocationTypeNumber,
+				Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+				Number: &juneauv1alpha1.AllocationPoolNumberSpec{
+					Min: 1,
+					Max: 65535,
+				},
+			},
+		},
+		{
+			// network-acl-id mirrors security-group-id: a stable
+			// cluster-wide identifier the data plane keys
+			// acl_meta_map / acl_rule_table by. The pool is sized
+			// independently because ACL counts are typically smaller
+			// than SG counts (one ACL per Subnet boundary versus many
+			// SGs per Pod), but uses the same Min=1 sentinel rule so
+			// 0 reliably means "no ACL programmed".
+			ObjectMeta: metav1.ObjectMeta{Name: defaultNetworkACLIDPoolName},
 			Spec: juneauv1alpha1.AllocationPoolSpec{
 				Type:     juneauv1alpha1.AllocationTypeNumber,
 				Strategy: juneauv1alpha1.AllocationStrategyFirstFit,

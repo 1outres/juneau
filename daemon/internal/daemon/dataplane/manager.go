@@ -42,6 +42,7 @@ type Manager struct {
 	serviceNATAttachmentInformer      cache.Informer
 	networkInterfaceInformer          cache.Informer
 	securityGroupInformer             cache.Informer
+	networkACLInformer                cache.Informer
 
 	subnetRunner       *runner.Runner
 	arpRunner          *runner.Runner
@@ -56,8 +57,10 @@ type Manager struct {
 	serviceNATRunner   *runner.Runner
 	sgRunner           *runner.Runner
 	sgMembershipRunner *runner.Runner
+	aclRunner          *runner.Runner
 
 	sgStore         *policy.SGStore
+	aclStore        *policy.ACLStore
 	membershipStore *policy.MembershipStore
 
 	napt *reconciler.Napt
@@ -145,6 +148,14 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	if m.rtInformer != nil {
 		if err := m.subnetRunner.WatchFanOut(m.rtInformer, subnetReconciler.FanOutRouteTableToSubnets); err != nil {
 			return fmt.Errorf("watch RouteTable (subnet fan-out): %w", err)
+		}
+	}
+	if m.networkACLInformer != nil {
+		// NetworkACL.status.aclID changes (initial allocation) and
+		// rulesetVersion bumps must propagate into subnet_map.acl_id
+		// without waiting for an unrelated Subnet event.
+		if err := m.subnetRunner.WatchFanOut(m.networkACLInformer, subnetReconciler.FanOutNetworkACLToSubnets); err != nil {
+			return fmt.Errorf("watch NetworkACL (subnet fan-out): %w", err)
 		}
 	}
 	m.subnetRunner.Start(ctx, 1)
@@ -249,6 +260,24 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 			return fmt.Errorf("watch SecurityGroup (peer fan-out): %w", err)
 		}
 		m.sgRunner.Start(ctx, 1)
+	}
+
+	// NetworkACL rule projection. Populates acl_rule_table +
+	// acl_meta_map from NetworkACL CRDs. Independent of SG: ACLs
+	// attach to Subnets, not Pods, so we do not need
+	// networkInterfaceInformer here.
+	if m.networkACLInformer != nil {
+		m.aclStore = policy.NewACLStore(
+			m.podEgress.Objs.AclMetaMap,
+			m.podEgress.Objs.AclRuleTable,
+			m.podEgress.MapSpecs.AclRulesInnerProto,
+		)
+		acl := reconciler.NewNetworkACL(m.client, m.aclStore)
+		m.aclRunner = runner.New(acl)
+		if err := m.aclRunner.Watch(m.networkACLInformer, runner.MetaNamespaceKey); err != nil {
+			return fmt.Errorf("watch NetworkACL: %w", err)
+		}
+		m.aclRunner.Start(ctx, 1)
 	}
 
 	// SG membership table — (vpc_id, ipv4) → SG list — built from
@@ -365,6 +394,11 @@ func (m *Manager) Stop() error {
 			return err
 		}
 	}
+	if m.aclStore != nil {
+		if err := m.aclStore.CloseAll(); err != nil {
+			return err
+		}
+	}
 
 	runners := []*runner.Runner{
 		m.subnetRunner,
@@ -380,6 +414,7 @@ func (m *Manager) Stop() error {
 		m.serviceNATRunner,
 		m.sgRunner,
 		m.sgMembershipRunner,
+		m.aclRunner,
 	}
 	for _, rn := range runners {
 		if rn == nil {
@@ -443,6 +478,7 @@ func NewManager(
 	serviceNATAttachmentInformer cache.Informer,
 	networkInterfaceInformer cache.Informer,
 	securityGroupInformer cache.Informer,
+	networkACLInformer cache.Informer,
 	nodeName string,
 	vxlanIfindex int,
 	hostIfindex int,
@@ -467,6 +503,7 @@ func NewManager(
 		serviceNATAttachmentInformer:      serviceNATAttachmentInformer,
 		networkInterfaceInformer:          networkInterfaceInformer,
 		securityGroupInformer:             securityGroupInformer,
+		networkACLInformer:                networkACLInformer,
 		nodeName:                          nodeName,
 		vxlanIfindex:                      vxlanIfindex,
 		hostIfindex:                       hostIfindex,

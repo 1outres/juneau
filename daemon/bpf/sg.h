@@ -29,6 +29,7 @@
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 #include "maps.h"
+#include "policy_match.h"
 
 #ifndef SG_VERDICT_PASS
 // SG_VERDICT_PASS is the evaluator's "no SG attached / nothing to do"
@@ -46,29 +47,6 @@ static __always_inline struct sg_membership_val *sg_membership_lookup(__u32 vpc_
       .ipv4 = ip,
   };
   return bpf_map_lookup_elem(&sg_membership_map, &k);
-}
-
-static __always_inline int sg_proto_matches(__u8 rule_proto, __u8 pkt_proto) {
-  if (rule_proto == SG_PROTO_ANY)
-    return 1;
-  return rule_proto == pkt_proto;
-}
-
-static __always_inline int sg_port_matches(__u16 lo, __u16 hi, __u16 dport) {
-  if (lo == 0 && hi == 0xFFFF)
-    return 1;
-  return dport >= lo && dport <= hi;
-}
-
-// sg_cidr_matches takes both addresses in network byte order and a
-// prefix length in host order. A prefixlen of 0 matches every address.
-static __always_inline int sg_cidr_matches(__be32 base_be, __u8 prefixlen, __be32 addr_be) {
-  if (prefixlen == 0)
-    return 1;
-  if (prefixlen > 32)
-    return 0;
-  __u32 mask = bpf_htonl((__u32)0xFFFFFFFF << (32 - prefixlen));
-  return (base_be & mask) == (addr_be & mask);
 }
 
 // sg_peer_sg_set_contains asks "does the peer's SG list include this
@@ -118,13 +96,13 @@ static __always_inline int sg_eval_one_sg(__u32 sg_id, __u8 direction,
       break;
     if (r->direction != direction)
       continue;
-    if (!sg_proto_matches(r->proto, proto))
+    if (!policy_proto_matches(r->proto, proto))
       continue;
-    if (!sg_port_matches(r->port_lo, r->port_hi, dport))
+    if (!policy_port_matches(r->port_lo, r->port_hi, dport))
       continue;
 
     if (r->peer_kind == SG_PEER_KIND_CIDR) {
-      if (!sg_cidr_matches(r->peer_v4, r->peer_prefixlen, peer_ip))
+      if (!policy_cidr_matches(r->peer_v4, r->peer_prefixlen, peer_ip))
         continue;
     } else if (r->peer_kind == SG_PEER_KIND_SG) {
       // peer_v4 holds peer_sg_id in host byte order (no IP semantics).
@@ -173,8 +151,9 @@ static __always_inline int sg_eval(const struct sg_membership_val *self,
   //     no SG defines egress rules).
   //   * Ingress: DENY (AWS default for SG-attached interfaces).
   // The "ALLOW because no rules" case still triggers CT installation
-  // so the reverse-direction packets find a SG_PASS entry rather than
-  // re-evaluating against an empty ingress ruleset (which would deny).
+  // so the reverse-direction packets find a POLICY_PASS entry rather
+  // than re-evaluating against an empty ingress ruleset (which would
+  // deny).
   bool any_rules = false;
 
 #pragma unroll

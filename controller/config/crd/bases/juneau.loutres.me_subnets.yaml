@@ -51,6 +51,19 @@ spec:
             properties:
               cidr:
                 type: string
+              networkACL:
+                description: |-
+                  NetworkACL names the NetworkACL applied at this Subnet's
+                  boundary. The referenced ACL must belong to the same Vpc as the
+                  Subnet (webhook-enforced). Empty means "no ACL" — the Subnet
+                  boundary does not enforce policy and traffic flows straight to
+                  the per-Pod SecurityGroup layer.
+
+                  Mutability: the field is mutable. Switching the reference (or
+                  clearing it) re-converges the Subnet status and triggers
+                  daemon-side CT invalidation so flows pick up the new policy on
+                  their next packet.
+                type: string
               routeTable:
                 description: |-
                   RouteTable selects which RouteTable governs traffic from Pods in
@@ -142,6 +155,40 @@ spec:
                 type: string
               gatewayMAC:
                 type: string
+              networkACL:
+                description: |-
+                  NetworkACL mirrors the resolved spec.networkACL reference. It
+                  carries the cluster-wide ACLID the daemon writes into the BPF
+                  subnet_map plus the ACL's RulesetVersion at the time the
+                  reference was resolved. Empty (nil) when spec.networkACL is
+                  unset or the named ACL does not yet exist.
+                properties:
+                  aclID:
+                    description: |-
+                      ACLID is the resolved cluster-wide identifier from the
+                      referenced NetworkACL's status.aclID. Zero means "the ACL
+                      exists in spec but has not been allocated yet"; the daemon
+                      treats zero as "no ACL programmed" and falls back to default-allow
+                      until the controller publishes a non-zero value.
+                    format: int32
+                    type: integer
+                  name:
+                    description: |-
+                      Name mirrors spec.networkACL — the user-facing reference. Kept
+                      in status so daemons consume one struct without cross-checking
+                      spec.
+                    type: string
+                  rulesetVersion:
+                    description: |-
+                      RulesetVersion mirrors the referenced ACL's
+                      status.rulesetVersion at the moment the reference was resolved.
+                      Daemons compare this against their last-applied value to decide
+                      whether to flush CT entries.
+                    format: int64
+                    type: integer
+                required:
+                - name
+                type: object
               observedGeneration:
                 format: int64
                 type: integer
