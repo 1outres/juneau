@@ -216,6 +216,36 @@ struct {
 
 // ---- Helpers --------------------------------------------------------
 
+// trace_skb_data / trace_skb_data_end mirror nat.h's same-named helpers
+// (see nat.h:33-49 for the rationale). Using inline asm with an
+// immediate-offset load forces clang to emit `*(u32 *)(skb + 76)` /
+// `*(u32 *)(skb + 80)` rather than `r6 += 76; *(u32 *)(r6 + 0)`. The
+// verifier accepts the former but rejects the latter as "dereference
+// of modified ctx ptr". Two back-to-back inlined trace helpers (e.g.
+// trace_emit_map_miss_l3 then trace_emit_drop_l3) routinely trip the
+// bad codegen without these wrappers.
+//
+// We duplicate rather than include nat.h because trace.h is the most
+// upstream header in the BPF source tree and we want to keep it free
+// of dependencies on the dataplane-specific helpers.
+static __always_inline void *trace_skb_data(const struct __sk_buff *skb) {
+  void *p;
+  __asm__ volatile("%[p] = *(u32 *)(%[skb] + %[off])"
+                   : [p] "=r"(p)
+                   : [skb] "r"(skb),
+                     [off] "i"(__builtin_offsetof(struct __sk_buff, data)));
+  return p;
+}
+
+static __always_inline void *trace_skb_data_end(const struct __sk_buff *skb) {
+  void *p;
+  __asm__ volatile("%[p] = *(u32 *)(%[skb] + %[off])"
+                   : [p] "=r"(p)
+                   : [skb] "r"(skb),
+                     [off] "i"(__builtin_offsetof(struct __sk_buff, data_end)));
+  return p;
+}
+
 // trace_is_active is the hot-path gate. Returns non-zero only when at
 // least one session has been programmed. Cost: one ARRAY map lookup
 // (constant-folded by the verifier into a single load).
@@ -690,8 +720,8 @@ trace_classify_and_emit_enter(struct __sk_buff *skb,
                               const struct trace_hook_ctx *ctx) {
   if (!trace_is_active())
     return 0;
-  void *data = (void *)(long)skb->data;
-  void *data_end = (void *)(long)skb->data_end;
+  void *data = trace_skb_data(skb);
+  void *data_end = trace_skb_data_end(skb);
   struct ethhdr *eth = data;
   if ((void *)(eth + 1) > data_end)
     return 0;
@@ -725,16 +755,42 @@ trace_classify_and_emit_enter(struct __sk_buff *skb,
 // These helpers wrap the underlying trace_emit_drop / _redirect /
 // _map_miss with skb-side header parsing so callers can drop them in
 // at TC_ACT_SHOT / bpf_redirect / lookup-miss sites with a single
-// line. They are __always_inline; with the verifier limit relaxed,
-// the call site cost is borne directly by the host program.
+// line.
+//
+// The skb-parse + ringbuf path is heavy enough that inlining each
+// call site (drop, redirect, map_miss) into pod_egress / node_ingress
+// blew through the verifier's 1M-insn budget once trace.h was
+// added. So the implementation lives once in the
+// trace_emit_l3 subprogram below; the public wrappers are tiny shims
+// that fill `trace_emit_l3_args` and CALL into the shared subprogram.
+// Net effect: each public call site costs ~one struct fill + one
+// CALL, regardless of which variant.
 
-static __always_inline void
-trace_emit_drop_l3(struct __sk_buff *skb, __u32 trace_id, __u32 reason,
-                   __u32 hook, __u8 scope, __u32 vpc_id, __u32 subnet_id) {
-  if (trace_id == 0)
+// trace_emit_l3_args bundles the shim → subprogram inputs. `verdict`
+// distinguishes drop / redirect / map-miss callers without needing
+// three near-identical subprograms; `aux1` carries target_ifindex
+// (redirect) or aux1 (map_miss), unused (zero) for drop.
+struct trace_emit_l3_args {
+  __u32 trace_id;
+  __u32 reason;
+  __u32 hook;
+  __u32 vpc_id;
+  __u32 subnet_id;
+  __u32 aux1;
+  __u8  scope;
+  __u8  verdict;
+  __u8  _pad[2];
+};
+
+// trace_emit_l3 is the shared subprogram. Marked noinline so each
+// shim call site costs a single CALL rather than the full skb parse
+// + ringbuf reserve + memset + field copies.
+static __juneau_bpf_subprog void
+trace_emit_l3(struct __sk_buff *skb, const struct trace_emit_l3_args *a) {
+  if (!a || a->trace_id == 0)
     return;
-  void *data = (void *)(long)skb->data;
-  void *data_end = (void *)(long)skb->data_end;
+  void *data = trace_skb_data(skb);
+  void *data_end = trace_skb_data_end(skb);
   struct ethhdr *eth = data;
   if ((void *)(eth + 1) > data_end)
     return;
@@ -743,8 +799,39 @@ trace_emit_drop_l3(struct __sk_buff *skb, __u32 trace_id, __u32 reason,
     return;
   __be16 sport = 0, dport = 0;
   trace_read_l4_ports(iph, data_end, &sport, &dport);
-  trace_emit_drop(trace_id, reason, hook, skb->ifindex, vpc_id, subnet_id,
-                  scope, iph->protocol, iph->saddr, iph->daddr, sport, dport);
+
+  struct trace_emit_args ea = {0};
+  ea.trace_id = a->trace_id;
+  ea.reason = a->reason;
+  ea.hook = a->hook;
+  ea.ifindex = skb->ifindex;
+  ea.vpc_id = a->vpc_id;
+  ea.subnet_id = a->subnet_id;
+  ea.scope = a->scope;
+  ea.proto = iph->protocol;
+  ea.verdict = a->verdict;
+  ea.saddr = iph->saddr;
+  ea.daddr = iph->daddr;
+  ea.sport = sport;
+  ea.dport = dport;
+  ea.aux1 = a->aux1;
+  trace_emit_full(&ea);
+}
+
+static __always_inline void
+trace_emit_drop_l3(struct __sk_buff *skb, __u32 trace_id, __u32 reason,
+                   __u32 hook, __u8 scope, __u32 vpc_id, __u32 subnet_id) {
+  if (trace_id == 0)
+    return;
+  struct trace_emit_l3_args a = {0};
+  a.trace_id = trace_id;
+  a.reason = reason;
+  a.hook = hook;
+  a.vpc_id = vpc_id;
+  a.subnet_id = subnet_id;
+  a.scope = scope;
+  a.verdict = TRACE_VERDICT_DROP;
+  trace_emit_l3(skb, &a);
 }
 
 static __always_inline void
@@ -753,19 +840,16 @@ trace_emit_redirect_l3(struct __sk_buff *skb, __u32 trace_id, __u32 reason,
                        __u32 target_ifindex) {
   if (trace_id == 0)
     return;
-  void *data = (void *)(long)skb->data;
-  void *data_end = (void *)(long)skb->data_end;
-  struct ethhdr *eth = data;
-  if ((void *)(eth + 1) > data_end)
-    return;
-  struct iphdr *iph = (void *)(eth + 1);
-  if ((void *)(iph + 1) > data_end)
-    return;
-  __be16 sport = 0, dport = 0;
-  trace_read_l4_ports(iph, data_end, &sport, &dport);
-  trace_emit_redirect(trace_id, reason, hook, skb->ifindex, vpc_id, subnet_id,
-                      scope, iph->protocol, iph->saddr, iph->daddr, sport,
-                      dport, target_ifindex, 0);
+  struct trace_emit_l3_args a = {0};
+  a.trace_id = trace_id;
+  a.reason = reason;
+  a.hook = hook;
+  a.vpc_id = vpc_id;
+  a.subnet_id = subnet_id;
+  a.aux1 = target_ifindex;
+  a.scope = scope;
+  a.verdict = TRACE_VERDICT_REDIRECT;
+  trace_emit_l3(skb, &a);
 }
 
 static __always_inline void
@@ -774,31 +858,33 @@ trace_emit_map_miss_l3(struct __sk_buff *skb, __u32 trace_id, __u32 reason,
                        __u32 aux1) {
   if (trace_id == 0)
     return;
-  void *data = (void *)(long)skb->data;
-  void *data_end = (void *)(long)skb->data_end;
-  struct ethhdr *eth = data;
-  if ((void *)(eth + 1) > data_end)
-    return;
-  struct iphdr *iph = (void *)(eth + 1);
-  if ((void *)(iph + 1) > data_end)
-    return;
-  __be16 sport = 0, dport = 0;
-  trace_read_l4_ports(iph, data_end, &sport, &dport);
-  trace_emit_map_miss(trace_id, reason, hook, skb->ifindex, vpc_id, subnet_id,
-                      scope, iph->protocol, iph->saddr, iph->daddr, sport,
-                      dport, aux1);
+  struct trace_emit_l3_args a = {0};
+  a.trace_id = trace_id;
+  a.reason = reason;
+  a.hook = hook;
+  a.vpc_id = vpc_id;
+  a.subnet_id = subnet_id;
+  a.aux1 = aux1;
+  a.scope = scope;
+  a.verdict = TRACE_VERDICT_OK;
+  trace_emit_l3(skb, &a);
 }
 
 // trace_lookup_id_l3 is for sites that need a trace_id at decision
 // points but were not classified at hook entry (e.g. terminal
 // verdicts in helpers that don't receive trace_id from the caller).
 // It re-derives the tuple and looks up the id.
-static __always_inline __u32
+//
+// Marked noinline for the same reason as trace_emit_l3 above:
+// pod_egress has many lookup sites and inlining the skb-parse +
+// tuple_map lookup at each one overflows the verifier 1M-insn
+// budget.
+static __juneau_bpf_subprog __u32
 trace_lookup_id_l3(struct __sk_buff *skb, __u8 scope, __u32 vpc_id) {
   if (!trace_is_active())
     return 0;
-  void *data = (void *)(long)skb->data;
-  void *data_end = (void *)(long)skb->data_end;
+  void *data = trace_skb_data(skb);
+  void *data_end = trace_skb_data_end(skb);
   struct ethhdr *eth = data;
   if ((void *)(eth + 1) > data_end)
     return 0;

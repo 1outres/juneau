@@ -30,6 +30,7 @@
 #include "maps.h"
 #include "nat.h"
 #include "sg.h"
+#include "trace.h"
 
 // ct_install_policy_pass writes the bidirectional CT entries that
 // represent "policy admitted this flow". Both directions share the
@@ -83,8 +84,15 @@ static __always_inline void ct_install_policy_pass(__u32 vpc_id,
 //    0: established-flow short-circuit, or no enforcement applied
 //   -1: terminal DENY (caller must TC_ACT_SHOT)
 //   -2: internal error (caller must TC_ACT_SHOT)
-static __always_inline int apply_policy_egress(struct __sk_buff *skb,
-                                               __u32 vpc_id, __u32 acl_id) {
+//
+// Marked as a BPF-to-BPF subprogram (noinline) so the verifier
+// explores its body once rather than once per call-site context. The
+// SG rule scan (sg.h) is the dominant state-explosion source; folding
+// the policy stage into a single subprogram keeps the verifier under
+// the 1M-insn budget once trace.h instrumentation expands the
+// surrounding host program.
+static __juneau_bpf_subprog int apply_policy_egress(struct __sk_buff *skb,
+                                                    __u32 vpc_id, __u32 acl_id) {
   struct iphdr *iph = nat_load_iph(skb);
   if (!iph)
     return -2;
@@ -141,7 +149,15 @@ static __always_inline int apply_policy_egress(struct __sk_buff *skb,
   struct sg_membership_val *peer = sg_membership_lookup(vpc_id, iph->daddr);
   int sg_v = SG_VERDICT_PASS;
   if (self != NULL && self->count > 0)
-    sg_v = sg_eval(self, SG_DIR_EGRESS, proto, dport, iph->daddr, peer);
+    {
+      struct sg_eval_args sea = {
+          .peer_ip = iph->daddr,
+          .dport = dport,
+          .direction = SG_DIR_EGRESS,
+          .proto = proto,
+      };
+      sg_v = sg_eval(self, peer, &sea);
+    }
   if (sg_v == SG_VERDICT_DENY)
     return -1;
 
@@ -175,14 +191,15 @@ static __always_inline int apply_policy_egress(struct __sk_buff *skb,
 }
 
 // apply_policy_ingress mirrors apply_policy_egress for inbound
-// traffic at a local Pod's veth.
+// traffic at a local Pod's veth. See the apply_policy_egress comment
+// for why this is a noinline subprogram.
 //
 // Returns:
 //    0: admitted (or short-circuited via CT, or no enforcement)
 //   -1: terminal DENY (caller must TC_ACT_SHOT)
 //   -2: internal error (caller must TC_ACT_SHOT)
-static __always_inline int apply_policy_ingress(struct __sk_buff *skb,
-                                                __u32 vpc_id, __u32 acl_id) {
+static __juneau_bpf_subprog int apply_policy_ingress(struct __sk_buff *skb,
+                                                     __u32 vpc_id, __u32 acl_id) {
   struct iphdr *iph = nat_load_iph(skb);
   if (!iph)
     return -2;
@@ -232,7 +249,15 @@ static __always_inline int apply_policy_ingress(struct __sk_buff *skb,
   struct sg_membership_val *peer = sg_membership_lookup(vpc_id, iph->saddr);
   int sg_v = SG_VERDICT_PASS;
   if (self != NULL && self->count > 0)
-    sg_v = sg_eval(self, SG_DIR_INGRESS, proto, dport, iph->saddr, peer);
+    {
+      struct sg_eval_args sea = {
+          .peer_ip = iph->saddr,
+          .dport = dport,
+          .direction = SG_DIR_INGRESS,
+          .proto = proto,
+      };
+      sg_v = sg_eval(self, peer, &sea);
+    }
   if (sg_v == SG_VERDICT_DENY)
     return -1;
 

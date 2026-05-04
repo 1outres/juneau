@@ -140,6 +140,7 @@ static __always_inline int handle_dnat(struct __sk_buff *skb, struct ethhdr *eth
   __be32 saddr = iph->saddr;
   __u8 proto = iph->protocol;
   __be16 sport = 0, dport = 0;
+  data_end = nat_skb_data_end(skb);
   trace_read_l4_ports(iph, data_end, &sport, &dport);
 
   struct arp_table_key ak = {

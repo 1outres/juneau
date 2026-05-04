@@ -27,6 +27,18 @@
 #include "maps.h"
 #include "policy_match.h"
 
+// __juneau_bpf_subprog mirrors the macro in trace.h. Defined locally
+// here so acl.h does not have to include trace.h.
+#ifndef __juneau_bpf_subprog
+#define __juneau_bpf_subprog __attribute__((noinline)) __attribute__((used))
+#endif
+
+// _acl_rule_btf_anchor forces clang to emit a full STRUCT entry for
+// `struct acl_rule` rather than the FWD declaration that surfaces
+// when the noinline `acl_evaluate` subprogram below is the only
+// place that references it. Mirrors _sg_rule_btf_anchor in sg.h.
+const struct acl_rule _acl_rule_btf_anchor;
+
 // acl_evaluate scans the inner array for a single ACL against parsed
 // packet metadata, returning one of:
 //
@@ -39,9 +51,16 @@
 //
 // peer_ip is the user-visible 5-tuple peer for this direction:
 // daddr on egress, saddr on ingress. The caller resolves that.
-static __always_inline int acl_evaluate(__u32 acl_id, __u8 direction,
-                                        __u8 proto, __u16 dport,
-                                        __be32 peer_ip) {
+//
+// Marked as a BPF-to-BPF subprogram (noinline). Inlining
+// acl_evaluate into apply_policy_X (now itself a subprogram) made
+// the verifier lose precision on the loop counter `i` across the
+// per-iteration bpf_map_lookup_elem call, tripping the
+// "infinite loop detected" check. Promoting acl_evaluate to its
+// own subprogram restores per-iteration tracking.
+static __juneau_bpf_subprog int acl_evaluate(__u32 acl_id, __u8 direction,
+                                             __u8 proto, __u16 dport,
+                                             __be32 peer_ip) {
   if (acl_id == 0)
     return ACL_VERDICT_PASS;
 

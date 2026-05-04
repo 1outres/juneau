@@ -386,6 +386,8 @@ type PodIngressMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type PodIngressVariableSpecs struct {
+	AclRuleBtfAnchor *ebpf.VariableSpec `ebpf:"_acl_rule_btf_anchor"`
+	SgRuleBtfAnchor  *ebpf.VariableSpec `ebpf:"_sg_rule_btf_anchor"`
 }
 
 // PodIngressObjects contains all objects after they have been loaded into the kernel.
@@ -479,6 +481,8 @@ func (m *PodIngressMaps) Close() error {
 //
 // It can be passed to LoadPodIngressObjects or ebpf.CollectionSpec.LoadAndAssign.
 type PodIngressVariables struct {
+	AclRuleBtfAnchor *ebpf.Variable `ebpf:"_acl_rule_btf_anchor"`
+	SgRuleBtfAnchor  *ebpf.Variable `ebpf:"_sg_rule_btf_anchor"`
 }
 
 // PodIngressPrograms contains all programs after they have been loaded into the kernel.
