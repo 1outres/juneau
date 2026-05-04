@@ -1558,14 +1558,21 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
 
   __u16 h_proto = bpf_ntohs(eth->h_proto);
 
-  // pod_egress is already at the verifier instruction limit on
-  // released kernels. Inlining trace_classify_l3 + trace_emit_enter
-  // here pushes load past 1M insns and the daemon refuses to start.
-  // Until the framework supports out-of-line tail-call emit (tracked
-  // for a future PR), pod_egress emits no per-hook event; downstream
-  // hooks (pod_ingress / vxlan_ingress) still observe the same packet
-  // and produce a useful timeline. The ringbuf maps stay pinned via
-  // the trace_is_active anchor in tc_pod_egress.
+  // Hook-entry trace event. trace_classify_and_emit_enter is a
+  // __noinline subprogram (see trace.h) so the verifier counts the
+  // call site as a single CALL rather than inlining the body —
+  // critical for pod_egress, whose pre-trace insn count already
+  // sits near the verifier ceiling.
+  {
+    struct trace_hook_ctx __ctx = {
+        .reason = TRACE_REASON_ENTER_POD_EGRESS,
+        .hook = TRACE_HOOK_POD_EGRESS,
+        .vpc_id = subnet->vpc_id,
+        .subnet_id = val->subnet_id,
+        .scope = TRACE_SCOPE_VPC,
+    };
+    (void)trace_classify_and_emit_enter(skb, &__ctx);
+  }
 
   if (h_proto == ETH_P_ARP)
     return handle_arp(skb, data_end, eth, val->subnet_id, subnet);

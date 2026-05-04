@@ -138,11 +138,15 @@ static __always_inline int tc_vxlan_ingress(struct __sk_buff *skb) {
   // Hook-entry trace event. Tunnel-decapsulated packets carry the
   // VPC-scoped tuple of the *destination* node, which is what the
   // user sees in the timeline at "vxlan_ingress" stops.
-  __u32 __trace_id = trace_classify_l3(skb, TRACE_SCOPE_VPC, subnet->vpc_id);
-  if (__trace_id != 0) {
-    trace_emit_enter_l3(skb, __trace_id, TRACE_REASON_ENTER_VXLAN_INGRESS,
-                        TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC,
-                        subnet->vpc_id, subnet_id);
+  {
+    struct trace_hook_ctx __ctx = {
+        .reason = TRACE_REASON_ENTER_VXLAN_INGRESS,
+        .hook = TRACE_HOOK_VXLAN_INGRESS,
+        .vpc_id = subnet->vpc_id,
+        .subnet_id = subnet_id,
+        .scope = TRACE_SCOPE_VPC,
+    };
+    (void)trace_classify_and_emit_enter(skb, &__ctx);
   }
 
   // Cross-Node reply leg of the shared-Service path: a CT_ACTION_SVC_SHARED_IN

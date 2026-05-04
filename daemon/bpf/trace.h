@@ -271,16 +271,58 @@ trace_should_emit(const struct trace_config_val *cfg, __u32 capture_flag,
   return 1;
 }
 
-// trace_emit_full submits a fully-populated event. Hot helper —
-// callers usually want the smaller wrappers below, but this is the
-// single point of truth for the wire format.
-static __always_inline void
-trace_emit_full(__u32 trace_id, __u32 reason, __u32 hook, __u32 ifindex,
-                __u32 vpc_id, __u32 subnet_id, __u8 scope, __u8 proto,
-                __u8 verdict, __be32 saddr, __be32 daddr, __be16 sport,
-                __be16 dport, __be32 saddr2, __be32 daddr2, __be16 sport2,
-                __be16 dport2, __u32 aux1, __u32 aux2) {
-  if (trace_id == 0)
+// __juneau_bpf_subprog marks a function as a BPF-to-BPF subprogram:
+//   - noinline so each call site costs the verifier just one CALL
+//     instruction rather than the full inlined body. Without this,
+//     pod_egress.c overflows the 1M-insn verifier ceiling once the
+//     trace path is added.
+//   - used so static linkage does not let the linker drop the
+//     function when only the host program references it indirectly.
+//
+// Requires kernel >= 5.0 (BPF-to-BPF calls). Juneau already targets
+// modern kernels so this is safe.
+//
+// BPF subprograms have a 5-register argument limit (R1-R5), so any
+// helper that needs more than 5 logical inputs must accept a pointer
+// to a struct holding them. trace_emit_args below is exactly that
+// container — wrappers fill it on stack and pass the address.
+#ifndef __juneau_bpf_subprog
+#define __juneau_bpf_subprog __attribute__((noinline)) __attribute__((used))
+#endif
+
+// trace_emit_args is the container struct passed to trace_emit_full.
+// One pointer fits in a single register; callers fill the struct on
+// the stack at each call site.
+struct trace_emit_args {
+  __u32 trace_id;
+  __u32 reason;
+  __u32 hook;
+  __u32 ifindex;
+  __u32 vpc_id;
+  __u32 subnet_id;
+  __u8  scope;
+  __u8  proto;
+  __u8  verdict;
+  __u8  _pad0;
+  __be32 saddr;
+  __be32 daddr;
+  __be16 sport;
+  __be16 dport;
+  __be32 saddr2;
+  __be32 daddr2;
+  __be16 sport2;
+  __be16 dport2;
+  __u32 aux1;
+  __u32 aux2;
+};
+
+// trace_emit_full submits a fully-populated event. The single point
+// of truth for the wire format. Marked noinline so the body lives
+// in exactly one place and each trace_emit_* wrapper costs just one
+// CALL at its call site.
+static __juneau_bpf_subprog void
+trace_emit_full(const struct trace_emit_args *a) {
+  if (!a || a->trace_id == 0)
     return;
   struct juneau_trace_event *ev =
       bpf_ringbuf_reserve(&trace_events, sizeof(*ev), 0);
@@ -290,26 +332,26 @@ trace_emit_full(__u32 trace_id, __u32 reason, __u32 hook, __u32 ifindex,
   // padding bytes do not leak stack data into userspace. Clang lowers
   // this to a constant-size memset.
   __builtin_memset(ev, 0, sizeof(*ev));
-  ev->trace_id = trace_id;
-  ev->reason = reason;
-  ev->hook = hook;
-  ev->ifindex = ifindex;
-  ev->vpc_id = vpc_id;
-  ev->subnet_id = subnet_id;
+  ev->trace_id = a->trace_id;
+  ev->reason = a->reason;
+  ev->hook = a->hook;
+  ev->ifindex = a->ifindex;
+  ev->vpc_id = a->vpc_id;
+  ev->subnet_id = a->subnet_id;
   ev->ts_ns = bpf_ktime_get_ns();
-  ev->saddr = saddr;
-  ev->daddr = daddr;
-  ev->sport = sport;
-  ev->dport = dport;
-  ev->proto = proto;
-  ev->verdict = verdict;
-  ev->scope = scope;
-  ev->saddr2 = saddr2;
-  ev->daddr2 = daddr2;
-  ev->sport2 = sport2;
-  ev->dport2 = dport2;
-  ev->aux1 = aux1;
-  ev->aux2 = aux2;
+  ev->saddr = a->saddr;
+  ev->daddr = a->daddr;
+  ev->sport = a->sport;
+  ev->dport = a->dport;
+  ev->proto = a->proto;
+  ev->verdict = a->verdict;
+  ev->scope = a->scope;
+  ev->saddr2 = a->saddr2;
+  ev->daddr2 = a->daddr2;
+  ev->sport2 = a->sport2;
+  ev->dport2 = a->dport2;
+  ev->aux1 = a->aux1;
+  ev->aux2 = a->aux2;
   bpf_ringbuf_submit(ev, 0);
 }
 
@@ -319,9 +361,21 @@ static __always_inline void
 trace_emit_enter(__u32 trace_id, __u32 reason, __u32 hook, __u32 ifindex,
                  __u32 vpc_id, __u32 subnet_id, __u8 scope, __u8 proto,
                  __be32 saddr, __be32 daddr, __be16 sport, __be16 dport) {
-  trace_emit_full(trace_id, reason, hook, ifindex, vpc_id, subnet_id, scope,
-                  proto, TRACE_VERDICT_OK, saddr, daddr, sport, dport, 0, 0, 0,
-                  0, 0, 0);
+  struct trace_emit_args a = {0};
+  a.trace_id = trace_id;
+  a.reason = reason;
+  a.hook = hook;
+  a.ifindex = ifindex;
+  a.vpc_id = vpc_id;
+  a.subnet_id = subnet_id;
+  a.scope = scope;
+  a.proto = proto;
+  a.verdict = TRACE_VERDICT_OK;
+  a.saddr = saddr;
+  a.daddr = daddr;
+  a.sport = sport;
+  a.dport = dport;
+  trace_emit_full(&a);
 }
 
 // trace_emit_drop tags a terminal SHOT verdict with the reason code
@@ -330,9 +384,21 @@ static __always_inline void
 trace_emit_drop(__u32 trace_id, __u32 reason, __u32 hook, __u32 ifindex,
                 __u32 vpc_id, __u32 subnet_id, __u8 scope, __u8 proto,
                 __be32 saddr, __be32 daddr, __be16 sport, __be16 dport) {
-  trace_emit_full(trace_id, reason, hook, ifindex, vpc_id, subnet_id, scope,
-                  proto, TRACE_VERDICT_DROP, saddr, daddr, sport, dport, 0, 0,
-                  0, 0, 0, 0);
+  struct trace_emit_args a = {0};
+  a.trace_id = trace_id;
+  a.reason = reason;
+  a.hook = hook;
+  a.ifindex = ifindex;
+  a.vpc_id = vpc_id;
+  a.subnet_id = subnet_id;
+  a.scope = scope;
+  a.proto = proto;
+  a.verdict = TRACE_VERDICT_DROP;
+  a.saddr = saddr;
+  a.daddr = daddr;
+  a.sport = sport;
+  a.dport = dport;
+  trace_emit_full(&a);
 }
 
 // trace_emit_redirect records a TC_ACT_REDIRECT (or VXLAN encap +
@@ -342,9 +408,23 @@ trace_emit_redirect(__u32 trace_id, __u32 reason, __u32 hook, __u32 ifindex,
                     __u32 vpc_id, __u32 subnet_id, __u8 scope, __u8 proto,
                     __be32 saddr, __be32 daddr, __be16 sport, __be16 dport,
                     __u32 target_ifindex, __u32 aux2) {
-  trace_emit_full(trace_id, reason, hook, ifindex, vpc_id, subnet_id, scope,
-                  proto, TRACE_VERDICT_REDIRECT, saddr, daddr, sport, dport, 0,
-                  0, 0, 0, target_ifindex, aux2);
+  struct trace_emit_args a = {0};
+  a.trace_id = trace_id;
+  a.reason = reason;
+  a.hook = hook;
+  a.ifindex = ifindex;
+  a.vpc_id = vpc_id;
+  a.subnet_id = subnet_id;
+  a.scope = scope;
+  a.proto = proto;
+  a.verdict = TRACE_VERDICT_REDIRECT;
+  a.saddr = saddr;
+  a.daddr = daddr;
+  a.sport = sport;
+  a.dport = dport;
+  a.aux1 = target_ifindex;
+  a.aux2 = aux2;
+  trace_emit_full(&a);
 }
 
 // trace_emit_map_miss records a lookup miss. Cheap to emit since map
@@ -355,9 +435,22 @@ trace_emit_map_miss(__u32 trace_id, __u32 reason, __u32 hook, __u32 ifindex,
                     __u32 vpc_id, __u32 subnet_id, __u8 scope, __u8 proto,
                     __be32 saddr, __be32 daddr, __be16 sport, __be16 dport,
                     __u32 aux1) {
-  trace_emit_full(trace_id, reason, hook, ifindex, vpc_id, subnet_id, scope,
-                  proto, TRACE_VERDICT_OK, saddr, daddr, sport, dport, 0, 0, 0,
-                  0, aux1, 0);
+  struct trace_emit_args a = {0};
+  a.trace_id = trace_id;
+  a.reason = reason;
+  a.hook = hook;
+  a.ifindex = ifindex;
+  a.vpc_id = vpc_id;
+  a.subnet_id = subnet_id;
+  a.scope = scope;
+  a.proto = proto;
+  a.verdict = TRACE_VERDICT_OK;
+  a.saddr = saddr;
+  a.daddr = daddr;
+  a.sport = sport;
+  a.dport = dport;
+  a.aux1 = aux1;
+  trace_emit_full(&a);
 }
 
 // trace_emit_nat carries before/after tuple pairs. before_* go in the
@@ -369,10 +462,25 @@ trace_emit_nat(__u32 trace_id, __u32 reason, __u32 hook, __u32 ifindex,
                __be32 before_saddr, __be32 before_daddr, __be16 before_sport,
                __be16 before_dport, __be32 after_saddr, __be32 after_daddr,
                __be16 after_sport, __be16 after_dport) {
-  trace_emit_full(trace_id, reason, hook, ifindex, vpc_id, subnet_id, scope,
-                  proto, TRACE_VERDICT_OK, before_saddr, before_daddr,
-                  before_sport, before_dport, after_saddr, after_daddr,
-                  after_sport, after_dport, 0, 0);
+  struct trace_emit_args a = {0};
+  a.trace_id = trace_id;
+  a.reason = reason;
+  a.hook = hook;
+  a.ifindex = ifindex;
+  a.vpc_id = vpc_id;
+  a.subnet_id = subnet_id;
+  a.scope = scope;
+  a.proto = proto;
+  a.verdict = TRACE_VERDICT_OK;
+  a.saddr = before_saddr;
+  a.daddr = before_daddr;
+  a.sport = before_sport;
+  a.dport = before_dport;
+  a.saddr2 = after_saddr;
+  a.daddr2 = after_daddr;
+  a.sport2 = after_sport;
+  a.dport2 = after_dport;
+  trace_emit_full(&a);
 }
 
 // trace_emit_policy records an ACL/SG verdict. aux1 carries the
@@ -383,9 +491,23 @@ trace_emit_policy(__u32 trace_id, __u32 reason, __u32 hook, __u32 ifindex,
                   __u32 vpc_id, __u32 subnet_id, __u8 scope, __u8 proto,
                   __be32 saddr, __be32 daddr, __be16 sport, __be16 dport,
                   __u32 policy_id, __u32 rule_index) {
-  trace_emit_full(trace_id, reason, hook, ifindex, vpc_id, subnet_id, scope,
-                  proto, TRACE_VERDICT_OK, saddr, daddr, sport, dport, 0, 0, 0,
-                  0, policy_id, rule_index);
+  struct trace_emit_args a = {0};
+  a.trace_id = trace_id;
+  a.reason = reason;
+  a.hook = hook;
+  a.ifindex = ifindex;
+  a.vpc_id = vpc_id;
+  a.subnet_id = subnet_id;
+  a.scope = scope;
+  a.proto = proto;
+  a.verdict = TRACE_VERDICT_OK;
+  a.saddr = saddr;
+  a.daddr = daddr;
+  a.sport = sport;
+  a.dport = dport;
+  a.aux1 = policy_id;
+  a.aux2 = rule_index;
+  trace_emit_full(&a);
 }
 
 // trace_learn_tuple installs a translated tuple into the local tuple
@@ -462,18 +584,35 @@ trace_read_l4_ports(const struct iphdr *iph, void *data_end, __be16 *sport,
   return 1;
 }
 
-// trace_classify_l3 builds a tuple from skb's L2+L3 headers and
-// resolves the trace_id. `scope` and `vpc_id` are the keyspace inputs
-// the caller already has available (e.g. pod_egress passes
-// TRACE_SCOPE_VPC and the resolved vpc_id; node_ingress passes
-// TRACE_SCOPE_HOST and 0).
+// (trace_classify_l3 was removed in the noinline refactor —
+// trace_classify_and_emit_enter below replaces it as a single
+// subprogram that combines lookup + emit.)
+
+// trace_hook_ctx bundles the per-hook context callers pass to
+// trace_classify_and_emit_enter. Bundling keeps the subprogram's
+// argument count under BPF's 5-register limit.
+struct trace_hook_ctx {
+  __u32 reason;
+  __u32 hook;
+  __u32 vpc_id;
+  __u32 subnet_id;
+  __u8  scope;
+  __u8  _pad[3];
+};
+
+// trace_classify_and_emit_enter classifies the packet, emits an
+// enter event if it matches a session, and returns the resolved
+// trace_id (0 = no match). One subprogram per hook-entry call site
+// keeps the verifier surface minimal.
 //
-// Source ports are ignored on the lookup path: ephemeral sports are
-// not knowable to kubectl ahead of time, so userspace stores tuples
-// with sport=0 and the BPF side mirrors that. Destination port is
-// kept because operators use it to disambiguate Service traces.
-static __always_inline __u32 trace_classify_l3(struct __sk_buff *skb,
-                                               __u8 scope, __u32 vpc_id) {
+// Source ports are wildcarded on the lookup so kubectl-stored
+// tuples (which cannot know an ephemeral source port) match both
+// initial and return-leg packets. A second-chance lookup with
+// dport=0 lets operators run "trace src to dst, all protocols"
+// without enumerating destination ports.
+static __juneau_bpf_subprog __u32
+trace_classify_and_emit_enter(struct __sk_buff *skb,
+                              const struct trace_hook_ctx *ctx) {
   if (!trace_is_active())
     return 0;
   void *data = (void *)(long)skb->data;
@@ -488,44 +627,22 @@ static __always_inline __u32 trace_classify_l3(struct __sk_buff *skb,
     return 0;
   __be16 sport = 0, dport = 0;
   trace_read_l4_ports(iph, data_end, &sport, &dport);
-  // Lookup with sport=0 to match kubectl-stored tuples; ephemeral
-  // source ports are unknown ahead of time.
-  struct trace_tuple_key k = trace_make_key(scope, vpc_id, iph->protocol,
-                                            iph->saddr, iph->daddr, 0,
-                                            dport);
+
+  struct trace_tuple_key k = trace_make_key(ctx->scope, ctx->vpc_id,
+                                            iph->protocol, iph->saddr,
+                                            iph->daddr, 0, dport);
   __u32 id = trace_lookup_tuple(&k);
-  if (id != 0)
-    return id;
-  // Second chance: also try with dport=0 so operators who only know
-  // src/dst (ICMP, exploratory) still match.
-  if (dport != 0) {
+  if (id == 0 && dport != 0) {
     k.dport = 0;
     id = trace_lookup_tuple(&k);
   }
-  return id;
-}
+  if (id == 0)
+    return 0;
 
-// trace_emit_enter_l3 emits a hook-entry event for an already-
-// classified packet. Pulls the tuple out of skb again so callers do
-// not have to thread it through; cheap when trace_id == 0 (early
-// return).
-static __always_inline void
-trace_emit_enter_l3(struct __sk_buff *skb, __u32 trace_id, __u32 reason,
-                    __u32 hook, __u8 scope, __u32 vpc_id, __u32 subnet_id) {
-  if (trace_id == 0)
-    return;
-  void *data = (void *)(long)skb->data;
-  void *data_end = (void *)(long)skb->data_end;
-  struct ethhdr *eth = data;
-  if ((void *)(eth + 1) > data_end)
-    return;
-  struct iphdr *iph = (void *)(eth + 1);
-  if ((void *)(iph + 1) > data_end)
-    return;
-  __be16 sport = 0, dport = 0;
-  trace_read_l4_ports(iph, data_end, &sport, &dport);
-  trace_emit_enter(trace_id, reason, hook, skb->ifindex, vpc_id, subnet_id,
-                   scope, iph->protocol, iph->saddr, iph->daddr, sport, dport);
+  trace_emit_enter(id, ctx->reason, ctx->hook, skb->ifindex, ctx->vpc_id,
+                   ctx->subnet_id, ctx->scope, iph->protocol, iph->saddr,
+                   iph->daddr, sport, dport);
+  return id;
 }
 
 #endif // JUNEAU_BPF_TRACE_H

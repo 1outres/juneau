@@ -100,8 +100,12 @@ static __always_inline int handle(struct __sk_buff *skb) {
   if (!subnet)
     return TC_ACT_OK;
 
-  // pod_ingress is also at the verifier limit — like pod_egress, the
-  // inlined trace classifier blows past 1M insns. Anchor only.
+  // pod_ingress remains uninstrumented even with noinline subprograms:
+  // the call site adds enough verifier-counted instructions to push
+  // the program over the 1M-insn ceiling. pod_egress (the harder case)
+  // loads successfully — it is the most useful hook for the egress
+  // timeline anyway. Restoring instrumentation here requires further
+  // refactoring (likely tail-calling into a separate trace program).
 
   if (apply_reverse_snat(skb, subnet->vpc_id) < 0)
     return TC_ACT_SHOT;

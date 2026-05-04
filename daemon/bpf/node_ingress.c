@@ -313,10 +313,13 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
   // packets — the tuple is host-scoped (no vpc_id available yet);
   // VPC scope is added on the inner program (vxlan_ingress) after
   // tunnel decap.
-  __u32 __trace_id = trace_classify_l3(skb, TRACE_SCOPE_HOST, 0);
-  if (__trace_id != 0) {
-    trace_emit_enter_l3(skb, __trace_id, TRACE_REASON_ENTER_NODE_INGRESS,
-                        TRACE_HOOK_NODE_INGRESS, TRACE_SCOPE_HOST, 0, 0);
+  {
+    struct trace_hook_ctx __ctx = {
+        .reason = TRACE_REASON_ENTER_NODE_INGRESS,
+        .hook = TRACE_HOOK_NODE_INGRESS,
+        .scope = TRACE_SCOPE_HOST,
+    };
+    (void)trace_classify_and_emit_enter(skb, &__ctx);
   }
 
   return handle_l3(skb, eth);
