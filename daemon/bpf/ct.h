@@ -63,6 +63,8 @@ static __always_inline __u8 ct_initial_state_for_syn(__u8 flags) {
 // ct_build_opposite_key derives the peer entry's key from a self entry.
 // The scope of the opposite key depends on the action:
 //
+//   POLICY_PASS (SG/ACL admission): opposite is the inverted 5-tuple in
+//                              the same vpc_id scope.
 //   DNAT / SNAT (Service): opposite is the same vpc_id-scoped flow.
 //   NAPT_OUT (pod → internet): opposite lives in the host (CT_SCOPE_HOST)
 //                              keyspace, keyed on (internet, host_napt_ip).
@@ -91,8 +93,8 @@ static __always_inline void ct_build_opposite_key(const struct ct_key *self,
   opp->_pad[1] = 0;
   opp->_pad[2] = 0;
 
-  if (cv->action == CT_ACTION_SG_PASS) {
-    // SG_PASS does not rewrite anything; the opposite key is just the
+  if (cv->action == CT_ACTION_POLICY_PASS) {
+    // POLICY_PASS does not rewrite anything; the opposite key is just the
     // inverted 5-tuple. Scope stays in the same VPC.
     opp->saddr = self->daddr;
     opp->daddr = self->saddr;

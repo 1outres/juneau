@@ -318,6 +318,67 @@ func createWebhookVpc() string {
 	return name
 }
 
+var _ = Describe("Subnet ↔ NetworkACL webhook", func() {
+	It("rejects creating a Subnet whose networkACL does not exist", func() {
+		vpcName := createWebhookVpc()
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Subnet{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("subnet")},
+			Spec: juneauv1alpha1.SubnetSpec{
+				Vpc:        vpcName,
+				CIDR:       webhookUniqueSubnetCIDR(),
+				NetworkACL: webhookUniqueTestName("missing-acl"),
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("referenced NetworkACL does not exist"))
+	})
+
+	It("rejects creating a Subnet whose networkACL belongs to another Vpc", func() {
+		aclVpc := createWebhookVpc()
+		aclName := webhookUniqueTestName("acl")
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.NetworkACL{
+			ObjectMeta: metav1.ObjectMeta{Name: aclName},
+			Spec:       juneauv1alpha1.NetworkACLSpec{Vpc: aclVpc},
+		})).To(Succeed())
+
+		subnetVpc := createWebhookVpc()
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Subnet{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("subnet")},
+			Spec: juneauv1alpha1.SubnetSpec{
+				Vpc:        subnetVpc,
+				CIDR:       webhookUniqueSubnetCIDR(),
+				NetworkACL: aclName,
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("NetworkACL belongs to Vpc"))
+	})
+
+	It("accepts a Subnet whose networkACL matches its Vpc, and lets the reference be cleared later", func() {
+		vpcName := createWebhookVpc()
+		aclName := webhookUniqueTestName("acl")
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.NetworkACL{
+			ObjectMeta: metav1.ObjectMeta{Name: aclName},
+			Spec:       juneauv1alpha1.NetworkACLSpec{Vpc: vpcName},
+		})).To(Succeed())
+
+		subnet := &juneauv1alpha1.Subnet{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("subnet")},
+			Spec: juneauv1alpha1.SubnetSpec{
+				Vpc:        vpcName,
+				CIDR:       webhookUniqueSubnetCIDR(),
+				NetworkACL: aclName,
+			},
+		}
+		Expect(webhookK8sClient.Create(context.Background(), subnet)).To(Succeed())
+
+		var current juneauv1alpha1.Subnet
+		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKeyFromObject(subnet), &current)).To(Succeed())
+		current.Spec.NetworkACL = ""
+		Expect(webhookK8sClient.Update(context.Background(), &current)).To(Succeed())
+	})
+})
+
 func createWebhookServiceEnabledVpc() string {
 	name := webhookUniqueTestName("vpc")
 	Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Vpc{

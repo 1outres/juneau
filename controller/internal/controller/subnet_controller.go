@@ -206,11 +206,49 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 
+	aclRef, err := r.resolveNetworkACL(ctx, &resource)
+	if err != nil {
+		if updateErr := r.updateStatus(ctx, &resource, *desired, metav1.ConditionFalse, subnetReasonReconcileFailed, fmt.Sprintf("failed to resolve NetworkACL: %v", err)); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{}, err
+	}
+	desired.NetworkACL = aclRef
+
 	if err := r.updateStatus(ctx, &resource, *desired, metav1.ConditionTrue, subnetReasonReconcileSucceeded, ""); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// resolveNetworkACL produces the SubnetNetworkACLRef the daemon
+// consumes from status.networkACL. The webhook already enforces same-
+// Vpc and existence at admission time, but the ACL may be allocated
+// asynchronously (status.aclID == 0 until the AllocationClaim resolves)
+// and may be deleted after admission while the Subnet still references
+// it. Both cases are surfaced as a non-nil ref with ACLID==0 so the
+// daemon can distinguish "no ACL configured" from "ACL configured but
+// not yet ready" — the daemon treats both as "do not enforce" but
+// users can see the dangling reference in status.
+func (r *SubnetReconciler) resolveNetworkACL(ctx context.Context, subnet *juneauv1alpha1.Subnet) (*juneauv1alpha1.SubnetNetworkACLRef, error) {
+	if subnet.Spec.NetworkACL == "" {
+		return nil, nil
+	}
+
+	var acl juneauv1alpha1.NetworkACL
+	if err := r.Get(ctx, client.ObjectKey{Name: subnet.Spec.NetworkACL}, &acl); err != nil {
+		if errors.IsNotFound(err) {
+			return &juneauv1alpha1.SubnetNetworkACLRef{Name: subnet.Spec.NetworkACL}, nil
+		}
+		return nil, err
+	}
+
+	return &juneauv1alpha1.SubnetNetworkACLRef{
+		Name:           acl.Name,
+		ACLID:          acl.Status.ACLID,
+		RulesetVersion: acl.Status.RulesetVersion,
+	}, nil
 }
 
 // ensureIPAllocationPool maintains the per-subnet AllocationPool that
@@ -374,6 +412,7 @@ func (r *SubnetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&juneauv1alpha1.Subnet{}).
 		Watches(&juneauv1alpha1.Vpc{}, handler.EnqueueRequestsFromMapFunc(r.mapVpcToSubnets)).
 		Watches(&juneauv1alpha1.AllocationClaim{}, handler.EnqueueRequestsFromMapFunc(r.mapClaimToSubnets)).
+		Watches(&juneauv1alpha1.NetworkACL{}, handler.EnqueueRequestsFromMapFunc(r.mapNetworkACLToSubnets)).
 		Named("subnet").
 		Complete(r)
 }
@@ -417,6 +456,29 @@ func (r *SubnetReconciler) mapClaimToSubnets(ctx context.Context, obj client.Obj
 	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: claim.Spec.ResourceRef.Name}}}
 }
 
+// mapNetworkACLToSubnets fans NetworkACL changes (status.aclID
+// allocation, status.rulesetVersion bumps) out to Subnets that
+// reference the ACL so they re-resolve their status.networkACL view.
+func (r *SubnetReconciler) mapNetworkACLToSubnets(ctx context.Context, obj client.Object) []reconcile.Request {
+	acl, ok := obj.(*juneauv1alpha1.NetworkACL)
+	if !ok {
+		return nil
+	}
+	var subnets juneauv1alpha1.SubnetList
+	if err := r.List(ctx, &subnets); err != nil {
+		return nil
+	}
+	reqs := make([]reconcile.Request, 0, len(subnets.Items))
+	for i := range subnets.Items {
+		s := &subnets.Items[i]
+		if s.Spec.NetworkACL != acl.Name {
+			continue
+		}
+		reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKey{Name: s.Name}})
+	}
+	return reqs
+}
+
 // updateStatus writes the desired SubnetStatus to the apiserver, after
 // folding in ObservedGeneration and the Ready condition. The full status
 // is passed in as a value so every reconcile branch carries an explicit,
@@ -441,6 +503,7 @@ func (r *SubnetReconciler) updateStatus(ctx context.Context, subnet *juneauv1alp
 		updated.Status.GatewayMAC == subnet.Status.GatewayMAC &&
 		updated.Status.DNS == subnet.Status.DNS &&
 		updated.Status.DNSMAC == subnet.Status.DNSMAC &&
+		reflect.DeepEqual(updated.Status.NetworkACL, subnet.Status.NetworkACL) &&
 		reflect.DeepEqual(updated.Status.Conditions, subnet.Status.Conditions) {
 		return nil
 	}

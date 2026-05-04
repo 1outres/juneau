@@ -44,6 +44,7 @@ type Subnet struct {
 type subnetSnapshot struct {
 	vni   uint32
 	dnsIP uint32 // host byte order; 0 means "no DNS entry written"
+	aclID uint32 // ACL programmed on this Subnet's boundary; 0 = none
 }
 
 func NewSubnet(cl client.Client, hostEgress *program.PodEgress) *Subnet {
@@ -118,6 +119,17 @@ func (r *Subnet) upsert(ctx context.Context, subnet *juneauv1alpha1.Subnet) erro
 		return err
 	}
 
+	// status.networkACL carries the resolved ACLID the daemon
+	// programs into subnet_map. nil status (no ACL configured) and a
+	// status with ACLID==0 (ACL named in spec but not yet allocated)
+	// both program a 0; the data plane treats 0 as "no ACL", so the
+	// boundary falls back to default-allow until the controller
+	// publishes a real number.
+	var aclID uint32
+	if subnet.Status.NetworkACL != nil {
+		aclID = subnet.Status.NetworkACL.ACLID
+	}
+
 	if err := r.hostEgress.Objs.SubnetMap.Update(
 		&bpf.PodEgressSubnetKey{SubnetId: subnet.Status.VNI},
 		&bpf.PodEgressSubnetVal{
@@ -126,6 +138,7 @@ func (r *Subnet) upsert(ctx context.Context, subnet *juneauv1alpha1.Subnet) erro
 			GwMac:   gwmac,
 			GwAddr:  gwaddr,
 			Mask:    mask,
+			AclId:   aclID,
 		},
 		ebpf.UpdateAny,
 	); err != nil {
@@ -142,7 +155,7 @@ func (r *Subnet) upsert(ctx context.Context, subnet *juneauv1alpha1.Subnet) erro
 
 	r.mu.Lock()
 	prev := r.snapshots[subnet.Name]
-	r.snapshots[subnet.Name] = subnetSnapshot{vni: subnet.Status.VNI, dnsIP: dnsIPHost}
+	r.snapshots[subnet.Name] = subnetSnapshot{vni: subnet.Status.VNI, dnsIP: dnsIPHost, aclID: aclID}
 	r.mu.Unlock()
 
 	// If a prior reconcile wrote a DNS ARP entry for a different VNI/IP
@@ -206,6 +219,32 @@ func (r *Subnet) deleteDNSARP(vni, dnsHost uint32) error {
 		return fmt.Errorf("delete ArpTable DNS VIP entry: %w", err)
 	}
 	return nil
+}
+
+// FanOutNetworkACLToSubnets re-enqueues every Subnet that references
+// the changed NetworkACL. Used so that a fresh ACLID allocation or a
+// rulesetVersion bump propagates into subnet_map.acl_id without
+// waiting for an unrelated Subnet event.
+func (r *Subnet) FanOutNetworkACLToSubnets(obj any) []string {
+	acl, ok := obj.(*juneauv1alpha1.NetworkACL)
+	if !ok {
+		return nil
+	}
+
+	var subnetList juneauv1alpha1.SubnetList
+	if err := r.client.List(context.Background(), &subnetList); err != nil {
+		zap.S().Warnf("subnet: list subnets for networkacl %q fan-out: %v", acl.Name, err)
+		return nil
+	}
+	keys := make([]string, 0, len(subnetList.Items))
+	for i := range subnetList.Items {
+		s := &subnetList.Items[i]
+		if s.Spec.NetworkACL != acl.Name {
+			continue
+		}
+		keys = append(keys, s.Name)
+	}
+	return keys
 }
 
 // FanOutVpcToSubnets re-enqueues every Subnet that belongs to the

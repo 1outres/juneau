@@ -51,7 +51,12 @@ const (
 // to one slot in the BPF inner array.
 //
 // Fields are intentionally chosen to let the BPF writer copy values
-// straight into the bpf2go-generated PodEgressSgRule struct.
+// straight into the bpf2go-generated PodEgressSgRule / PodEgressAclRule
+// structs. Layers that do not use a particular field (e.g. SG ignores
+// Priority because it has no ordered semantics; ACL ignores PeerKind
+// because peers are CIDR-only) leave it at the zero value, which the
+// per-layer writer maps to the appropriate "wildcard" / "default"
+// behaviour.
 type Rule struct {
 	Direction Direction
 
@@ -72,19 +77,44 @@ type Rule struct {
 	PeerPrefixlen uint8
 
 	Verdict Verdict
+
+	// Priority is meaningful only for ordered policy layers
+	// (NetworkACL). SG ignores it. The ACL writer is responsible for
+	// sorting rules by Priority before writing the inner array; lower
+	// values evaluate first.
+	Priority uint16
 }
 
-// RuleSet is what one SecurityGroup expands into. Counts mirror the
-// summary controllers project into status.
+// RuleSet is the post-expansion form one policy resource (SG or ACL)
+// flattens into. Counts mirror the summary controllers project into
+// status.
+//
+// Both layers reuse this struct; the per-layer Store reads only the
+// fields its BPF meta map cares about (e.g. SGStore ignores
+// HasIngressRules because SecurityGroup ingress is always
+// deny-by-default, while ACLStore respects it because NetworkACL
+// supports per-direction default-allow).
 type RuleSet struct {
+	// GroupID is the cluster-wide identifier for the resource: SG
+	// GroupID for SecurityGroup, ACLID for NetworkACL. Both layers
+	// reuse the same field so the Rotator-driven write path is
+	// identical.
 	GroupID uint32
 
-	// Rules is a single flat slice covering both directions. Entries
-	// where Direction=0 do NOT imply ingress: see Direction field.
+	// Rules is a single flat slice covering both directions. For
+	// ordered layers (NetworkACL) it is sorted by (Direction asc,
+	// Priority asc) so the BPF evaluator can scan front-to-back and
+	// short-circuit on first match.
 	Rules []Rule
 
-	IngressCount   int
-	EgressCount    int
-	HasEgressRules bool
+	IngressCount int
+	EgressCount  int
+
+	// HasIngressRules / HasEgressRules report whether the spec
+	// declared the direction explicitly. They drive default-allow vs
+	// default-deny behaviour at evaluation time.
+	HasIngressRules bool
+	HasEgressRules  bool
+
 	RulesetVersion uint64
 }

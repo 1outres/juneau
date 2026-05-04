@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net/netip"
+	"sort"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
@@ -128,6 +129,131 @@ func portsToRanges(ports []juneauv1alpha1.SecurityGroupPort) []portRange {
 		}
 	}
 	return out
+}
+
+// ExpandNetworkACL flattens a NetworkACL CRD into a RuleSet. Each
+// user-facing rule is expanded across its port list (CIDR is a single
+// scalar). The output Rules slice is sorted by (Direction asc,
+// Priority asc) so ACLStore can write the BPF inner array in scan
+// order — first match wins, with deny rules participating in the
+// priority order alongside allow rules.
+//
+// ACLID and RulesetVersion are taken from acl.Status. Returns an
+// error when the resource has no ACLID yet (the daemon-side
+// reconciler short-circuits on this; we surface it as a clear error
+// rather than silently skipping).
+func ExpandNetworkACL(acl *juneauv1alpha1.NetworkACL) (RuleSet, error) {
+	rs := RuleSet{
+		GroupID:         acl.Status.ACLID,
+		RulesetVersion:  acl.Status.RulesetVersion,
+		HasIngressRules: acl.Spec.Ingress != nil,
+		HasEgressRules:  acl.Spec.Egress != nil,
+	}
+	if rs.GroupID == 0 {
+		return rs, fmt.Errorf("NetworkACL %q has no ACLID yet", acl.Name)
+	}
+
+	if acl.Spec.Ingress != nil {
+		for _, rule := range *acl.Spec.Ingress {
+			expanded, err := expandACLRule(DirIngress, rule)
+			if err != nil {
+				return rs, fmt.Errorf("ACL %q ingress: %w", acl.Name, err)
+			}
+			rs.IngressCount += len(expanded)
+			rs.Rules = append(rs.Rules, expanded...)
+		}
+	}
+	if acl.Spec.Egress != nil {
+		for _, rule := range *acl.Spec.Egress {
+			expanded, err := expandACLRule(DirEgress, rule)
+			if err != nil {
+				return rs, fmt.Errorf("ACL %q egress: %w", acl.Name, err)
+			}
+			rs.EgressCount += len(expanded)
+			rs.Rules = append(rs.Rules, expanded...)
+		}
+	}
+
+	// Stable sort: same (direction, priority) keeps original peer/port
+	// expansion order, which makes the on-wire BPF layout
+	// deterministic for diff/debug.
+	sort.SliceStable(rs.Rules, func(i, j int) bool {
+		if rs.Rules[i].Direction != rs.Rules[j].Direction {
+			return rs.Rules[i].Direction < rs.Rules[j].Direction
+		}
+		return rs.Rules[i].Priority < rs.Rules[j].Priority
+	})
+
+	return rs, nil
+}
+
+func expandACLRule(dir Direction, rule juneauv1alpha1.NetworkACLRule) ([]Rule, error) {
+	prefix, err := netip.ParsePrefix(rule.CIDR)
+	if err != nil {
+		return nil, fmt.Errorf("rule priority=%d: invalid CIDR %q: %w", rule.Priority, rule.CIDR, err)
+	}
+	if !prefix.Addr().Is4() {
+		return nil, fmt.Errorf("rule priority=%d: only IPv4 CIDRs are supported (%q)", rule.Priority, rule.CIDR)
+	}
+	addr4 := prefix.Masked().Addr().As4()
+	peerV4 := binary.LittleEndian.Uint32(addr4[:])
+	peerPrefix := uint8(prefix.Bits())
+
+	protoNum := networkACLProtoToNum(rule.Protocol)
+	portRanges := networkACLPortsToRanges(rule.Ports)
+	verdict := networkACLActionToVerdict(rule.Action)
+
+	out := make([]Rule, 0, len(portRanges))
+	for _, pr := range portRanges {
+		out = append(out, Rule{
+			Direction:     dir,
+			Proto:         protoNum,
+			PortLo:        pr.lo,
+			PortHi:        pr.hi,
+			PeerKind:      PeerKindCIDR,
+			PeerV4:        peerV4,
+			PeerPrefixlen: peerPrefix,
+			Verdict:       verdict,
+			Priority:      uint16(rule.Priority),
+		})
+	}
+	return out, nil
+}
+
+func networkACLProtoToNum(p juneauv1alpha1.NetworkACLProtocol) uint8 {
+	switch p {
+	case juneauv1alpha1.NetworkACLProtocolTCP:
+		return ProtoTCP
+	case juneauv1alpha1.NetworkACLProtocolUDP:
+		return ProtoUDP
+	case juneauv1alpha1.NetworkACLProtocolICMP:
+		return ProtoICMP
+	default:
+		return ProtoAny
+	}
+}
+
+func networkACLPortsToRanges(ports []juneauv1alpha1.NetworkACLPort) []portRange {
+	if len(ports) == 0 {
+		return []portRange{{lo: PortAnyLo, hi: PortAnyHi}}
+	}
+	out := make([]portRange, 0, len(ports))
+	for _, p := range ports {
+		switch {
+		case p.Port != nil:
+			out = append(out, portRange{lo: uint16(*p.Port), hi: uint16(*p.Port)})
+		case p.PortRange != nil:
+			out = append(out, portRange{lo: uint16(p.PortRange.From), hi: uint16(p.PortRange.To)})
+		}
+	}
+	return out
+}
+
+func networkACLActionToVerdict(a juneauv1alpha1.NetworkACLAction) Verdict {
+	if a == juneauv1alpha1.NetworkACLActionDeny {
+		return VerdictDeny
+	}
+	return VerdictAllow
 }
 
 func buildPeer(peer juneauv1alpha1.SecurityGroupPeer, resolver PeerResolver) (Rule, bool) {

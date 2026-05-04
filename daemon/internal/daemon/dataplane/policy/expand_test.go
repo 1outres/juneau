@@ -141,6 +141,141 @@ func TestExpandSecurityGroup_NoGroupID(t *testing.T) {
 	}
 }
 
+func TestExpandNetworkACL_PrioritySortAndPortExpansion(t *testing.T) {
+	ingress := []juneauv1alpha1.NetworkACLRule{
+		{
+			Priority: 200,
+			Action:   juneauv1alpha1.NetworkACLActionDeny,
+			Protocol: juneauv1alpha1.NetworkACLProtocolAll,
+			CIDR:     "192.0.2.0/24",
+		},
+		{
+			Priority: 100,
+			Action:   juneauv1alpha1.NetworkACLActionAllow,
+			Protocol: juneauv1alpha1.NetworkACLProtocolTCP,
+			CIDR:     "10.0.0.0/8",
+			Ports: []juneauv1alpha1.NetworkACLPort{
+				{Port: ptrInt32(80)},
+				{PortRange: &juneauv1alpha1.NetworkACLPortRange{From: 8000, To: 8009}},
+			},
+		},
+	}
+	egress := []juneauv1alpha1.NetworkACLRule{{
+		Priority: 50,
+		Action:   juneauv1alpha1.NetworkACLActionAllow,
+		Protocol: juneauv1alpha1.NetworkACLProtocolAll,
+		CIDR:     "0.0.0.0/0",
+	}}
+
+	acl := &juneauv1alpha1.NetworkACL{
+		Status: juneauv1alpha1.NetworkACLStatus{ACLID: 42, RulesetVersion: 7},
+		Spec: juneauv1alpha1.NetworkACLSpec{
+			Vpc:     "test",
+			Ingress: &ingress,
+			Egress:  &egress,
+		},
+	}
+
+	rs, err := ExpandNetworkACL(acl)
+	if err != nil {
+		t.Fatalf("expand: %v", err)
+	}
+	if rs.GroupID != 42 || rs.RulesetVersion != 7 {
+		t.Errorf("identifiers wrong: %+v", rs)
+	}
+	if !rs.HasIngressRules || !rs.HasEgressRules {
+		t.Errorf("Has*Rules should be true when both directions are non-nil")
+	}
+	// Ingress: 1 (priority=200, port-any) + 2 (priority=100, two ports) = 3
+	if rs.IngressCount != 3 {
+		t.Errorf("ingress count = %d, want 3", rs.IngressCount)
+	}
+	if rs.EgressCount != 1 {
+		t.Errorf("egress count = %d, want 1", rs.EgressCount)
+	}
+
+	// Direction asc + Priority asc: ingress rules come before egress
+	// (DirIngress=0 < DirEgress=1) and within ingress, priority=100
+	// rules precede priority=200.
+	if rs.Rules[0].Direction != DirIngress || rs.Rules[0].Priority != 100 {
+		t.Errorf("rule[0] = %+v, want ingress priority 100", rs.Rules[0])
+	}
+	if rs.Rules[1].Direction != DirIngress || rs.Rules[1].Priority != 100 {
+		t.Errorf("rule[1] = %+v, want ingress priority 100", rs.Rules[1])
+	}
+	if rs.Rules[2].Direction != DirIngress || rs.Rules[2].Priority != 200 {
+		t.Errorf("rule[2] = %+v, want ingress priority 200", rs.Rules[2])
+	}
+	if rs.Rules[3].Direction != DirEgress || rs.Rules[3].Priority != 50 {
+		t.Errorf("rule[3] = %+v, want egress priority 50", rs.Rules[3])
+	}
+
+	// Verdict mapping: deny rule (priority 200) carries VerdictDeny.
+	if rs.Rules[2].Verdict != VerdictDeny {
+		t.Errorf("rule[2] verdict = %d, want VerdictDeny", rs.Rules[2].Verdict)
+	}
+
+	// CIDR encoding sanity: 10.0.0.0/8 is little-endian-encoded so the
+	// in-memory bytes line up with the BPF __be32 view.
+	expectedAddr := binary.LittleEndian.Uint32(net.IPv4(10, 0, 0, 0).To4())
+	if rs.Rules[0].PeerV4 != expectedAddr || rs.Rules[0].PeerPrefixlen != 8 {
+		t.Errorf("rule[0] CIDR encoding wrong: %+v (expected %#x)", rs.Rules[0], expectedAddr)
+	}
+}
+
+func TestExpandNetworkACL_NilDirectionDefaults(t *testing.T) {
+	acl := &juneauv1alpha1.NetworkACL{
+		Status: juneauv1alpha1.NetworkACLStatus{ACLID: 7},
+		Spec:   juneauv1alpha1.NetworkACLSpec{Vpc: "test"}, // both nil
+	}
+	rs, err := ExpandNetworkACL(acl)
+	if err != nil {
+		t.Fatalf("expand: %v", err)
+	}
+	if rs.HasIngressRules || rs.HasEgressRules {
+		t.Errorf("Has*Rules must be false when both directions are nil: %+v", rs)
+	}
+	if len(rs.Rules) != 0 {
+		t.Errorf("expected zero rules, got %d", len(rs.Rules))
+	}
+
+	// Explicit empty list = deny-all (HasRules=true, count=0)
+	emptyIngress := []juneauv1alpha1.NetworkACLRule{}
+	acl2 := &juneauv1alpha1.NetworkACL{
+		Status: juneauv1alpha1.NetworkACLStatus{ACLID: 8},
+		Spec:   juneauv1alpha1.NetworkACLSpec{Vpc: "test", Ingress: &emptyIngress},
+	}
+	rs2, err := ExpandNetworkACL(acl2)
+	if err != nil {
+		t.Fatalf("expand: %v", err)
+	}
+	if !rs2.HasIngressRules {
+		t.Error("HasIngressRules must be true when spec.ingress is explicitly []")
+	}
+}
+
+func TestExpandNetworkACL_NoACLID(t *testing.T) {
+	if _, err := ExpandNetworkACL(&juneauv1alpha1.NetworkACL{}); err == nil {
+		t.Error("expected error when ACLID == 0")
+	}
+}
+
+func TestExpandNetworkACL_InvalidCIDR(t *testing.T) {
+	ingress := []juneauv1alpha1.NetworkACLRule{{
+		Priority: 100,
+		Action:   juneauv1alpha1.NetworkACLActionAllow,
+		Protocol: juneauv1alpha1.NetworkACLProtocolAll,
+		CIDR:     "not-a-cidr",
+	}}
+	acl := &juneauv1alpha1.NetworkACL{
+		Status: juneauv1alpha1.NetworkACLStatus{ACLID: 1},
+		Spec:   juneauv1alpha1.NetworkACLSpec{Vpc: "test", Ingress: &ingress},
+	}
+	if _, err := ExpandNetworkACL(acl); err == nil {
+		t.Error("expected error for invalid CIDR")
+	}
+}
+
 func TestExpandSecurityGroup_AnyPort(t *testing.T) {
 	sg := &juneauv1alpha1.SecurityGroup{
 		Status: juneauv1alpha1.SecurityGroupStatus{GroupID: 1},

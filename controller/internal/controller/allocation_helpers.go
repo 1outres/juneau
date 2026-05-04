@@ -18,6 +18,7 @@ const (
 	allocationPoolVpcID           = "vpc-id"
 	allocationPoolNATGatewayID    = "nat-gateway-id"
 	allocationPoolSecurityGroupID = "security-group-id"
+	allocationPoolNetworkACLID    = "network-acl-id"
 )
 
 // allocationClaimName composes a deterministic claim name from the
