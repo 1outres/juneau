@@ -467,6 +467,11 @@ trace_read_l4_ports(const struct iphdr *iph, void *data_end, __be16 *sport,
 // the caller already has available (e.g. pod_egress passes
 // TRACE_SCOPE_VPC and the resolved vpc_id; node_ingress passes
 // TRACE_SCOPE_HOST and 0).
+//
+// Source ports are ignored on the lookup path: ephemeral sports are
+// not knowable to kubectl ahead of time, so userspace stores tuples
+// with sport=0 and the BPF side mirrors that. Destination port is
+// kept because operators use it to disambiguate Service traces.
 static __always_inline __u32 trace_classify_l3(struct __sk_buff *skb,
                                                __u8 scope, __u32 vpc_id) {
   if (!trace_is_active())
@@ -483,10 +488,21 @@ static __always_inline __u32 trace_classify_l3(struct __sk_buff *skb,
     return 0;
   __be16 sport = 0, dport = 0;
   trace_read_l4_ports(iph, data_end, &sport, &dport);
+  // Lookup with sport=0 to match kubectl-stored tuples; ephemeral
+  // source ports are unknown ahead of time.
   struct trace_tuple_key k = trace_make_key(scope, vpc_id, iph->protocol,
-                                            iph->saddr, iph->daddr, sport,
+                                            iph->saddr, iph->daddr, 0,
                                             dport);
-  return trace_lookup_tuple(&k);
+  __u32 id = trace_lookup_tuple(&k);
+  if (id != 0)
+    return id;
+  // Second chance: also try with dport=0 so operators who only know
+  // src/dst (ICMP, exploratory) still match.
+  if (dport != 0) {
+    k.dport = 0;
+    id = trace_lookup_tuple(&k);
+  }
+  return id;
 }
 
 // trace_emit_enter_l3 emits a hook-entry event for an already-

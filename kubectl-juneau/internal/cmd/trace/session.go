@@ -60,7 +60,10 @@ func (o *Options) createSession(ctx context.Context, cl client.Client, r *resolv
 // Cleanup removes the TraceSession unless --keep-session was set.
 // Idempotent.
 func (s *sessionLifecycle) Cleanup() error {
-	if s == nil || s.keep {
+	if s == nil {
+		return fmt.Errorf("trace: cleanup called on nil lifecycle")
+	}
+	if s.keep {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

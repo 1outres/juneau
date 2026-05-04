@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+
 // Run is the trace command's main entry. It is split from Complete /
 // Validate so tests can drive Run with a fake client.
 func (o *Options) Run(ctx context.Context) error {
@@ -158,10 +159,23 @@ func (s *streamSet) Close() {
 	if s.cancel != nil {
 		s.cancel()
 	}
-	for _, h := range s.clients {
-		_ = h.cl.Close()
+	// Close client conns in parallel so a single hung exec channel
+	// does not block the rest of the shutdown. The cleanup defer
+	// upstream in Run depends on this returning promptly so the
+	// TraceSession CRD delete is not delayed past the user's
+	// patience.
+	done := make(chan struct{})
+	go func() {
+		for _, h := range s.clients {
+			_ = h.cl.Close()
+		}
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
 	}
-	s.wg.Wait()
 }
 
 // attachStreams dials each node's nodeagent and starts a WatchTrace
