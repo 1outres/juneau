@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/1outres/juneau/daemon/pkg/debugpb"
+	"github.com/1outres/juneau/kubectl-juneau/internal/factory/nodeagent"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -37,10 +38,14 @@ func (o *Options) Run(ctx context.Context) error {
 		return err
 	}
 
-	// If no nodes were resolved (e.g. --to-ip with no source Pod),
-	// fan out to every node hosting a daemon. Operators can narrow
-	// the watch later by attaching --from-pod.
-	if len(resolved.nodes) == 0 {
+	// Service / IP destinations have no node affinity kubectl can
+	// statically derive — backends may be anywhere, NAPT IPs may be
+	// owned by any node, etc. Attach to every daemon so the
+	// LearnTuple fan-out in PropagateLearnedTuple has a peer set
+	// large enough to cover the post-NAT path. Pod-to-Pod traces
+	// keep the narrow [source, dest] node set.
+	wantAll := o.DestService != "" || o.DestIP != ""
+	if wantAll || len(resolved.nodes) == 0 {
 		nodes, err := allDaemonNodes(runCtx, cl)
 		if err != nil {
 			return err
@@ -100,6 +105,14 @@ func (o *Options) Run(ctx context.Context) error {
 		case ev := <-streams.Events():
 			collector.Add(ev)
 			fmt.Fprintln(out, renderEvent(ev))
+			// NAT-class events carry a post-translation tuple that
+			// remote-node hooks need in their trace_tuple_map for the
+			// continuation to match. Mirror it via Debug.LearnTuple
+			// to every other daemon. Async: trace rendering must not
+			// stall on RPC roundtrips.
+			if isNATEvent(ev.Reason) && ev.HasAuxTuple {
+				go streams.PropagateLearnedTuple(runCtx, ev)
+			}
 		case streamErr := <-streams.Errors():
 			fmt.Fprintf(o.Factory.Streams().ErrOut, "trace: stream error: %v\n", streamErr)
 		}
@@ -146,15 +159,67 @@ type streamSet struct {
 
 type nodeagentClientHandle struct {
 	node string
-	cl   nodeAgentCloser
-}
-
-type nodeAgentCloser interface {
-	Close() error
+	cl   nodeagent.Client
 }
 
 func (s *streamSet) Events() <-chan *debugpb.TraceEvent { return s.events }
 func (s *streamSet) Errors() <-chan error               { return s.errors }
+
+// PropagateLearnedTuple installs the post-NAT tuple from `ev` on
+// every daemon node *other than* the one that emitted the event.
+// Best-effort: per-node failures are surfaced on the error channel
+// but never block trace rendering.
+//
+// The originating node's BPF program already learned the tuple
+// locally via trace_learn_tuple, so re-installing there would be a
+// redundant write and a wasted RPC. Skip it.
+func (s *streamSet) PropagateLearnedTuple(ctx context.Context, ev *debugpb.TraceEvent) {
+	if ev == nil || !ev.HasAuxTuple {
+		return
+	}
+	tuple := &debugpb.TraceTuple{
+		Scope:    ev.Scope,
+		VpcId:    ev.VpcId,
+		SrcIp:    ev.AuxSrcIp,
+		DstIp:    ev.AuxDstIp,
+		SrcPort:  0, // ephemeral source ports are wildcarded BPF-side
+		DstPort:  uint32(ev.AuxDstPort),
+		Protocol: ev.Protocol,
+	}
+	req := &debugpb.LearnTupleRequest{TraceId: ev.TraceId, Tuple: tuple}
+
+	for _, h := range s.clients {
+		if h.node == ev.NodeName {
+			continue
+		}
+		// 2s is enough for an RPC over the local exec / port-forward
+		// tunnel; capping prevents a stuck peer from leaking
+		// goroutines.
+		callCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		_, err := h.cl.Debug().LearnTuple(callCtx, req)
+		cancel()
+		if err != nil {
+			select {
+			case s.errors <- fmt.Errorf("node %s: LearnTuple: %w", h.node, err):
+			default:
+			}
+		}
+	}
+}
+
+// isNATEvent reports whether the reason carries a useful aux tuple
+// that should be fanned out to peer daemons. Only NAT-class events
+// currently propagate; map-miss / policy events are observation-only.
+func isNATEvent(r debugpb.TraceEventReason) bool {
+	switch r {
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_DNAT_APPLIED,
+		debugpb.TraceEventReason_TRACE_EVENT_REASON_SNAT_APPLIED,
+		debugpb.TraceEventReason_TRACE_EVENT_REASON_NAPT_ALLOCATED,
+		debugpb.TraceEventReason_TRACE_EVENT_REASON_REVERSE_NAT_APPLIED:
+		return true
+	}
+	return false
+}
 func (s *streamSet) Close() {
 	if s.cancel != nil {
 		s.cancel()

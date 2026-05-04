@@ -928,10 +928,43 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
   };
   bpf_map_update_elem(&ct_map, &rev_key, &rev_val, BPF_ANY);
 
+  // Capture pre-rewrite tuple values for the trace NAT event below;
+  // rewrite_ipv4_addr/rewrite_l4_port mutate skb in place so we
+  // cannot rely on iph after they run.
+  __be32 __nat_before_saddr = iph->saddr;
+  __be32 __nat_before_daddr = iph->daddr;
+  __be16 __nat_before_sport = sport;
+  __be16 __nat_before_dport = dport;
+  __u8 __nat_proto = iph->protocol;
+
   if (rewrite_ipv4_addr(skb, /*is_source=*/false, backend_addr_be) < 0)
     return TC_ACT_SHOT;
   if (rewrite_l4_port(skb, /*is_source=*/false, backend_port_be) < 0)
     return TC_ACT_SHOT;
+
+  // Trace: emit the DNAT event (carries before/after tuples) and
+  // learn the after-tuple locally so subsequent hooks on this node
+  // resolve the same trace_id. Cross-node propagation is userspace's
+  // job (kubectl forwards LearnTuple to peers via Debug RPC).
+  {
+    struct trace_nat_event __ne = {
+        .vpc_id = subnet->vpc_id,
+        .subnet_id = bv->backend_subnet_id,
+        .hook = TRACE_HOOK_POD_EGRESS,
+        .reason = TRACE_REASON_DNAT_APPLIED,
+        .scope = TRACE_SCOPE_VPC,
+        .proto = __nat_proto,
+        .before_saddr = __nat_before_saddr,
+        .before_daddr = __nat_before_daddr,
+        .before_sport = __nat_before_sport,
+        .before_dport = __nat_before_dport,
+        .after_saddr = __nat_before_saddr,
+        .after_daddr = backend_addr_be,
+        .after_sport = __nat_before_sport,
+        .after_dport = backend_port_be,
+    };
+    trace_observe_nat(skb, &__ne);
+  }
 
   // Re-derive packet pointers after the rewrites; both helpers reload
   // skb->data internally but our local eth/iph were captured before.

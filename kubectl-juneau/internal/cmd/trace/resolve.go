@@ -8,7 +8,6 @@ import (
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
-	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -107,95 +106,16 @@ func (o *Options) resolveSession(ctx context.Context, cl client.Client) (*resolv
 	}
 	out.initialTuples = append(out.initialTuples, tuple)
 
-	// For Service destinations, precompute one post-DNAT tuple per
-	// backend so vxlan_ingress / pod_ingress on the destination node
-	// can match the rewritten tuple. Daemon-side tuple learning would
-	// be the dynamic alternative; precomputing keeps the
-	// observe-only path useful even on programs that do not yet emit
-	// learn events.
-	if o.DestService != "" && out.destination.service != nil {
-		extra, extraNodes, err := o.serviceBackendTuples(ctx, cl, out)
-		if err != nil {
-			return nil, err
-		}
-		out.initialTuples = append(out.initialTuples, extra...)
-		out.nodes = append(out.nodes, extraNodes...)
-		out.nodes = dedupeNonEmpty(out.nodes...)
-	}
+	// Backend tuples are no longer precomputed from EndpointSlices.
+	// pod_egress now emits a DNAT_APPLIED event with both the original
+	// (Service ClusterIP) and post-translation (backend Pod IP)
+	// tuples, and kubectl propagates the latter to peer daemons via
+	// Debug.LearnTuple — see run.go's PropagateLearnedTuple. That
+	// path handles arbitrary NAT (Service DNAT, NAPT, shared-Service
+	// SNAT, future translations) without kubectl re-implementing
+	// the dataplane's translation logic.
 
 	return out, nil
-}
-
-// serviceBackendTuples enumerates the destination Service's
-// EndpointSlices and returns a tuple per (backend IP, target port)
-// pair. Each tuple keys (sourceIP, backendIP, targetPort) so that on
-// vxlan/pod-ingress the post-DNAT packet matches without daemon-side
-// learning. Backend node names are also returned so the dialer fans
-// out to those nodes.
-func (o *Options) serviceBackendTuples(ctx context.Context, cl client.Client, r *resolved) ([]juneauv1alpha1.TraceTuple, []string, error) {
-	if !r.source.ip.IsValid() || r.destination.service == nil {
-		return nil, nil, nil
-	}
-	svc := r.destination.service
-	var slices discoveryv1.EndpointSliceList
-	if err := cl.List(ctx, &slices,
-		client.InNamespace(svc.Namespace),
-		client.MatchingLabels{"kubernetes.io/service-name": svc.Name},
-	); err != nil {
-		return nil, nil, fmt.Errorf("list endpointslices: %w", err)
-	}
-
-	scope := juneauv1alpha1.TraceTupleScopeVPC
-	vpcID := r.source.vpcID
-	if vpcID == 0 {
-		scope = juneauv1alpha1.TraceTupleScopeHost
-	}
-
-	var (
-		tuples []juneauv1alpha1.TraceTuple
-		nodes  []string
-	)
-	for _, sl := range slices.Items {
-		if sl.AddressType != discoveryv1.AddressTypeIPv4 {
-			continue
-		}
-		// Resolve targetPort: prefer the slice port matching the
-		// session protocol; fall back to the first port.
-		var targetPort int32
-		for _, p := range sl.Ports {
-			if p.Port == nil {
-				continue
-			}
-			if p.Protocol != nil && string(*p.Protocol) != "TCP" && o.crdProtocol() == juneauv1alpha1.TraceProtocolTCP {
-				continue
-			}
-			targetPort = *p.Port
-			break
-		}
-		if targetPort == 0 {
-			continue
-		}
-		for _, ep := range sl.Endpoints {
-			for _, addr := range ep.Addresses {
-				ip, err := netip.ParseAddr(addr)
-				if err != nil || !ip.Is4() {
-					continue
-				}
-				tuples = append(tuples, juneauv1alpha1.TraceTuple{
-					Scope:    scope,
-					VPCID:    vpcID,
-					SrcIP:    r.source.ip.String(),
-					DstIP:    ip.String(),
-					DstPort:  targetPort,
-					Protocol: o.crdProtocol(),
-				})
-				if ep.NodeName != nil && *ep.NodeName != "" {
-					nodes = append(nodes, *ep.NodeName)
-				}
-			}
-		}
-	}
-	return tuples, nodes, nil
 }
 
 func (o *Options) buildPrimaryTuple(r *resolved) (juneauv1alpha1.TraceTuple, error) {

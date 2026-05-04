@@ -600,6 +600,81 @@ struct trace_hook_ctx {
   __u8  _pad[3];
 };
 
+// trace_nat_event bundles the args trace_observe_nat needs.
+// Bundling keeps the subprogram's argument count under BPF's
+// 5-register ceiling.
+struct trace_nat_event {
+  __u32 vpc_id;
+  __u32 subnet_id;
+  __u32 hook;
+  __u32 reason;
+  __u8  scope;
+  __u8  proto;
+  __u8  _pad[2];
+  __be32 before_saddr;
+  __be32 before_daddr;
+  __be16 before_sport;
+  __be16 before_dport;
+  __be32 after_saddr;
+  __be32 after_daddr;
+  __be16 after_sport;
+  __be16 after_dport;
+};
+
+// trace_observe_nat is called by NAT decision points (Service DNAT,
+// SNAT, NAPT, shared-Service rewrite). It resolves the trace_id from
+// the BEFORE tuple, emits a NAT event carrying both tuples, and
+// installs the AFTER tuple in trace_tuple_map so subsequent hooks
+// on this node match without re-classifying.
+//
+// Userspace (the daemon's ringbuf reader → debug stream) propagates
+// the AFTER tuple to other nodes via Debug.LearnTuple, so when the
+// rewritten packet crosses the wire and lands on a different node's
+// vxlan_ingress / pod_ingress, the lookup hits there too.
+static __juneau_bpf_subprog void
+trace_observe_nat(struct __sk_buff *skb, const struct trace_nat_event *e) {
+  if (!trace_is_active() || !e)
+    return;
+  struct trace_tuple_key bk = trace_make_key(e->scope, e->vpc_id, e->proto,
+                                             e->before_saddr, e->before_daddr,
+                                             0, e->before_dport);
+  __u32 id = trace_lookup_tuple(&bk);
+  if (id == 0 && e->before_dport != 0) {
+    bk.dport = 0;
+    id = trace_lookup_tuple(&bk);
+  }
+  if (id == 0)
+    return;
+
+  struct trace_emit_args a = {0};
+  a.trace_id = id;
+  a.reason = e->reason;
+  a.hook = e->hook;
+  a.ifindex = skb->ifindex;
+  a.vpc_id = e->vpc_id;
+  a.subnet_id = e->subnet_id;
+  a.scope = e->scope;
+  a.proto = e->proto;
+  a.verdict = TRACE_VERDICT_OK;
+  a.saddr = e->before_saddr;
+  a.daddr = e->before_daddr;
+  a.sport = e->before_sport;
+  a.dport = e->before_dport;
+  a.saddr2 = e->after_saddr;
+  a.daddr2 = e->after_daddr;
+  a.sport2 = e->after_sport;
+  a.dport2 = e->after_dport;
+  trace_emit_full(&a);
+
+  // Install the post-NAT tuple locally so any further hook on this
+  // same node (e.g. pod_ingress on the response leg) resolves the
+  // same trace_id. Cross-node propagation is userspace's job.
+  struct trace_tuple_key ak = trace_make_key(e->scope, e->vpc_id, e->proto,
+                                             e->after_saddr, e->after_daddr,
+                                             0, e->after_dport);
+  trace_learn_tuple(id, &ak);
+}
+
 // trace_classify_and_emit_enter classifies the packet, emits an
 // enter event if it matches a session, and returns the resolved
 // trace_id (0 = no match). One subprogram per hook-entry call site
