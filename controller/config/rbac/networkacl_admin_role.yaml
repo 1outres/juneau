@@ -1,0 +1,28 @@
+# This rule is not used by the project controller itself.
+# It is provided to allow the cluster admin to help manage permissions for users.
+#
+# Grants full permissions ('*') over juneau.loutres.me networkacls.
+# This role is intended for cluster administrators who need full control over
+# these resources. It includes the ability to create, read, update, and delete
+# any resources in the juneau.loutres.me, as well as perform any verbs.
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: controller
+    app.kubernetes.io/managed-by: kustomize
+  name: networkacl-admin-role
+rules:
+- apiGroups:
+  - juneau.loutres.me
+  resources:
+  - networkacls
+  verbs:
+  - '*'
+- apiGroups:
+  - juneau.loutres.me
+  resources:
+  - networkacls/status
+  verbs:
+  - get
