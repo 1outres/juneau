@@ -4,5 +4,6 @@ use (
 	./bgp-speaker
 	./controller
 	./daemon
+	./kubectl-juneau
 	./test/e2e
 )
