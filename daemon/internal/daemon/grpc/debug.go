@@ -42,9 +42,9 @@ type DebugServer struct {
 // trace_id so GetTraceSnapshot can answer kubectl queries that arrive
 // after the first events were already published.
 type snapshotBuffer struct {
-	events []trace.Event
+	events  []trace.Event
 	dropped uint64
-	cap    int
+	cap     int
 }
 
 // NewDebugServer wires the debug RPC to the daemon's trace plane.

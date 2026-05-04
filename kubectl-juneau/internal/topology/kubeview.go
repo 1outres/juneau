@@ -27,13 +27,13 @@ import (
 type kubeView struct {
 	cl client.Client
 
-	mu                sync.Mutex
-	vpcCache          map[string]*juneauv1alpha1.Vpc
-	subnetCache       map[string]*juneauv1alpha1.Subnet
-	routeTableCache   map[string]*juneauv1alpha1.RouteTable
-	sgCache           map[string]*juneauv1alpha1.SecurityGroup
-	aclCache          map[string]*juneauv1alpha1.NetworkACL
-	natGwCache        map[string]*juneauv1alpha1.NATGateway
+	mu              sync.Mutex
+	vpcCache        map[string]*juneauv1alpha1.Vpc
+	subnetCache     map[string]*juneauv1alpha1.Subnet
+	routeTableCache map[string]*juneauv1alpha1.RouteTable
+	sgCache         map[string]*juneauv1alpha1.SecurityGroup
+	aclCache        map[string]*juneauv1alpha1.NetworkACL
+	natGwCache      map[string]*juneauv1alpha1.NATGateway
 
 	// Bulk listings memoised once per command invocation.
 	allSubnetsOnce        sync.Once

@@ -61,23 +61,23 @@ func TestDecodeEvent(t *testing.T) {
 	put8 := func(v byte) { b[off] = v; off++ }
 	put64 := func(v uint64) { binary.NativeEndian.PutUint64(b[off:off+8], v); off += 8 }
 
-	put32(0x12345678)              // trace_id
+	put32(0x12345678)                // trace_id
 	put32(uint32(ReasonDNATApplied)) // reason
-	put32(uint32(HookPodEgress))    // hook
-	put32(99)                       // ifindex
-	put32(7)                        // vpc_id
-	put32(101)                      // subnet_id
+	put32(uint32(HookPodEgress))     // hook
+	put32(99)                        // ifindex
+	put32(7)                         // vpc_id
+	put32(101)                       // subnet_id
 	put64(uint64(1234567 * time.Millisecond))
-	putBE32(0x0a000105)             // saddr 10.0.1.5
-	putBE32(0x0a60000a)             // daddr 10.96.0.10
-	putBE16(50000)                  // sport
-	putBE16(443)                    // dport
-	put8(6)                         // proto = TCP
+	putBE32(0x0a000105) // saddr 10.0.1.5
+	putBE32(0x0a60000a) // daddr 10.96.0.10
+	putBE16(50000)      // sport
+	putBE16(443)        // dport
+	put8(6)             // proto = TCP
 	put8(byte(VerdictOK))
 	put8(byte(ScopeVPC))
-	put8(0)                         // _pad0
-	putBE32(0x0a000208)             // saddr2 10.0.2.8
-	putBE32(0x0a000105)             // daddr2 10.0.1.5
+	put8(0)             // _pad0
+	putBE32(0x0a000208) // saddr2 10.0.2.8
+	putBE32(0x0a000105) // daddr2 10.0.1.5
 	putBE16(8443)
 	putBE16(50000)
 	put32(7)

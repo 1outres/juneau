@@ -52,12 +52,12 @@ type Server struct {
 	cni   *CNIServer
 	debug *DebugServer
 
-	mu          sync.Mutex
-	cniLis      net.Listener
-	debugLis    net.Listener
-	udsPath     string
-	debugAddr   string
-	stopOnce    sync.Once
+	mu        sync.Mutex
+	cniLis    net.Listener
+	debugLis  net.Listener
+	udsPath   string
+	debugAddr string
+	stopOnce  sync.Once
 }
 
 // Run starts both gRPC servers and blocks until ctx is cancelled or

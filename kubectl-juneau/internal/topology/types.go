@@ -13,8 +13,8 @@ type PodContext struct {
 	Namespace string `json:"namespace"`
 	Name      string `json:"name"`
 
-	Pod        *corev1.Pod          `json:"pod,omitempty"`
-	Interfaces []InterfaceContext   `json:"interfaces,omitempty"`
+	Pod        *corev1.Pod        `json:"pod,omitempty"`
+	Interfaces []InterfaceContext `json:"interfaces,omitempty"`
 }
 
 // InterfaceContext is the chain reachable from a single
@@ -147,8 +147,8 @@ type NATGatewaySummary struct {
 // ElasticIPSummary is the resolved attachment + EIP view for a single
 // NetworkInterface.
 type ElasticIPSummary struct {
-	AttachmentName string                                       `json:"attachmentName"`
-	ElasticIPName  string                                       `json:"elasticIPName,omitempty"`
-	Address        string                                       `json:"address,omitempty"`
-	Phase          juneauv1alpha1.ElasticIPAttachmentPhase      `json:"phase,omitempty"`
+	AttachmentName string                                  `json:"attachmentName"`
+	ElasticIPName  string                                  `json:"elasticIPName,omitempty"`
+	Address        string                                  `json:"address,omitempty"`
+	Phase          juneauv1alpha1.ElasticIPAttachmentPhase `json:"phase,omitempty"`
 }

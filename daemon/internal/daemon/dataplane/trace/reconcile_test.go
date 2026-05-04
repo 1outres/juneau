@@ -77,8 +77,8 @@ func TestBuildSessionSpec(t *testing.T) {
 func TestBuildSessionSpecObserveOnlyDefaultsLevel(t *testing.T) {
 	ts := &juneauv1alpha1.TraceSession{
 		Spec: juneauv1alpha1.TraceSessionSpec{
-			TraceID: 1,
-			Mode:    juneauv1alpha1.TraceModeObserveOnly,
+			TraceID:   1,
+			Mode:      juneauv1alpha1.TraceModeObserveOnly,
 			ExpiresAt: metav1.NewTime(time.Now().Add(time.Minute)),
 		},
 	}

@@ -17,7 +17,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-
 // Run is the trace command's main entry. It is split from Complete /
 // Validate so tests can drive Run with a fake client.
 func (o *Options) Run(ctx context.Context) error {

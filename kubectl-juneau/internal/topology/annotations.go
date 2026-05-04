@@ -14,9 +14,9 @@ package topology
 // Annotation keys are duplicated from controller/internal/webhook and
 // controller/internal/controller because those packages are
 // internal/-scoped. Keep this block in sync with:
-//   * controller/internal/controller/pod_controller.go
-//   * controller/internal/webhook/v1alpha1/service_webhook.go
-//   * controller/internal/webhook/v1alpha1/pod_webhook.go
+//   - controller/internal/controller/pod_controller.go
+//   - controller/internal/webhook/v1alpha1/service_webhook.go
+//   - controller/internal/webhook/v1alpha1/pod_webhook.go
 //
 // Once the controller exposes these as public constants under
 // controller/api/v1alpha1, replace this block with imports and delete

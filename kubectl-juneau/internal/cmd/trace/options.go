@@ -34,13 +34,13 @@ type Options struct {
 	Port     int32
 
 	// Capture / mode.
-	ObserveOnly  bool
-	ProbeKind    string // pod-exec | daemon-netns | daemon-host
-	CaptureLevel string // summary | decision | verbose
-	IncludeMeta  bool
+	ObserveOnly   bool
+	ProbeKind     string // pod-exec | daemon-netns | daemon-host
+	CaptureLevel  string // summary | decision | verbose
+	IncludeMeta   bool
 	IncludeMisses bool
 	IncludePolicy bool
-	IncludeNAT   bool
+	IncludeNAT    bool
 
 	// Lifecycle.
 	Timeout      time.Duration
@@ -58,17 +58,17 @@ type Options struct {
 
 func newOptions(f factory.Factory) *Options {
 	return &Options{
-		Factory:      f,
-		Protocol:     "tcp",
-		ObserveOnly:  false,
-		ProbeKind:    "pod-exec",
-		CaptureLevel: "decision",
+		Factory:       f,
+		Protocol:      "tcp",
+		ObserveOnly:   false,
+		ProbeKind:     "pod-exec",
+		CaptureLevel:  "decision",
 		IncludeMisses: true,
 		IncludePolicy: true,
 		IncludeNAT:    true,
-		Timeout:      10 * time.Second,
-		TTL:          30 * time.Second,
-		OutputFormat: "tree",
+		Timeout:       10 * time.Second,
+		TTL:           30 * time.Second,
+		OutputFormat:  "tree",
 	}
 }
 
