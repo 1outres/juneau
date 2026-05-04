@@ -18,6 +18,8 @@ package controller
 
 import (
 	"context"
+	"sort"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -31,10 +33,11 @@ import (
 )
 
 const (
-	podAnnSubnet  = "juneau.loutres.me/subnet"
-	podAnnAddress = "juneau.loutres.me/address"
-	defaultIfName = "eth0"
-	requeueDelay  = 5 * time.Second
+	podAnnSubnet         = "juneau.loutres.me/subnet"
+	podAnnAddress        = "juneau.loutres.me/address"
+	podAnnSecurityGroups = "juneau.loutres.me/security-groups"
+	defaultIfName        = "eth0"
+	requeueDelay         = 5 * time.Second
 )
 
 // PodReconciler reconciles a Pod object for NetworkInterface provisioning.
@@ -116,6 +119,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		nwiface.Spec.NodeName = pod.Spec.NodeName
 		nwiface.Spec.Subnet = subnetName
 		nwiface.Spec.Address = annotations[podAnnAddress]
+		nwiface.Spec.SecurityGroups = ParsePodSecurityGroups(annotations[podAnnSecurityGroups])
 
 		return ctrl.SetControllerReference(&pod, nwiface, r.Scheme)
 	})
@@ -137,4 +141,32 @@ func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&corev1.Pod{}).
 		Named("pod").
 		Complete(r)
+}
+
+// ParsePodSecurityGroups parses the comma-separated value of the
+// juneau.loutres.me/security-groups Pod annotation into a deduplicated,
+// sorted slice. Empty / whitespace-only entries are dropped.
+//
+// Sorting yields a stable spec.securityGroups regardless of how the user
+// wrote the annotation, which keeps NetworkInterface diffs minimal.
+func ParsePodSecurityGroups(annotation string) []string {
+	if strings.TrimSpace(annotation) == "" {
+		return nil
+	}
+	parts := strings.Split(annotation, ",")
+	seen := make(map[string]struct{}, len(parts))
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		name := strings.TrimSpace(p)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }

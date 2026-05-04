@@ -1,0 +1,391 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: securitygroups.juneau.loutres.me
+spec:
+  group: juneau.loutres.me
+  names:
+    kind: SecurityGroup
+    listKind: SecurityGroupList
+    plural: securitygroups
+    shortNames:
+    - sg
+    - secgroup
+    singular: securitygroup
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.vpc
+      name: VPC
+      type: string
+    - jsonPath: .status.groupID
+      name: GroupID
+      type: integer
+    - jsonPath: .status.ingressRuleCount
+      name: Ingress
+      type: integer
+    - jsonPath: .status.egressRuleCount
+      name: Egress
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: SecurityGroup is the Schema for the securitygroups API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              SecurityGroupSpec defines the desired state of SecurityGroup.
+
+              Semantics:
+
+                - A SecurityGroup is scoped to exactly one Vpc. Cross-Vpc references
+                  are rejected by webhook validation.
+                - Ingress is implicitly deny-all; rules whitelist what is admitted.
+                - When Egress is nil (the field is omitted), egress is implicitly
+                  allow-all (AWS-compatible default). When Egress is set (even as an
+                  empty list), egress flips to deny-by-default + allow-list.
+            properties:
+              egress:
+                description: |-
+                  Egress lists rules permitting outbound traffic. nil (the field
+                  is omitted entirely) means "allow all egress" (AWS-compatible
+                  default). A non-nil list (even empty) flips egress to
+                  "deny-by-default, allow-by-rule".
+                items:
+                  description: |-
+                    SecurityGroupEgressRule mirrors SecurityGroupIngressRule but for
+                    egress. The "to" side semantics are identical to "from".
+                  properties:
+                    description:
+                      description: Description is free-form metadata.
+                      type: string
+                    ports:
+                      description: Ports list the destination ports admitted by this
+                        rule.
+                      items:
+                        description: |-
+                          SecurityGroupPort selects an L4 destination port (or range).
+
+                          Either Port or PortRange must be set, never both. Webhook validation
+                          enforces this invariant.
+                        properties:
+                          port:
+                            description: Port matches a single L4 destination port.
+                            format: int32
+                            maximum: 65535
+                            minimum: 1
+                            type: integer
+                          portRange:
+                            description: PortRange matches a contiguous L4 destination
+                              port range.
+                            properties:
+                              from:
+                                format: int32
+                                maximum: 65535
+                                minimum: 1
+                                type: integer
+                              to:
+                                format: int32
+                                maximum: 65535
+                                minimum: 1
+                                type: integer
+                            required:
+                            - from
+                            - to
+                            type: object
+                        type: object
+                      type: array
+                    protocol:
+                      default: all
+                      description: Protocol selects the IP protocol. Defaults to "all"
+                        when empty.
+                      enum:
+                      - tcp
+                      - udp
+                      - icmp
+                      - all
+                      type: string
+                    to:
+                      description: |-
+                        To lists the peers (CIDRs or SecurityGroupRefs) admitted by this
+                        rule. At least one peer is required.
+                      items:
+                        description: |-
+                          SecurityGroupPeer expresses a single source/destination scope.
+
+                          Exactly one of CIDR or SecurityGroupRef must be set. Webhook validation
+                          enforces this invariant; the controller assumes it during expansion.
+                        properties:
+                          cidr:
+                            description: |-
+                              CIDR matches any address inside the given IPv4 prefix.
+                              Mutually exclusive with SecurityGroupRef.
+                            type: string
+                          securityGroupRef:
+                            description: |-
+                              SecurityGroupRef matches any NetworkInterface whose membership set
+                              includes the referenced SecurityGroup. The referenced SG must
+                              belong to the same Vpc as this rule's parent.
+                              Mutually exclusive with CIDR.
+                            properties:
+                              name:
+                                minLength: 1
+                                type: string
+                            required:
+                            - name
+                            type: object
+                        type: object
+                      minItems: 1
+                      type: array
+                  required:
+                  - to
+                  type: object
+                nullable: true
+                type: array
+              ingress:
+                description: |-
+                  Ingress lists rules permitting inbound traffic. Empty/omitted
+                  means "deny all ingress".
+                items:
+                  description: |-
+                    SecurityGroupIngressRule allows ingress traffic that matches the
+                    (peer × protocol × ports) cross-product. Multiple ingress rules are
+                    ORed together.
+                  properties:
+                    description:
+                      description: |-
+                        Description is free-form metadata returned in API responses for
+                        operator clarity; ignored by the data plane.
+                      type: string
+                    from:
+                      description: |-
+                        From lists the peers (CIDRs or SecurityGroupRefs) whose traffic
+                        is admitted by this rule. At least one peer is required.
+                      items:
+                        description: |-
+                          SecurityGroupPeer expresses a single source/destination scope.
+
+                          Exactly one of CIDR or SecurityGroupRef must be set. Webhook validation
+                          enforces this invariant; the controller assumes it during expansion.
+                        properties:
+                          cidr:
+                            description: |-
+                              CIDR matches any address inside the given IPv4 prefix.
+                              Mutually exclusive with SecurityGroupRef.
+                            type: string
+                          securityGroupRef:
+                            description: |-
+                              SecurityGroupRef matches any NetworkInterface whose membership set
+                              includes the referenced SecurityGroup. The referenced SG must
+                              belong to the same Vpc as this rule's parent.
+                              Mutually exclusive with CIDR.
+                            properties:
+                              name:
+                                minLength: 1
+                                type: string
+                            required:
+                            - name
+                            type: object
+                        type: object
+                      minItems: 1
+                      type: array
+                    ports:
+                      description: |-
+                        Ports list the destination ports admitted by this rule. Empty
+                        list (or unset) matches any port for the chosen protocol. When
+                        Protocol is "icmp" or "all", Ports must be empty.
+                      items:
+                        description: |-
+                          SecurityGroupPort selects an L4 destination port (or range).
+
+                          Either Port or PortRange must be set, never both. Webhook validation
+                          enforces this invariant.
+                        properties:
+                          port:
+                            description: Port matches a single L4 destination port.
+                            format: int32
+                            maximum: 65535
+                            minimum: 1
+                            type: integer
+                          portRange:
+                            description: PortRange matches a contiguous L4 destination
+                              port range.
+                            properties:
+                              from:
+                                format: int32
+                                maximum: 65535
+                                minimum: 1
+                                type: integer
+                              to:
+                                format: int32
+                                maximum: 65535
+                                minimum: 1
+                                type: integer
+                            required:
+                            - from
+                            - to
+                            type: object
+                        type: object
+                      type: array
+                    protocol:
+                      default: all
+                      description: Protocol selects the IP protocol. Defaults to "all"
+                        when empty.
+                      enum:
+                      - tcp
+                      - udp
+                      - icmp
+                      - all
+                      type: string
+                  required:
+                  - from
+                  type: object
+                type: array
+              vpc:
+                description: Vpc names the Vpc this SecurityGroup belongs to. Immutable.
+                minLength: 1
+                type: string
+            required:
+            - vpc
+            type: object
+          status:
+            description: SecurityGroupStatus reports observed state.
+            properties:
+              attachedInterfaces:
+                description: |-
+                  AttachedInterfaces enumerates NetworkInterfaces currently
+                  referencing this SecurityGroup. Updated by the controller from
+                  an informer; it is observability-only and may lag briefly.
+                items:
+                  description: |-
+                    SecurityGroupAttachedInterface identifies a NetworkInterface that
+                    references this SecurityGroup.
+                  properties:
+                    name:
+                      type: string
+                    namespace:
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              egressRuleCount:
+                format: int32
+                type: integer
+              groupID:
+                description: |-
+                  GroupID is the cluster-wide identifier allocated for this
+                  SecurityGroup via an AllocationClaim. Daemon and BPF maps
+                  reference this number; once assigned it never changes for the
+                  lifetime of the resource.
+                format: int32
+                type: integer
+              hasEgressRules:
+                description: |-
+                  HasEgressRules mirrors the spec choice (nil → false). Daemons
+                  use this to decide whether to apply egress allow-list semantics
+                  or default-allow.
+                type: boolean
+              ingressRuleCount:
+                description: |-
+                  IngressRuleCount and EgressRuleCount report how many flat
+                  (post-expansion) BPF rule entries the controller resolved for
+                  each direction. These are observability fields; they are not a
+                  hard cap (that lives in the data plane MAX_RULES_PER_SG).
+                format: int32
+                type: integer
+              observedGeneration:
+                format: int64
+                type: integer
+              rulesetVersion:
+                description: |-
+                  RulesetVersion is bumped every time the controller resolves a
+                  new effective ruleset. Daemons can use it to detect and ack
+                  rule changes.
+                format: int64
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

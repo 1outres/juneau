@@ -13,6 +13,7 @@
 #include "ct.h"
 #include "maps.h"
 #include "nat.h"
+#include "sg.h"
 
 #define ETH_P_IP 0x0800
 
@@ -73,6 +74,104 @@ static __always_inline int apply_reverse_snat(struct __sk_buff *skb,
   return 0;
 }
 
+// apply_sg_ingress evaluates SecurityGroup ingress rules for a packet
+// arriving at a local Pod. Mirrors apply_sg_egress in pod_egress.c.
+//
+// Returns -1 on DENY (caller should drop), -2 on internal error, 0 on
+// "passed / no enforcement" (caller continues).
+static __always_inline int apply_sg_ingress(struct __sk_buff *skb,
+                                            __u32 vpc_id) {
+  struct iphdr *iph = nat_load_iph(skb);
+  if (!iph)
+    return -2;
+  void *data_end = nat_skb_data_end(skb);
+
+  __u8 proto = iph->protocol;
+  __u16 dport = 0;
+  __u16 sport = 0;
+  if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
+    __be16 sp_be, dp_be;
+    if (nat_read_l4_ports(iph, data_end, &sp_be, &dp_be) < 0)
+      return 0;
+    sport = bpf_ntohs(sp_be);
+    dport = bpf_ntohs(dp_be);
+  } else if (proto != IPPROTO_ICMP) {
+    return 0;
+  }
+
+  // Established-flow short-circuit: any of SG_PASS / DNAT / SNAT means
+  // SG was already evaluated for this conversation. Observe TCP state
+  // for SG_PASS so the entry tracks the lifecycle.
+  struct ct_key ck = {
+      .scope = vpc_id,
+      .saddr = iph->saddr,
+      .daddr = iph->daddr,
+      .sport = bpf_htons(sport),
+      .dport = bpf_htons(dport),
+      .proto = proto,
+  };
+  struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &ck);
+  if (cv) {
+    if (cv->action == CT_ACTION_SG_PASS) {
+      cv->last_seen_ns = bpf_ktime_get_ns();
+      if (proto == IPPROTO_TCP) {
+        __u8 f;
+        if (ct_read_tcp_flags(iph, data_end, &f) == 0)
+          ct_observe_tcp(&ck, cv, f);
+      }
+    }
+    return 0;
+  }
+
+  // Self is the receiving Pod; iph->daddr is its IP. Peer is the sender.
+  struct sg_membership_val *self = sg_membership_lookup(vpc_id, iph->daddr);
+  if (!self || self->count == 0)
+    return 0;
+  struct sg_membership_val *peer = sg_membership_lookup(vpc_id, iph->saddr);
+
+  int verdict = sg_eval(self, SG_DIR_INGRESS, proto, dport, iph->saddr, peer);
+  if (verdict == SG_VERDICT_PASS)
+    return 0;
+  if (verdict != SG_VERDICT_ALLOW)
+    return -1;
+
+  // Seed CT entries (forward + reverse) so subsequent packets in this
+  // direction skip eval.
+  __u8 init_flags = 0;
+  __u8 init_state = CT_STATE_ESTABLISHED;
+  if (proto == IPPROTO_TCP) {
+    __u8 f;
+    if (ct_read_tcp_flags(iph, data_end, &f) == 0) {
+      init_flags = f & TCP_FLAG_TRACKED;
+      init_state = ct_initial_state_for_syn(f);
+    }
+  }
+  __u64 now = bpf_ktime_get_ns();
+  struct ct_val fwd = {
+      .action = CT_ACTION_SG_PASS,
+      .state = init_state,
+      .flags_seen = init_flags,
+      .last_seen_ns = now,
+  };
+  bpf_map_update_elem(&ct_map, &ck, &fwd, BPF_ANY);
+  struct ct_key rev = {
+      .scope = vpc_id,
+      .saddr = iph->daddr,
+      .daddr = iph->saddr,
+      .sport = bpf_htons(dport),
+      .dport = bpf_htons(sport),
+      .proto = proto,
+  };
+  struct ct_val rev_val = {
+      .action = CT_ACTION_SG_PASS,
+      .state = init_state,
+      .flags_seen = init_flags,
+      .last_seen_ns = now,
+  };
+  bpf_map_update_elem(&ct_map, &rev, &rev_val, BPF_ANY);
+  return 0;
+}
+
 static __always_inline int handle(struct __sk_buff *skb) {
   void *data = nat_skb_data(skb);
   void *data_end = nat_skb_data_end(skb);
@@ -98,6 +197,14 @@ static __always_inline int handle(struct __sk_buff *skb) {
     return TC_ACT_OK;
 
   if (apply_reverse_snat(skb, subnet->vpc_id) < 0)
+    return TC_ACT_SHOT;
+
+  // SG ingress eval. Reverse SNAT may have rewritten src; SG checks the
+  // peer the *Pod* sees, which is the rewritten src (= original
+  // ClusterIP for service responses), so running this after the reverse
+  // SNAT is correct.
+  int sg_rc = apply_sg_ingress(skb, subnet->vpc_id);
+  if (sg_rc == -1 || sg_rc == -2)
     return TC_ACT_SHOT;
 
   return TC_ACT_OK;

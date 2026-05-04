@@ -61,6 +61,37 @@
 #define MAX_VIRTUAL_SERVICE_FLOW_MAP 131072
 #endif
 
+#ifndef MAX_SECURITY_GROUPS
+#define MAX_SECURITY_GROUPS 16384
+#endif
+
+#ifndef MAX_RULES_PER_SG
+// MAX_RULES_PER_SG bounds the per-SG rule array size. The data plane
+// scans this many rules per SG per first-packet evaluation, so the
+// number must fit the verifier instruction budget when combined with
+// MAX_SGS_PER_NIC (worst case scan = MAX_SGS_PER_NIC * MAX_RULES_PER_SG
+// rules). 8 fits comfortably below the 1M-insn ceiling on Linux 5.10+.
+// Controllers reject SGs whose post-expansion rule count exceeds this
+// and surface a clean Reason.
+#define MAX_RULES_PER_SG 8
+#endif
+
+#ifndef MAX_SG_MEMBERSHIP
+// MAX_SG_MEMBERSHIP bounds the cluster-wide (vpc_id, ipv4) → SG list
+// table. Sized for ~64k Pods.
+#define MAX_SG_MEMBERSHIP 65536
+#endif
+
+// MAX_SGS_PER_NIC matches NetworkInterface.spec.securityGroups MaxItems
+// and PodSecurityGroupsMax in the controller webhook. Keep all three in
+// lockstep — the data plane scans this many SGs per packet at most.
+//
+// Note: this also bounds the verifier instruction budget for sg_eval:
+// worst-case insn count grows with MAX_SGS_PER_NIC * MAX_RULES_PER_SG.
+// Two SGs per NIC (e.g. one role-based + one shared) is enough for most
+// real deployments; can be raised later if the verifier budget allows.
+#define MAX_SGS_PER_NIC 2
+
 #define FIB_ROUTE_TYPE_CONNECTED 1
 #define FIB_ROUTE_TYPE_ENDPOINT 2
 #define FIB_ROUTE_TYPE_INTERNET_GATEWAY 3
@@ -90,6 +121,11 @@
 // caller sees a reply from the ClusterIP.
 #define CT_ACTION_SVC_SHARED_OUT 7
 #define CT_ACTION_SVC_SHARED_IN 8
+// SG_PASS marks a flow whose first packet was admitted by SecurityGroup
+// rule evaluation. Subsequent packets short-circuit the rule scan via a
+// CT lookup. Both directions of the flow are installed at admission
+// time so reply packets do not re-evaluate.
+#define CT_ACTION_SG_PASS 9
 
 // BACKEND_SUBNET_ID_UNDERLAY is the sentinel value the user-space
 // service reconciler writes into backend_val.backend_subnet_id when an
@@ -506,5 +542,110 @@ struct {
   __type(value, struct virtual_service_flow_val);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } virtual_service_flow_map SEC(".maps");
+
+// ---- SecurityGroup data-plane tables --------------------------------
+//
+// The SG plane is built around three tables:
+//
+//   sg_membership_map: cluster-wide. Maps a Pod's (vpc_id, ipv4) to the
+//                      set of SG groupIDs attached to its NetworkInterface.
+//                      Used for both "self" (egress evaluator side) and
+//                      "peer" (from-SG / to-SG rule resolution) lookups.
+//
+//   sg_meta_map:       per-SG metadata (rule counts, ruleset_version,
+//                      has_egress_rules). Lets the eval loop terminate
+//                      early when the relevant direction has no rules.
+//
+//   sg_rule_table:     HASH_OF_MAPS keyed by sg_id, inner is a fixed-size
+//                      array of sg_rule entries scanned by the evaluator.
+//
+// All three are populated by the daemon-side reconciler in
+// daemon/internal/daemon/dataplane/reconciler/securitygroup.go and
+// sg_membership.go.
+
+// SG_DIR_* and SG_PEER_KIND_* keep the rule layout self-describing.
+#define SG_DIR_INGRESS 0
+#define SG_DIR_EGRESS  1
+
+#define SG_PEER_KIND_CIDR 0
+#define SG_PEER_KIND_SG   1
+
+#define SG_VERDICT_DENY  0
+#define SG_VERDICT_ALLOW 1
+
+// SG_PROTO_ANY matches any IP protocol (used when the rule's protocol is
+// "all"). SG_PROTO_ICMP is encoded as IPPROTO_ICMP (1) so the BPF
+// evaluator can compare directly against iph->protocol.
+#define SG_PROTO_ANY 0
+
+struct sg_membership_key {
+  __u32 vpc_id;
+  __be32 ipv4;
+};
+
+struct sg_membership_val {
+  __u8  count;
+  __u8  _pad[3];
+  __u32 sgs[MAX_SGS_PER_NIC];
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_SG_MEMBERSHIP);
+  __type(key, struct sg_membership_key);
+  __type(value, struct sg_membership_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} sg_membership_map SEC(".maps");
+
+struct sg_meta_val {
+  __u32 ingress_count;
+  __u32 egress_count;
+  __u32 ruleset_version;
+  __u8  has_egress_rules;   // 0 → default-allow egress; 1 → allow-list only
+  __u8  _pad[3];
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_SECURITY_GROUPS);
+  __type(key, __u32);       // sg_id
+  __type(value, struct sg_meta_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} sg_meta_map SEC(".maps");
+
+// sg_rule encodes a single (peer × proto × ports) tuple after the
+// controller has expanded the user-facing rule. port_lo/port_hi are
+// inclusive; (0, 0xFFFF) wildcards the L4 port. peer_v4 carries either
+// a CIDR base (network byte order) or a peer sg_id depending on
+// peer_kind.
+struct sg_rule {
+  __u8  direction;          // SG_DIR_*
+  __u8  proto;              // SG_PROTO_ANY or IPPROTO_*
+  __u16 port_lo;            // host byte order
+  __u16 port_hi;            // host byte order
+  __u8  peer_kind;          // SG_PEER_KIND_*
+  __u8  peer_prefixlen;     // CIDR prefix length (0..32)
+  __be32 peer_v4;           // CIDR base (NBO) or peer sg_id (host order if SG)
+  __u8  verdict;            // SG_VERDICT_*
+  __u8  _pad[3];
+};
+
+struct sg_rules_inner {
+  __uint(type, BPF_MAP_TYPE_ARRAY);
+  __uint(max_entries, MAX_RULES_PER_SG);
+  __type(key, __u32);
+  __type(value, struct sg_rule);
+};
+
+struct sg_rules_inner sg_rules_inner_proto SEC(".maps");
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
+  __uint(max_entries, MAX_SECURITY_GROUPS);
+  __type(key, __u32);       // sg_id
+  __type(value, __u32);     // inner map fd handle
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+  __array(values, struct sg_rules_inner);
+} sg_rule_table SEC(".maps");
 
 #endif // JUNEAU_BPF_MAPS_H

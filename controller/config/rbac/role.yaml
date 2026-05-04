@@ -42,6 +42,7 @@ rules:
   - networkendpoints
   - networkinterfaces
   - routetables
+  - securitygroups
   - servicenatattachments
   - subnets
   - vpcs
@@ -70,6 +71,7 @@ rules:
   - networkendpoints/finalizers
   - networkinterfaces/finalizers
   - routetables/finalizers
+  - securitygroups/finalizers
   - servicenatattachments/finalizers
   - subnets/finalizers
   - vpcs/finalizers
@@ -92,6 +94,7 @@ rules:
   - networkendpoints/status
   - networkinterfaces/status
   - routetables/status
+  - securitygroups/status
   - servicenatattachments/status
   - subnets/status
   - vpcs/status

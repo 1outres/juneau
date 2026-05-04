@@ -34,6 +34,19 @@ type NetworkInterfaceSpec struct {
 	Subnet string `json:"subnet"`
 	// +optional
 	Address string `json:"address,omitempty"`
+
+	// SecurityGroups lists SecurityGroup resources whose rules apply
+	// to this interface. Order is irrelevant; rules from all listed
+	// SGs are unioned. An empty / nil list means "no SG enforcement"
+	// unless the owning Vpc has spec.enforceSecurityGroups=true, in
+	// which case Pod admission rejects unattached Pods.
+	//
+	// All referenced SGs must belong to the same Vpc as this
+	// NetworkInterface's Subnet. Webhook validation enforces this.
+	// +optional
+	// +kubebuilder:validation:MaxItems=2
+	// +listType=set
+	SecurityGroups []string `json:"securityGroups,omitempty"`
 }
 
 // NetworkInterfaceStatus defines the observed state of NetworkInterface.
@@ -48,6 +61,20 @@ type NetworkInterfaceStatus struct {
 	AllocationClaim string         `json:"allocationClaim,omitempty"`
 	Address         string         `json:"address,omitempty"`
 	Routes          []NetworkRoute `json:"routes,omitempty"`
+
+	// EffectiveSecurityGroups echoes spec.securityGroups after the
+	// controller resolved them (filtered by existence + same-Vpc) and
+	// includes the assigned GroupID for each. Daemon reads this list
+	// rather than spec, so a stale/dangling spec entry never causes a
+	// blackhole.
+	EffectiveSecurityGroups []NetworkInterfaceEffectiveSG `json:"effectiveSecurityGroups,omitempty"`
+}
+
+// NetworkInterfaceEffectiveSG is a single resolved SecurityGroup
+// reference. Daemon-side maps key off GroupID, never the name.
+type NetworkInterfaceEffectiveSG struct {
+	Name    string `json:"name"`
+	GroupID uint32 `json:"groupID"`
 }
 
 type NetworkInterfacePodReference struct {

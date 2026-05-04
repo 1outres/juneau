@@ -12,12 +12,13 @@ import (
 )
 
 const (
-	defaultVpcName              = "default"
-	defaultSubnetName           = "default"
-	defaultSubnetVNIPoolName    = "subnet-vni"
-	defaultRouteTablePoolName   = "route-table-id"
-	defaultVpcIDPoolName        = "vpc-id"
-	defaultNATGatewayIDPoolName = "nat-gateway-id"
+	defaultVpcName                 = "default"
+	defaultSubnetName              = "default"
+	defaultSubnetVNIPoolName       = "subnet-vni"
+	defaultRouteTablePoolName      = "route-table-id"
+	defaultVpcIDPoolName           = "vpc-id"
+	defaultNATGatewayIDPoolName    = "nat-gateway-id"
+	defaultSecurityGroupIDPoolName = "security-group-id"
 )
 
 // EnsureDefaults creates default VPC and Subnet if they don't already exist.
@@ -80,6 +81,22 @@ func ensureDefaultAllocationPools(ctx context.Context, c client.Client, logger l
 				Number: &juneauv1alpha1.AllocationPoolNumberSpec{
 					Min: 1,
 					Max: uint64(^uint32(0)),
+				},
+			},
+		},
+		{
+			// security-group-id is a number-typed pool that hands out
+			// stable cluster-wide GroupIDs to SecurityGroup resources.
+			// The data plane (BPF) keys its rule tables by GroupID, so
+			// these numbers must outlive transient Kubernetes object
+			// names. Min=1 keeps 0 as the "no SG" sentinel.
+			ObjectMeta: metav1.ObjectMeta{Name: defaultSecurityGroupIDPoolName},
+			Spec: juneauv1alpha1.AllocationPoolSpec{
+				Type:     juneauv1alpha1.AllocationTypeNumber,
+				Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+				Number: &juneauv1alpha1.AllocationPoolNumberSpec{
+					Min: 1,
+					Max: 65535,
 				},
 			},
 		},

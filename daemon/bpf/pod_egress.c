@@ -7,6 +7,7 @@
 #include "ct.h"
 #include "maps.h"
 #include "nat.h"
+#include "sg.h"
 
 // uapi/linux/if_packet.h pkt_type values. vmlinux.h does not export
 // these as enums, and we only need PACKET_HOST so define it locally.
@@ -1125,6 +1126,128 @@ static __always_inline int apply_conntrack_svc_shared_in(struct __sk_buff *skb,
   return 1;
 }
 
+// apply_sg_egress evaluates SecurityGroup egress rules for a Pod's
+// outbound packet. It is the single source of truth for "does this Pod
+// get to talk to dst:dport".
+//
+// Behavior:
+//
+//   * If a SG_PASS conntrack entry exists for this 5-tuple, the flow has
+//     already been admitted by a prior eval. Observe TCP flags so the
+//     entry tracks the lifecycle, then return 0 (continue dispatch).
+//   * If a DNAT conntrack entry exists, this is an established Service
+//     flow that was admitted on first contact; we let apply_conntrack_dnat
+//     run and skip SG eval entirely.
+//   * Otherwise, look up the local Pod's SG list (sg_membership_map by
+//     (vpc_id, src_ip)). If empty, return 0 (no enforcement, legacy
+//     behaviour preserved).
+//   * Run sg_eval. ALLOW: install SG_PASS forward + reverse CT entries
+//     so subsequent packets short-circuit. DENY: TC_ACT_SHOT.
+//
+// Returns 1 on "admitted, continue dispatch", 0 on "no enforcement",
+// -1 on DENY, -2 on internal error.
+static __always_inline int apply_sg_egress(struct __sk_buff *skb,
+                                           __u32 vpc_id) {
+  struct iphdr *iph = load_iph(skb);
+  if (!iph)
+    return -2;
+  void *data_end = skb_data_end(skb);
+
+  __u16 dport = 0;
+  __u16 sport = 0;
+  __u8 proto = iph->protocol;
+
+  // Resolve dst port for TCP/UDP. Other protocols match with port=0.
+  if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
+    __be16 sp_be, dp_be;
+    if (read_l4_ports(iph, data_end, &sp_be, &dp_be) < 0)
+      return 0;
+    sport = bpf_ntohs(sp_be);
+    dport = bpf_ntohs(dp_be);
+  } else if (proto != IPPROTO_ICMP) {
+    // Other protocols: bypass SG (rare; kept for safety).
+    return 0;
+  }
+
+  // Established-flow short-circuits.
+  struct ct_key ck = {
+      .scope = vpc_id,
+      .saddr = iph->saddr,
+      .daddr = iph->daddr,
+      .sport = bpf_htons(sport),
+      .dport = bpf_htons(dport),
+      .proto = proto,
+  };
+  struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &ck);
+  if (cv) {
+    if (cv->action == CT_ACTION_SG_PASS) {
+      cv->last_seen_ns = bpf_ktime_get_ns();
+      if (proto == IPPROTO_TCP) {
+        __u8 f;
+        if (ct_read_tcp_flags(iph, data_end, &f) == 0)
+          ct_observe_tcp(&ck, cv, f);
+      }
+      return 0;
+    }
+    // Service / NAPT / shared CT actions: leave to their respective
+    // dispatchers; SG was checked when the flow was created.
+    return 0;
+  }
+
+  // Resolve self's SG list. Missing → "no enforcement", legacy path.
+  struct sg_membership_val *self = sg_membership_lookup(vpc_id, iph->saddr);
+  if (!self || self->count == 0)
+    return 0;
+
+  struct sg_membership_val *peer = sg_membership_lookup(vpc_id, iph->daddr);
+
+  int verdict = sg_eval(self, SG_DIR_EGRESS, proto, dport, iph->daddr, peer);
+  if (verdict == SG_VERDICT_DENY)
+    return -1;
+
+  // ALLOW or PASS (default-allow because no SG declares egress rules):
+  // both install CT so the reverse leg of this flow short-circuits SG
+  // ingress eval. Without this, an outbound flow from a Pod whose SGs
+  // happen to lack ingress rules would have its reply traffic denied
+  // by AWS-style default-deny ingress.
+  __u8 init_flags = 0;
+  __u8 init_state = CT_STATE_ESTABLISHED;
+  if (proto == IPPROTO_TCP) {
+    __u8 f;
+    if (ct_read_tcp_flags(iph, data_end, &f) == 0) {
+      init_flags = f & TCP_FLAG_TRACKED;
+      init_state = ct_initial_state_for_syn(f);
+    }
+  }
+  __u64 now = bpf_ktime_get_ns();
+
+  struct ct_val fwd = {
+      .action = CT_ACTION_SG_PASS,
+      .state = init_state,
+      .flags_seen = init_flags,
+      .last_seen_ns = now,
+  };
+  bpf_map_update_elem(&ct_map, &ck, &fwd, BPF_ANY);
+
+  struct ct_key rev = {
+      .scope = vpc_id,
+      .saddr = iph->daddr,
+      .daddr = iph->saddr,
+      .sport = bpf_htons(dport),
+      .dport = bpf_htons(sport),
+      .proto = proto,
+  };
+  struct ct_val rev_val = {
+      .action = CT_ACTION_SG_PASS,
+      .state = init_state,
+      .flags_seen = init_flags,
+      .last_seen_ns = now,
+  };
+  bpf_map_update_elem(&ct_map, &rev, &rev_val, BPF_ANY);
+
+  return 1;
+}
+
 // apply_conntrack_dnat looks up the conntrack table for the packet's
 // 5-tuple and applies forward-direction DNAT if a matching entry exists.
 //
@@ -1583,6 +1706,15 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
       return TC_ACT_SHOT;
     if (shared_hit == 1)
       return shared_rc;
+
+    // SecurityGroup egress evaluation. Returns -1 on DENY (drop), 0/1
+    // on admitted; either way the dispatch continues. We deliberately
+    // run this BEFORE apply_conntrack_dnat so SG evaluates the
+    // user-visible 5-tuple (e.g. Service ClusterIP), not the rewritten
+    // backend IP.
+    int sg_rc = apply_sg_egress(skb, subnet->vpc_id);
+    if (sg_rc == -1 || sg_rc == -2)
+      return TC_ACT_SHOT;
 
     int rc = apply_conntrack_dnat(skb, subnet->vpc_id);
     if (rc < 0)

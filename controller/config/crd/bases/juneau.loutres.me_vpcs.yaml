@@ -49,6 +49,14 @@ spec:
                   the controller injects a Service-typed route into every RouteTable
                   belonging to this VPC, so Pods in the VPC can reach Services in it.
                 type: boolean
+              enforceSecurityGroups:
+                description: |-
+                  EnforceSecurityGroups makes SecurityGroup attachment mandatory for
+                  every Pod placed in a Subnet of this Vpc. Pods without the
+                  juneau.loutres.me/security-groups annotation (or with a list that
+                  resolves to zero valid SGs) are rejected at admission. Existing
+                  Pods are not retroactively affected when this flag is toggled.
+                type: boolean
             type: object
           status:
             description: VpcStatus defines the observed state of Vpc.

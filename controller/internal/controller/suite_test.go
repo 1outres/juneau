@@ -143,6 +143,10 @@ var _ = BeforeSuite(func() {
 		Scheme:            mgr.GetScheme(),
 		EndpointNamespace: "kube-system",
 	}).SetupWithManager(mgr)).To(Succeed())
+	Expect((&SecurityGroupReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr)).To(Succeed())
 	// NetworkInterfaceReconciler and ElasticIPReconciler are exercised
 	// directly in their own _test.go files rather than through the
 	// manager, so that other controllers' tests (notably the
