@@ -1,0 +1,424 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: tracesessions.juneau.loutres.me
+spec:
+  group: juneau.loutres.me
+  names:
+    kind: TraceSession
+    listKind: TraceSessionList
+    plural: tracesessions
+    shortNames:
+    - trace
+    - traces
+    singular: tracesession
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.mode
+      name: Mode
+      type: string
+    - jsonPath: .spec.traceID
+      name: TraceID
+      type: integer
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.expiresAt
+      name: ExpiresAt
+      type: date
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: TraceSession is the Schema for the tracesessions API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: TraceSessionSpec is the desired state of a trace session.
+            properties:
+              capture:
+                description: Capture controls per-event detail and event-class selection.
+                properties:
+                  includeMapMiss:
+                    description: |-
+                      IncludeMapMiss surfaces lookup misses in subnet/fdb/arp/fib/
+                      service/backend maps. Indispensable for "why did my packet
+                      drop?" debugging; cheap to emit because misses are rare in
+                      healthy clusters.
+                    type: boolean
+                  includeNAT:
+                    description: |-
+                      IncludeNAT emits before/after tuples for DNAT, SNAT, NAPT,
+                      shared-Service and host-network Service rewrites. Necessary
+                      for cross-node propagation: trace_id assignment on the
+                      destination node depends on a learned post-NAT tuple.
+                    type: boolean
+                  includePacketMeta:
+                    description: |-
+                      IncludePacketMeta enriches enter events with packet metadata
+                      (TCP flags, ICMP type/code). Costs one extra event field.
+                    type: boolean
+                  includePolicy:
+                    description: |-
+                      IncludePolicy emits NetworkACL and SecurityGroup verdicts as
+                      dedicated events so a "policy drop" never has to be inferred
+                      from a missing follow-up event.
+                    type: boolean
+                  level:
+                    default: Decision
+                    description: |-
+                      Level selects the per-event verbosity. Defaults to Decision
+                      when empty.
+                    enum:
+                    - Summary
+                    - Decision
+                    - Verbose
+                    type: string
+                type: object
+              destination:
+                description: |-
+                  Destination identifies the target endpoint. Same role as
+                  Source — kubectl uses it for tuple computation; daemons
+                  match by tuple.
+                properties:
+                  ip:
+                    description: |-
+                      IP is a literal IPv4 address (no CIDR). Useful for tracing
+                      node-internal IPs, external destinations and bare endpoints
+                      that have no Kubernetes object.
+                    type: string
+                  podRef:
+                    description: |-
+                      PodRef selects a Pod by namespace + name. The Pod must have a
+                      Juneau NetworkInterface attached.
+                    properties:
+                      name:
+                        minLength: 1
+                        type: string
+                      namespace:
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - namespace
+                    type: object
+                  port:
+                    description: |-
+                      Port applies to the destination side. Required when this
+                      endpoint is a session's Destination and Protocol is TCP/UDP;
+                      ignored on Source and for ICMP.
+                    format: int32
+                    maximum: 65535
+                    minimum: 0
+                    type: integer
+                  protocol:
+                    description: |-
+                      Protocol applies to the destination side. Required when this
+                      endpoint is a session's Destination, ignored on Source.
+                    enum:
+                    - TCP
+                    - UDP
+                    - ICMP
+                    type: string
+                  serviceRef:
+                    description: |-
+                      ServiceRef selects a Kubernetes Service by namespace + name.
+                      The destination tuple is computed from the Service's
+                      ClusterIP. Use Port + Protocol to disambiguate multi-port
+                      Services.
+                    properties:
+                      name:
+                        minLength: 1
+                        type: string
+                      namespace:
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - namespace
+                    type: object
+                type: object
+              expiresAt:
+                description: |-
+                  ExpiresAt is the wall-clock time after which daemons must
+                  stop emitting events for this session and remove their local
+                  dataplane state. Mandatory. Protects against orphan sessions
+                  when kubectl crashes mid-trace. Daemons evaluate expiry on
+                  every reconcile; kubectl typically sets ExpiresAt to now() +
+                  session timeout + a small grace window.
+                format: date-time
+                type: string
+              initialTuples:
+                description: |-
+                  InitialTuples is the precomputed list of tuples kubectl
+                  expects the dataplane to match. There can be more than one
+                  per session because a Service ClusterIP may resolve to
+                  multiple backend Pods (one tuple per backend), or because
+                  kubectl wants to trace both directions of a flow at session
+                  start. Additional tuples discovered post-NAT are learned by
+                  daemons and fanned out via the debug stream.
+                items:
+                  description: |-
+                    TraceTuple is a five-tuple plus VPC scope. kubectl pre-computes the
+                    initial tuples it expects to see and stores them on the spec so
+                    daemons can program their BPF trace_tuple_map without re-resolving
+                    CRDs.
+                  properties:
+                    dstIP:
+                      description: DstIP is the destination IPv4 address.
+                      minLength: 1
+                      type: string
+                    dstPort:
+                      description: |-
+                        DstPort is the destination L4 port. 0 wildcards the
+                        destination port (e.g. ICMP sessions).
+                      format: int32
+                      maximum: 65535
+                      minimum: 0
+                      type: integer
+                    protocol:
+                      description: Protocol selects the IP protocol matched by this
+                        tuple.
+                      enum:
+                      - TCP
+                      - UDP
+                      - ICMP
+                      type: string
+                    scope:
+                      description: |-
+                        Scope selects the keyspace this tuple belongs to. Determines
+                        whether the daemon installs the tuple into the host or VPC
+                        trace_tuple_map keyspace.
+                      enum:
+                      - Host
+                      - VPC
+                      type: string
+                    srcIP:
+                      description: SrcIP is the source IPv4 address.
+                      minLength: 1
+                      type: string
+                    srcPort:
+                      description: SrcPort is the source L4 port. 0 wildcards the
+                        source port.
+                      format: int32
+                      maximum: 65535
+                      minimum: 0
+                      type: integer
+                    vpcID:
+                      description: VPCID is required when Scope=VPC and ignored otherwise.
+                      format: int32
+                      minimum: 0
+                      type: integer
+                  required:
+                  - dstIP
+                  - protocol
+                  - scope
+                  - srcIP
+                  type: object
+                type: array
+              mode:
+                description: |-
+                  Mode selects ActiveProbe (probe injection) or ObserveOnly
+                  (passive observation). ObserveOnly is the safe default for
+                  production.
+                enum:
+                - ActiveProbe
+                - ObserveOnly
+                type: string
+              source:
+                description: |-
+                  Source identifies the originating endpoint. Used by kubectl
+                  when computing initial tuples and shown in the rendered
+                  timeline; daemons themselves match by tuple, not by source.
+                properties:
+                  ip:
+                    description: |-
+                      IP is a literal IPv4 address (no CIDR). Useful for tracing
+                      node-internal IPs, external destinations and bare endpoints
+                      that have no Kubernetes object.
+                    type: string
+                  podRef:
+                    description: |-
+                      PodRef selects a Pod by namespace + name. The Pod must have a
+                      Juneau NetworkInterface attached.
+                    properties:
+                      name:
+                        minLength: 1
+                        type: string
+                      namespace:
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - namespace
+                    type: object
+                  port:
+                    description: |-
+                      Port applies to the destination side. Required when this
+                      endpoint is a session's Destination and Protocol is TCP/UDP;
+                      ignored on Source and for ICMP.
+                    format: int32
+                    maximum: 65535
+                    minimum: 0
+                    type: integer
+                  protocol:
+                    description: |-
+                      Protocol applies to the destination side. Required when this
+                      endpoint is a session's Destination, ignored on Source.
+                    enum:
+                    - TCP
+                    - UDP
+                    - ICMP
+                    type: string
+                  serviceRef:
+                    description: |-
+                      ServiceRef selects a Kubernetes Service by namespace + name.
+                      The destination tuple is computed from the Service's
+                      ClusterIP. Use Port + Protocol to disambiguate multi-port
+                      Services.
+                    properties:
+                      name:
+                        minLength: 1
+                        type: string
+                      namespace:
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - namespace
+                    type: object
+                type: object
+              traceID:
+                description: |-
+                  TraceID is a session-stable identifier programmed into BPF
+                  maps. Daemons use it to attach trace state to in-flight
+                  packets without re-keying by full tuple. kubectl picks a
+                  random non-zero value at session creation; uniqueness is the
+                  caller's responsibility (collisions cause cross-talk between
+                  concurrent sessions).
+                format: int32
+                minimum: 1
+                type: integer
+            required:
+            - destination
+            - expiresAt
+            - mode
+            - source
+            - traceID
+            type: object
+          status:
+            description: TraceSessionStatus is observed state.
+            properties:
+              conditions:
+                description: |-
+                  Conditions reports detailed lifecycle signals. The defined
+                  types live in the TraceSessionCondition* constants below.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              lastObservedAt:
+                description: |-
+                  LastObservedAt is the most recent time any daemon emitted a
+                  trace event for this session. Surfaced to operators so a
+                  "no events received" run is distinguishable from a daemon
+                  outage.
+                format: date-time
+                type: string
+              observedNodes:
+                description: |-
+                  ObservedNodes lists the node names whose juneaud has
+                  programmed local trace maps for this session. Updated by
+                  the daemon-side reconciler. Order is not significant.
+                items:
+                  type: string
+                type: array
+              phase:
+                description: |-
+                  Phase summarizes the lifecycle stage. Useful for kubectl
+                  progress display; reconciliation does not branch on it.
+                enum:
+                - Pending
+                - Active
+                - Expired
+                - Terminating
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

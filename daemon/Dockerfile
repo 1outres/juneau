@@ -12,6 +12,8 @@ COPY bgp-speaker/go.mod bgp-speaker/go.mod
 COPY bgp-speaker/go.sum bgp-speaker/go.sum
 COPY controller/go.mod controller/go.mod
 COPY controller/go.sum controller/go.sum
+COPY kubectl-juneau/go.mod kubectl-juneau/go.mod
+COPY kubectl-juneau/go.sum kubectl-juneau/go.sum
 COPY test/e2e/go.mod test/e2e/go.mod
 
 # Pre-download module deps before pulling source so the cache layer is

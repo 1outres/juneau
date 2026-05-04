@@ -22,6 +22,7 @@ resources:
 - bases/juneau.loutres.me_servicenatattachments.yaml
 - bases/juneau.loutres.me_securitygroups.yaml
 - bases/juneau.loutres.me_networkacls.yaml
+- bases/juneau.loutres.me_tracesessions.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

@@ -1,28 +1,41 @@
-// Package nodeagent reserves the surface that Tier 2 commands will use
-// to read BPF map state from the per-Node juneaud process. Today the
-// only contract exposed is a sentinel error returned by Factory; the
-// types here exist so callers (e.g. describe --with-bpf) can compile
-// against an interface that will gain methods in a follow-up change
-// without rippling import edits across the plugin.
+// Package nodeagent connects kubectl-juneau to per-Node juneaud
+// debug surfaces.
 //
-// Concrete clients (gRPC over `kubectl exec` is the leading candidate)
-// belong here when implemented. Until then, every Factory.NodeAgent
-// call returns ErrNotImplemented and the surrounding command surfaces
-// a clean "feature not available in this build" message.
+// Tier 1 commands never need this; the trace command (Tier 2) drives
+// every interesting RPC. The package hides the transport choice
+// (today: `kubectl exec`-tunnelled gRPC over the daemon's UDS) so
+// commands depend on a stable Client interface even as the transport
+// evolves.
 package nodeagent
 
-import "errors"
+import (
+	"context"
+	"errors"
 
-// ErrNotImplemented signals that the running kubectl-juneau build does
-// not include node-agent connectivity. Tier 1 commands never reach this
-// path; later tiers must handle it explicitly.
+	"github.com/1outres/juneau/daemon/pkg/debugpb"
+)
+
+// ErrNotImplemented signals that the running kubectl-juneau build
+// does not include node-agent connectivity for the requested
+// transport. Commands handle this explicitly so a missing transport
+// surfaces as a clean "feature not available in this build" message
+// rather than a panic.
 var ErrNotImplemented = errors.New("nodeagent: not implemented in this build")
 
-// Client is the contract Tier 2 commands will depend on. It is empty
-// today because no methods are stable enough to commit to. Adding
-// methods later is a backward-compatible change for callers that fall
-// back on ErrNotImplemented.
+// Client is the contract trace and other operational commands depend
+// on. Implementations are responsible for hiding transport details
+// (port-forward, exec-tunnel, future TLS-on-NodePort, etc.).
 type Client interface {
-	// Close releases any resources (port-forward sessions, gRPC conns).
+	// Debug returns the debug RPC stub multiplexed over this client.
+	Debug() debugpb.DebugClient
+	// Close releases any resources (port-forward sessions, exec
+	// streams, gRPC conns).
 	Close() error
+}
+
+// Dialer constructs a Client targeting a specific Node. The factory
+// implementation injects a Dialer; Tier 2 builds use exec-tunnel,
+// while tests use a fake.
+type Dialer interface {
+	Dial(ctx context.Context, node string) (Client, error)
 }

@@ -49,9 +49,10 @@ type Factory interface {
 	// indicates whether the namespace was explicitly set.
 	Namespace() (string, bool, error)
 
-	// NodeAgent returns a per-Node debug client. Tier 1 builds
-	// always return nodeagent.ErrNotImplemented; Tier 2 will
-	// override the kube impl to dial juneaud's debug endpoint.
+	// NodeAgent returns a per-Node debug client. Construction is
+	// lazy: dialing is gated on the caller actually needing a
+	// connection, so commands that never call NodeAgent pay no exec
+	// startup cost.
 	NodeAgent(ctx context.Context, node string) (nodeagent.Client, error)
 }
 

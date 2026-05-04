@@ -7,6 +7,7 @@
 #include "ct.h"
 #include "maps.h"
 #include "nat.h"
+#include "trace.h"
 
 #define ETH_ALEN 6
 #define ETH_P_IP 0x0800
@@ -134,6 +135,16 @@ static __always_inline int tc_vxlan_ingress(struct __sk_buff *skb) {
   if (!subnet)
     return TC_ACT_SHOT;
 
+  // Hook-entry trace event. Tunnel-decapsulated packets carry the
+  // VPC-scoped tuple of the *destination* node, which is what the
+  // user sees in the timeline at "vxlan_ingress" stops.
+  __u32 __trace_id = trace_classify_l3(skb, TRACE_SCOPE_VPC, subnet->vpc_id);
+  if (__trace_id != 0) {
+    trace_emit_enter_l3(skb, __trace_id, TRACE_REASON_ENTER_VXLAN_INGRESS,
+                        TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC,
+                        subnet->vpc_id, subnet_id);
+  }
+
   // Cross-Node reply leg of the shared-Service path: a CT_ACTION_SVC_SHARED_IN
   // entry on this Node tells us we minted the SNAT IP this packet is bound
   // for. Reverse the rewrite and deliver straight to the caller Pod's veth,
@@ -168,6 +179,8 @@ static __always_inline int tc_vxlan_ingress(struct __sk_buff *skb) {
 
 SEC("tc")
 int tc_vxlan_ingress_entry(struct __sk_buff *skb) {
+  // See tc_pod_egress for why this anchor exists.
+  (void)trace_is_active();
   return tc_vxlan_ingress(skb);
 }
 

@@ -1,0 +1,224 @@
+// debug.proto carries the operational debug API kubectl-juneau
+// uses to drive a trace session: it streams ringbuf events from one
+// daemon, exchanges learned tuples between daemons, and lets kubectl
+// inject probes when active probing is requested.
+//
+// The service is intentionally distinct from CNI (cni.proto) — CNI
+// is wired into the kubelet boot sequence and must stay frozen while
+// the trace API is operator-facing and may evolve more frequently.
+syntax = "proto3";
+
+package debug.v1;
+
+option go_package = "github.com/1outres/juneau/daemon/pkg/debugpb";
+
+import "google/protobuf/empty.proto";
+
+service Debug {
+  // WatchTrace streams every trace event observed on this node
+  // belonging to one of the requested trace IDs. The stream stays
+  // open until the client cancels or the daemon shuts down.
+  //
+  // Empty trace_ids mean "every trace event". Daemons cap this to
+  // protect themselves; kubectl always supplies a concrete list.
+  rpc WatchTrace(WatchTraceRequest) returns (stream TraceEvent);
+
+  // GetTraceSnapshot returns the daemon's view of one session: which
+  // tuples are programmed, when the daemon last emitted an event,
+  // and a bounded backlog of recent events. Used by kubectl when
+  // the timeline is rendered after the live stream begins.
+  rpc GetTraceSnapshot(GetTraceSnapshotRequest) returns (TraceSnapshot);
+
+  // InjectProbe asks the daemon to send a synthetic packet matching
+  // an initial tuple of the requested session. Returns immediately
+  // after the packet is queued; observed events flow back over
+  // WatchTrace.
+  rpc InjectProbe(InjectProbeRequest) returns (InjectProbeResponse);
+
+  // LearnTuple installs a translated tuple on this node so a
+  // post-NAT continuation of an existing session can be matched
+  // here. Used by kubectl to mirror tuples it receives from one
+  // daemon over to the daemons whose dataplane may also see the
+  // packet.
+  rpc LearnTuple(LearnTupleRequest) returns (google.protobuf.Empty);
+}
+
+message WatchTraceRequest {
+  // trace_ids the client wants events for. Empty selects every
+  // session known to this node — daemons may rate-limit or refuse
+  // unbounded subscriptions in production.
+  repeated uint32 trace_ids = 1;
+
+  // buffer_hint advises the per-stream channel size. 0 lets the
+  // daemon pick a sane default.
+  uint32 buffer_hint = 2;
+}
+
+message GetTraceSnapshotRequest {
+  uint32 trace_id = 1;
+}
+
+message TraceSnapshot {
+  uint32 trace_id = 1;
+  string node_name = 2;
+  // tuples currently programmed in this node's BPF trace_tuple_map
+  // for the session.
+  repeated TraceTuple tuples = 3;
+  // recent_events is a bounded backlog. Daemons cap it to keep memory
+  // pressure predictable; kubectl uses it only to fill in the gap
+  // between session start and stream attach.
+  repeated TraceEvent recent_events = 4;
+  uint64 dropped_events = 5;
+}
+
+message InjectProbeRequest {
+  uint32 trace_id = 1;
+  // strategy picks how the daemon synthesises the packet. The values
+  // are negotiated between kubectl and the daemon via discovery; new
+  // strategies extend the enum without breaking older daemons.
+  InjectProbeStrategy strategy = 2;
+  TraceTuple tuple = 3;
+  // payload_bytes is an optional probe payload (e.g. a trace token).
+  bytes payload_bytes = 4;
+}
+
+enum InjectProbeStrategy {
+  INJECT_PROBE_STRATEGY_UNSPECIFIED = 0;
+  // POD_EXEC: kubectl will exec into the source Pod itself; the
+  // daemon does not generate a packet. Reported here for
+  // completeness — kubectl falls back to this if the daemon does
+  // not support a more privileged strategy.
+  INJECT_PROBE_STRATEGY_POD_EXEC = 1;
+  // DAEMON_NETNS: daemon enters the source Pod's netns and sends
+  // from there. Most privileged option; guarded by capability.
+  INJECT_PROBE_STRATEGY_DAEMON_NETNS = 2;
+  // DAEMON_HOST: daemon sends from the host netns. Used for
+  // node/underlay debugging.
+  INJECT_PROBE_STRATEGY_DAEMON_HOST = 3;
+}
+
+message InjectProbeResponse {
+  // packet_id is opaque; daemons return a value the client can
+  // correlate with subsequent WatchTrace events if they encode it
+  // into the probe payload.
+  uint64 packet_id = 1;
+}
+
+message LearnTupleRequest {
+  uint32 trace_id = 1;
+  TraceTuple tuple = 2;
+}
+
+// TraceTuple mirrors juneau_trace_event's tuple representation in the
+// CRD: a 5-tuple plus VPC scope. Numbers carry over to the BPF map
+// keys verbatim.
+message TraceTuple {
+  TupleScope scope = 1;
+  uint32 vpc_id = 2;
+  bytes src_ip = 3;       // IPv4 in network byte order (4 bytes)
+  bytes dst_ip = 4;
+  uint32 src_port = 5;    // host byte order
+  uint32 dst_port = 6;
+  TraceProtocol protocol = 7;
+}
+
+enum TupleScope {
+  TUPLE_SCOPE_UNSPECIFIED = 0;
+  TUPLE_SCOPE_HOST = 1;
+  TUPLE_SCOPE_VPC = 2;
+}
+
+enum TraceProtocol {
+  TRACE_PROTOCOL_UNSPECIFIED = 0;
+  TRACE_PROTOCOL_TCP = 1;
+  TRACE_PROTOCOL_UDP = 2;
+  TRACE_PROTOCOL_ICMP = 3;
+}
+
+// TraceEvent is the wire encoding of one ringbuf record after the
+// daemon's decoder has translated raw fields. Stable across releases
+// — append, never renumber. Numbers must match daemon/bpf/trace.h
+// reason / hook / verdict constants so the userspace renderer can
+// decode old captures from new daemons.
+message TraceEvent {
+  uint32 trace_id = 1;
+  TraceEventReason reason = 2;
+  TraceHook hook = 3;
+  string node_name = 4;
+  uint32 ifindex = 5;
+  uint32 vpc_id = 6;
+  uint32 subnet_id = 7;
+  // monotonic_ns is the bpf_ktime_get_ns timestamp on the daemon's
+  // host. Cross-node ordering uses received_ns instead.
+  uint64 monotonic_ns = 8;
+  // received_ns is the wallclock the daemon decoded the event,
+  // expressed in unix nanoseconds.
+  uint64 received_ns = 9;
+  TraceProtocol protocol = 10;
+  TraceVerdict verdict = 11;
+  TupleScope scope = 12;
+
+  bytes src_ip = 13;
+  bytes dst_ip = 14;
+  uint32 src_port = 15;
+  uint32 dst_port = 16;
+
+  bool has_aux_tuple = 17;
+  bytes aux_src_ip = 18;
+  bytes aux_dst_ip = 19;
+  uint32 aux_src_port = 20;
+  uint32 aux_dst_port = 21;
+
+  uint32 aux1 = 22;
+  uint32 aux2 = 23;
+}
+
+enum TraceHook {
+  TRACE_HOOK_UNSPECIFIED = 0;
+  TRACE_HOOK_POD_EGRESS = 1;
+  TRACE_HOOK_POD_INGRESS = 2;
+  TRACE_HOOK_VXLAN_INGRESS = 3;
+  TRACE_HOOK_NODE_INGRESS = 4;
+}
+
+enum TraceVerdict {
+  TRACE_VERDICT_UNSPECIFIED = 0;
+  TRACE_VERDICT_OK = 1;
+  TRACE_VERDICT_DROP = 2;
+  TRACE_VERDICT_REDIRECT = 3;
+}
+
+enum TraceEventReason {
+  TRACE_EVENT_REASON_UNSPECIFIED = 0;
+  TRACE_EVENT_REASON_ENTER_POD_EGRESS = 100;
+  TRACE_EVENT_REASON_ENTER_POD_INGRESS = 101;
+  TRACE_EVENT_REASON_ENTER_VXLAN_INGRESS = 102;
+  TRACE_EVENT_REASON_ENTER_NODE_INGRESS = 103;
+
+  TRACE_EVENT_REASON_MISS_IFINDEX_SUBNET = 200;
+  TRACE_EVENT_REASON_MISS_SUBNET = 201;
+  TRACE_EVENT_REASON_MISS_FIB_TABLE = 202;
+  TRACE_EVENT_REASON_MISS_FIB_ROUTE = 203;
+  TRACE_EVENT_REASON_MISS_ARP = 204;
+  TRACE_EVENT_REASON_MISS_FDB = 205;
+  TRACE_EVENT_REASON_MISS_SERVICE = 206;
+  TRACE_EVENT_REASON_MISS_BACKEND = 207;
+  TRACE_EVENT_REASON_MISS_CONNTRACK = 208;
+
+  TRACE_EVENT_REASON_POLICY_ACL_PASS = 300;
+  TRACE_EVENT_REASON_POLICY_ACL_DROP = 301;
+  TRACE_EVENT_REASON_POLICY_SG_PASS = 302;
+  TRACE_EVENT_REASON_POLICY_SG_DROP = 303;
+
+  TRACE_EVENT_REASON_SERVICE_LOOKUP_HIT = 400;
+  TRACE_EVENT_REASON_SERVICE_BACKEND_SELECTED = 401;
+  TRACE_EVENT_REASON_DNAT_APPLIED = 402;
+  TRACE_EVENT_REASON_SNAT_APPLIED = 403;
+  TRACE_EVENT_REASON_NAPT_ALLOCATED = 404;
+  TRACE_EVENT_REASON_REVERSE_NAT_APPLIED = 405;
+
+  TRACE_EVENT_REASON_REDIRECT_IFINDEX = 500;
+  TRACE_EVENT_REASON_REDIRECT_VXLAN = 501;
+  TRACE_EVENT_REASON_PASS_KERNEL = 502;
+  TRACE_EVENT_REASON_DROP_SHOT = 503;
+}

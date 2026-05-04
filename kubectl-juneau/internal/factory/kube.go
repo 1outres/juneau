@@ -11,6 +11,7 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -35,6 +36,10 @@ type kubeFactory struct {
 	discoveryOnce sync.Once
 	discoveryErr  error
 	discovery     discovery.DiscoveryInterface
+
+	dialerOnce sync.Once
+	dialerErr  error
+	dialer     nodeagent.Dialer
 }
 
 func (f *kubeFactory) Streams() genericiooptions.IOStreams { return f.streams }
@@ -111,6 +116,30 @@ func (f *kubeFactory) Namespace() (string, bool, error) {
 	return ns, overridden, nil
 }
 
-func (f *kubeFactory) NodeAgent(_ context.Context, _ string) (nodeagent.Client, error) {
-	return nil, nodeagent.ErrNotImplemented
+func (f *kubeFactory) NodeAgent(ctx context.Context, node string) (nodeagent.Client, error) {
+	if node == "" {
+		return nil, fmt.Errorf("nodeagent: node name is required")
+	}
+	dialer, err := f.nodeDialer()
+	if err != nil {
+		return nil, err
+	}
+	return dialer.Dial(ctx, node)
+}
+
+func (f *kubeFactory) nodeDialer() (nodeagent.Dialer, error) {
+	f.dialerOnce.Do(func() {
+		cfg, err := f.RESTConfig()
+		if err != nil {
+			f.dialerErr = err
+			return
+		}
+		kc, err := kubernetes.NewForConfig(cfg)
+		if err != nil {
+			f.dialerErr = fmt.Errorf("build typed kube client: %w", err)
+			return
+		}
+		f.dialer = nodeagent.NewExecDialer(cfg, kc, f.streams, nodeagent.ExecDialerOptions{})
+	})
+	return f.dialer, f.dialerErr
 }

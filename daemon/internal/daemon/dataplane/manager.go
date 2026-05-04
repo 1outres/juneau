@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"go.uber.org/zap"
@@ -17,8 +18,14 @@ import (
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/policy"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/program"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/reconciler"
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/trace"
 	"github.com/1outres/juneau/daemon/internal/daemon/runner"
 )
+
+// TraceGCInterval bounds how stale an expired session may stay in BPF
+// state. Sessions live in the seconds-to-minutes range; sweeping
+// every second keeps map pressure tight without becoming a hot loop.
+const TraceGCInterval = time.Second
 
 // Manager wires up every eBPF program, reconciler, and TC link attacher
 // that makes up the dataplane. Its sole responsibility is lifecycle:
@@ -58,6 +65,14 @@ type Manager struct {
 	sgRunner           *runner.Runner
 	sgMembershipRunner *runner.Runner
 	aclRunner          *runner.Runner
+	traceRunner        *runner.Runner
+
+	traceSessionInformer cache.Informer
+	traceStore           *trace.Store
+	traceBus             *trace.Bus
+	traceReader          *trace.Reader
+	traceCancel          context.CancelFunc
+	traceDone            chan struct{}
 
 	sgStore         *policy.SGStore
 	aclStore        *policy.ACLStore
@@ -334,8 +349,76 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 
 	m.startConntrackGC(ctx)
 
+	if err := m.startTrace(ctx); err != nil {
+		return fmt.Errorf("start trace plane: %w", err)
+	}
+
 	return nil
 }
+
+// startTrace wires the trace.Store, ringbuf reader, GC loop and the
+// TraceSession reconciler. The trace plane is purely additive — when
+// no TraceSession CRDs exist the store sits with active=0 and BPF
+// programs short-circuit on the hot path.
+func (m *Manager) startTrace(ctx context.Context) error {
+	m.traceStore = trace.NewStore(
+		m.podEgress.Objs.TraceActive,
+		m.podEgress.Objs.TraceConfigMap,
+		m.podEgress.Objs.TraceTupleMap,
+	)
+	m.traceBus = trace.NewBus()
+
+	rd, err := trace.NewReader(m.podEgress.Objs.TraceEvents, m.traceBus)
+	if err != nil {
+		return fmt.Errorf("create trace ringbuf reader: %w", err)
+	}
+	m.traceReader = rd
+
+	traceCtx, cancel := context.WithCancel(ctx)
+	m.traceCancel = cancel
+	m.traceDone = make(chan struct{})
+	go func() {
+		defer close(m.traceDone)
+		if err := rd.Run(traceCtx); err != nil {
+			zap.S().Warnw("trace: ringbuf reader exited with error", "err", err)
+		}
+	}()
+
+	go m.traceGCLoop(traceCtx)
+
+	if m.traceSessionInformer != nil {
+		rec := trace.NewReconciler(m.client, m.traceStore, m.nodeName)
+		m.traceRunner = runner.New(rec)
+		if err := m.traceRunner.Watch(m.traceSessionInformer, runner.MetaNamespaceKey); err != nil {
+			return fmt.Errorf("watch TraceSession: %w", err)
+		}
+		m.traceRunner.Start(ctx, 1)
+	}
+	return nil
+}
+
+func (m *Manager) traceGCLoop(ctx context.Context) {
+	t := time.NewTicker(TraceGCInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := m.traceStore.GC(); err != nil {
+				zap.S().Warnw("trace: GC failed", "err", err)
+			}
+		}
+	}
+}
+
+// TraceBus exposes the in-process event bus for the debug gRPC server.
+// Returns nil before Start has run.
+func (m *Manager) TraceBus() *trace.Bus { return m.traceBus }
+
+// TraceStore exposes the BPF map programmer for debug RPCs that
+// install learned tuples on remote nodes.
+func (m *Manager) TraceStore() *trace.Store { return m.traceStore }
 
 // startConntrackGC spawns the periodic ct_map garbage collector. It is
 // not informer-driven (no resource events to react to), so it lives
@@ -354,6 +437,15 @@ func (m *Manager) startConntrackGC(ctx context.Context) {
 func (m *Manager) Stop() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if m.traceCancel != nil {
+		m.traceCancel()
+		<-m.traceDone
+		m.traceCancel = nil
+	}
+	if m.traceReader != nil {
+		_ = m.traceReader.Close()
+	}
 
 	if m.conntrackCancel != nil {
 		m.conntrackCancel()
@@ -415,6 +507,7 @@ func (m *Manager) Stop() error {
 		m.sgRunner,
 		m.sgMembershipRunner,
 		m.aclRunner,
+		m.traceRunner,
 	}
 	for _, rn := range runners {
 		if rn == nil {
@@ -479,6 +572,7 @@ func NewManager(
 	networkInterfaceInformer cache.Informer,
 	securityGroupInformer cache.Informer,
 	networkACLInformer cache.Informer,
+	traceSessionInformer cache.Informer,
 	nodeName string,
 	vxlanIfindex int,
 	hostIfindex int,
@@ -504,6 +598,7 @@ func NewManager(
 		networkInterfaceInformer:          networkInterfaceInformer,
 		securityGroupInformer:             securityGroupInformer,
 		networkACLInformer:                networkACLInformer,
+		traceSessionInformer:              traceSessionInformer,
 		nodeName:                          nodeName,
 		vxlanIfindex:                      vxlanIfindex,
 		hostIfindex:                       hostIfindex,

@@ -15,6 +15,7 @@
 #include "nat.h"
 #include "policy.h"
 #include "sg.h"
+#include "trace.h"
 
 #define ETH_P_IP 0x0800
 
@@ -99,6 +100,9 @@ static __always_inline int handle(struct __sk_buff *skb) {
   if (!subnet)
     return TC_ACT_OK;
 
+  // pod_ingress is also at the verifier limit — like pod_egress, the
+  // inlined trace classifier blows past 1M insns. Anchor only.
+
   if (apply_reverse_snat(skb, subnet->vpc_id) < 0)
     return TC_ACT_SHOT;
 
@@ -115,6 +119,10 @@ static __always_inline int handle(struct __sk_buff *skb) {
 }
 
 SEC("tc")
-int tc_pod_ingress(struct __sk_buff *skb) { return handle(skb); }
+int tc_pod_ingress(struct __sk_buff *skb) {
+  // See tc_pod_egress for why this anchor exists.
+  (void)trace_is_active();
+  return handle(skb);
+}
 
 char __license[] SEC("license") = "Dual MIT/GPL";

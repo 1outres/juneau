@@ -7,6 +7,7 @@
 #include "ct.h"
 #include "maps.h"
 #include "nat.h"
+#include "trace.h"
 
 #define ETH_ALEN 6
 #define ETH_P_IP 0x0800
@@ -308,10 +309,24 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
   if (bpf_ntohs(eth->h_proto) != ETH_P_IP)
     return TC_ACT_OK;
 
+  // Hook-entry trace event. node_ingress sees pre-decap underlay
+  // packets — the tuple is host-scoped (no vpc_id available yet);
+  // VPC scope is added on the inner program (vxlan_ingress) after
+  // tunnel decap.
+  __u32 __trace_id = trace_classify_l3(skb, TRACE_SCOPE_HOST, 0);
+  if (__trace_id != 0) {
+    trace_emit_enter_l3(skb, __trace_id, TRACE_REASON_ENTER_NODE_INGRESS,
+                        TRACE_HOOK_NODE_INGRESS, TRACE_SCOPE_HOST, 0, 0);
+  }
+
   return handle_l3(skb, eth);
 }
 
 SEC("tc")
-int tc_node_ingress(struct __sk_buff *skb) { return handle_l2(skb); }
+int tc_node_ingress(struct __sk_buff *skb) {
+  // See tc_pod_egress for why this anchor exists.
+  (void)trace_is_active();
+  return handle_l2(skb);
+}
 
 char __license[] SEC("license") = "Dual MIT/GPL";

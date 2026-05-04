@@ -520,6 +520,16 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	// TraceSession has no in-controller reconciler — daemons watch and
+	// program BPF maps directly. The webhook still runs here so admission
+	// validation lands at the same place as every other Juneau CRD.
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err = webhookjuneauv1alpha1.SetupTraceSessionWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "TraceSession")
+			os.Exit(1)
+		}
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err = (&controller.PodReconciler{

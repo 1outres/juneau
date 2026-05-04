@@ -14,6 +14,7 @@ generate: generate-proto generate-bpf
 
 generate-proto:
 	$(PROTOC) --go_out=module=github.com/1outres/juneau/daemon:. --go-grpc_out=module=github.com/1outres/juneau/daemon:. pkg/cnipb/cni.proto
+	$(PROTOC) --go_out=module=github.com/1outres/juneau/daemon:. --go-grpc_out=module=github.com/1outres/juneau/daemon:. pkg/debugpb/debug.proto
 
 generate-bpf:
 	@if [ "$(UNAME_S)" = "Linux" ]; then \

@@ -10,7 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/trace"
 	"github.com/1outres/juneau/daemon/pkg/cnipb"
+	"github.com/1outres/juneau/daemon/pkg/debugpb"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -19,12 +21,23 @@ import (
 type Server struct {
 	grpcServer *grpc.Server
 	cni        *CNIServer
+	debug      *DebugServer
 
 	mu       sync.Mutex
 	lis      net.Listener
 	udsPath  string
 	stopOnce sync.Once
 }
+
+// SnapshotBacklog bounds per-session in-memory backlog the debug
+// server keeps for late-attaching kubectl streams. 256 events covers
+// the time between session start and the first WatchTrace call
+// without becoming a memory hazard.
+const SnapshotBacklog = 256
+
+// SnapshotEvictInterval bounds how stale a session's snapshot
+// backlog may stay after the session is gone.
+const SnapshotEvictInterval = 30 * time.Second
 
 func (s *Server) Run(ctx context.Context, udsPath string) error {
 	if err := s.listen(udsPath); err != nil {
@@ -57,6 +70,9 @@ func (s *Server) Run(ctx context.Context, udsPath string) error {
 
 func (s *Server) Stop() {
 	s.stopOnce.Do(func() {
+		if s.debug != nil {
+			s.debug.Stop()
+		}
 		s.mu.Lock()
 		lis := s.lis
 		udsPath := s.udsPath
@@ -130,12 +146,31 @@ func removeStaleSocket(path string) error {
 	return nil
 }
 
-func NewServer(client client.Client) *Server {
+// NewServer constructs the gRPC server. CNI is always registered;
+// the debug surface is registered only when the trace plane provides
+// a Bus and Store (i.e. the dataplane has finished loading BPF maps).
+func NewServer(client client.Client, traceBus *trace.Bus, traceStore *trace.Store, nodeName string) *Server {
 	s := &Server{
 		grpcServer: grpc.NewServer(),
 		cni:        newCNIServer(client),
 	}
 	cnipb.RegisterCNIServer(s.grpcServer, s.cni)
 
+	if traceBus != nil && traceStore != nil {
+		s.debug = NewDebugServer(traceBus, traceStore, nodeName, SnapshotBacklog)
+		debugpb.RegisterDebugServer(s.grpcServer, s.debug)
+	}
+
 	return s
+}
+
+// StartBackground starts background goroutines (snapshot collector,
+// evictor) tied to ctx. Safe to call when the debug server is not
+// configured.
+func (s *Server) StartBackground(ctx context.Context) {
+	if s.debug == nil {
+		return
+	}
+	s.debug.Start(ctx)
+	s.debug.startSnapshotEvictor(ctx, SnapshotEvictInterval)
 }

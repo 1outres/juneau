@@ -9,6 +9,7 @@
 #include "nat.h"
 #include "sg.h"
 #include "policy.h"
+#include "trace.h"
 
 // uapi/linux/if_packet.h pkt_type values. vmlinux.h does not export
 // these as enums, and we only need PACKET_HOST so define it locally.
@@ -1556,6 +1557,16 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
     return TC_ACT_SHOT;
 
   __u16 h_proto = bpf_ntohs(eth->h_proto);
+
+  // pod_egress is already at the verifier instruction limit on
+  // released kernels. Inlining trace_classify_l3 + trace_emit_enter
+  // here pushes load past 1M insns and the daemon refuses to start.
+  // Until the framework supports out-of-line tail-call emit (tracked
+  // for a future PR), pod_egress emits no per-hook event; downstream
+  // hooks (pod_ingress / vxlan_ingress) still observe the same packet
+  // and produce a useful timeline. The ringbuf maps stay pinned via
+  // the trace_is_active anchor in tc_pod_egress.
+
   if (h_proto == ETH_P_ARP)
     return handle_arp(skb, data_end, eth, val->subnet_id, subnet);
 
@@ -1641,6 +1652,12 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
 }
 
 SEC("tc")
-int tc_pod_egress(struct __sk_buff *skb) { return handle_l2(skb); }
+int tc_pod_egress(struct __sk_buff *skb) {
+  // Hot-path gate: forces the verifier to load every trace_* map in
+  // this program object so daemons can pin them under PIN_BY_NAME at
+  // load time. Returns 0 immediately when no session is active.
+  (void)trace_is_active();
+  return handle_l2(skb);
+}
 
 char __license[] SEC("license") = "Dual MIT/GPL";

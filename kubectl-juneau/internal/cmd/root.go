@@ -11,6 +11,7 @@ import (
 	"k8s.io/cli-runtime/pkg/genericiooptions"
 
 	describecmd "github.com/1outres/juneau/kubectl-juneau/internal/cmd/describe"
+	tracecmd "github.com/1outres/juneau/kubectl-juneau/internal/cmd/trace"
 	versioncmd "github.com/1outres/juneau/kubectl-juneau/internal/cmd/version"
 	"github.com/1outres/juneau/kubectl-juneau/internal/factory"
 )
@@ -38,5 +39,6 @@ Future tiers will add data-plane (BPF map / CT) and reachability commands.`,
 
 	root.AddCommand(versioncmd.NewCommand(f))
 	root.AddCommand(describecmd.NewCommand(f))
+	root.AddCommand(tracecmd.NewCommand(f))
 	return root
 }
