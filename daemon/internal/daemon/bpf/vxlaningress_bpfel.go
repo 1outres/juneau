@@ -160,6 +160,41 @@ type VxlanIngressServiceVal struct {
 	Flags        uint32
 }
 
+type VxlanIngressSgMembershipKey struct {
+	_     structs.HostLayout
+	VpcId uint32
+	Ipv4  uint32
+}
+
+type VxlanIngressSgMembershipVal struct {
+	_     structs.HostLayout
+	Count uint8
+	Pad   [3]uint8
+	Sgs   [2]uint32
+}
+
+type VxlanIngressSgMetaVal struct {
+	_              structs.HostLayout
+	IngressCount   uint32
+	EgressCount    uint32
+	RulesetVersion uint32
+	HasEgressRules uint8
+	Pad            [3]uint8
+}
+
+type VxlanIngressSgRule struct {
+	_             structs.HostLayout
+	Direction     uint8
+	Proto         uint8
+	PortLo        uint16
+	PortHi        uint16
+	PeerKind      uint8
+	PeerPrefixlen uint8
+	PeerV4        uint32
+	Verdict       uint8
+	Pad           [3]uint8
+}
+
 type VxlanIngressSubnetKey struct {
 	_        structs.HostLayout
 	SubnetId uint32
@@ -280,6 +315,10 @@ type VxlanIngressMapSpecs struct {
 	NatSnatMap            *ebpf.MapSpec `ebpf:"nat_snat_map"`
 	ServiceMap            *ebpf.MapSpec `ebpf:"service_map"`
 	ServiceNatIp          *ebpf.MapSpec `ebpf:"service_nat_ip"`
+	SgMembershipMap       *ebpf.MapSpec `ebpf:"sg_membership_map"`
+	SgMetaMap             *ebpf.MapSpec `ebpf:"sg_meta_map"`
+	SgRuleTable           *ebpf.MapSpec `ebpf:"sg_rule_table"`
+	SgRulesInnerProto     *ebpf.MapSpec `ebpf:"sg_rules_inner_proto"`
 	SubnetMap             *ebpf.MapSpec `ebpf:"subnet_map"`
 	VirtualServiceFlowMap *ebpf.MapSpec `ebpf:"virtual_service_flow_map"`
 	VirtualServiceMap     *ebpf.MapSpec `ebpf:"virtual_service_map"`
@@ -327,6 +366,10 @@ type VxlanIngressMaps struct {
 	NatSnatMap            *ebpf.Map `ebpf:"nat_snat_map"`
 	ServiceMap            *ebpf.Map `ebpf:"service_map"`
 	ServiceNatIp          *ebpf.Map `ebpf:"service_nat_ip"`
+	SgMembershipMap       *ebpf.Map `ebpf:"sg_membership_map"`
+	SgMetaMap             *ebpf.Map `ebpf:"sg_meta_map"`
+	SgRuleTable           *ebpf.Map `ebpf:"sg_rule_table"`
+	SgRulesInnerProto     *ebpf.Map `ebpf:"sg_rules_inner_proto"`
 	SubnetMap             *ebpf.Map `ebpf:"subnet_map"`
 	VirtualServiceFlowMap *ebpf.Map `ebpf:"virtual_service_flow_map"`
 	VirtualServiceMap     *ebpf.Map `ebpf:"virtual_service_map"`
@@ -350,6 +393,10 @@ func (m *VxlanIngressMaps) Close() error {
 		m.NatSnatMap,
 		m.ServiceMap,
 		m.ServiceNatIp,
+		m.SgMembershipMap,
+		m.SgMetaMap,
+		m.SgRuleTable,
+		m.SgRulesInnerProto,
 		m.SubnetMap,
 		m.VirtualServiceFlowMap,
 		m.VirtualServiceMap,

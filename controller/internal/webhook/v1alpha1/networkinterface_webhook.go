@@ -97,6 +97,12 @@ func (v *NetworkInterfaceCustomValidator) ValidateCreate(ctx context.Context, ob
 	addressErrs := validateNetworkInterfaceAddress(networkinterface.Spec.Address, subnet, specPath.Child("address"))
 	errs = append(errs, addressErrs...)
 
+	sgErrs, sgErr := validateNetworkInterfaceSecurityGroups(ctx, v.Client, networkinterface, subnet, specPath.Child("securityGroups"))
+	if sgErr != nil {
+		return nil, sgErr
+	}
+	errs = append(errs, sgErrs...)
+
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "NetworkInterface"}, networkinterface.Name, errs)
 		networkinterfacelog.Info("Validation failed for NetworkInterface", "name", networkinterface.GetName(), "error", err)
@@ -140,6 +146,34 @@ func (v *NetworkInterfaceCustomValidator) ValidateUpdate(ctx context.Context, ol
 	if networkinterface.Spec.PodRef.Interface != oldNetworkInterface.Spec.PodRef.Interface {
 		errs = append(errs, field.Invalid(podRefPath.Child("interface"), networkinterface.Spec.PodRef.Interface, "spec.podRef.interface is immutable"))
 	}
+
+	// Re-validate SG references on update so changing SGs goes through
+	// the same vetting as create (existence + same Vpc as Subnet).
+	//
+	// Subnet existence intentionally is NOT re-checked on update.
+	// spec.subnet is immutable (enforced above), so any drift since
+	// admission means the Subnet was deleted out from under the
+	// NetworkInterface — and the controller still needs to take its
+	// finalizer-removal update through to release allocations. A
+	// validating-webhook reject here would deadlock that path.
+	//
+	// We do still need the Subnet object to check that SGs share its
+	// Vpc, so try to fetch it (best-effort: NotFound is OK).
+	var subnet *juneauv1alpha1.Subnet
+	if networkinterface.Spec.Subnet != "" {
+		var fetched juneauv1alpha1.Subnet
+		if err := v.Get(ctx, client.ObjectKey{Name: networkinterface.Spec.Subnet}, &fetched); err == nil {
+			subnet = &fetched
+		} else if !errors.IsNotFound(err) {
+			return nil, err
+		}
+	}
+
+	sgErrs, sgErr := validateNetworkInterfaceSecurityGroups(ctx, v.Client, networkinterface, subnet, specPath.Child("securityGroups"))
+	if sgErr != nil {
+		return nil, sgErr
+	}
+	errs = append(errs, sgErrs...)
 
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "NetworkInterface"}, networkinterface.Name, errs)
@@ -201,4 +235,61 @@ func validateNetworkInterfaceAddress(address string, subnet *juneauv1alpha1.Subn
 	}
 
 	return nil
+}
+
+// validateNetworkInterfaceSecurityGroups checks that every entry in
+// spec.securityGroups names a SecurityGroup that (a) exists, (b)
+// belongs to the same Vpc as the NetworkInterface's Subnet, and (c) is
+// not duplicated within the list.
+//
+// The first return is the list of field errors; the second is a
+// transport-level error (e.g. unrelated apiserver failure) that should
+// abort admission.
+func validateNetworkInterfaceSecurityGroups(ctx context.Context, c client.Client, iface *juneauv1alpha1.NetworkInterface, subnet *juneauv1alpha1.Subnet, path *field.Path) (field.ErrorList, error) {
+	if len(iface.Spec.SecurityGroups) == 0 {
+		return nil, nil
+	}
+
+	var errs field.ErrorList
+
+	seen := make(map[string]int, len(iface.Spec.SecurityGroups))
+	for i, name := range iface.Spec.SecurityGroups {
+		if name == "" {
+			errs = append(errs, field.Invalid(path.Index(i), name, "must not be empty"))
+			continue
+		}
+		if prev, dup := seen[name]; dup {
+			errs = append(errs, field.Duplicate(path.Index(i), fmt.Sprintf("duplicates entry [%d]", prev)))
+			continue
+		}
+		seen[name] = i
+	}
+
+	// Subnet was either resolved (caller passes it in) or unresolved (we
+	// surfaced the error already). Without a subnet we cannot enforce
+	// the same-Vpc invariant; let the rest of validation flow through.
+	expectedVpc := ""
+	if subnet != nil {
+		expectedVpc = subnet.Spec.Vpc
+	}
+
+	for i, name := range iface.Spec.SecurityGroups {
+		if name == "" {
+			continue
+		}
+		var sg juneauv1alpha1.SecurityGroup
+		if err := c.Get(ctx, client.ObjectKey{Name: name}, &sg); err != nil {
+			if errors.IsNotFound(err) {
+				errs = append(errs, field.Invalid(path.Index(i), name, "referenced SecurityGroup does not exist"))
+				continue
+			}
+			return nil, err
+		}
+		if expectedVpc != "" && sg.Spec.Vpc != expectedVpc {
+			errs = append(errs, field.Invalid(path.Index(i), name,
+				fmt.Sprintf("SecurityGroup belongs to Vpc %q (expected %q to match Subnet)", sg.Spec.Vpc, expectedVpc)))
+		}
+	}
+
+	return errs, nil
 }

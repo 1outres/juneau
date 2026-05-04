@@ -78,6 +78,21 @@ spec:
                 - name
                 - uid
                 type: object
+              securityGroups:
+                description: |-
+                  SecurityGroups lists SecurityGroup resources whose rules apply
+                  to this interface. Order is irrelevant; rules from all listed
+                  SGs are unioned. An empty / nil list means "no SG enforcement"
+                  unless the owning Vpc has spec.enforceSecurityGroups=true, in
+                  which case Pod admission rejects unattached Pods.
+
+                  All referenced SGs must belong to the same Vpc as this
+                  NetworkInterface's Subnet. Webhook validation enforces this.
+                items:
+                  type: string
+                maxItems: 2
+                type: array
+                x-kubernetes-list-type: set
               subnet:
                 minLength: 1
                 type: string
@@ -151,6 +166,28 @@ spec:
                   - reason
                   - status
                   - type
+                  type: object
+                type: array
+              effectiveSecurityGroups:
+                description: |-
+                  EffectiveSecurityGroups echoes spec.securityGroups after the
+                  controller resolved them (filtered by existence + same-Vpc) and
+                  includes the assigned GroupID for each. Daemon reads this list
+                  rather than spec, so a stale/dangling spec entry never causes a
+                  blackhole.
+                items:
+                  description: |-
+                    NetworkInterfaceEffectiveSG is a single resolved SecurityGroup
+                    reference. Daemon-side maps key off GroupID, never the name.
+                  properties:
+                    groupID:
+                      format: int32
+                      type: integer
+                    name:
+                      type: string
+                  required:
+                  - groupID
+                  - name
                   type: object
                 type: array
               observedGeneration:

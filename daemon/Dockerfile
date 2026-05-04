@@ -37,7 +37,7 @@ FROM docker.io/debian:bookworm-slim
 
 WORKDIR /
 
-RUN apt-get update && apt-get install -y --no-install-recommends iptables && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends iptables bpftool && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /sys/fs/bpf
 
 COPY --from=builder /workspace/juneaud /juneaud

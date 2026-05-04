@@ -14,6 +14,7 @@ import (
 
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/convert"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/link"
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/policy"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/program"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/reconciler"
 	"github.com/1outres/juneau/daemon/internal/daemon/runner"
@@ -39,18 +40,25 @@ type Manager struct {
 	externalNetworkAttachmentInformer cache.Informer
 	natGatewayInformer                cache.Informer
 	serviceNATAttachmentInformer      cache.Informer
+	networkInterfaceInformer          cache.Informer
+	securityGroupInformer             cache.Informer
 
-	subnetRunner      *runner.Runner
-	arpRunner         *runner.Runner
-	fdbRunner         *runner.Runner
-	podIfaceRunner    *runner.Runner
-	podAttacherRunner *runner.Runner
-	fibRunner         *runner.Runner
-	natRunner         *runner.Runner
-	bgpPoolRunner     *runner.Runner
-	serviceRunner     *runner.Runner
-	naptRunner        *runner.Runner
-	serviceNATRunner  *runner.Runner
+	subnetRunner       *runner.Runner
+	arpRunner          *runner.Runner
+	fdbRunner          *runner.Runner
+	podIfaceRunner     *runner.Runner
+	podAttacherRunner  *runner.Runner
+	fibRunner          *runner.Runner
+	natRunner          *runner.Runner
+	bgpPoolRunner      *runner.Runner
+	serviceRunner      *runner.Runner
+	naptRunner         *runner.Runner
+	serviceNATRunner   *runner.Runner
+	sgRunner           *runner.Runner
+	sgMembershipRunner *runner.Runner
+
+	sgStore         *policy.SGStore
+	membershipStore *policy.MembershipStore
 
 	napt *reconciler.Napt
 
@@ -219,6 +227,58 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 		m.serviceNATRunner.Start(ctx, 1)
 	}
 
+	// SecurityGroup rule projection. Populates sg_rule_table + sg_meta_map
+	// from SecurityGroup CRDs. Runs even when networkInterfaceInformer is
+	// absent (e.g. unit-test harnesses) because SG metadata is independent
+	// of NetworkInterface bindings.
+	if m.securityGroupInformer != nil {
+		m.sgStore = policy.NewSGStore(
+			m.podEgress.Objs.SgMetaMap,
+			m.podEgress.Objs.SgRuleTable,
+			m.podEgress.MapSpecs.SgRulesInnerProto,
+		)
+		sg := reconciler.NewSecurityGroup(m.client, m.sgStore)
+		m.sgRunner = runner.New(sg)
+		if err := m.sgRunner.Watch(m.securityGroupInformer, runner.MetaNamespaceKey); err != nil {
+			return fmt.Errorf("watch SecurityGroup: %w", err)
+		}
+		// Peer-cross-references: a change to one SG re-evaluates every
+		// other SG in the same Vpc so newly-resolvable peer references
+		// propagate.
+		if err := m.sgRunner.WatchFanOut(m.securityGroupInformer, sg.FanOutVpcPeers); err != nil {
+			return fmt.Errorf("watch SecurityGroup (peer fan-out): %w", err)
+		}
+		m.sgRunner.Start(ctx, 1)
+	}
+
+	// SG membership table — (vpc_id, ipv4) → SG list — built from
+	// NetworkInterface.status.effectiveSecurityGroups. Cluster-wide so
+	// the data plane can resolve both self and peer.
+	if m.networkInterfaceInformer != nil {
+		m.membershipStore = policy.NewMembershipStore(m.podEgress.Objs.SgMembershipMap)
+		mem := reconciler.NewSGMembership(m.client, m.membershipStore)
+		m.sgMembershipRunner = runner.New(mem)
+		if err := m.sgMembershipRunner.Watch(m.networkInterfaceInformer, runner.MetaNamespaceKey); err != nil {
+			return fmt.Errorf("watch NetworkInterface (sg-membership): %w", err)
+		}
+		if m.subnetInformer != nil {
+			if err := m.sgMembershipRunner.WatchFanOut(m.subnetInformer, mem.FanOutSubnetToInterfaces); err != nil {
+				return fmt.Errorf("watch Subnet (sg-membership fan-out): %w", err)
+			}
+		}
+		if m.vpcInformer != nil {
+			if err := m.sgMembershipRunner.WatchFanOut(m.vpcInformer, mem.FanOutVpcToInterfaces); err != nil {
+				return fmt.Errorf("watch Vpc (sg-membership fan-out): %w", err)
+			}
+		}
+		if m.securityGroupInformer != nil {
+			if err := m.sgMembershipRunner.WatchFanOut(m.securityGroupInformer, mem.FanOutSGToInterfaces); err != nil {
+				return fmt.Errorf("watch SecurityGroup (sg-membership fan-out): %w", err)
+			}
+		}
+		m.sgMembershipRunner.Start(ctx, 1)
+	}
+
 	if m.serviceInformer != nil && m.endpointSliceInformer != nil {
 		svc := reconciler.NewService(m.client, m.podEgress, m.juNodeUnderlayIP)
 		m.serviceRunner = runner.New(svc)
@@ -300,6 +360,12 @@ func (m *Manager) Stop() error {
 		}
 	}
 
+	if m.sgStore != nil {
+		if err := m.sgStore.CloseAll(); err != nil {
+			return err
+		}
+	}
+
 	runners := []*runner.Runner{
 		m.subnetRunner,
 		m.arpRunner,
@@ -312,6 +378,8 @@ func (m *Manager) Stop() error {
 		m.serviceRunner,
 		m.naptRunner,
 		m.serviceNATRunner,
+		m.sgRunner,
+		m.sgMembershipRunner,
 	}
 	for _, rn := range runners {
 		if rn == nil {
@@ -373,6 +441,8 @@ func NewManager(
 	externalNetworkAttachmentInformer cache.Informer,
 	natGatewayInformer cache.Informer,
 	serviceNATAttachmentInformer cache.Informer,
+	networkInterfaceInformer cache.Informer,
+	securityGroupInformer cache.Informer,
 	nodeName string,
 	vxlanIfindex int,
 	hostIfindex int,
@@ -395,6 +465,8 @@ func NewManager(
 		externalNetworkAttachmentInformer: externalNetworkAttachmentInformer,
 		natGatewayInformer:                natGatewayInformer,
 		serviceNATAttachmentInformer:      serviceNATAttachmentInformer,
+		networkInterfaceInformer:          networkInterfaceInformer,
+		securityGroupInformer:             securityGroupInformer,
 		nodeName:                          nodeName,
 		vxlanIfindex:                      vxlanIfindex,
 		hostIfindex:                       hostIfindex,

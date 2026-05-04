@@ -132,10 +132,45 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	addressNet := &net.IPNet{IP: net.ParseIP(address), Mask: cidr.Mask}
-	if err := r.updateAllocatedStatus(ctx, &resource, claimNameForNetworkInterface(&resource), addressNet, subnet.Status.Gateway); err != nil {
+	effectiveSGs, err := r.resolveEffectiveSecurityGroups(ctx, &resource, subnet)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.updateAllocatedStatus(ctx, &resource, claimNameForNetworkInterface(&resource), addressNet, subnet.Status.Gateway, effectiveSGs); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
+}
+
+// resolveEffectiveSecurityGroups maps spec.securityGroups names to
+// resolved {name, groupID} pairs, dropping references that are missing,
+// in the wrong Vpc, or have not yet been allocated a GroupID. The order
+// is stable (sorted by name) so commitStatus can short-circuit.
+func (r *NetworkInterfaceReconciler) resolveEffectiveSecurityGroups(ctx context.Context, resource *juneauv1alpha1.NetworkInterface, subnet *juneauv1alpha1.Subnet) ([]juneauv1alpha1.NetworkInterfaceEffectiveSG, error) {
+	if len(resource.Spec.SecurityGroups) == 0 {
+		return nil, nil
+	}
+	out := make([]juneauv1alpha1.NetworkInterfaceEffectiveSG, 0, len(resource.Spec.SecurityGroups))
+	for _, name := range resource.Spec.SecurityGroups {
+		var sg juneauv1alpha1.SecurityGroup
+		if err := r.Get(ctx, client.ObjectKey{Name: name}, &sg); err != nil {
+			if errors.IsNotFound(err) {
+				continue
+			}
+			return nil, err
+		}
+		if subnet != nil && sg.Spec.Vpc != subnet.Spec.Vpc {
+			continue
+		}
+		if sg.Status.GroupID == 0 {
+			continue
+		}
+		out = append(out, juneauv1alpha1.NetworkInterfaceEffectiveSG{
+			Name:    sg.Name,
+			GroupID: sg.Status.GroupID,
+		})
+	}
+	return out, nil
 }
 
 func (r *NetworkInterfaceReconciler) handleDeletion(ctx context.Context, resource *juneauv1alpha1.NetworkInterface) error {
@@ -276,12 +311,13 @@ func claimNameForNetworkInterface(resource *juneauv1alpha1.NetworkInterface) str
 	)
 }
 
-func (r *NetworkInterfaceReconciler) updateAllocatedStatus(ctx context.Context, resource *juneauv1alpha1.NetworkInterface, claimName string, address *net.IPNet, gateway string) error {
+func (r *NetworkInterfaceReconciler) updateAllocatedStatus(ctx context.Context, resource *juneauv1alpha1.NetworkInterface, claimName string, address *net.IPNet, gateway string, effectiveSGs []juneauv1alpha1.NetworkInterfaceEffectiveSG) error {
 	updated := resource.DeepCopy()
 	updated.Status.ObservedGeneration = updated.Generation
 	updated.Status.AllocationClaim = claimName
 	updated.Status.Address = address.String()
 	updated.Status.Routes = buildDefaultRoutes(gateway)
+	updated.Status.EffectiveSecurityGroups = effectiveSGs
 	meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
 		Type:               juneauv1alpha1.NetworkInterfaceStatusAllocated,
 		Status:             metav1.ConditionTrue,
@@ -397,6 +433,7 @@ func (r *NetworkInterfaceReconciler) commitStatus(ctx context.Context, resource 
 		resource.Status.AllocationClaim == status.AllocationClaim &&
 		resource.Status.Address == status.Address &&
 		reflect.DeepEqual(resource.Status.Routes, status.Routes) &&
+		reflect.DeepEqual(resource.Status.EffectiveSecurityGroups, status.EffectiveSecurityGroups) &&
 		reflect.DeepEqual(resource.Status.Conditions, status.Conditions) {
 		return nil
 	}
@@ -426,6 +463,39 @@ func (r *NetworkInterfaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				}}
 			}),
 		).
+		Watches(
+			&juneauv1alpha1.SecurityGroup{},
+			handler.EnqueueRequestsFromMapFunc(r.mapSecurityGroupToNetworkInterfaces),
+		).
 		Named("networkinterface").
 		Complete(r)
+}
+
+// mapSecurityGroupToNetworkInterfaces fans out a SecurityGroup change
+// (e.g. its Status.GroupID becoming available, or a deletion) to every
+// NetworkInterface whose spec lists the SG by name. This keeps
+// status.effectiveSecurityGroups eventually-consistent without polling.
+func (r *NetworkInterfaceReconciler) mapSecurityGroupToNetworkInterfaces(ctx context.Context, obj client.Object) []reconcile.Request {
+	sg, ok := obj.(*juneauv1alpha1.SecurityGroup)
+	if !ok {
+		return nil
+	}
+	var ifaces juneauv1alpha1.NetworkInterfaceList
+	if err := r.List(ctx, &ifaces); err != nil {
+		return nil
+	}
+	var reqs []reconcile.Request
+	for i := range ifaces.Items {
+		iface := &ifaces.Items[i]
+		for _, name := range iface.Spec.SecurityGroups {
+			if name == sg.Name {
+				reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKey{
+					Namespace: iface.Namespace,
+					Name:      iface.Name,
+				}})
+				break
+			}
+		}
+	}
+	return reqs
 }

@@ -91,6 +91,17 @@ static __always_inline void ct_build_opposite_key(const struct ct_key *self,
   opp->_pad[1] = 0;
   opp->_pad[2] = 0;
 
+  if (cv->action == CT_ACTION_SG_PASS) {
+    // SG_PASS does not rewrite anything; the opposite key is just the
+    // inverted 5-tuple. Scope stays in the same VPC.
+    opp->saddr = self->daddr;
+    opp->daddr = self->saddr;
+    opp->sport = self->dport;
+    opp->dport = self->sport;
+    opp->scope = self->scope;
+    return;
+  }
+
   if (cv->action == CT_ACTION_SVC_NAPT_OUT ||
       cv->action == CT_ACTION_SVC_NAPT_IN ||
       cv->action == CT_ACTION_SVC_SHARED_OUT ||
