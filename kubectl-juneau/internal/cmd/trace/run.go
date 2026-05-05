@@ -198,10 +198,7 @@ func (s *streamSet) PropagateLearnedTuple(ctx context.Context, ev *debugpb.Trace
 		_, err := h.cl.Debug().LearnTuple(callCtx, req)
 		cancel()
 		if err != nil {
-			select {
-			case s.errors <- fmt.Errorf("node %s: LearnTuple: %w", h.node, err):
-			default:
-			}
+			s.reportError(fmt.Errorf("node %s: LearnTuple: %w", h.node, err))
 		}
 	}
 }
@@ -248,16 +245,22 @@ func (s *streamSet) Close() {
 // overall command.
 func (o *Options) attachStreams(ctx context.Context, nodes []string, traceID uint32) (*streamSet, error) {
 	streamCtx, cancel := context.WithCancel(ctx)
+	// Buffer headroom: each node may produce up to 2 setup errors
+	// (NodeAgent dial + WatchTrace handshake) before Run starts
+	// consuming, plus a margin for runtime stream errors. Sizing the
+	// buffer to len(nodes)*2+16 prevents a setup-time deadlock that
+	// otherwise hangs the command on cluster-wide RBAC/connectivity
+	// failures.
 	set := &streamSet{
 		events: make(chan *debugpb.TraceEvent, 1024),
-		errors: make(chan error, 16),
+		errors: make(chan error, len(nodes)*2+16),
 		cancel: cancel,
 	}
 
 	for _, node := range nodes {
 		client, err := o.Factory.NodeAgent(streamCtx, node)
 		if err != nil {
-			set.errors <- fmt.Errorf("node %s: %w", node, err)
+			set.reportError(fmt.Errorf("node %s: %w", node, err))
 			continue
 		}
 		set.clients = append(set.clients, nodeagentClientHandle{node: node, cl: client})
@@ -266,7 +269,7 @@ func (o *Options) attachStreams(ctx context.Context, nodes []string, traceID uin
 			TraceIds: []uint32{traceID},
 		})
 		if err != nil {
-			set.errors <- fmt.Errorf("node %s: WatchTrace: %w", node, err)
+			set.reportError(fmt.Errorf("node %s: WatchTrace: %w", node, err))
 			continue
 		}
 
@@ -277,7 +280,7 @@ func (o *Options) attachStreams(ctx context.Context, nodes []string, traceID uin
 				ev, err := stream.Recv()
 				if err != nil {
 					if streamCtx.Err() == nil {
-						set.errors <- fmt.Errorf("node %s: stream closed: %w", node, err)
+						set.reportError(fmt.Errorf("node %s: stream closed: %w", node, err))
 					}
 					return
 				}
@@ -290,4 +293,17 @@ func (o *Options) attachStreams(ctx context.Context, nodes []string, traceID uin
 		}(node)
 	}
 	return set, nil
+}
+
+// reportError pushes err onto the error channel without blocking.
+// Setup-time callers run before Run consumes from Errors(), so a
+// blocking send on a saturated buffer would deadlock the command.
+// The buffer is sized to absorb the expected setup volume (see
+// attachStreams); this non-blocking guard is the safety net for the
+// runtime path and any future caller that exceeds the budget.
+func (s *streamSet) reportError(err error) {
+	select {
+	case s.errors <- err:
+	default:
+	}
 }
