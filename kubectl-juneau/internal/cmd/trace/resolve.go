@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"strings"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -105,16 +107,181 @@ func (o *Options) resolveSession(ctx context.Context, cl client.Client) (*resolv
 	}
 	out.initialTuples = append(out.initialTuples, tuple)
 
-	// Backend tuples are no longer precomputed from EndpointSlices.
-	// pod_egress now emits a DNAT_APPLIED event with both the original
-	// (Service ClusterIP) and post-translation (backend Pod IP)
-	// tuples, and kubectl propagates the latter to peer daemons via
-	// Debug.LearnTuple — see run.go's PropagateLearnedTuple. That
-	// path handles arbitrary NAT (Service DNAT, NAPT, shared-Service
-	// SNAT, future translations) without kubectl re-implementing
-	// the dataplane's translation logic.
+	// For Service destinations, pre-seed one tuple per backend so
+	// destination-node hooks (vxlan_ingress, pod_ingress) match the
+	// post-DNAT packet on the very first probe. The async LearnTuple
+	// fan-out from run.go's PropagateLearnedTuple stays in place to
+	// handle NAT classes kubectl cannot precompute (NAPT,
+	// shared-Service SNAT, future translations) — but it only fires
+	// after a NAT event is decoded userspace-side, which is too late
+	// for the first cross-node packet of a one-shot active probe.
+	if o.DestService != "" && out.destination.service != nil {
+		extra, extraNodes, err := o.serviceBackendTuples(ctx, cl, out)
+		if err != nil {
+			return nil, err
+		}
+		out.initialTuples = append(out.initialTuples, extra...)
+		out.nodes = dedupeNonEmpty(append(out.nodes, extraNodes...)...)
+	}
 
 	return out, nil
+}
+
+// serviceBackendTuples enumerates the destination Service's
+// EndpointSlices and returns a tuple per (backend IP, target port)
+// pair plus the deduplicated set of backend node names. Each tuple is
+// keyed (sourceIP, backendIP, targetPort) so on vxlan_ingress /
+// pod_ingress the post-DNAT packet matches without waiting for the
+// daemon's userspace learn round-trip.
+//
+// Returns (nil, nil, nil) when the source has no resolvable IP or the
+// destination is not actually a Service — those callers fall back to
+// the primary tuple alone.
+func (o *Options) serviceBackendTuples(ctx context.Context, cl client.Client, r *resolved) ([]juneauv1alpha1.TraceTuple, []string, error) {
+	if !r.source.ip.IsValid() || r.destination.service == nil {
+		return nil, nil, nil
+	}
+	svc := r.destination.service
+
+	// Service.Spec.Ports[i].Name is the join key against
+	// EndpointSlice.Ports[].Name. Find the entry that matches the
+	// user-supplied --port + --proto so multi-port Services route to
+	// the correct targetPort. An empty name is the legitimate
+	// single-port case.
+	wantPortName, found := matchingServicePortName(svc, o.Port, o.Protocol)
+	if !found {
+		// User asked for a port the Service does not expose. Don't
+		// fabricate backend tuples — the primary tuple plus the
+		// LearnTuple async path is the safer fallback.
+		return nil, nil, nil
+	}
+
+	var slices discoveryv1.EndpointSliceList
+	if err := cl.List(ctx, &slices,
+		client.InNamespace(svc.Namespace),
+		client.MatchingLabels{discoveryv1.LabelServiceName: svc.Name},
+	); err != nil {
+		return nil, nil, fmt.Errorf("list endpointslices for %s/%s: %w", svc.Namespace, svc.Name, err)
+	}
+
+	scope := juneauv1alpha1.TraceTupleScopeVPC
+	vpcID := r.source.vpcID
+	if vpcID == 0 {
+		scope = juneauv1alpha1.TraceTupleScopeHost
+	}
+	proto := o.crdProtocol()
+
+	var (
+		tuples []juneauv1alpha1.TraceTuple
+		nodes  []string
+	)
+	for _, sl := range slices.Items {
+		if sl.AddressType != discoveryv1.AddressTypeIPv4 {
+			continue
+		}
+		targetPort := pickEndpointPort(sl.Ports, wantPortName, proto)
+		if targetPort == 0 {
+			continue
+		}
+		for _, ep := range sl.Endpoints {
+			if !endpointReady(ep) {
+				continue
+			}
+			for _, addr := range ep.Addresses {
+				ip, err := netip.ParseAddr(addr)
+				if err != nil || !ip.Is4() {
+					continue
+				}
+				tuples = append(tuples, juneauv1alpha1.TraceTuple{
+					Scope:    scope,
+					VPCID:    vpcID,
+					SrcIP:    r.source.ip.String(),
+					DstIP:    ip.String(),
+					DstPort:  targetPort,
+					Protocol: proto,
+				})
+				if ep.NodeName != nil && *ep.NodeName != "" {
+					nodes = append(nodes, *ep.NodeName)
+				}
+			}
+		}
+	}
+	return tuples, nodes, nil
+}
+
+// matchingServicePortName returns the Service port name (possibly
+// empty) whose Port and Protocol match the user-requested values. The
+// second return is false when no entry matches.
+func matchingServicePortName(svc *corev1.Service, port int32, proto string) (string, bool) {
+	want := corev1.ProtocolTCP
+	switch strings.ToLower(proto) {
+	case "udp":
+		want = corev1.ProtocolUDP
+	case "icmp":
+		// Services do not expose ICMP; let the caller skip backend
+		// seeding for ICMP traces.
+		return "", false
+	}
+	for _, sp := range svc.Spec.Ports {
+		if sp.Port != port {
+			continue
+		}
+		got := sp.Protocol
+		if got == "" {
+			got = corev1.ProtocolTCP
+		}
+		if got != want {
+			continue
+		}
+		return sp.Name, true
+	}
+	return "", false
+}
+
+// pickEndpointPort selects the EndpointSlice port corresponding to
+// wantName + proto. An exact name match wins over a wildcard fallback;
+// the fallback handles legacy unnamed ports on single-port Services.
+func pickEndpointPort(ports []discoveryv1.EndpointPort, wantName string, proto juneauv1alpha1.TraceProtocol) int32 {
+	var fallback int32
+	for _, p := range ports {
+		if p.Port == nil || !endpointPortMatchesProto(p, proto) {
+			continue
+		}
+		name := ""
+		if p.Name != nil {
+			name = *p.Name
+		}
+		if name == wantName {
+			return *p.Port
+		}
+		if fallback == 0 {
+			fallback = *p.Port
+		}
+	}
+	return fallback
+}
+
+func endpointPortMatchesProto(p discoveryv1.EndpointPort, proto juneauv1alpha1.TraceProtocol) bool {
+	if p.Protocol == nil {
+		return proto == juneauv1alpha1.TraceProtocolTCP
+	}
+	switch *p.Protocol {
+	case corev1.ProtocolTCP:
+		return proto == juneauv1alpha1.TraceProtocolTCP
+	case corev1.ProtocolUDP:
+		return proto == juneauv1alpha1.TraceProtocolUDP
+	}
+	return false
+}
+
+// endpointReady mirrors the kubelet contract: missing Conditions is
+// treated as ready (legacy slice). NotReady backends would never
+// receive DNAT'd traffic, so seeding their tuples is wasted state.
+func endpointReady(ep discoveryv1.Endpoint) bool {
+	if ep.Conditions.Ready == nil {
+		return true
+	}
+	return *ep.Conditions.Ready
 }
 
 func (o *Options) buildPrimaryTuple(r *resolved) (juneauv1alpha1.TraceTuple, error) {
