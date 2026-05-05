@@ -135,12 +135,12 @@ func (v *TraceSessionCustomValidator) validate(ts, old *juneauv1alpha1.TraceSess
 		// expiresAt was valid at create stays valid as the wall
 		// clock advances.
 		now := time.Now()
-		if !ts.Spec.ExpiresAt.Time.After(now) {
-			errs = append(errs, field.Invalid(expiryPath, ts.Spec.ExpiresAt.Time.Format(time.RFC3339),
+		if !ts.Spec.ExpiresAt.After(now) {
+			errs = append(errs, field.Invalid(expiryPath, ts.Spec.ExpiresAt.Format(time.RFC3339),
 				"expiresAt must be in the future"))
 		}
-		if ts.Spec.ExpiresAt.Time.Sub(now) > MaxTraceTTL {
-			errs = append(errs, field.Invalid(expiryPath, ts.Spec.ExpiresAt.Time.Format(time.RFC3339),
+		if ts.Spec.ExpiresAt.Sub(now) > MaxTraceTTL {
+			errs = append(errs, field.Invalid(expiryPath, ts.Spec.ExpiresAt.Format(time.RFC3339),
 				fmt.Sprintf("expiresAt may be at most %s in the future", MaxTraceTTL)))
 		}
 	}

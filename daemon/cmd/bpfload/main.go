@@ -78,7 +78,7 @@ func tryLoad(name string, fn func() (*ebpf.CollectionSpec, error)) {
 		fmt.Printf("  mktemp error: %v\n", err)
 		return
 	}
-	defer os.RemoveAll(pinDir)
+	defer func() { _ = os.RemoveAll(pinDir) }()
 	coll, err := ebpf.NewCollectionWithOptions(spec, ebpf.CollectionOptions{
 		Maps:     ebpf.MapOptions{PinPath: pinDir},
 		Programs: ebpf.ProgramOptions{LogDisabled: true},
@@ -97,7 +97,7 @@ func tryLoad(name string, fn func() (*ebpf.CollectionSpec, error)) {
 				prog, perr := ebpf.NewProgramWithOptions(progSpec, ebpf.ProgramOptions{LogLevel: ebpf.LogLevelInstruction, LogSizeStart: 1 << 24})
 				if perr == nil {
 					fmt.Printf("    [program %s OK]\n", progName)
-					prog.Close()
+					_ = prog.Close()
 					continue
 				}
 				var pverr *ebpf.VerifierError

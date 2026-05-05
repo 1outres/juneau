@@ -99,12 +99,9 @@ func (d *pfDialer) Dial(ctx context.Context, node string) (Client, error) {
 		return nil, err
 	}
 
-	dialCtx, cancel := context.WithTimeout(ctx, d.opts.dialTimeout())
-	defer cancel()
-	conn, err := grpc.DialContext(dialCtx,
+	conn, err := grpc.NewClient(
 		"127.0.0.1:"+strconv.Itoa(int(localPort)),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
 	)
 	if err != nil {
 		pf.Close()

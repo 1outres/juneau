@@ -38,5 +38,5 @@ func formatRouteVia(r topology.RouteSummary) string {
 	if r.Type == "" {
 		return "-"
 	}
-	return string(r.Type)
+	return r.Type
 }

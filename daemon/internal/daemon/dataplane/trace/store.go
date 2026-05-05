@@ -256,7 +256,7 @@ func storeConfigVal(spec SessionSpec, bootNs int64) any {
 		// at process start (bootNs vs processStart's wallclock) so
 		// the BPF helper can compare via bpf_ktime_get_ns directly.
 		nowMono := monoNowNs()
-		ahead := spec.ExpiresAt.Sub(time.Now())
+		ahead := time.Until(spec.ExpiresAt)
 		if ahead < 0 {
 			// Expiry is already in the past; encode as 1 ns so BPF
 			// treats every packet as expired. Reconciler will delete

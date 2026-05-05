@@ -27,31 +27,31 @@ func (o *Options) driveProbe(ctx context.Context, r *resolved) {
 		return
 	}
 	if o.ProbeKind != "pod-exec" {
-		fmt.Fprintf(o.Factory.Streams().ErrOut,
+		_, _ = fmt.Fprintf(o.Factory.Streams().ErrOut,
 			"trace: probe strategy %q is not implemented in this build (use --observe-only to suppress)\n",
 			o.ProbeKind)
 		return
 	}
 	if r.source.pod == nil || !r.destination.ip.IsValid() {
-		fmt.Fprintln(o.Factory.Streams().ErrOut,
+		_, _ = fmt.Fprintln(o.Factory.Streams().ErrOut,
 			"trace: pod-exec probe requires a Pod source and resolvable destination")
 		return
 	}
 
 	cfg, err := o.Factory.RESTConfig()
 	if err != nil {
-		fmt.Fprintf(o.Factory.Streams().ErrOut, "trace: probe rest config: %v\n", err)
+		_, _ = fmt.Fprintf(o.Factory.Streams().ErrOut, "trace: probe rest config: %v\n", err)
 		return
 	}
 	kc, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		fmt.Fprintf(o.Factory.Streams().ErrOut, "trace: probe kube client: %v\n", err)
+		_, _ = fmt.Fprintf(o.Factory.Streams().ErrOut, "trace: probe kube client: %v\n", err)
 		return
 	}
 
 	cmd, err := o.buildProbeCommand(r)
 	if err != nil {
-		fmt.Fprintf(o.Factory.Streams().ErrOut, "trace: build probe command: %v\n", err)
+		_, _ = fmt.Fprintf(o.Factory.Streams().ErrOut, "trace: build probe command: %v\n", err)
 		return
 	}
 
@@ -78,7 +78,7 @@ func (o *Options) driveProbe(ctx context.Context, r *resolved) {
 
 	exec, err := remotecommand.NewSPDYExecutor(cfg, "POST", req.URL())
 	if err != nil {
-		fmt.Fprintf(o.Factory.Streams().ErrOut, "trace: probe exec setup: %v\n", err)
+		_, _ = fmt.Fprintf(o.Factory.Streams().ErrOut, "trace: probe exec setup: %v\n", err)
 		return
 	}
 	streams := o.Factory.Streams()
@@ -86,7 +86,7 @@ func (o *Options) driveProbe(ctx context.Context, r *resolved) {
 		Stdout: nullWriter(streams),
 		Stderr: streams.ErrOut,
 	}); err != nil {
-		fmt.Fprintf(streams.ErrOut, "trace: probe exec: %v\n", err)
+		_, _ = fmt.Fprintf(streams.ErrOut, "trace: probe exec: %v\n", err)
 	}
 }
 

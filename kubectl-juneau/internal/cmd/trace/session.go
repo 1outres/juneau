@@ -22,10 +22,9 @@ import (
 // rely on spec.expiresAt to evict orphans if Cleanup is somehow
 // skipped.
 type sessionLifecycle struct {
-	cl     client.Client
-	name   string
-	keep   bool
-	cancel context.CancelFunc
+	cl   client.Client
+	name string
+	keep bool
 }
 
 // createSession constructs the TraceSession from resolved state and

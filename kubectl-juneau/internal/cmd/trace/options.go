@@ -53,7 +53,6 @@ type Options struct {
 	sourceNamespace string
 	destNamespace   string
 	traceID         uint32
-	clusterDomain   string
 }
 
 func newOptions(f factory.Factory) *Options {

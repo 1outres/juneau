@@ -3,7 +3,6 @@ package trace
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/netip"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
@@ -210,7 +209,7 @@ func lookupPodVPC(ctx context.Context, cl client.Client, pod *corev1.Pod) (uint3
 		return 0, err
 	}
 	if subnet.Spec.Vpc == "" {
-		return 0, fmt.Errorf("Subnet %s has no vpc", subnet.Name)
+		return 0, fmt.Errorf("subnet %s has no vpc", subnet.Name)
 	}
 	var vpc juneauv1alpha1.Vpc
 	if err := cl.Get(ctx, types.NamespacedName{Name: subnet.Spec.Vpc}, &vpc); err != nil {
@@ -233,24 +232,4 @@ func dedupeNonEmpty(in ...string) []string {
 		out = append(out, s)
 	}
 	return out
-}
-
-// netIPToBytes converts a netip.Addr to the 4-byte representation
-// used by debugpb.TraceTuple. Helper kept here so the resolver and
-// renderer agree on encoding.
-func netIPToBytes(addr netip.Addr) []byte {
-	if !addr.Is4() {
-		return nil
-	}
-	v := addr.As4()
-	return v[:]
-}
-
-// netSrcAndDst returns the source and destination IP4 in their
-// 4-byte form. Used by the run loop when building the LearnTuple
-// fan-out.
-func (r *resolved) netSrcAndDst() (net.IP, net.IP) {
-	src := append(net.IP{}, netIPToBytes(r.source.ip)...)
-	dst := append(net.IP{}, netIPToBytes(r.destination.ip)...)
-	return src, dst
 }

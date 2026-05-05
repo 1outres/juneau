@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/1outres/juneau/daemon/pkg/debugpb"
 )
@@ -157,17 +156,17 @@ func verdictSuffix(v debugpb.TraceVerdict) string {
 func renderFooter(w io.Writer, c *eventCollector, r *resolved) {
 	count := c.Count()
 	if count == 0 {
-		fmt.Fprintf(w, "\nResult: no events received for trace-%08x — packet did not enter any instrumented hook on the watched nodes.\n", r.traceID)
+		_, _ = fmt.Fprintf(w, "\nResult: no events received for trace-%08x — packet did not enter any instrumented hook on the watched nodes.\n", r.traceID)
 		return
 	}
 	last := c.Last()
 	switch last.Verdict {
 	case debugpb.TraceVerdict_TRACE_VERDICT_DROP:
-		fmt.Fprintf(w, "\nResult: dropped at %s (%s)\n", hookString(last.Hook), reasonString(last.Reason))
+		_, _ = fmt.Fprintf(w, "\nResult: dropped at %s (%s)\n", hookString(last.Hook), reasonString(last.Reason))
 	case debugpb.TraceVerdict_TRACE_VERDICT_REDIRECT:
-		fmt.Fprintf(w, "\nResult: last seen redirected at %s\n", hookString(last.Hook))
+		_, _ = fmt.Fprintf(w, "\nResult: last seen redirected at %s\n", hookString(last.Hook))
 	default:
-		fmt.Fprintf(w, "\nResult: %d events received\n", count)
+		_, _ = fmt.Fprintf(w, "\nResult: %d events received\n", count)
 	}
 }
 
@@ -238,11 +237,4 @@ func (c *eventCollector) Close() error {
 		return c.file.Close()
 	}
 	return nil
-}
-
-// formatNs renders a kernel-monotonic ns into a human millisecond
-// string. Useful for tests that compare rendered output.
-func formatNs(ns uint64) string {
-	d := time.Duration(ns)
-	return fmt.Sprintf("%.3fms", float64(d)/float64(time.Millisecond))
 }

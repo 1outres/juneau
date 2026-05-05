@@ -61,7 +61,7 @@ func (o *Options) Run(ctx context.Context) error {
 	}
 	defer func() {
 		if cerr := session.Cleanup(); cerr != nil {
-			fmt.Fprintf(o.Factory.Streams().ErrOut, "trace: cleanup failed: %v\n", cerr)
+			_, _ = fmt.Fprintf(o.Factory.Streams().ErrOut, "trace: cleanup failed: %v\n", cerr)
 		} else if !o.KeepSession {
 			ackCtx, ackCancel := context.WithTimeout(context.Background(), 2*time.Second)
 			_ = session.WaitForCleanupAck(ackCtx, 2*time.Second)
@@ -78,7 +78,7 @@ func (o *Options) Run(ctx context.Context) error {
 	collector := newEventCollector(o.OutputFile)
 	defer func() {
 		if err := collector.Close(); err != nil {
-			fmt.Fprintf(o.Factory.Streams().ErrOut, "trace: close output file: %v\n", err)
+			_, _ = fmt.Fprintf(o.Factory.Streams().ErrOut, "trace: close output file: %v\n", err)
 		}
 	}()
 
@@ -89,7 +89,7 @@ func (o *Options) Run(ctx context.Context) error {
 
 	out := o.Factory.Streams().Out
 	header := renderHeader(resolved, o)
-	fmt.Fprintln(out, header)
+	_, _ = fmt.Fprintln(out, header)
 
 	for {
 		select {
@@ -103,7 +103,7 @@ func (o *Options) Run(ctx context.Context) error {
 			return nil
 		case ev := <-streams.Events():
 			collector.Add(ev)
-			fmt.Fprintln(out, renderEvent(ev))
+			_, _ = fmt.Fprintln(out, renderEvent(ev))
 			// NAT-class events carry a post-translation tuple that
 			// remote-node hooks need in their trace_tuple_map for the
 			// continuation to match. Mirror it via Debug.LearnTuple
@@ -113,7 +113,7 @@ func (o *Options) Run(ctx context.Context) error {
 				go streams.PropagateLearnedTuple(runCtx, ev)
 			}
 		case streamErr := <-streams.Errors():
-			fmt.Fprintf(o.Factory.Streams().ErrOut, "trace: stream error: %v\n", streamErr)
+			_, _ = fmt.Fprintf(o.Factory.Streams().ErrOut, "trace: stream error: %v\n", streamErr)
 		}
 	}
 }
@@ -182,7 +182,7 @@ func (s *streamSet) PropagateLearnedTuple(ctx context.Context, ev *debugpb.Trace
 		SrcIp:    ev.AuxSrcIp,
 		DstIp:    ev.AuxDstIp,
 		SrcPort:  0, // ephemeral source ports are wildcarded BPF-side
-		DstPort:  uint32(ev.AuxDstPort),
+		DstPort:  ev.AuxDstPort,
 		Protocol: ev.Protocol,
 	}
 	req := &debugpb.LearnTupleRequest{TraceId: ev.TraceId, Tuple: tuple}
