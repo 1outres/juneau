@@ -82,15 +82,29 @@ ct_install_policy_pass(const struct ct_key *fwd_key, __u8 init_state,
 // Returns:
 //    1: admitted by policy and CT installed (caller continues)
 //    0: established-flow short-circuit, or no enforcement applied
-//   -1: terminal DENY (caller must TC_ACT_SHOT)
+//   -1: terminal DENY by NetworkACL (caller must TC_ACT_SHOT)
 //   -2: internal error (caller must TC_ACT_SHOT)
+//   -3: terminal DENY by SecurityGroup (caller must TC_ACT_SHOT)
+//
+// Negative codes are split per layer so callers can attribute the
+// drop to the right policy stage in trace events. Pre-split callers
+// only checked policy_rc < 0 and emitted a generic ACL_DROP, which
+// hid SG denials behind the wrong label.
 //
 // Inlined into the caller. The state-explosion pressure that used to
 // require a separate subprogram lives now in `acl_evaluate` and
 // `sg_eval` (both noinline subprograms): the rule-scan loops are the
 // real source, and isolating those is enough.
+//
+// trace_id / hook / subnet_id thread the active trace session through
+// the policy stage so per-layer PASS events can fire at the same site
+// where the per-layer DROP events are caught. trace_id == 0 short-
+// circuits every emit with one comparison, so the no-trace path keeps
+// its near-zero overhead.
 static __always_inline int apply_policy_egress(struct __sk_buff *skb,
-                                               __u32 vpc_id, __u32 acl_id) {
+                                               __u32 vpc_id, __u32 acl_id,
+                                               __u32 trace_id, __u32 hook,
+                                               __u32 subnet_id) {
   struct iphdr *iph = nat_load_iph(skb);
   if (!iph)
     return -2;
@@ -135,10 +149,20 @@ static __always_inline int apply_policy_egress(struct __sk_buff *skb,
     return 0;
   }
 
+  // First-packet path: emit MISS_CONNTRACK so the timeline shows why
+  // we are about to run the layered evaluator instead of taking the
+  // CT shortcut. The renderer can be told to suppress these via
+  // capture mask if too noisy.
+  trace_emit_map_miss_l3(skb, trace_id, TRACE_REASON_MISS_CONNTRACK,
+                         hook, TRACE_SCOPE_VPC, vpc_id, subnet_id, 0);
+
   // ACL eval first (Subnet boundary). Peer for egress is daddr.
   int acl_v = acl_evaluate(acl_id, ACL_DIR_EGRESS, proto, dport, iph->daddr);
   if (acl_v == ACL_VERDICT_DENY)
     return -1;
+  if (acl_id != 0)
+    trace_emit_policy_pass_l3(skb, trace_id, TRACE_REASON_POLICY_ACL_PASS,
+                              hook, TRACE_SCOPE_VPC, vpc_id, subnet_id);
 
   // SG eval (per-NIC). Skip cleanly when self has no SG attached so
   // the legacy "no enforcement" behaviour is preserved for Pods that
@@ -157,7 +181,10 @@ static __always_inline int apply_policy_egress(struct __sk_buff *skb,
       sg_v = sg_eval(self, peer, &sea);
     }
   if (sg_v == SG_VERDICT_DENY)
-    return -1;
+    return -3;
+  if (self != NULL && self->count > 0)
+    trace_emit_policy_pass_l3(skb, trace_id, TRACE_REASON_POLICY_SG_PASS,
+                              hook, TRACE_SCOPE_VPC, vpc_id, subnet_id);
 
   // CT install policy: any enforcing layer (ACL attached OR SG
   // attached) is enough to warrant a CT entry. PASS verdicts on
@@ -193,10 +220,17 @@ static __always_inline int apply_policy_egress(struct __sk_buff *skb,
 //
 // Returns:
 //    0: admitted (or short-circuited via CT, or no enforcement)
-//   -1: terminal DENY (caller must TC_ACT_SHOT)
+//   -1: terminal DENY by NetworkACL (caller must TC_ACT_SHOT)
 //   -2: internal error (caller must TC_ACT_SHOT)
+//   -3: terminal DENY by SecurityGroup (caller must TC_ACT_SHOT)
+//
+// Negative codes are split per layer; see apply_policy_egress for
+// the rationale and caller contract. trace_id / hook / subnet_id
+// thread the trace session through; see apply_policy_egress.
 static __always_inline int apply_policy_ingress(struct __sk_buff *skb,
-                                                __u32 vpc_id, __u32 acl_id) {
+                                                __u32 vpc_id, __u32 acl_id,
+                                                __u32 trace_id, __u32 hook,
+                                                __u32 subnet_id) {
   struct iphdr *iph = nat_load_iph(skb);
   if (!iph)
     return -2;
@@ -236,11 +270,17 @@ static __always_inline int apply_policy_ingress(struct __sk_buff *skb,
     return 0;
   }
 
+  trace_emit_map_miss_l3(skb, trace_id, TRACE_REASON_MISS_CONNTRACK,
+                         hook, TRACE_SCOPE_VPC, vpc_id, subnet_id, 0);
+
   // Peer for ingress is the sender (saddr). self is the receiving
   // Pod, identified by daddr.
   int acl_v = acl_evaluate(acl_id, ACL_DIR_INGRESS, proto, dport, iph->saddr);
   if (acl_v == ACL_VERDICT_DENY)
     return -1;
+  if (acl_id != 0)
+    trace_emit_policy_pass_l3(skb, trace_id, TRACE_REASON_POLICY_ACL_PASS,
+                              hook, TRACE_SCOPE_VPC, vpc_id, subnet_id);
 
   struct sg_membership_val *self = sg_membership_lookup(vpc_id, iph->daddr);
   struct sg_membership_val *peer = sg_membership_lookup(vpc_id, iph->saddr);
@@ -256,7 +296,10 @@ static __always_inline int apply_policy_ingress(struct __sk_buff *skb,
       sg_v = sg_eval(self, peer, &sea);
     }
   if (sg_v == SG_VERDICT_DENY)
-    return -1;
+    return -3;
+  if (self != NULL && self->count > 0)
+    trace_emit_policy_pass_l3(skb, trace_id, TRACE_REASON_POLICY_SG_PASS,
+                              hook, TRACE_SCOPE_VPC, vpc_id, subnet_id);
 
   // Symmetric to apply_policy_egress: any enforcing layer warrants a
   // CT entry, even on PASS verdicts, so the reverse leg's egress

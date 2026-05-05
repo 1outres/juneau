@@ -126,7 +126,9 @@ static __always_inline int handle(struct __sk_buff *skb) {
   if (!subnet)
     return TC_ACT_OK;
 
-  // Hook-entry trace event.
+  // Hook-entry trace event. Keep the trace_id so policy drops below
+  // can attribute themselves to this hook in the timeline.
+  __u32 __trace_id = 0;
   {
     struct trace_hook_ctx __ctx = {
         .reason = TRACE_REASON_ENTER_POD_INGRESS,
@@ -135,21 +137,43 @@ static __always_inline int handle(struct __sk_buff *skb) {
         .subnet_id = isv->subnet_id,
         .scope = TRACE_SCOPE_VPC,
     };
-    (void)trace_classify_and_emit_enter(skb, &__ctx);
+    __trace_id = trace_classify_and_emit_enter(skb, &__ctx);
   }
 
-  if (apply_reverse_snat(skb, subnet->vpc_id, isv->subnet_id) < 0)
+  if (apply_reverse_snat(skb, subnet->vpc_id, isv->subnet_id) < 0) {
+    trace_emit_drop_l3(skb, __trace_id, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_POD_INGRESS, TRACE_SCOPE_VPC,
+                       subnet->vpc_id, isv->subnet_id);
     return TC_ACT_SHOT;
+  }
 
   // Unified policy stage runs after reverse SNAT — the ACL and SG
   // layers evaluate the peer the *Pod* sees, which is the rewritten
   // src (= original ClusterIP for Service responses). Running this
   // after the reverse SNAT keeps user-facing rules ("admit traffic
   // from ClusterIP X") effective.
-  int policy_rc = apply_policy_ingress(skb, subnet->vpc_id, subnet->acl_id);
-  if (policy_rc == -1 || policy_rc == -2)
+  int policy_rc = apply_policy_ingress(skb, subnet->vpc_id, subnet->acl_id,
+                                       __trace_id, TRACE_HOOK_POD_INGRESS,
+                                       isv->subnet_id);
+  if (policy_rc < 0) {
+    // -1 = ACL deny, -3 = SG deny, -2 = internal error.
+    __u32 reason = TRACE_REASON_DROP_SHOT;
+    if (policy_rc == -1)
+      reason = TRACE_REASON_POLICY_ACL_DROP;
+    else if (policy_rc == -3)
+      reason = TRACE_REASON_POLICY_SG_DROP;
+    trace_emit_drop_l3(skb, __trace_id, reason, TRACE_HOOK_POD_INGRESS,
+                       TRACE_SCOPE_VPC, subnet->vpc_id, isv->subnet_id);
     return TC_ACT_SHOT;
+  }
 
+  // Terminal: hand the packet to the kernel for veth dispatch into
+  // the Pod's netns. Emitting here gives the timeline a clear close
+  // for the success path; without it the trace ended with the
+  // hook-entry event and operators could not tell whether the
+  // policy stage admitted the flow or silently dropped further down.
+  trace_emit_pass_kernel_l3(skb, __trace_id, TRACE_HOOK_POD_INGRESS,
+                            TRACE_SCOPE_VPC, subnet->vpc_id, isv->subnet_id);
   return TC_ACT_OK;
 }
 

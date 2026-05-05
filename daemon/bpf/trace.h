@@ -901,6 +901,39 @@ trace_emit_map_miss_l3(struct __sk_buff *skb, __u32 trace_id, __u32 reason,
                 TRACE_L3_PACK_C(hook, scope, TRACE_VERDICT_OK), aux1);
 }
 
+// trace_emit_pass_kernel_l3 records the terminal "TC_ACT_OK to
+// kernel" verdict at hooks that hand the packet back for kernel
+// dispatch (veth fdb, in-kernel routing). Without this emit, the
+// timeline ended at the hook-entry event for any same-Node flow
+// that exits via TC_ACT_OK rather than bpf_redirect, leaving
+// operators unable to tell where the packet actually landed.
+static __always_inline void
+trace_emit_pass_kernel_l3(struct __sk_buff *skb, __u32 trace_id, __u32 hook,
+                          __u8 scope, __u32 vpc_id, __u32 subnet_id) {
+  if (trace_id == 0)
+    return;
+  trace_emit_l3(skb, TRACE_L3_PACK_A(trace_id, TRACE_REASON_PASS_KERNEL),
+                TRACE_L3_PACK_B(vpc_id, subnet_id),
+                TRACE_L3_PACK_C(hook, scope, TRACE_VERDICT_OK),
+                skb->ifindex);
+}
+
+// trace_emit_policy_pass_l3 records that a policy layer (ACL or SG)
+// affirmatively admitted the flow on the first packet. Reason is one
+// of TRACE_REASON_POLICY_ACL_PASS / TRACE_REASON_POLICY_SG_PASS.
+// Emitted only on first-packet eval — established flows short-circuit
+// via CT and skip the layered evaluator entirely.
+static __always_inline void
+trace_emit_policy_pass_l3(struct __sk_buff *skb, __u32 trace_id, __u32 reason,
+                          __u32 hook, __u8 scope, __u32 vpc_id,
+                          __u32 subnet_id) {
+  if (trace_id == 0)
+    return;
+  trace_emit_l3(skb, TRACE_L3_PACK_A(trace_id, reason),
+                TRACE_L3_PACK_B(vpc_id, subnet_id),
+                TRACE_L3_PACK_C(hook, scope, TRACE_VERDICT_OK), 0);
+}
+
 // trace_lookup_id_l3 is for sites that need a trace_id at decision
 // points but were not classified at hook entry (e.g. terminal
 // verdicts in helpers that don't receive trace_id from the caller).

@@ -93,12 +93,24 @@ func reasonString(r debugpb.TraceEventReason) string {
 		return "enter vxlan_ingress"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_ENTER_NODE_INGRESS:
 		return "enter node_ingress"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_IFINDEX_SUBNET:
+		return "ifindex->subnet miss"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_SUBNET:
+		return "subnet miss"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_FIB_TABLE:
+		return "fib table miss"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_FIB_ROUTE:
 		return "fib route miss"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_ARP:
+		return "arp miss"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_FDB:
+		return "fdb miss"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_SERVICE:
 		return "service miss"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_BACKEND:
 		return "backend miss"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_CONNTRACK:
+		return "conntrack miss"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_POLICY_ACL_PASS:
 		return "acl pass"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_POLICY_ACL_DROP:
@@ -107,14 +119,24 @@ func reasonString(r debugpb.TraceEventReason) string {
 		return "sg pass"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_POLICY_SG_DROP:
 		return "sg drop"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_SERVICE_LOOKUP_HIT:
+		return "service lookup hit"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_SERVICE_BACKEND_SELECTED:
+		return "backend selected"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_DNAT_APPLIED:
 		return "dnat applied"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_SNAT_APPLIED:
 		return "snat applied"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_NAPT_ALLOCATED:
+		return "napt allocated"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_REVERSE_NAT_APPLIED:
+		return "reverse nat applied"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_REDIRECT_IFINDEX:
 		return "redirect ifindex"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_REDIRECT_VXLAN:
 		return "redirect vxlan"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_PASS_KERNEL:
+		return "pass to kernel"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_DROP_SHOT:
 		return "drop"
 	}

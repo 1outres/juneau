@@ -270,26 +270,30 @@ static __always_inline int handle_arp(struct __sk_buff *skb, void *data_end,
 }
 
 static __always_inline int forward_l2(struct __sk_buff *skb, struct ethhdr *eth,
-                                      __u32 subnet_id) {
+                                      __u32 vpc_id, __u32 subnet_id) {
   // Re-derive trace_id at this site rather than threading through the
   // call chain. Cheap when no session is active (single map lookup).
-  __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, 0);
+  // Earlier this passed vpc_id=0 which silently missed the trace tuple
+  // (registered with the source Pod's vpc_id), suppressing every
+  // FDB / REDIRECT / DROP emit on the success path.
+  __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, vpc_id);
   struct fdb_key fk = {};
   fk.subnet_id = subnet_id;
   __builtin_memcpy(fk.mac, eth->h_dest, ETH_ALEN);
   const struct fdb_val *fv = bpf_map_lookup_elem(&fdb, &fk);
   if (!fv) {
     trace_emit_map_miss_l3(skb, __tid, TRACE_REASON_MISS_FDB,
-                           TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, 0,
+                           TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, vpc_id,
                            subnet_id, subnet_id);
     trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_SHOT,
-                       TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, 0, subnet_id);
+                       TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, vpc_id,
+                       subnet_id);
     return TC_ACT_SHOT;
   }
 
   if (fv->ifindex != 0) {
     trace_emit_redirect_l3(skb, __tid, TRACE_REASON_REDIRECT_IFINDEX,
-                           TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, 0,
+                           TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, vpc_id,
                            subnet_id, fv->ifindex);
     return bpf_redirect(fv->ifindex, 0);
   }
@@ -298,7 +302,8 @@ static __always_inline int forward_l2(struct __sk_buff *skb, struct ethhdr *eth,
   const __u32 *vx_if = bpf_map_lookup_elem(&vxlan_ifindex, &vx_key);
   if (!vx_if) {
     trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_SHOT,
-                       TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, 0, subnet_id);
+                       TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, vpc_id,
+                       subnet_id);
     return TC_ACT_SHOT;
   }
 
@@ -310,13 +315,14 @@ static __always_inline int forward_l2(struct __sk_buff *skb, struct ethhdr *eth,
 
   if (bpf_skb_set_tunnel_key(skb, &tkey, sizeof(tkey), 0) < 0) {
     trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_SHOT,
-                       TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, 0, subnet_id);
+                       TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, vpc_id,
+                       subnet_id);
     return TC_ACT_SHOT;
   }
 
   trace_emit_redirect_l3(skb, __tid, TRACE_REASON_REDIRECT_VXLAN,
-                         TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, 0, subnet_id,
-                         *vx_if);
+                         TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, vpc_id,
+                         subnet_id, *vx_if);
   return bpf_redirect(*vx_if, 0);
 }
 
@@ -362,19 +368,34 @@ static __always_inline __u32 napt_rotate_left(__u32 x, __u32 r) {
 static __always_inline int dispatch_after_dnat(struct __sk_buff *skb,
                                                struct ethhdr *eth,
                                                struct iphdr *iph,
-                                               __u32 table_id, __be32 dst_be) {
+                                               __u32 vpc_id, __u32 table_id,
+                                               __be32 dst_be) {
   __u32 tid = table_id;
   void *fib_inner_map = bpf_map_lookup_elem(&fib_map, &tid);
-  if (!fib_inner_map)
+  if (!fib_inner_map) {
+    __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, vpc_id);
+    trace_emit_map_miss_l3(skb, __tid, TRACE_REASON_MISS_FIB_TABLE,
+                           TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                           vpc_id, 0, tid);
+    trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, vpc_id, 0);
     return TC_ACT_SHOT;
+  }
 
   struct fib_key fkey = {
       .prefixlen = 32,
       .dst = dst_be,
   };
   const struct fib_val *fv = bpf_map_lookup_elem(fib_inner_map, &fkey);
-  if (!fv)
+  if (!fv) {
+    __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, vpc_id);
+    trace_emit_map_miss_l3(skb, __tid, TRACE_REASON_MISS_FIB_ROUTE,
+                           TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                           vpc_id, 0, bpf_ntohl(dst_be));
+    trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, vpc_id, 0);
     return TC_ACT_SHOT;
+  }
 
   if (fv->type == FIB_ROUTE_TYPE_CONNECTED) {
     struct arp_table_key ak = {
@@ -386,13 +407,13 @@ static __always_inline int dispatch_after_dnat(struct __sk_buff *skb,
       return TC_ACT_SHOT;
     __builtin_memcpy(eth->h_dest, av->mac, ETH_ALEN);
     __builtin_memcpy(eth->h_source, fv->smac, ETH_ALEN);
-    return forward_l2(skb, eth, fv->subnet_id);
+    return forward_l2(skb, eth, vpc_id, fv->subnet_id);
   }
 
   if (fv->type == FIB_ROUTE_TYPE_ENDPOINT) {
     __builtin_memcpy(eth->h_dest, fv->dmac, ETH_ALEN);
     __builtin_memcpy(eth->h_source, fv->smac, ETH_ALEN);
-    return forward_l2(skb, eth, fv->subnet_id);
+    return forward_l2(skb, eth, vpc_id, fv->subnet_id);
   }
 
   if (fv->type == FIB_ROUTE_TYPE_INTERNET_GATEWAY)
@@ -917,8 +938,8 @@ handle_service_shared(struct __sk_buff *skb, struct iphdr *iph,
   struct ethhdr *new_eth =
       (struct ethhdr *)((void *)new_iph - sizeof(struct ethhdr));
 
-  return dispatch_after_dnat(skb, new_eth, new_iph, backend_subnet->table_id,
-                             backend_addr_be);
+  return dispatch_after_dnat(skb, new_eth, new_iph, backend_subnet->vpc_id,
+                             backend_subnet->table_id, backend_addr_be);
 }
 
 // handle_service performs the Service DNAT path. It enforces VPC ownership
@@ -942,8 +963,16 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
       .proto = iph->protocol,
   };
   const struct service_val *sv = bpf_map_lookup_elem(&service_map, &sk);
-  if (!sv)
+  if (!sv) {
+    __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, subnet->vpc_id);
+    trace_emit_map_miss_l3(skb, __tid, TRACE_REASON_MISS_SERVICE,
+                           TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                           subnet->vpc_id, 0, sk.cluster_ip);
+    trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                       subnet->vpc_id, 0);
     return TC_ACT_SHOT;
+  }
   // Cross-Vpc access is only allowed for Services explicitly opted in to
   // the shared path. caller_vpc != owner_vpc otherwise drops, preserving
   // the strict per-Vpc isolation that ordinary Services rely on.
@@ -1141,8 +1170,8 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
   struct ethhdr *new_eth =
       (struct ethhdr *)((void *)new_iph - sizeof(struct ethhdr));
 
-  return dispatch_after_dnat(skb, new_eth, new_iph, subnet->table_id,
-                             backend_addr_be);
+  return dispatch_after_dnat(skb, new_eth, new_iph, subnet->vpc_id,
+                             subnet->table_id, backend_addr_be);
 }
 
 // apply_conntrack_svc_napt_in handles the reply leg of a HOST_LOCAL
@@ -1254,7 +1283,10 @@ static __always_inline int apply_conntrack_svc_napt_in(struct __sk_buff *skb,
   __builtin_memcpy(eth->h_dest, dst_mac, ETH_ALEN);
   __builtin_memcpy(eth->h_source, src_mac, ETH_ALEN);
 
-  *out_rc = forward_l2(skb, eth, next_subnet_id);
+  // Reply leg: trace tuples are registered for the forward direction
+  // only, so this lookup never claims an active session. Pass 0 to
+  // make that intent explicit at the call site.
+  *out_rc = forward_l2(skb, eth, 0, next_subnet_id);
   return 1;
 }
 
@@ -1382,7 +1414,8 @@ static __always_inline int apply_conntrack_svc_shared_in(struct __sk_buff *skb,
   __builtin_memcpy(eth->h_dest, dst_mac, ETH_ALEN);
   __builtin_memcpy(eth->h_source, src_mac, ETH_ALEN);
 
-  *out_rc = forward_l2(skb, eth, next_subnet_id);
+  // Reply leg; see apply_conntrack_svc_napt_in for the rationale.
+  *out_rc = forward_l2(skb, eth, 0, next_subnet_id);
   return 1;
 }
 
@@ -1686,16 +1719,32 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
 
   __u32 tid = subnet->table_id;
   void *fib_inner_map = bpf_map_lookup_elem(&fib_map, &tid);
-  if (!fib_inner_map)
+  if (!fib_inner_map) {
+    __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, subnet->vpc_id);
+    trace_emit_map_miss_l3(skb, __tid, TRACE_REASON_MISS_FIB_TABLE,
+                           TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                           subnet->vpc_id, 0, tid);
+    trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                       subnet->vpc_id, 0);
     return TC_ACT_SHOT;
+  }
 
   struct fib_key fkey = {
       .prefixlen = 32,
       .dst = dst_be,
   };
   const struct fib_val *fv = bpf_map_lookup_elem(fib_inner_map, &fkey);
-  if (!fv)
+  if (!fv) {
+    __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, subnet->vpc_id);
+    trace_emit_map_miss_l3(skb, __tid, TRACE_REASON_MISS_FIB_ROUTE,
+                           TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                           subnet->vpc_id, 0, bpf_ntohl(dst_be));
+    trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                       subnet->vpc_id, 0);
     return TC_ACT_SHOT;
+  }
 
   if (fv->type == FIB_ROUTE_TYPE_CONNECTED) {
     struct arp_table_key ak = {
@@ -1709,14 +1758,14 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
     __builtin_memcpy(eth->h_dest, av->mac, ETH_ALEN);
     __builtin_memcpy(eth->h_source, fv->smac, ETH_ALEN);
 
-    return forward_l2(skb, eth, fv->subnet_id);
+    return forward_l2(skb, eth, subnet->vpc_id, fv->subnet_id);
   }
 
   if (fv->type == FIB_ROUTE_TYPE_ENDPOINT) {
     __builtin_memcpy(eth->h_dest, fv->dmac, ETH_ALEN);
     __builtin_memcpy(eth->h_source, fv->smac, ETH_ALEN);
 
-    return forward_l2(skb, eth, fv->subnet_id);
+    return forward_l2(skb, eth, subnet->vpc_id, fv->subnet_id);
   }
 
   if (fv->type == FIB_ROUTE_TYPE_INTERNET_GATEWAY)
@@ -1950,13 +1999,18 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
     // rewritten backend IP. -1/-2 are terminal DENY / internal error;
     // 0 means "established flow short-circuited" or "no enforcement";
     // 1 means "admitted on first packet, CT installed".
-    int policy_rc = apply_policy_egress(skb, subnet->vpc_id, subnet->acl_id);
-    if (policy_rc == -1 || policy_rc == -2) {
-      // -1 = ACL deny, -2 = SG deny (or internal). Best-effort
-      // attribution: emit both reasons so timeline shows both
-      // layers were consulted; the renderer dedupes if needed.
-      __u32 reason = (policy_rc == -1) ? TRACE_REASON_POLICY_ACL_DROP
-                                       : TRACE_REASON_POLICY_SG_DROP;
+    int policy_rc = apply_policy_egress(skb, subnet->vpc_id, subnet->acl_id,
+                                        __trace_id, TRACE_HOOK_POD_EGRESS,
+                                        val->subnet_id);
+    if (policy_rc < 0) {
+      // -1 = ACL deny, -3 = SG deny, -2 = internal error.
+      // Each maps to its own trace reason so the timeline names the
+      // policy layer that actually rejected the packet.
+      __u32 reason = TRACE_REASON_DROP_SHOT;
+      if (policy_rc == -1)
+        reason = TRACE_REASON_POLICY_ACL_DROP;
+      else if (policy_rc == -3)
+        reason = TRACE_REASON_POLICY_SG_DROP;
       trace_emit_drop_l3(skb, __trace_id, reason, TRACE_HOOK_POD_EGRESS,
                          TRACE_SCOPE_VPC, subnet->vpc_id, val->subnet_id);
       return TC_ACT_SHOT;
@@ -1990,10 +2044,16 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
       // the post-NAT tuple as both before and after; the more
       // detailed emit happens at the actual NAT decision in
       // handle_service / handle_service_shared.
-      trace_emit_drop_l3(skb, __trace_id, TRACE_REASON_DNAT_APPLIED,
-                         TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
-                         subnet->vpc_id, val->subnet_id);
-      return dispatch_after_dnat(skb, eth, iph, subnet->table_id, iph->daddr);
+      //
+      // Use the map-miss helper (TRACE_VERDICT_OK) rather than the
+      // drop helper: this is the success path. Earlier code used
+      // trace_emit_drop_l3 which mislabelled the timeline event with
+      // [DROP].
+      trace_emit_map_miss_l3(skb, __trace_id, TRACE_REASON_DNAT_APPLIED,
+                             TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                             subnet->vpc_id, val->subnet_id, 0);
+      return dispatch_after_dnat(skb, eth, iph, subnet->vpc_id,
+                                 subnet->table_id, iph->daddr);
     }
 
     // Virtual service classifier runs after Service-DNAT but before the
@@ -2030,7 +2090,7 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
   if (is_gw)
     return handle_l3(skb, eth, subnet);
 
-  return forward_l2(skb, eth, val->subnet_id);
+  return forward_l2(skb, eth, subnet->vpc_id, val->subnet_id);
 }
 
 SEC("tc")
