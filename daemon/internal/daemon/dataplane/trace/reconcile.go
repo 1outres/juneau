@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
@@ -25,16 +26,36 @@ import (
 // workqueue items; Store serialises BPF writes internally. Status
 // patches are idempotent — if a node is already listed in
 // observedNodes the patch is skipped.
+// storeIface narrows *Store to the methods the Reconciler needs so
+// tests can substitute a fake.
+type storeIface interface {
+	Apply(SessionSpec) error
+	Delete(traceID uint32) error
+}
+
 type Reconciler struct {
 	client   client.Client
-	store    *Store
+	store    storeIface
 	nodeName string
+
+	// idByName memoises the most recent traceID we observed for each
+	// TraceSession name. The CRD object is gone by the time NotFound is
+	// delivered, so we cannot recover the traceID from spec — we have
+	// to remember it here. Used by deleteByName to target only the
+	// removed session instead of tearing down every active trace.
+	mu       sync.Mutex
+	idByName map[string]uint32
 }
 
 // NewReconciler wires the dependencies. The same instance is used by
 // the daemon's Runner and shares Store with the ringbuf reader.
 func NewReconciler(cl client.Client, store *Store, nodeName string) *Reconciler {
-	return &Reconciler{client: cl, store: store, nodeName: nodeName}
+	return &Reconciler{
+		client:   cl,
+		store:    store,
+		nodeName: nodeName,
+		idByName: make(map[string]uint32),
+	}
 }
 
 // Name implements runner.Reconciler.
@@ -73,6 +94,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, key string) error {
 	if err := r.store.Apply(spec); err != nil {
 		return fmt.Errorf("apply session %q: %w", name, err)
 	}
+	r.rememberID(name, spec.TraceID)
 	if err := r.markObserved(ctx, &ts); err != nil {
 		zap.S().Warnw("trace: status patch failed", "name", name, "err", err)
 	}
@@ -83,21 +105,46 @@ func (r *Reconciler) deleteSpec(ctx context.Context, ts *juneauv1alpha1.TraceSes
 	if err := r.store.Delete(ts.Spec.TraceID); err != nil {
 		return err
 	}
+	r.forgetID(ts.Name)
 	return r.markUnobserved(ctx, ts)
 }
 
 func (r *Reconciler) deleteByName(name string) error {
-	// We do not have the trace_id once the CRD is gone; rely on the
-	// store to GC by name-correlated state. The store keys by
-	// trace_id only, so the safest fallback is to scan and delete by
-	// active set membership. Reasonable because trace sessions are
-	// rare.
-	for _, id := range r.store.ActiveTraceIDs() {
-		if err := r.store.Delete(id); err != nil {
-			zap.S().Warnw("trace: cleanup-by-name failed", "name", name, "traceID", id, "err", err)
-		}
+	id, ok := r.takeID(name)
+	if !ok {
+		// Either we never applied this session on this node, or the
+		// daemon restarted between Apply and the delete event. The
+		// store's GC tick reaps stale state by expiresAt, so dropping
+		// here is safe and avoids tearing down peer sessions.
+		return nil
+	}
+	if err := r.store.Delete(id); err != nil {
+		zap.S().Warnw("trace: delete-by-name failed", "name", name, "traceID", id, "err", err)
+		return err
 	}
 	return nil
+}
+
+func (r *Reconciler) rememberID(name string, id uint32) {
+	r.mu.Lock()
+	r.idByName[name] = id
+	r.mu.Unlock()
+}
+
+func (r *Reconciler) forgetID(name string) {
+	r.mu.Lock()
+	delete(r.idByName, name)
+	r.mu.Unlock()
+}
+
+func (r *Reconciler) takeID(name string) (uint32, bool) {
+	r.mu.Lock()
+	id, ok := r.idByName[name]
+	if ok {
+		delete(r.idByName, name)
+	}
+	r.mu.Unlock()
+	return id, ok
 }
 
 // markObserved appends this node to status.observedNodes and bumps
