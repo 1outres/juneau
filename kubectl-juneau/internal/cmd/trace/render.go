@@ -11,7 +11,79 @@ import (
 	"sync"
 
 	"github.com/1outres/juneau/daemon/pkg/debugpb"
+	"google.golang.org/protobuf/encoding/protojson"
+	sigsyaml "sigs.k8s.io/yaml"
 )
+
+// Output formats accepted by --output. validated in Options.Validate.
+const (
+	outputTree = "tree"
+	outputJSON = "json"
+	outputYAML = "yaml"
+)
+
+// writeHeader prints the human-readable timeline title for the tree
+// format. JSON / YAML callers want a clean stream of structured
+// records and skip this entirely.
+func writeHeader(w io.Writer, format string, r *resolved, o *Options) {
+	if normaliseFormat(format) != outputTree {
+		return
+	}
+	_, _ = fmt.Fprintln(w, renderHeader(r, o))
+}
+
+// writeEvent emits a single event in the configured format. tree
+// formatting matches the streaming-friendly one-line layout; JSON
+// produces NDJSON so downstream tooling can consume the stream
+// incrementally; YAML uses the kubectl idiom of one document per
+// record separated by `---`.
+func writeEvent(w io.Writer, format string, ev *debugpb.TraceEvent) error {
+	switch normaliseFormat(format) {
+	case outputJSON:
+		marshaller := protojson.MarshalOptions{EmitUnpopulated: false}
+		buf, err := marshaller.Marshal(ev)
+		if err != nil {
+			return fmt.Errorf("marshal json: %w", err)
+		}
+		_, err = fmt.Fprintln(w, string(buf))
+		return err
+	case outputYAML:
+		marshaller := protojson.MarshalOptions{EmitUnpopulated: false}
+		buf, err := marshaller.Marshal(ev)
+		if err != nil {
+			return fmt.Errorf("marshal yaml: %w", err)
+		}
+		yamlBytes, err := sigsyaml.JSONToYAML(buf)
+		if err != nil {
+			return fmt.Errorf("convert yaml: %w", err)
+		}
+		if _, err := fmt.Fprintln(w, "---"); err != nil {
+			return err
+		}
+		_, err = w.Write(yamlBytes)
+		return err
+	default:
+		_, err := fmt.Fprintln(w, renderEvent(ev))
+		return err
+	}
+}
+
+// writeFooter emits the post-timeout summary, suppressed for
+// machine-readable formats.
+func writeFooter(w io.Writer, format string, c *eventCollector, r *resolved) {
+	if normaliseFormat(format) != outputTree {
+		return
+	}
+	renderFooter(w, c, r)
+}
+
+func normaliseFormat(format string) string {
+	f := strings.ToLower(strings.TrimSpace(format))
+	if f == "" {
+		return outputTree
+	}
+	return f
+}
 
 // renderHeader returns the one-line trace title for the timeline.
 // Mirrors the example in the design handoff:

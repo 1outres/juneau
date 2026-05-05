@@ -88,22 +88,24 @@ func (o *Options) Run(ctx context.Context) error {
 	defer deadline.Stop()
 
 	out := o.Factory.Streams().Out
-	header := renderHeader(resolved, o)
-	_, _ = fmt.Fprintln(out, header)
+	errOut := o.Factory.Streams().ErrOut
+	writeHeader(out, o.OutputFormat, resolved, o)
 
 	for {
 		select {
 		case <-runCtx.Done():
 			collector.Sort()
-			renderFooter(out, collector, resolved)
+			writeFooter(out, o.OutputFormat, collector, resolved)
 			return nil
 		case <-deadline.C:
 			collector.Sort()
-			renderFooter(out, collector, resolved)
+			writeFooter(out, o.OutputFormat, collector, resolved)
 			return nil
 		case ev := <-streams.Events():
 			collector.Add(ev)
-			_, _ = fmt.Fprintln(out, renderEvent(ev))
+			if err := writeEvent(out, o.OutputFormat, ev); err != nil {
+				_, _ = fmt.Fprintf(errOut, "trace: render: %v\n", err)
+			}
 			// NAT-class events carry a post-translation tuple that
 			// remote-node hooks need in their trace_tuple_map for the
 			// continuation to match. Mirror it via Debug.LearnTuple
@@ -113,7 +115,7 @@ func (o *Options) Run(ctx context.Context) error {
 				go streams.PropagateLearnedTuple(runCtx, ev)
 			}
 		case streamErr := <-streams.Errors():
-			_, _ = fmt.Fprintf(o.Factory.Streams().ErrOut, "trace: stream error: %v\n", streamErr)
+			_, _ = fmt.Fprintf(errOut, "trace: stream error: %v\n", streamErr)
 		}
 	}
 }
