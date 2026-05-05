@@ -44,10 +44,10 @@ func TestClusterZoneResolvesSameVPCService(t *testing.T) {
 	z := NewClusterZone(cl, DefaultClusterDomain, 30)
 
 	res, err := z.Resolve(context.Background(), Query{
-		Name:                "demo.ns1.svc.cluster.local.",
-		Type:                TypeA,
-		Class:               ClassINET,
-		CallerVPC:           "tenant-a",
+		Name:                 "demo.ns1.svc.cluster.local.",
+		Type:                 TypeA,
+		Class:                ClassINET,
+		CallerVPC:            "tenant-a",
 		CallerServiceEnabled: true,
 		CallerConsume:        true,
 	})
@@ -90,10 +90,10 @@ func TestClusterZoneAcrossVPCDeniedNXDomain(t *testing.T) {
 	z := NewClusterZone(cl, DefaultClusterDomain, 30)
 
 	res, err := z.Resolve(context.Background(), Query{
-		Name:                "demo.ns1.svc.cluster.local.",
-		Type:                TypeA,
-		Class:               ClassINET,
-		CallerVPC:           "tenant-b",
+		Name:                 "demo.ns1.svc.cluster.local.",
+		Type:                 TypeA,
+		Class:                ClassINET,
+		CallerVPC:            "tenant-b",
 		CallerServiceEnabled: true,
 		CallerConsume:        true,
 	})
@@ -115,10 +115,10 @@ func TestClusterZoneSharedServiceAcrossVPC(t *testing.T) {
 	z := NewClusterZone(cl, DefaultClusterDomain, 30)
 
 	res, err := z.Resolve(context.Background(), Query{
-		Name:                "demo.ns1.svc.cluster.local.",
-		Type:                TypeA,
-		Class:               ClassINET,
-		CallerVPC:           "tenant-b",
+		Name:                 "demo.ns1.svc.cluster.local.",
+		Type:                 TypeA,
+		Class:                ClassINET,
+		CallerVPC:            "tenant-b",
 		CallerServiceEnabled: true,
 		CallerConsume:        true,
 	})
@@ -141,10 +141,10 @@ func TestClusterZoneServiceEnabledOff(t *testing.T) {
 	z := NewClusterZone(cl, DefaultClusterDomain, 30)
 
 	res, err := z.Resolve(context.Background(), Query{
-		Name:                "demo.ns1.svc.cluster.local.",
-		Type:                TypeA,
-		Class:               ClassINET,
-		CallerVPC:           "tenant-a",
+		Name:                 "demo.ns1.svc.cluster.local.",
+		Type:                 TypeA,
+		Class:                ClassINET,
+		CallerVPC:            "tenant-a",
 		CallerServiceEnabled: false,
 	})
 	if err != nil {
@@ -162,10 +162,10 @@ func TestClusterZoneAAAAReturnsNoData(t *testing.T) {
 	z := NewClusterZone(cl, DefaultClusterDomain, 30)
 
 	res, err := z.Resolve(context.Background(), Query{
-		Name:                "demo.ns1.svc.cluster.local.",
-		Type:                TypeAAAA,
-		Class:               ClassINET,
-		CallerVPC:           "default",
+		Name:                 "demo.ns1.svc.cluster.local.",
+		Type:                 TypeAAAA,
+		Class:                ClassINET,
+		CallerVPC:            "default",
 		CallerServiceEnabled: true,
 		CallerConsume:        true,
 	})
@@ -186,10 +186,10 @@ func TestClusterZoneHeadlessServiceNoData(t *testing.T) {
 	z := NewClusterZone(cl, DefaultClusterDomain, 30)
 
 	res, err := z.Resolve(context.Background(), Query{
-		Name:                "headless.ns1.svc.cluster.local.",
-		Type:                TypeA,
-		Class:               ClassINET,
-		CallerVPC:           "default",
+		Name:                 "headless.ns1.svc.cluster.local.",
+		Type:                 TypeA,
+		Class:                ClassINET,
+		CallerVPC:            "default",
 		CallerServiceEnabled: true,
 		CallerConsume:        true,
 	})

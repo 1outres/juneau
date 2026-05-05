@@ -60,14 +60,11 @@ const (
 
 // natPlan is the resolved decision planAction returns to Reconcile.
 // vpcID is meaningful for natWrite/natClear; address only for
-// natWrite. installedKey records the previously-installed vpc_id (if
-// any) so a write that targets a different key can also drop the
-// stale slot.
+// natWrite.
 type natPlan struct {
-	action      natAction
-	vpcID       uint32
-	address     string
-	installedAt uint32
+	action  natAction
+	vpcID   uint32
+	address string
 }
 
 // planAction decides what to do with an incoming reconcile event.

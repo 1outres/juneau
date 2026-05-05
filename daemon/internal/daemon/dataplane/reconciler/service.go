@@ -29,9 +29,9 @@ const (
 	// compile; the canonical home for these constants is the
 	// svcpolicy package, which both the data plane and the virtual
 	// DNS resolver import.
-	ServiceAnnotationVpc                  = svcpolicy.AnnotationVpc
-	ServiceAnnotationShared               = svcpolicy.AnnotationShared
-	ServiceAnnotationAllowedConsumerVpcs  = svcpolicy.AnnotationAllowedConsumerVpcs
+	ServiceAnnotationVpc                 = svcpolicy.AnnotationVpc
+	ServiceAnnotationShared              = svcpolicy.AnnotationShared
+	ServiceAnnotationAllowedConsumerVpcs = svcpolicy.AnnotationAllowedConsumerVpcs
 
 	// svcFlagShared mirrors SVC_FLAG_SHARED in daemon/bpf/maps.h. Setting
 	// it on service_val.flags lets pod_egress.handle_service treat
