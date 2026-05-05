@@ -213,13 +213,13 @@ var _ = Describe("Service-related Vpc/Subnet webhooks", func() {
 
 		var vpc juneauv1alpha1.Vpc
 		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Name: vpcName}, &vpc)).To(Succeed())
-		vpc.Spec.EnableService = true
+		vpc.Spec.Service = &juneauv1alpha1.VpcServiceSpec{Consume: true}
 		err := webhookK8sClient.Update(context.Background(), &vpc)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("overlaps with Service CIDR"))
 	})
 
-	It("rejects creating a Subnet that overlaps the Service CIDR when the VPC has enableService=true", func() {
+	It("rejects creating a Subnet that overlaps the Service CIDR when the VPC has Service routing enabled", func() {
 		vpcName := createWebhookServiceEnabledVpc()
 
 		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Subnet{
@@ -231,6 +231,42 @@ var _ = Describe("Service-related Vpc/Subnet webhooks", func() {
 		})
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("overlaps with Service CIDR"))
+	})
+
+	// The provider NAT-source-Subnet reference is intentionally not
+	// validated at admission: the Vpc and its Subnet are commonly
+	// applied together (`kubectl apply -f -`), and admission-time
+	// existence checks would deadlock since each side references the
+	// other. Existence/ownership is enforced by the Vpc controller
+	// instead, surfaced via the Vpc's Ready condition.
+	It("admits a provider Vpc whose natSourceSubnet does not exist yet", func() {
+		vpcName := webhookUniqueTestName("vpc")
+		subnetName := webhookUniqueTestName("subnet")
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Vpc{
+			ObjectMeta: metav1.ObjectMeta{Name: vpcName},
+			Spec: juneauv1alpha1.VpcSpec{Service: &juneauv1alpha1.VpcServiceSpec{
+				Provider: &juneauv1alpha1.VpcServiceProviderSpec{NATSourceSubnet: subnetName},
+			}},
+		})).To(Succeed())
+	})
+
+	It("admits a provider Vpc whose natSourceSubnet belongs to another Vpc", func() {
+		otherVpc := createWebhookVpc()
+		foreignSubnet := webhookUniqueTestName("subnet")
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Subnet{
+			ObjectMeta: metav1.ObjectMeta{Name: foreignSubnet},
+			Spec: juneauv1alpha1.SubnetSpec{
+				Vpc:  otherVpc,
+				CIDR: webhookUniqueSubnetCIDR(),
+			},
+		})).To(Succeed())
+
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Vpc{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("vpc")},
+			Spec: juneauv1alpha1.VpcSpec{Service: &juneauv1alpha1.VpcServiceSpec{
+				Provider: &juneauv1alpha1.VpcServiceProviderSpec{NATSourceSubnet: foreignSubnet},
+			}},
+		})).To(Succeed())
 	})
 })
 
@@ -383,9 +419,42 @@ func createWebhookServiceEnabledVpc() string {
 	name := webhookUniqueTestName("vpc")
 	Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Vpc{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec:       juneauv1alpha1.VpcSpec{EnableService: true},
+		Spec:       juneauv1alpha1.VpcSpec{Service: &juneauv1alpha1.VpcServiceSpec{Consume: true}},
 	})).To(Succeed())
 	return name
+}
+
+// createWebhookServiceProviderVpc creates a Vpc that opts in to the
+// cross-Vpc provider role, with a freshly-allocated Subnet acting as
+// its NAT-source pool. Used by Service-webhook tests that verify
+// provider-only behaviours (shared annotation acceptance, ACL).
+func createWebhookServiceProviderVpc() string {
+	vpcName := webhookUniqueTestName("vpc")
+	subnetName := webhookUniqueTestName("subnet")
+
+	Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Vpc{
+		ObjectMeta: metav1.ObjectMeta{Name: vpcName},
+		// Provider must reference an existing Subnet, so create the
+		// Vpc first without provider, attach the Subnet, then patch
+		// provider in. Mirrors the bootstrap ordering used in
+		// production.
+	})).To(Succeed())
+	Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Subnet{
+		ObjectMeta: metav1.ObjectMeta{Name: subnetName},
+		Spec: juneauv1alpha1.SubnetSpec{
+			Vpc:  vpcName,
+			CIDR: webhookUniqueSubnetCIDR(),
+		},
+	})).To(Succeed())
+
+	var vpc juneauv1alpha1.Vpc
+	Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Name: vpcName}, &vpc)).To(Succeed())
+	vpc.Spec.Service = &juneauv1alpha1.VpcServiceSpec{
+		Consume:  true,
+		Provider: &juneauv1alpha1.VpcServiceProviderSpec{NATSourceSubnet: subnetName},
+	}
+	Expect(webhookK8sClient.Update(context.Background(), &vpc)).To(Succeed())
+	return vpcName
 }
 
 func webhookUniqueTestName(prefix string) string {
@@ -393,6 +462,12 @@ func webhookUniqueTestName(prefix string) string {
 }
 
 func webhookUniqueSubnetCIDR() string {
-	octet := time.Now().UnixNano()%200 + 20
+	// Avoid 10.96.0.0/12 (the test Service CIDR) so this helper is
+	// safe to use even from specs that toggle Service routing on the
+	// owning Vpc. We pick from 10.{20..95,112..219}.0.0/24.
+	octet := int(time.Now().UnixNano()%(200-16) + 20)
+	if octet >= 96 {
+		octet += 16 // skip the 96..111 window
+	}
 	return fmt.Sprintf("10.%d.0.0/24", octet)
 }

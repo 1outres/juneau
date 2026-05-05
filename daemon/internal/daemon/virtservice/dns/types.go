@@ -57,10 +57,16 @@ type Query struct {
 	// each have to do their own VPC lookup.
 	CallerVPC string
 
-	// CallerEnableService caches Vpc.spec.enableService for
-	// CallerVPC. Resolvers use it to short-circuit the
-	// svcpolicy.ResolvableFrom check.
-	CallerEnableService bool
+	// CallerServiceEnabled mirrors Vpc.Spec.ServiceEnabled() for
+	// CallerVPC (Provider configured OR Consume true). False means
+	// the VPC has no Service routing and resolvers must answer
+	// NXDOMAIN even for own-VPC Services.
+	CallerServiceEnabled bool
+
+	// CallerConsume mirrors Vpc.Spec.Service.Consume for CallerVPC.
+	// Required for cross-VPC shared-Service resolution; same-VPC
+	// resolution is governed by CallerServiceEnabled alone.
+	CallerConsume bool
 
 	// CallerIP is the Pod's source IP. Carried through for logging
 	// and potential future EDNS Client Subnet support.

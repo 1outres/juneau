@@ -23,18 +23,24 @@ import (
 )
 
 const (
-	// ServiceAnnotationVpc and ServiceAnnotationShared are kept as
-	// re-exports so existing callers (including controller-side tests)
-	// continue to compile; the canonical home for these constants is
-	// the svcpolicy package, which both the data plane and the virtual
+	// ServiceAnnotationVpc, ServiceAnnotationShared, and
+	// ServiceAnnotationAllowedConsumerVpcs are kept as re-exports so
+	// existing callers (including controller-side tests) continue to
+	// compile; the canonical home for these constants is the
+	// svcpolicy package, which both the data plane and the virtual
 	// DNS resolver import.
-	ServiceAnnotationVpc    = svcpolicy.AnnotationVpc
-	ServiceAnnotationShared = svcpolicy.AnnotationShared
+	ServiceAnnotationVpc                  = svcpolicy.AnnotationVpc
+	ServiceAnnotationShared               = svcpolicy.AnnotationShared
+	ServiceAnnotationAllowedConsumerVpcs  = svcpolicy.AnnotationAllowedConsumerVpcs
 
 	// svcFlagShared mirrors SVC_FLAG_SHARED in daemon/bpf/maps.h. Setting
 	// it on service_val.flags lets pod_egress.handle_service treat
 	// caller_vpc != owner_vpc as a shared-Service hit instead of a drop.
 	svcFlagShared uint32 = 1 << 0
+	// svcFlagHasACL mirrors SVC_FLAG_HAS_ACL in daemon/bpf/maps.h.
+	// Setting it lets pod_egress.handle_service consult
+	// service_acl_map for a (svc × caller_vpc) admit decision.
+	svcFlagHasACL uint32 = 1 << 1
 
 	// kubernetesServiceLabel links an EndpointSlice to its parent Service
 	// and is the canonical Kubernetes selector for the relationship.
@@ -85,6 +91,7 @@ type Service struct {
 type serviceSnapshot struct {
 	serviceKeys []bpf.PodEgressServiceKey
 	backendKeys []bpf.PodEgressBackendKey
+	aclKeys     []bpf.PodEgressServiceAclKey
 }
 
 func NewService(cl client.Client, podEgress *program.PodEgress, nodeIP net.IP) *Service {
@@ -137,7 +144,7 @@ func (r *Service) upsert(ctx context.Context, key string, svc *corev1.Service) e
 		// Vpc still being reconciled; skip until it has an ID.
 		return nil
 	}
-	if !vpc.Spec.EnableService {
+	if !vpc.Spec.ServiceEnabled() {
 		return r.delete(key)
 	}
 
@@ -224,6 +231,14 @@ func (r *Service) upsert(ctx context.Context, key string, svc *corev1.Service) e
 		}
 	}
 
+	// Resolve the consumer ACL once; the same set applies to every
+	// (port × proto) row of the Service.
+	allowedVpcIDs, hasACL, err := r.resolveAllowedConsumerVpcIDs(ctx, svc)
+	if err != nil {
+		return err
+	}
+	flags := serviceFlags(svc, hasACL)
+
 	now := serviceSnapshot{}
 	for _, port := range svc.Spec.Ports {
 		proto := protoToU8(port.Protocol)
@@ -238,7 +253,7 @@ func (r *Service) upsert(ctx context.Context, key string, svc *corev1.Service) e
 		val := bpf.PodEgressServiceVal{
 			OwnerVpcId:   vpc.Status.VpcID,
 			BackendCount: uint32(len(backendsByPort[port])),
-			Flags:        serviceFlags(svc),
+			Flags:        flags,
 		}
 		if err := r.podEgress.Objs.ServiceMap.Update(&key, &val, ebpf.UpdateAny); err != nil {
 			return fmt.Errorf("update ServiceMap: %w", err)
@@ -256,6 +271,22 @@ func (r *Service) upsert(ctx context.Context, key string, svc *corev1.Service) e
 				return fmt.Errorf("update BackendMap: %w", err)
 			}
 			now.backendKeys = append(now.backendKeys, bk)
+		}
+
+		if hasACL {
+			for _, callerVpcID := range allowedVpcIDs {
+				ak := bpf.PodEgressServiceAclKey{
+					ClusterIp:   clusterIPHost,
+					Port:        uint16(port.Port),
+					Proto:       proto,
+					CallerVpcId: callerVpcID,
+				}
+				one := uint8(1)
+				if err := r.podEgress.Objs.ServiceAclMap.Update(&ak, &one, ebpf.UpdateAny); err != nil {
+					return fmt.Errorf("update ServiceAclMap: %w", err)
+				}
+				now.aclKeys = append(now.aclKeys, ak)
+			}
 		}
 	}
 
@@ -279,8 +310,46 @@ func (r *Service) upsert(ctx context.Context, key string, svc *corev1.Service) e
 			}
 		}
 	}
+	for _, ak := range old.aclKeys {
+		if !containsServiceAclKey(now.aclKeys, ak) {
+			if err := r.podEgress.Objs.ServiceAclMap.Delete(&ak); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+				zap.S().Warnf("service: delete stale ServiceAclMap entry: %v", err)
+			}
+		}
+	}
 
 	return nil
+}
+
+// resolveAllowedConsumerVpcIDs translates the
+// shared-service-allowed-consumer-vpcs annotation into the BPF-side
+// vpc_id whitelist. Returns hasACL=false when no ACL is configured
+// (every consume-enabled Vpc is admitted by default). Vpcs listed in
+// the annotation but not yet reconciled (VpcID=0) or absent from the
+// cache are skipped silently; the next Vpc event will re-run the
+// reconciler and pick them up. The reconciler must list these
+// resources via its informer cache so the lookup is O(N_vpcs)
+// without an extra round-trip.
+func (r *Service) resolveAllowedConsumerVpcIDs(ctx context.Context, svc *corev1.Service) ([]uint32, bool, error) {
+	allowed := svcpolicy.AllowedConsumerVpcs(svc)
+	if len(allowed) == 0 {
+		return nil, false, nil
+	}
+	out := make([]uint32, 0, len(allowed))
+	for _, name := range allowed {
+		var vpc juneauv1alpha1.Vpc
+		if err := r.client.Get(ctx, client.ObjectKey{Name: name}, &vpc); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return nil, false, fmt.Errorf("get consumer Vpc %q: %w", name, err)
+		}
+		if vpc.Status.VpcID == 0 {
+			continue
+		}
+		out = append(out, vpc.Status.VpcID)
+	}
+	return out, true, nil
 }
 
 func (r *Service) delete(key string) error {
@@ -302,6 +371,11 @@ func (r *Service) delete(key string) error {
 	for _, bk := range old.backendKeys {
 		if err := r.podEgress.Objs.BackendMap.Delete(&bk); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 			zap.S().Warnf("service: delete BackendMap entry: %v", err)
+		}
+	}
+	for _, ak := range old.aclKeys {
+		if err := r.podEgress.Objs.ServiceAclMap.Delete(&ak); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			zap.S().Warnf("service: delete ServiceAclMap entry: %v", err)
 		}
 	}
 	return nil
@@ -397,14 +471,20 @@ func (r *Service) findInterfaceForPod(ctx context.Context, namespace, podName st
 }
 
 // serviceFlags returns the SVC_FLAG_* bitmask written to service_val.flags
-// for the given Service. Currently only the shared bit is exposed; the
-// shared decision lives in svcpolicy so the BPF backend programmer and
-// the virtual DNS resolver answer the same question identically.
-func serviceFlags(svc *corev1.Service) uint32 {
+// for the given Service. The shared decision lives in svcpolicy so
+// the BPF backend programmer and the virtual DNS resolver answer the
+// same question identically; the ACL bit is signalled separately by
+// the caller because resolving the ACL list also requires
+// per-consumer-Vpc lookups.
+func serviceFlags(svc *corev1.Service, hasACL bool) uint32 {
+	var flags uint32
 	if svcpolicy.IsShared(svc) {
-		return svcFlagShared
+		flags |= svcFlagShared
 	}
-	return 0
+	if hasACL {
+		flags |= svcFlagHasACL
+	}
+	return flags
 }
 
 func matchEndpointsForPort(endpoints []endpointInfo, svcPort corev1.ServicePort) []endpointInfo {
@@ -462,6 +542,15 @@ func containsServiceKey(set []bpf.PodEgressServiceKey, k bpf.PodEgressServiceKey
 }
 
 func containsBackendKey(set []bpf.PodEgressBackendKey, k bpf.PodEgressBackendKey) bool {
+	for i := range set {
+		if set[i] == k {
+			return true
+		}
+	}
+	return false
+}
+
+func containsServiceAclKey(set []bpf.PodEgressServiceAclKey, k bpf.PodEgressServiceAclKey) bool {
 	for i := range set {
 		if set[i] == k {
 			return true

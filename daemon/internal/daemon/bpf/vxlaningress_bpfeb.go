@@ -167,6 +167,15 @@ type VxlanIngressNatOutside struct {
 	Addr uint32
 }
 
+type VxlanIngressServiceAclKey struct {
+	_           structs.HostLayout
+	ClusterIp   uint32
+	Port        uint16
+	Proto       uint8
+	Pad         uint8
+	CallerVpcId uint32
+}
+
 type VxlanIngressServiceKey struct {
 	_         structs.HostLayout
 	ClusterIp uint32
@@ -366,6 +375,7 @@ type VxlanIngressMapSpecs struct {
 	NaptSrc               *ebpf.MapSpec `ebpf:"napt_src"`
 	NatDnatMap            *ebpf.MapSpec `ebpf:"nat_dnat_map"`
 	NatSnatMap            *ebpf.MapSpec `ebpf:"nat_snat_map"`
+	ServiceAclMap         *ebpf.MapSpec `ebpf:"service_acl_map"`
 	ServiceMap            *ebpf.MapSpec `ebpf:"service_map"`
 	ServiceNatIp          *ebpf.MapSpec `ebpf:"service_nat_ip"`
 	SgMembershipMap       *ebpf.MapSpec `ebpf:"sg_membership_map"`
@@ -424,6 +434,7 @@ type VxlanIngressMaps struct {
 	NaptSrc               *ebpf.Map `ebpf:"napt_src"`
 	NatDnatMap            *ebpf.Map `ebpf:"nat_dnat_map"`
 	NatSnatMap            *ebpf.Map `ebpf:"nat_snat_map"`
+	ServiceAclMap         *ebpf.Map `ebpf:"service_acl_map"`
 	ServiceMap            *ebpf.Map `ebpf:"service_map"`
 	ServiceNatIp          *ebpf.Map `ebpf:"service_nat_ip"`
 	SgMembershipMap       *ebpf.Map `ebpf:"sg_membership_map"`
@@ -458,6 +469,7 @@ func (m *VxlanIngressMaps) Close() error {
 		m.NaptSrc,
 		m.NatDnatMap,
 		m.NatSnatMap,
+		m.ServiceAclMap,
 		m.ServiceMap,
 		m.ServiceNatIp,
 		m.SgMembershipMap,

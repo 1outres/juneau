@@ -24,8 +24,9 @@ import (
 // Tenant identity comes from the listener (one per (vpc, subnet)
 // binding) rather than the BPF flow_map; the accept loop carries
 // TenantID into HandleConn via its context. The vpc resolver is still
-// consulted to populate Vpc.spec.enableService at handler-call time
-// because that bit can flip without the binding changing.
+// consulted to populate Vpc.spec.service.consume / serviceEnabled at
+// handler-call time because those bits can flip without the binding
+// changing.
 type TCPHandler struct {
 	resolver Resolver
 	vpcs     VPCResolver

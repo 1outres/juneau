@@ -355,12 +355,12 @@ func validateSubnetServiceCIDROverlap(ctx context.Context, c client.Client, subn
 		return nil, err
 	}
 
-	if !vpc.Spec.EnableService {
+	if !vpc.Spec.ServiceEnabled() {
 		return nil, nil
 	}
 
 	if cidrsOverlap(subnetCIDR, serviceCIDR) {
-		return field.ErrorList{field.Invalid(path, subnet.Spec.CIDR, fmt.Sprintf("overlaps with Service CIDR %q while Vpc %q has spec.enableService=true", serviceCIDR.String(), subnet.Spec.Vpc))}, nil
+		return field.ErrorList{field.Invalid(path, subnet.Spec.CIDR, fmt.Sprintf("overlaps with Service CIDR %q while Vpc %q has Service routing enabled", serviceCIDR.String(), subnet.Spec.Vpc))}, nil
 	}
 
 	return nil, nil

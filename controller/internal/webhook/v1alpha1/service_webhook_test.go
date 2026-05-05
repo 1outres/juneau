@@ -18,7 +18,7 @@ func intOrString(i int) intstr.IntOrString {
 }
 
 var _ = Describe("Service webhook", func() {
-	It("rejects creating a Service whose Vpc has enableService=false", func() {
+	It("rejects creating a Service whose Vpc has Service routing disabled", func() {
 		vpcName := createWebhookVpc()
 
 		err := webhookK8sClient.Create(context.Background(), &corev1.Service{
@@ -33,7 +33,7 @@ var _ = Describe("Service webhook", func() {
 			},
 		})
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("does not have spec.enableService=true"))
+		Expect(err.Error()).To(ContainSubstring("does not have Service routing enabled"))
 	})
 
 	It("rejects Service annotated with juneau.loutres.me/subnet", func() {
@@ -75,7 +75,7 @@ var _ = Describe("Service webhook", func() {
 		Expect(err.Error()).To(ContainSubstring("referenced Vpc does not exist"))
 	})
 
-	It("accepts Service when its Vpc has enableService=true", func() {
+	It("accepts Service when its Vpc has service.consume=true", func() {
 		vpcName := createWebhookServiceEnabledVpc()
 		name := webhookUniqueTestName("svc")
 		Expect(webhookK8sClient.Create(context.Background(), &corev1.Service{
@@ -96,7 +96,7 @@ var _ = Describe("Service webhook", func() {
 		})
 	})
 
-	It("rejects shared-service annotation on a non-default Vpc", func() {
+	It("rejects shared-service annotation when the owner Vpc has no provider configured", func() {
 		vpcName := createWebhookServiceEnabledVpc()
 
 		err := webhookK8sClient.Create(context.Background(), &corev1.Service{
@@ -114,18 +114,116 @@ var _ = Describe("Service webhook", func() {
 			},
 		})
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("shared-service annotation is only valid on Services owned by the default Vpc"))
+		Expect(err.Error()).To(ContainSubstring("is not configured as a Service provider"))
 	})
 
-	It("accepts shared-service annotation on the default Vpc", func() {
+	It("accepts shared-service annotation on the default Vpc (provider bootstrapped)", func() {
 		name := webhookUniqueTestName("svc")
 		Expect(webhookK8sClient.Create(context.Background(), &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      name,
 				Namespace: "default",
 				Annotations: map[string]string{
-					// Vpc annotation absent → default Vpc.
+					// Vpc annotation absent → default Vpc, which the
+					// bootstrap promoted to a Service provider.
 					ServiceAnnotationShared: "true",
+				},
+			},
+			Spec: corev1.ServiceSpec{
+				Ports:    []corev1.ServicePort{{Port: 80, TargetPort: intOrString(80)}},
+				Selector: map[string]string{"app": "x"},
+			},
+		})).To(Succeed())
+		DeferCleanup(func() {
+			_ = webhookK8sClient.Delete(context.Background(), &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			})
+		})
+	})
+
+	It("accepts shared-service annotation on a non-default Vpc with provider configured", func() {
+		vpcName := createWebhookServiceProviderVpc()
+		name := webhookUniqueTestName("svc")
+		Expect(webhookK8sClient.Create(context.Background(), &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "default",
+				Annotations: map[string]string{
+					ServiceAnnotationVpc:    vpcName,
+					ServiceAnnotationShared: "true",
+				},
+			},
+			Spec: corev1.ServiceSpec{
+				Ports:    []corev1.ServicePort{{Port: 80, TargetPort: intOrString(80)}},
+				Selector: map[string]string{"app": "x"},
+			},
+		})).To(Succeed())
+		DeferCleanup(func() {
+			_ = webhookK8sClient.Delete(context.Background(), &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			})
+		})
+	})
+
+	It("rejects allowed-consumer-vpcs annotation without shared-service", func() {
+		vpcName := createWebhookServiceEnabledVpc()
+
+		err := webhookK8sClient.Create(context.Background(), &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      webhookUniqueTestName("svc"),
+				Namespace: "default",
+				Annotations: map[string]string{
+					ServiceAnnotationVpc:                 vpcName,
+					ServiceAnnotationAllowedConsumerVpcs: "default",
+				},
+			},
+			Spec: corev1.ServiceSpec{
+				Ports:    []corev1.ServicePort{{Port: 80, TargetPort: intOrString(80)}},
+				Selector: map[string]string{"app": "x"},
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("has no effect without the shared-service annotation"))
+	})
+
+	It("rejects allowed-consumer-vpcs entries that don't have service.consume=true", func() {
+		ownerVpc := createWebhookServiceProviderVpc()
+		// A Vpc without spec.service ⇒ service.consume is false.
+		nonConsumerVpc := createWebhookVpc()
+
+		err := webhookK8sClient.Create(context.Background(), &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      webhookUniqueTestName("svc"),
+				Namespace: "default",
+				Annotations: map[string]string{
+					ServiceAnnotationVpc:                 ownerVpc,
+					ServiceAnnotationShared:              "true",
+					ServiceAnnotationAllowedConsumerVpcs: nonConsumerVpc,
+				},
+			},
+			Spec: corev1.ServiceSpec{
+				Ports:    []corev1.ServicePort{{Port: 80, TargetPort: intOrString(80)}},
+				Selector: map[string]string{"app": "x"},
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("does not have spec.service.consume=true"))
+	})
+
+	It("accepts allowed-consumer-vpcs whitelist with consume-enabled Vpcs", func() {
+		ownerVpc := createWebhookServiceProviderVpc()
+		consumerA := createWebhookServiceEnabledVpc()
+		consumerB := createWebhookServiceEnabledVpc()
+
+		name := webhookUniqueTestName("svc")
+		Expect(webhookK8sClient.Create(context.Background(), &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "default",
+				Annotations: map[string]string{
+					ServiceAnnotationVpc:                 ownerVpc,
+					ServiceAnnotationShared:              "true",
+					ServiceAnnotationAllowedConsumerVpcs: consumerA + "," + consumerB,
 				},
 			},
 			Spec: corev1.ServiceSpec{
@@ -163,7 +261,7 @@ var _ = Describe("Service webhook", func() {
 
 		var vpc juneauv1alpha1.Vpc
 		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Name: vpcName}, &vpc)).To(Succeed())
-		vpc.Spec.EnableService = false
+		vpc.Spec.Service = nil
 		Expect(webhookK8sClient.Update(context.Background(), &vpc)).To(Succeed())
 
 		var fetched corev1.Service

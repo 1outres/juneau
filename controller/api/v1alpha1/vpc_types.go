@@ -22,11 +22,18 @@ import (
 
 // VpcSpec defines the desired state of Vpc.
 type VpcSpec struct {
-	// EnableService enables Service routing within this VPC. When true,
-	// the controller injects a Service-typed route into every RouteTable
-	// belonging to this VPC, so Pods in the VPC can reach Services in it.
+	// Service configures Service routing for this VPC. When nil, the
+	// VPC has no Service routing — its Pods cannot reach any
+	// ClusterIP and the controller does not inject a Service-typed
+	// route into the VPC's main RouteTable.
+	//
+	// Two cross-VPC roles are independently configurable under this
+	// field: Provider (this VPC hosts Services that other VPCs may
+	// reach) and Consume (this VPC's Pods may reach shared Services
+	// hosted in other VPCs). Setting either implicitly enables
+	// Service routing for the VPC.
 	// +optional
-	EnableService bool `json:"enableService,omitempty"`
+	Service *VpcServiceSpec `json:"service,omitempty"`
 
 	// EnforceSecurityGroups makes SecurityGroup attachment mandatory for
 	// every Pod placed in a Subnet of this Vpc. Pods without the
@@ -35,6 +42,41 @@ type VpcSpec struct {
 	// Pods are not retroactively affected when this flag is toggled.
 	// +optional
 	EnforceSecurityGroups bool `json:"enforceSecurityGroups,omitempty"`
+}
+
+// VpcServiceSpec configures the Service-routing behaviour of a VPC,
+// including its participation in cross-VPC shared Services.
+//
+// Setting either Provider or Consume enables Service routing for this
+// VPC: the controller injects a Service-typed route into every
+// RouteTable belonging to it so that Pods can reach ClusterIPs.
+type VpcServiceSpec struct {
+	// Provider, when set, makes Services in this VPC eligible to be
+	// marked as cross-VPC shared via the
+	// juneau.loutres.me/shared-service annotation. Per-Node SNAT IPs
+	// are allocated from the configured Subnet so that backend
+	// replies flow over this VPC's fabric back to the originating
+	// caller's Node.
+	// +optional
+	Provider *VpcServiceProviderSpec `json:"provider,omitempty"`
+
+	// Consume, when true, allows Pods in this VPC to call shared
+	// Services hosted in other VPCs. The per-Service ACL annotation
+	// (juneau.loutres.me/shared-service-allowed-consumer-vpcs) may
+	// further restrict which provider Services this VPC can reach.
+	// +optional
+	Consume bool `json:"consume,omitempty"`
+}
+
+// VpcServiceProviderSpec configures the cross-VPC provider role of a VPC.
+type VpcServiceProviderSpec struct {
+	// NATSourceSubnet names a Subnet in this VPC from which per-Node
+	// SNAT source IPs are allocated for cross-VPC callers reaching
+	// shared Services owned by this VPC. The Subnet must exist and
+	// belong to this VPC. Required to mark Services in this VPC as
+	// shared.
+	// +kubebuilder:validation:MinLength=1
+	NATSourceSubnet string `json:"natSourceSubnet"`
 }
 
 // VpcStatus defines the observed state of Vpc.
@@ -63,6 +105,37 @@ type Vpc struct {
 const (
 	VpcStatusReady string = "Ready"
 )
+
+// ServiceEnabled reports whether Service routing is enabled in this
+// VPC. The VPC has Service routing iff at least one of the cross-VPC
+// roles (Provider or Consume) is configured.
+func (s *VpcSpec) ServiceEnabled() bool {
+	if s == nil || s.Service == nil {
+		return false
+	}
+	return s.Service.Consume || s.Service.IsProvider()
+}
+
+// IsProvider reports whether this Service spec opts the VPC in to the
+// cross-VPC provider role (NATSourceSubnet configured).
+func (s *VpcServiceSpec) IsProvider() bool {
+	return s != nil && s.Provider != nil && s.Provider.NATSourceSubnet != ""
+}
+
+// ProviderSubnet returns the configured provider NAT source Subnet
+// name, or empty when this VPC does not act as a provider.
+func (s *VpcServiceSpec) ProviderSubnet() string {
+	if s == nil || s.Provider == nil {
+		return ""
+	}
+	return s.Provider.NATSourceSubnet
+}
+
+// Consumes reports whether this VPC opts in to consuming shared
+// Services from other VPCs.
+func (s *VpcServiceSpec) Consumes() bool {
+	return s != nil && s.Consume
+}
 
 // +kubebuilder:object:root=true
 

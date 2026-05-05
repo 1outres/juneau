@@ -32,7 +32,7 @@ func TestTCPHandlerRoundTrip(t *testing.T) {
 			}},
 		},
 	}
-	h := NewTCPHandler(resolver, stubVPCResolver{name: "tenant-a", enableService: true, ok: true})
+	h := NewTCPHandler(resolver, stubVPCResolver{name: "tenant-a", serviceEnabled: true, consume: true, ok: true})
 	h.IdleTimeout = 200 * time.Millisecond
 
 	server, client := net.Pipe()
@@ -83,7 +83,7 @@ func TestTCPHandlerRoundTrip(t *testing.T) {
 // TestTCPHandlerIdleTimeoutClosesConnection ensures the connection is
 // closed when the client doesn't send anything within IdleTimeout.
 func TestTCPHandlerIdleTimeoutClosesConnection(t *testing.T) {
-	h := NewTCPHandler(stubResolver{}, stubVPCResolver{ok: true, name: "x", enableService: true})
+	h := NewTCPHandler(stubResolver{}, stubVPCResolver{ok: true, name: "x", serviceEnabled: true})
 	h.IdleTimeout = 50 * time.Millisecond
 
 	server, client := net.Pipe()

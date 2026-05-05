@@ -8,19 +8,18 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// Replaces the old "pod-to-svc + custom VPC + enableService=true" matrix
-// entries (which only re-proved the default-VPC Service path). The three
-// specs below carry the contracts the matrix never actually verified:
-// (a) Service creation is webhook-gated on Vpc.spec.enableService,
+// The three specs below carry the contracts the connectivity matrix
+// never actually verified:
+// (a) Service creation is webhook-gated on Vpc.spec.service being set,
 // (b) Services are isolated per VPC at runtime, and
 // (c) ClusterIP traffic crosses subnets within the same VPC.
 var _ = Describe("Juneau Service VPC scoping", func() {
-	It("rejects creating a Service in a VPC where enableService is false", func() {
+	It("rejects creating a Service in a VPC where service routing is disabled", func() {
 		ctx := newCaseContext(connectivityScenario{name: "svc-vpc-disabled"})
 		currentCase = &ctx
 		DeferCleanup(func() { currentCase = nil })
 
-		By("creating an isolated namespace and a VPC with enableService unset")
+		By("creating an isolated namespace and a VPC with no service config")
 		createNamespace(ctx.namespace)
 		DeferCleanup(cleanupCaseResources, ctx)
 		createCustomNetwork(ctx, false, false)
@@ -53,20 +52,22 @@ var _ = Describe("Juneau Service VPC scoping", func() {
 			runBestEffort(repoRoot, "kubectl", "delete", "vpc", vpcB, "--ignore-not-found=true")
 		})
 
-		By("creating two VPCs (both enableService=true) with one subnet each")
+		By("creating two VPCs (both with service.consume=true) with one subnet each")
 		manifest := fmt.Sprintf(`apiVersion: juneau.loutres.me/v1alpha1
 kind: Vpc
 metadata:
   name: %s
 spec:
-  enableService: true
+  service:
+    consume: true
 ---
 apiVersion: juneau.loutres.me/v1alpha1
 kind: Vpc
 metadata:
   name: %s
 spec:
-  enableService: true
+  service:
+    consume: true
 ---
 apiVersion: juneau.loutres.me/v1alpha1
 kind: Subnet

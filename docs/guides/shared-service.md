@@ -1,30 +1,37 @@
-# Vpcで共有Serviceを利用する
+# Vpc 間で共有Serviceを利用する
 
-Juneauでは、default Vpcに置いたServiceに`juneau.loutres.me/shared-service: "true"` annotationを付与すると、別のVpcから到達できる「共有Service」として公開できます。共有Serviceは`spec.enableService=true`が設定されたVpcから到達でき、クラスタ全体で同じClusterIPを通じて利用されます。
+Juneauの共有Service機能を使うと、ある Vpc に置いた Service を他の Vpc から到達できるように公開できます。デフォルトでは Vpc は互いに隔離されているため、ClusterIP 経由の通信もそのままでは Vpc 境界を越えません。共有Service はこの境界を、許可した呼び出し側のみに開ける仕組みです。
 
-クラスタの`kubernetes` Service (`default` namespace) は、annotationの有無にかかわらず暗黙的に共有Serviceとして扱われます。これにより、別Vpcに属するPodもapiserverに到達できます。
+共有Service は次の 3 つの独立した opt-in を組み合わせて成立します。
 
-このガイドでは、default Vpc上のnginx Serviceを共有Serviceとして公開し、別Vpcに居るPodからClusterIP経由で到達するまでの手順を一通り示します。
+| 役割 | 設定先 | 内容 |
+|---|---|---|
+| Provider | Vpc.spec.service.provider.natSourceSubnet | 自 Vpc が共有Service を「公開」する。発信元書き換え用の SNAT アドレスをこの Subnet から払い出す |
+| Service マーカ | Service annotation `juneau.loutres.me/shared-service: "true"` | この Service を共有公開する |
+| Consumer | Vpc.spec.service.consume | 自 Vpc の Pod が他 Vpc の共有Service を呼べる |
 
-## このガイドで構築するもの
+加えて、Service ごとに到達可能な Consumer Vpc を絞り込む whitelist annotation `juneau.loutres.me/shared-service-allowed-consumer-vpcs` も設定できます。
 
-- nginxによるbackend Deployment (replicas: 2) とそれに対応する共有Service (default Vpc所属)
-- Service機能を有効化したVpc (`app-vpc`)
-- `app-vpc`に属するSubnet (`app-subnet`, `10.80.0.0/24`)
-- 別Vpcに置いたclient Podから、共有nginx Serviceに到達
+このガイドでは、
+
+1. default Vpc の共有Service に 別の Vpc からアクセス
+2. 別 Vpc が公開する共有Service に default Vpc からアクセス
+3. Consumer の whitelist で絞り込み
+
+の 3 パターンを順に示します。
 
 ## 前提条件
 
-- Juneauのcontroller/daemonが動作しているクラスター
-- kubectlが利用可能なこと
-- クラスターでServiceの仮想IP (ClusterIP) 用のCIDRが設定されていること
-- default Vpcのdefault Subnetに、Node数分の予備アドレスが残っていること (Nodeごとに1つずつ共有Service用のソースNATアドレスが払い出されます)
+- Juneau の controller / daemon が動作しているクラスター
+- kubectl が利用可能なこと
+- クラスターで Service の仮想IP (ClusterIP) 用の CIDR が設定されていること
+- Provider となる Vpc の `service.provider.natSourceSubnet` に、Node 数分の予備アドレスが残っていること (Node ごとに 1 つずつ共有Service 用の SNAT アドレスが払い出されます)
 
-## 手順
+## 1. default Vpc の共有Service に別 Vpc からアクセス
 
-### 1. backend Deploymentをdefault Vpcに作成
+bootstrap 時に default Vpc は `service.provider.natSourceSubnet: default`、`service.consume: true` の状態で作成されます。Provider の設定がすでに揃っているので、共有Service にしたい Service へ annotation を付与するだけで公開できます。
 
-backendのnginxを2レプリカで`default` Subnetに配置します (annotation不要、default Vpcに所属)。
+### backend Deployment と共有Service
 
 ```yaml
 apiVersion: apps/v1
@@ -44,13 +51,7 @@ spec:
       containers:
         - name: nginx
           image: nginx:1.27
-```
-
-### 2. 共有Serviceを作成
-
-ServiceにはVpcのannotation (省略するとdefault Vpc所属)と、共有Serviceとして公開することを示す`juneau.loutres.me/shared-service: "true"` annotationを付けます。共有Service annotationを付けられるのは、default Vpcに属するServiceだけです。
-
-```yaml
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -65,17 +66,11 @@ spec:
       targetPort: 80
 ```
 
-```console
-$ kubectl get service nginx
-NAME    TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)   AGE
-nginx   ClusterIP   10.96.123.45    <none>        80/TCP    5s
-```
+Service の owner Vpc を省略するか `juneau.loutres.me/vpc: default` を明示すれば default Vpc 所属になります。
 
-`shared-service` annotationを付けずに作成したdefault Vpc所属のServiceは、これまで通りdefault Vpc内のPodからのみ到達できます。
+### caller 側 Vpc / Subnet
 
-### 3. caller側のVpc/Subnetを作成
-
-共有Serviceを利用するVpcには`spec.enableService: true`が必須です。
+呼び出し側の Vpc には `spec.service.consume: true` が必須です。
 
 ```yaml
 apiVersion: juneau.loutres.me/v1alpha1
@@ -83,7 +78,8 @@ kind: Vpc
 metadata:
   name: app-vpc
 spec:
-  enableService: true
+  service:
+    consume: true
 ---
 apiVersion: juneau.loutres.me/v1alpha1
 kind: Subnet
@@ -94,24 +90,20 @@ spec:
   cidr: 10.80.0.0/24
 ```
 
-詳細は[Vpc](../resources/vpc.md) / [Subnet](../resources/subnet.md)を参照してください。
+### ServiceNATAttachment の確認
 
-### 4. 各NodeにServiceNATAttachmentが払い出されたことを確認
-
-クラスタ内の各Nodeに対して、共有Serviceのソースとして使うアドレスが自動的に1つずつ払い出されます。Pod が共有ServiceのClusterIPに通信するとき、そのPodが配置されているNodeに対応するアドレスがソースIPとして利用されます。
+各 Node には Provider Vpc 単位で SNAT アドレスが払い出されます。リソース名は `<node>.<provider-vpc>` です。
 
 ```console
 $ kubectl get servicenatattachment
-NAME       NODE       ASSIGNEDIP    ASSIGNEDMAC          READY
-worker-1   worker-1   10.16.0.200   02:00:0a:10:00:c8    True
-worker-2   worker-2   10.16.0.201   02:00:0a:10:00:c9    True
+NAME              NODE       VPC       ASSIGNEDIP    SUBNET    READY
+worker-1.default  worker-1   default   10.16.0.200   default   True
+worker-2.default  worker-2   default   10.16.0.201   default   True
 ```
 
-すべてのNodeに対して`READY: True`、`ASSIGNEDIP`が埋まっていれば、共有Serviceのソースアドレスの払い出しは完了です。詳細は[ServiceNATAttachment](../resources/servicenatattachment.md)を参照してください。
+すべての Node が `READY: True` で `ASSIGNEDIP` が埋まっていれば公開準備完了です。
 
-### 5. 別Vpcにclient Podをデプロイ
-
-`app-subnet`にcurl用のPodを配置します。
+### 別 Vpc から疎通
 
 ```yaml
 apiVersion: v1
@@ -127,10 +119,6 @@ spec:
       command: ["sleep", "infinity"]
 ```
 
-### 6. ClusterIPへの疎通を確認
-
-別Vpcに居るclient PodからnginxのClusterIPに到達できることを確認します。
-
 ```console
 $ kubectl exec curl -- curl -sS http://nginx.default.svc/
 <!DOCTYPE html>
@@ -138,24 +126,145 @@ $ kubectl exec curl -- curl -sS http://nginx.default.svc/
 <h1>Welcome to nginx!</h1>
 ```
 
-`app-vpc`のPodからdefault Vpcに置いたnginx Serviceに、共有Service経由で到達できています。
+## 2. 別 Vpc の共有Service に default Vpc からアクセス
+
+Provider 役を default 以外の Vpc に持たせる構成です。`service.provider.natSourceSubnet` に同 Vpc 内の Subnet を指定すると、その Vpc の Service を共有公開できるようになります。
+
+### Provider Vpc / Subnet
+
+```yaml
+apiVersion: juneau.loutres.me/v1alpha1
+kind: Vpc
+metadata:
+  name: tenant-vpc
+spec:
+  service:
+    consume: true
+    provider:
+      natSourceSubnet: tenant-subnet
+---
+apiVersion: juneau.loutres.me/v1alpha1
+kind: Subnet
+metadata:
+  name: tenant-subnet
+spec:
+  vpc: tenant-vpc
+  cidr: 10.90.0.0/24
+```
+
+### backend Pod と共有Service
+
+backend を `tenant-subnet` に置き、Service の owner Vpc を `tenant-vpc` に指定します。
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx
+  annotations:
+    juneau.loutres.me/subnet: tenant-subnet
+  labels:
+    app: nginx
+spec:
+  containers:
+    - name: nginx
+      image: nginx:1.27
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  annotations:
+    juneau.loutres.me/vpc: tenant-vpc
+    juneau.loutres.me/shared-service: "true"
+spec:
+  selector:
+    app: nginx
+  ports:
+    - port: 80
+      targetPort: 80
+```
+
+### default Vpc の Pod から疎通
+
+default Vpc は bootstrap で `service.consume: true` が立っているので追加設定は不要です。
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: curl-default
+spec:
+  containers:
+    - name: curl
+      image: curlimages/curl:8.7.1
+      command: ["sleep", "infinity"]
+```
+
+```console
+$ kubectl exec curl-default -- curl -sS http://nginx.default.svc/
+<!DOCTYPE html>
+...
+```
+
+ServiceNATAttachment は Provider Vpc ごとに別系統で払い出されます。default Vpc から `tenant-vpc` の共有Service を呼ぶ場合、`<node>.tenant-vpc` の attachment が用意され、そこに記録された SNAT アドレスがソースとして使われます。
+
+```console
+$ kubectl get servicenatattachment
+NAME                  NODE       VPC          ASSIGNEDIP     SUBNET           READY
+worker-1.default      worker-1   default      10.16.0.200    default          True
+worker-1.tenant-vpc   worker-1   tenant-vpc   10.90.0.200    tenant-subnet    True
+worker-2.default      worker-2   default      10.16.0.201    default          True
+worker-2.tenant-vpc   worker-2   tenant-vpc   10.90.0.201    tenant-subnet    True
+```
+
+## 3. Consumer Vpc を whitelist で絞り込む
+
+`juneau.loutres.me/shared-service-allowed-consumer-vpcs` annotation をカンマ区切りで指定すると、リストにある Vpc からの呼び出しだけを許可できます。annotation を省略した場合は `service.consume: true` の全 Vpc から到達可能です。
+
+例: `tenant-vpc` の共有Service を default Vpc からのみ受け付ける。
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  annotations:
+    juneau.loutres.me/vpc: tenant-vpc
+    juneau.loutres.me/shared-service: "true"
+    juneau.loutres.me/shared-service-allowed-consumer-vpcs: "default"
+spec:
+  selector:
+    app: nginx
+  ports:
+    - port: 80
+      targetPort: 80
+```
+
+annotation 内の各 Vpc は実在し、かつ `spec.service.consume: true` が必要です (webhook で検証されます)。
+
+同一 Vpc 内 (Service の owner Vpc と caller が同じ Vpc) の通信には ACL は適用されず、所有者は常に到達可能です。
 
 ## うまくいかないとき
 
-1. **Serviceのapplyが拒否される (`shared-service annotation is only valid on...`)**
-    - `juneau.loutres.me/shared-service: "true"`が付いているServiceは、必ずdefault Vpcに所属している必要があります (`juneau.loutres.me/vpc` annotationを省略するか、`default`を指定)
-2. **client PodからClusterIPに到達しない**
-    - client Podを配置しているVpcの`spec.enableService`が`true`になっているか
-    - 対象ServiceにAnnotation `juneau.loutres.me/shared-service: "true"`が付いているか、もしくはdefault namespaceの`kubernetes` Serviceか
-    - `kubectl get servicenatattachment`で、各Nodeが`READY: True`になっているか
-    - `kubectl get endpointslice -l kubernetes.io/service-name=nginx`でbackendのPod IPが登録されているか
-3. **`kubectl get servicenatattachment`の`ASSIGNEDIP`が空のままのNodeがある**
-    - default Subnetの`AddressPool`にIP在庫が残っているか (Node数より多くのIPが必要)
-    - `READY: False`の場合は`status.conditions[?(@.type=="Ready")].message`を確認
+1. **Service の apply が拒否される (`Vpc ... is not configured as a Service provider`)**
+    - 共有Service の owner Vpc に `spec.service.provider.natSourceSubnet` が設定されているかを確認します。
+2. **`shared-service-allowed-consumer-vpcs` が拒否される**
+    - 列挙した Vpc がすべて存在し、`spec.service.consume: true` になっているかを確認します。
+    - `shared-service: "true"` が同時に付いていないと拒否されます (ACL 単独では効果がないため)。
+3. **caller Pod から ClusterIP に到達しない**
+    - caller Pod の Vpc に `spec.service.consume: true` が設定されているか
+    - 対象 Service に `juneau.loutres.me/shared-service: "true"` が付いているか
+    - ACL を設定している場合、caller の Vpc 名が `shared-service-allowed-consumer-vpcs` に含まれているか
+    - `kubectl get servicenatattachment` で `<node>.<provider-vpc>` が `READY: True` になっているか
+    - `kubectl get endpointslice -l kubernetes.io/service-name=<svc>` で backend の Pod IP が登録されているか
+4. **`kubectl get servicenatattachment` の `ASSIGNEDIP` が空のままの行がある**
+    - Provider Vpc の `natSourceSubnet` の Subnet に Node 数分の在庫が残っているか
+    - `READY: False` の場合は `status.conditions[?(@.type=="Ready")].message` を確認
 
 ## 参照
 
 - [Vpc](../resources/vpc.md)
 - [Subnet](../resources/subnet.md)
 - [ServiceNATAttachment](../resources/servicenatattachment.md)
-- [VPCでServiceを利用する](custom-vpc-service.md)
+- [Vpc で Service を利用する](custom-vpc-service.md)

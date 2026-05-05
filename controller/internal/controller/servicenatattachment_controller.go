@@ -47,42 +47,45 @@ const (
 	serviceNATAttachmentReasonMissingDependency = "MissingDependency"
 	serviceNATAttachmentReasonReconcileFailed   = "ReconcileFailed"
 
-	// serviceNATAttachmentSubnet anchors every per-Node SNAT IP into the
-	// default Subnet's L2 segment. Using a constant keeps the address
-	// space and route reachability symmetric across all Nodes.
-	serviceNATAttachmentSubnet = JuneauNodeDefaultSubnet
-
 	serviceNATAttachmentAttribute = "serviceNATAttachment.assignedIP"
 
 	serviceNATAttachmentRequeueAfter = 10 * time.Second
 
-	// serviceNATEndpointSuffix is the suffix appended to the Node name
-	// when forming the derived NetworkEndpoint name. Suffixing keeps the
-	// name distinct from the per-Node juneau_node NetworkEndpoint, which
-	// is keyed by the Node name itself.
+	// serviceNATEndpointSuffix is the suffix appended to the
+	// attachment name when forming the derived NetworkEndpoint name.
+	// The juneau_node Node-kind endpoint already uses the Node name
+	// directly, so we suffix to disambiguate.
 	serviceNATEndpointSuffix = ".servicenat"
+
+	// serviceNATAttachmentNameSeparator joins the Node and Vpc parts
+	// of a ServiceNATAttachment's metadata.name. Mirrored by the
+	// webhook so the two stay in lockstep.
+	serviceNATAttachmentNameSeparator = "."
 )
 
 // ServiceNATAttachmentReconciler reconciles ServiceNATAttachment resources.
 //
 // For each attachment the reconciler ensures:
 //
-//  1. an AllocationClaim against the default Subnet's IP pool, claiming a
-//     /32 to use as the per-Node SNAT source IP for shared-Service flows;
-//  2. a derived NetworkEndpoint of kind=ServiceNAT in the default Subnet
-//     so the data plane's arp/fdb reconcilers route reply traffic back to
-//     the originating Node;
-//  3. status.assignedIP / assignedMAC and the Ready condition mirroring
-//     the underlying claim and NetworkEndpoint state.
+//  1. an AllocationClaim against the provider Vpc's NAT-source Subnet
+//     IP pool (Vpc.Spec.Service.Provider.NATSourceSubnet), claiming a
+//     /32 to use as the per-Node SNAT source IP for shared-Service
+//     flows owned by that Vpc;
+//  2. a derived NetworkEndpoint of kind=ServiceNAT in the same Subnet
+//     so the data plane's arp/fdb reconcilers route reply traffic
+//     back to the originating Node;
+//  3. status.assignedIP / assignedMAC / subnet and the Ready condition
+//     mirroring the underlying claim and NetworkEndpoint state.
 type ServiceNATAttachmentReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 
-	// EndpointNamespace is the namespace used for derived NetworkEndpoint
-	// resources. NetworkEndpoint is namespaced and cannot reference a
-	// cluster-scoped owner directly, so the namespace must match the
-	// daemon's pod-namespace flag for the per-Node endpoint to be picked
-	// up by the daemon-side reconcilers.
+	// EndpointNamespace is the namespace used for derived
+	// NetworkEndpoint resources. NetworkEndpoint is namespaced and
+	// cannot reference a cluster-scoped owner directly, so the
+	// namespace must match the daemon's pod-namespace flag for the
+	// per-Node endpoint to be picked up by the daemon-side
+	// reconcilers.
 	EndpointNamespace string
 }
 
@@ -106,26 +109,53 @@ func (r *ServiceNATAttachmentReconciler) Reconcile(ctx context.Context, req ctrl
 
 	if !resource.DeletionTimestamp.IsZero() {
 		// AllocationClaim is owned by this attachment and gets GC'd
-		// automatically. NetworkEndpoint is namespace-scoped and cannot
-		// declare a cluster-scoped owner, so it is removed explicitly.
+		// automatically. NetworkEndpoint is namespace-scoped and
+		// cannot declare a cluster-scoped owner, so it is removed
+		// explicitly.
 		if err := r.deleteEndpoint(ctx, &resource); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
 	}
 
-	address, requeue, err := r.ensureClaim(ctx, &resource)
+	subnetName, requeue, err := r.resolveProviderSubnet(ctx, &resource)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if requeue {
-		if err := r.updatePendingStatus(ctx, &resource, "", "", serviceNATAttachmentReasonNoAddress, "no available address in default Subnet IP pool"); err != nil {
+	if subnetName == "" {
+		// Provider Vpc is missing or no longer configured as a
+		// provider. Tear down the endpoint and requeue so the
+		// attachment is cleaned up shortly after the Vpc reconciler
+		// removes it.
+		if err := r.deleteEndpoint(ctx, &resource); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.commitStatus(ctx, &resource, "", "", "", metav1.Condition{
+			Type:    juneauv1alpha1.ServiceNATAttachmentStatusReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  serviceNATAttachmentReasonMissingDependency,
+			Message: fmt.Sprintf("provider Vpc %q has no spec.service.provider.natSourceSubnet", resource.Spec.Vpc),
+		}); err != nil {
+			return ctrl.Result{}, err
+		}
+		if requeue {
+			return ctrl.Result{RequeueAfter: serviceNATAttachmentRequeueAfter}, nil
+		}
+		return ctrl.Result{}, nil
+	}
+
+	address, exhausted, err := r.ensureClaim(ctx, &resource, subnetName)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if exhausted {
+		if err := r.updatePendingStatus(ctx, &resource, "", "", subnetName, serviceNATAttachmentReasonNoAddress, fmt.Sprintf("no available address in Subnet %q IP pool", subnetName)); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: serviceNATAttachmentRequeueAfter}, nil
 	}
 	if address == "" {
-		if err := r.updatePendingStatus(ctx, &resource, "", "", serviceNATAttachmentReasonAllocating, "AllocationClaim is still allocating an address"); err != nil {
+		if err := r.updatePendingStatus(ctx, &resource, "", "", subnetName, serviceNATAttachmentReasonAllocating, "AllocationClaim is still allocating an address"); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
@@ -133,30 +163,49 @@ func (r *ServiceNATAttachmentReconciler) Reconcile(ctx context.Context, req ctrl
 
 	mac, err := serviceNATMAC(address)
 	if err != nil {
-		if updateErr := r.updateErrorStatus(ctx, &resource, serviceNATAttachmentReasonReconcileFailed, err.Error()); updateErr != nil {
+		if updateErr := r.updateErrorStatus(ctx, &resource, subnetName, serviceNATAttachmentReasonReconcileFailed, err.Error()); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
 		return ctrl.Result{}, nil
 	}
 
-	if err := r.ensureEndpoint(ctx, &resource, address, mac); err != nil {
+	if err := r.ensureEndpoint(ctx, &resource, subnetName, address, mac); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if err := r.updateReadyStatus(ctx, &resource, address, mac); err != nil {
+	if err := r.updateReadyStatus(ctx, &resource, subnetName, address, mac); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
 }
 
-func (r *ServiceNATAttachmentReconciler) ensureClaim(ctx context.Context, resource *juneauv1alpha1.ServiceNATAttachment) (string, bool, error) {
+// resolveProviderSubnet looks up the provider Vpc that backs this
+// attachment and returns the configured NAT source Subnet name. The
+// second return value is true when the caller should requeue (e.g.
+// the Vpc has not yet been reconciled). subnetName is empty when the
+// Vpc is missing or no longer opts in to the provider role.
+func (r *ServiceNATAttachmentReconciler) resolveProviderSubnet(ctx context.Context, resource *juneauv1alpha1.ServiceNATAttachment) (string, bool, error) {
+	if resource.Spec.Vpc == "" {
+		return "", false, nil
+	}
+	var vpc juneauv1alpha1.Vpc
+	if err := r.Get(ctx, client.ObjectKey{Name: resource.Spec.Vpc}, &vpc); err != nil {
+		if errors.IsNotFound(err) {
+			return "", true, nil
+		}
+		return "", false, fmt.Errorf("get provider Vpc %q: %w", resource.Spec.Vpc, err)
+	}
+	return vpc.Spec.Service.ProviderSubnet(), false, nil
+}
+
+func (r *ServiceNATAttachmentReconciler) ensureClaim(ctx context.Context, resource *juneauv1alpha1.ServiceNATAttachment, subnetName string) (string, bool, error) {
 	gvk := schema.GroupVersionKind{
 		Group:   juneauv1alpha1.GroupVersion.Group,
 		Version: juneauv1alpha1.GroupVersion.Version,
 		Kind:    "ServiceNATAttachment",
 	}
-	poolName := SubnetIPAllocationPoolName(serviceNATAttachmentSubnet)
+	poolName := SubnetIPAllocationPoolName(subnetName)
 	desired := newAllocationClaim(poolName, gvk, "", resource.Name, serviceNATAttachmentAttribute)
 
 	claim := &juneauv1alpha1.AllocationClaim{ObjectMeta: metav1.ObjectMeta{Name: desired.Name}}
@@ -173,20 +222,21 @@ func (r *ServiceNATAttachmentReconciler) ensureClaim(ctx context.Context, resour
 
 	ready := meta.FindStatusCondition(claim.Status.Conditions, juneauv1alpha1.AllocationClaimStatusReady)
 	if ready != nil && ready.Reason == allocationClaimReasonPending {
-		// Pool is exhausted. Ask the controller to retry on a backoff so
-		// the user sees an explicit signal rather than a silent stall.
+		// Pool is exhausted. Ask the controller to retry on a backoff
+		// so the user sees an explicit signal rather than a silent
+		// stall.
 		return "", true, nil
 	}
 
 	return "", false, nil
 }
 
-func (r *ServiceNATAttachmentReconciler) ensureEndpoint(ctx context.Context, resource *juneauv1alpha1.ServiceNATAttachment, address, mac string) error {
+func (r *ServiceNATAttachmentReconciler) ensureEndpoint(ctx context.Context, resource *juneauv1alpha1.ServiceNATAttachment, subnetName, address, mac string) error {
 	if r.EndpointNamespace == "" {
 		return stderrors.New("ServiceNATAttachmentReconciler.EndpointNamespace must be set")
 	}
 
-	cidr, err := r.serviceNATEndpointAddress(ctx, address)
+	cidr, err := r.serviceNATEndpointAddress(ctx, subnetName, address)
 	if err != nil {
 		return err
 	}
@@ -206,7 +256,7 @@ func (r *ServiceNATAttachmentReconciler) ensureEndpoint(ctx context.Context, res
 			endpoint.Spec = juneauv1alpha1.NetworkEndpointSpec{
 				Kind:       juneauv1alpha1.EndpointKindServiceNAT,
 				NodeName:   resource.Spec.NodeName,
-				Subnet:     serviceNATAttachmentSubnet,
+				Subnet:     subnetName,
 				Address:    cidr,
 				MACAddress: mac,
 			}
@@ -238,18 +288,18 @@ func (r *ServiceNATAttachmentReconciler) deleteEndpoint(ctx context.Context, res
 	return nil
 }
 
-// serviceNATEndpointAddress combines the assigned /32 with the default
-// Subnet's prefix length so the data plane can install a connected route
-// covering the SNAT IP within the Subnet's L2 segment.
-func (r *ServiceNATAttachmentReconciler) serviceNATEndpointAddress(ctx context.Context, address string) (string, error) {
+// serviceNATEndpointAddress combines the assigned /32 with the
+// NAT-source Subnet's prefix length so the data plane can install a
+// connected route covering the SNAT IP within the Subnet's L2 segment.
+func (r *ServiceNATAttachmentReconciler) serviceNATEndpointAddress(ctx context.Context, subnetName, address string) (string, error) {
 	var subnet juneauv1alpha1.Subnet
-	if err := r.Get(ctx, client.ObjectKey{Name: serviceNATAttachmentSubnet}, &subnet); err != nil {
-		return "", fmt.Errorf("get default Subnet: %w", err)
+	if err := r.Get(ctx, client.ObjectKey{Name: subnetName}, &subnet); err != nil {
+		return "", fmt.Errorf("get NAT source Subnet %q: %w", subnetName, err)
 	}
 
 	_, cidr, err := net.ParseCIDR(subnet.Spec.CIDR)
 	if err != nil {
-		return "", fmt.Errorf("parse default Subnet CIDR %q: %w", subnet.Spec.CIDR, err)
+		return "", fmt.Errorf("parse Subnet %q CIDR %q: %w", subnetName, subnet.Spec.CIDR, err)
 	}
 	prefixLen, _ := cidr.Mask.Size()
 
@@ -260,8 +310,8 @@ func (r *ServiceNATAttachmentReconciler) serviceNATEndpointAddress(ctx context.C
 	return fmt.Sprintf("%s/%d", ip.String(), prefixLen), nil
 }
 
-func (r *ServiceNATAttachmentReconciler) updateReadyStatus(ctx context.Context, resource *juneauv1alpha1.ServiceNATAttachment, address, mac string) error {
-	return r.commitStatus(ctx, resource, address, mac, metav1.Condition{
+func (r *ServiceNATAttachmentReconciler) updateReadyStatus(ctx context.Context, resource *juneauv1alpha1.ServiceNATAttachment, subnetName, address, mac string) error {
+	return r.commitStatus(ctx, resource, address, mac, subnetName, metav1.Condition{
 		Type:    juneauv1alpha1.ServiceNATAttachmentStatusReady,
 		Status:  metav1.ConditionTrue,
 		Reason:  serviceNATAttachmentReasonReady,
@@ -269,8 +319,8 @@ func (r *ServiceNATAttachmentReconciler) updateReadyStatus(ctx context.Context, 
 	})
 }
 
-func (r *ServiceNATAttachmentReconciler) updatePendingStatus(ctx context.Context, resource *juneauv1alpha1.ServiceNATAttachment, address, mac, reason, message string) error {
-	return r.commitStatus(ctx, resource, address, mac, metav1.Condition{
+func (r *ServiceNATAttachmentReconciler) updatePendingStatus(ctx context.Context, resource *juneauv1alpha1.ServiceNATAttachment, address, mac, subnetName, reason, message string) error {
+	return r.commitStatus(ctx, resource, address, mac, subnetName, metav1.Condition{
 		Type:    juneauv1alpha1.ServiceNATAttachmentStatusReady,
 		Status:  metav1.ConditionFalse,
 		Reason:  reason,
@@ -278,10 +328,10 @@ func (r *ServiceNATAttachmentReconciler) updatePendingStatus(ctx context.Context
 	})
 }
 
-func (r *ServiceNATAttachmentReconciler) updateErrorStatus(ctx context.Context, resource *juneauv1alpha1.ServiceNATAttachment, reason, message string) error {
+func (r *ServiceNATAttachmentReconciler) updateErrorStatus(ctx context.Context, resource *juneauv1alpha1.ServiceNATAttachment, subnetName, reason, message string) error {
 	// Preserve any previously assigned IP/MAC on the resource so the
 	// transient error doesn't blank them out.
-	return r.commitStatus(ctx, resource, resource.Status.AssignedIP, resource.Status.AssignedMAC, metav1.Condition{
+	return r.commitStatus(ctx, resource, resource.Status.AssignedIP, resource.Status.AssignedMAC, subnetName, metav1.Condition{
 		Type:    juneauv1alpha1.ServiceNATAttachmentStatusReady,
 		Status:  metav1.ConditionFalse,
 		Reason:  reason,
@@ -289,17 +339,19 @@ func (r *ServiceNATAttachmentReconciler) updateErrorStatus(ctx context.Context, 
 	})
 }
 
-func (r *ServiceNATAttachmentReconciler) commitStatus(ctx context.Context, resource *juneauv1alpha1.ServiceNATAttachment, address, mac string, condition metav1.Condition) error {
+func (r *ServiceNATAttachmentReconciler) commitStatus(ctx context.Context, resource *juneauv1alpha1.ServiceNATAttachment, address, mac, subnetName string, condition metav1.Condition) error {
 	updated := resource.DeepCopy()
 	updated.Status.ObservedGeneration = updated.Generation
 	updated.Status.AssignedIP = address
 	updated.Status.AssignedMAC = mac
+	updated.Status.Subnet = subnetName
 	condition.ObservedGeneration = updated.Generation
 	meta.SetStatusCondition(&updated.Status.Conditions, condition)
 
 	if updated.Status.ObservedGeneration == resource.Status.ObservedGeneration &&
 		updated.Status.AssignedIP == resource.Status.AssignedIP &&
 		updated.Status.AssignedMAC == resource.Status.AssignedMAC &&
+		updated.Status.Subnet == resource.Status.Subnet &&
 		reflect.DeepEqual(updated.Status.Conditions, resource.Status.Conditions) {
 		return nil
 	}
@@ -316,6 +368,10 @@ func (r *ServiceNATAttachmentReconciler) SetupWithManager(mgr ctrl.Manager) erro
 		Watches(
 			&juneauv1alpha1.NetworkEndpoint{},
 			handler.EnqueueRequestsFromMapFunc(r.mapEndpointToServiceNATAttachment),
+		).
+		Watches(
+			&juneauv1alpha1.Vpc{},
+			handler.EnqueueRequestsFromMapFunc(r.mapVpcToAttachments),
 		).
 		Named("servicenatattachment").
 		Complete(r)
@@ -334,9 +390,38 @@ func (r *ServiceNATAttachmentReconciler) mapEndpointToServiceNATAttachment(_ con
 	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: attachmentName}}}
 }
 
-// serviceNATEndpointName returns the deterministic NetworkEndpoint name
-// for the SNAT endpoint backing the given attachment. The Node name is
-// already used for the juneau_node endpoint, so we suffix to disambiguate.
+// mapVpcToAttachments enqueues every ServiceNATAttachment whose
+// spec.vpc names the changed Vpc, so a flip of
+// spec.service.provider.natSourceSubnet (or removal of the provider
+// role) propagates to the attachments without needing an explicit
+// notification.
+func (r *ServiceNATAttachmentReconciler) mapVpcToAttachments(ctx context.Context, obj client.Object) []reconcile.Request {
+	vpc, ok := obj.(*juneauv1alpha1.Vpc)
+	if !ok {
+		return nil
+	}
+	var list juneauv1alpha1.ServiceNATAttachmentList
+	if err := r.List(ctx, &list); err != nil {
+		return nil
+	}
+	var reqs []reconcile.Request
+	for i := range list.Items {
+		if list.Items[i].Spec.Vpc == vpc.Name {
+			reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKey{Name: list.Items[i].Name}})
+		}
+	}
+	return reqs
+}
+
+// serviceNATAttachmentName returns the deterministic
+// ServiceNATAttachment metadata.name for a (Node, provider Vpc) pair.
+// The webhook validates this concatenation matches metadata.name.
+func serviceNATAttachmentName(nodeName, vpcName string) string {
+	return nodeName + serviceNATAttachmentNameSeparator + vpcName
+}
+
+// serviceNATEndpointName returns the deterministic NetworkEndpoint
+// name for the SNAT endpoint backing the given attachment.
 func serviceNATEndpointName(attachmentName string) string {
 	return attachmentName + serviceNATEndpointSuffix
 }

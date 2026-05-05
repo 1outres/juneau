@@ -78,9 +78,12 @@ func presentSubnetTree(w io.Writer, sc *topology.SubnetContext) error {
 		sc.Subnet.Name, sc.Subnet.Spec.CIDR, sc.Subnet.Status.VNI))
 
 	if sc.Vpc != nil {
-		root.Childf("Vpc  %s  (vpcID: %d, enableService: %t, enforceSecurityGroups: %t)",
+		root.Childf("Vpc  %s  (vpcID: %d, serviceEnabled: %t, consume: %t, provider: %s, enforceSecurityGroups: %t)",
 			sc.Vpc.Name, sc.Vpc.Status.VpcID,
-			sc.Vpc.Spec.EnableService, sc.Vpc.Spec.EnforceSecurityGroups)
+			sc.Vpc.Spec.ServiceEnabled(),
+			sc.Vpc.Spec.Service.Consumes(),
+			displayOrDash(sc.Vpc.Spec.Service.ProviderSubnet()),
+			sc.Vpc.Spec.EnforceSecurityGroups)
 	} else if sc.Subnet.Spec.Vpc != "" {
 		root.Childf("Vpc  %s  (not found)", sc.Subnet.Spec.Vpc)
 	}

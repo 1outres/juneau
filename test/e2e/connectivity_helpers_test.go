@@ -173,9 +173,12 @@ func ensureNetworkFixture(ctx caseContext, mode networkMode) networkFixture {
 
 func createCustomNetwork(ctx caseContext, createClientSubnet bool, enableService bool) {
 	By("creating a dedicated VPC and subnet resources")
-	enableServiceLine := ""
+	serviceLine := ""
 	if enableService {
-		enableServiceLine = "\nspec:\n  enableService: true"
+		// Setting service.consume=true is the umbrella that turns on
+		// Service routing in the VPC; provider-only configuration
+		// would also work but is not what these tests care about.
+		serviceLine = "\nspec:\n  service:\n    consume: true"
 	}
 	manifest := fmt.Sprintf(`apiVersion: juneau.loutres.me/v1alpha1
 kind: Vpc
@@ -189,7 +192,7 @@ metadata:
 spec:
   vpc: %s
   cidr: %s
-`, ctx.vpcName, enableServiceLine, ctx.serverSubnet, ctx.vpcName, ctx.serverCIDR)
+`, ctx.vpcName, serviceLine, ctx.serverSubnet, ctx.vpcName, ctx.serverCIDR)
 
 	if createClientSubnet {
 		manifest += fmt.Sprintf(`---

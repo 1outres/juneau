@@ -21,7 +21,7 @@ Juneauでは、Vpcごとに独立したServiceを利用できます。default以
 
 ### 1. Service機能を有効化したVpcを作成
 
-default以外のVpcでServiceを扱うには、`spec.enableService: true`を指定します。
+default以外のVpcでServiceを扱うには、`spec.service` を設定します。自 Vpc のPod が同じVpc 内のService にだけ到達できれば良いケースでは `spec.service.consume: true` だけ指定すれば十分です。
 
 ```yaml
 apiVersion: juneau.loutres.me/v1alpha1
@@ -29,10 +29,11 @@ kind: Vpc
 metadata:
   name: app-vpc
 spec:
-  enableService: true
+  service:
+    consume: true
 ```
 
-`spec.enableService`を有効にしていないVpcをServiceの所属先として指定すると、Serviceの作成は拒否されます。詳細は[Vpc](../resources/vpc.md)を参照してください。
+`spec.service` を一切設定していないVpcをServiceの所属先として指定すると、Serviceの作成は拒否されます。詳細は[Vpc](../resources/vpc.md)を参照してください。
 
 ### 2. Subnetを2つ作成
 
@@ -60,7 +61,7 @@ spec:
 
 ### 3. RouteTableにService経路が注入されていることを確認
 
-`spec.enableService: true`のVpcでは、そのVpcのメインRouteTableにService CIDR向けのルートが自動で注入されます。ユーザが手動で追加する必要はありません。
+`spec.service` でService 関連の opt-in が設定されたVpcでは、そのVpcのメインRouteTableにService CIDR向けのルートが自動で注入されます。ユーザが手動で追加する必要はありません。
 
 ```console
 $ kubectl get routetable app-vpc -o yaml
@@ -169,10 +170,10 @@ $ kubectl exec curl -- curl -sS http://nginx/
 ## うまくいかないとき
 
 1. **Serviceのapplyが拒否される**
-    - 対象Vpcに`spec.enableService: true`が付いているか
+    - 対象Vpcに`spec.service.consume: true` (もしくは `spec.service.provider.natSourceSubnet`) が設定されているか
     - `juneau.loutres.me/vpc`で指定したVpcが実在するか
 2. **RouteTableに`via.type: service`のルートが入らない**
-    - 対象Vpcの`spec.enableService`が`true`になっているか
+    - 対象Vpcの `spec.service` でService ルーティングが有効になっているか
     - クラスター側でService CIDRが設定されているか
 3. **client PodからClusterIPに到達しない**
     - client Podが対象Vpcに属するSubnetに配置されているか (`juneau.loutres.me/subnet`アノテーション)

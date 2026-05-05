@@ -39,12 +39,14 @@ import (
 )
 
 const (
-	vpcReasonDeleting           = "Deleting"
-	vpcReasonRouteTableNotReady = "MainRouteTableNotReady"
-	vpcReasonRouteTableMissing  = "MainRouteTableMissing"
-	vpcReasonNotReady           = "NotReady"
-	vpcReasonReconcileFailed    = "ReconcileFailed"
-	vpcReasonReconcileSucceeded = "ReconcileSucceeded"
+	vpcReasonDeleting              = "Deleting"
+	vpcReasonRouteTableNotReady    = "MainRouteTableNotReady"
+	vpcReasonRouteTableMissing     = "MainRouteTableMissing"
+	vpcReasonNotReady              = "NotReady"
+	vpcReasonReconcileFailed       = "ReconcileFailed"
+	vpcReasonReconcileSucceeded    = "ReconcileSucceeded"
+	vpcReasonProviderSubnetMissing = "ProviderSubnetMissing"
+	vpcReasonProviderSubnetForeign = "ProviderSubnetForeign"
 
 	defaultVpcName = "default"
 )
@@ -163,18 +165,46 @@ func (r *VpcReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, nil
 	}
 
-	if resource.Name == defaultVpcName {
-		// default Vpc fans out per-Node ServiceNATAttachments. They
-		// preallocate the SNAT source IPs that other Vpcs need for
-		// reaching shared Services in the default Vpc; allocating up
-		// front keeps the cross-Vpc flow ready the moment a Vpc opts
-		// in via spec.enableService=true.
-		if err := r.ensureServiceNATAttachments(ctx, &resource); err != nil {
-			if updateErr := r.updateStatus(ctx, &resource, mainRouteTableName, vpcID, metav1.ConditionFalse, vpcReasonReconcileFailed, fmt.Sprintf("failed to reconcile ServiceNATAttachments: %v", err)); updateErr != nil {
+	// When the Vpc opts in to the cross-Vpc provider role, the
+	// referenced Subnet must exist and be owned by this Vpc. The check
+	// lives here (not in the admission webhook) so that a Vpc and its
+	// NAT-source Subnet can be applied together without admission
+	// rejecting the Vpc on the grounds that the Subnet "doesn't exist
+	// yet". The Subnet watcher re-reconciles the Vpc when the Subnet
+	// finally appears.
+	if resource.Spec.Service.IsProvider() {
+		subnetName := resource.Spec.Service.ProviderSubnet()
+		var subnet juneauv1alpha1.Subnet
+		switch err := r.Get(ctx, client.ObjectKey{Name: subnetName}, &subnet); {
+		case errors.IsNotFound(err):
+			if updateErr := r.updateStatus(ctx, &resource, mainRouteTableName, vpcID, metav1.ConditionFalse, vpcReasonProviderSubnetMissing, fmt.Sprintf("spec.service.provider.natSourceSubnet %q does not exist", subnetName)); updateErr != nil {
+				return ctrl.Result{}, updateErr
+			}
+			return ctrl.Result{}, nil
+		case err != nil:
+			if updateErr := r.updateStatus(ctx, &resource, mainRouteTableName, vpcID, metav1.ConditionFalse, vpcReasonReconcileFailed, fmt.Sprintf("failed to fetch provider Subnet %q: %v", subnetName, err)); updateErr != nil {
 				return ctrl.Result{}, updateErr
 			}
 			return ctrl.Result{}, err
+		case subnet.Spec.Vpc != resource.Name:
+			if updateErr := r.updateStatus(ctx, &resource, mainRouteTableName, vpcID, metav1.ConditionFalse, vpcReasonProviderSubnetForeign, fmt.Sprintf("spec.service.provider.natSourceSubnet %q is owned by Vpc %q, not %q", subnetName, subnet.Spec.Vpc, resource.Name)); updateErr != nil {
+				return ctrl.Result{}, updateErr
+			}
+			return ctrl.Result{}, nil
 		}
+	}
+
+	// Every Vpc owns the ServiceNATAttachments rooted at it. When the
+	// Vpc opts in to the cross-Vpc provider role
+	// (spec.service.provider.natSourceSubnet), we eagerly allocate one
+	// SNAT IP per Node so cross-Vpc flows are ready as soon as a
+	// caller Vpc opts in. When the role is dropped, the cleanup pass
+	// in ensureServiceNATAttachments tears the attachments down.
+	if err := r.ensureServiceNATAttachments(ctx, &resource); err != nil {
+		if updateErr := r.updateStatus(ctx, &resource, mainRouteTableName, vpcID, metav1.ConditionFalse, vpcReasonReconcileFailed, fmt.Sprintf("failed to reconcile ServiceNATAttachments: %v", err)); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{}, err
 	}
 
 	if err := r.updateStatus(ctx, &resource, mainRouteTableName, vpcID, metav1.ConditionTrue, vpcReasonReconcileSucceeded, ""); err != nil {
@@ -184,33 +214,43 @@ func (r *VpcReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	return ctrl.Result{}, nil
 }
 
-// ensureServiceNATAttachments creates one ServiceNATAttachment per Node.
-// Existing attachments owned by the default Vpc but missing from the Node
-// list are deleted so that drained Nodes don't leak SNAT IP allocations.
+// ensureServiceNATAttachments reconciles the per-(Node, this-Vpc)
+// ServiceNATAttachment fan-out. When the Vpc opts in to the
+// cross-Vpc provider role it ensures one attachment per Node;
+// otherwise the desired set is empty and the cleanup pass tears down
+// any leftover attachments owned by this Vpc. Existing attachments
+// for Nodes that have left the cluster are deleted regardless so SNAT
+// IP allocations don't leak.
 func (r *VpcReconciler) ensureServiceNATAttachments(ctx context.Context, vpc *juneauv1alpha1.Vpc) error {
-	var nodes corev1.NodeList
-	if err := r.List(ctx, &nodes); err != nil {
-		return fmt.Errorf("list Nodes: %w", err)
-	}
+	desired := make(map[string]struct{})
 
-	desired := make(map[string]struct{}, len(nodes.Items))
-	for i := range nodes.Items {
-		nodeName := nodes.Items[i].Name
-		desired[nodeName] = struct{}{}
-
-		attachment := &juneauv1alpha1.ServiceNATAttachment{
-			ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+	if vpc.Spec.Service.IsProvider() {
+		var nodes corev1.NodeList
+		if err := r.List(ctx, &nodes); err != nil {
+			return fmt.Errorf("list Nodes: %w", err)
 		}
-		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, attachment, func() error {
-			// Spec is immutable per the webhook, so only set on create
-			// (when the resource has no UID yet).
-			if attachment.UID == "" {
-				attachment.Spec = juneauv1alpha1.ServiceNATAttachmentSpec{NodeName: nodeName}
+		for i := range nodes.Items {
+			nodeName := nodes.Items[i].Name
+			attachmentName := serviceNATAttachmentName(nodeName, vpc.Name)
+			desired[attachmentName] = struct{}{}
+
+			attachment := &juneauv1alpha1.ServiceNATAttachment{
+				ObjectMeta: metav1.ObjectMeta{Name: attachmentName},
 			}
-			return controllerutil.SetControllerReference(vpc, attachment, r.Scheme)
-		})
-		if err != nil {
-			return fmt.Errorf("ensure ServiceNATAttachment %q: %w", nodeName, err)
+			_, err := controllerutil.CreateOrUpdate(ctx, r.Client, attachment, func() error {
+				// Spec is immutable per the webhook, so only set on
+				// create (when the resource has no UID yet).
+				if attachment.UID == "" {
+					attachment.Spec = juneauv1alpha1.ServiceNATAttachmentSpec{
+						NodeName: nodeName,
+						Vpc:      vpc.Name,
+					}
+				}
+				return controllerutil.SetControllerReference(vpc, attachment, r.Scheme)
+			})
+			if err != nil {
+				return fmt.Errorf("ensure ServiceNATAttachment %q: %w", attachmentName, err)
+			}
 		}
 	}
 
@@ -244,7 +284,8 @@ func (r *VpcReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&juneauv1alpha1.ServiceNATAttachment{}).
 		Watches(&juneauv1alpha1.RouteTable{}, handler.EnqueueRequestsFromMapFunc(r.mapRouteTableToVpcs)).
 		Watches(&juneauv1alpha1.AllocationClaim{}, handler.EnqueueRequestsFromMapFunc(r.mapClaimToVpcs)).
-		Watches(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(r.mapNodeToDefaultVpc)).
+		Watches(&juneauv1alpha1.Subnet{}, handler.EnqueueRequestsFromMapFunc(r.mapSubnetToProviderVpcs)).
+		Watches(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(r.mapNodeToProviderVpcs)).
 		Named("vpc").
 		Complete(r)
 }
@@ -324,9 +365,44 @@ func (r *VpcReconciler) mapClaimToVpcs(ctx context.Context, obj client.Object) [
 	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: claim.Spec.ResourceRef.Name}}}
 }
 
-// mapNodeToDefaultVpc enqueues the default Vpc whenever a Node is added,
-// removed, or labelled. The default Vpc reconciler is the only consumer
-// of Node events because it owns the per-Node ServiceNATAttachment fan-out.
-func (r *VpcReconciler) mapNodeToDefaultVpc(_ context.Context, _ client.Object) []reconcile.Request {
-	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: defaultVpcName}}}
+// mapSubnetToProviderVpcs enqueues every Vpc whose
+// spec.service.provider.natSourceSubnet names the changed Subnet, so
+// the Vpc's Ready condition (ProviderSubnetMissing /
+// ProviderSubnetForeign) is reevaluated as soon as the Subnet is
+// created, deleted, or its ownership changes.
+func (r *VpcReconciler) mapSubnetToProviderVpcs(ctx context.Context, obj client.Object) []reconcile.Request {
+	subnet, ok := obj.(*juneauv1alpha1.Subnet)
+	if !ok {
+		return nil
+	}
+	var list juneauv1alpha1.VpcList
+	if err := r.List(ctx, &list); err != nil {
+		return nil
+	}
+	var reqs []reconcile.Request
+	for i := range list.Items {
+		if list.Items[i].Spec.Service.ProviderSubnet() == subnet.Name {
+			reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKey{Name: list.Items[i].Name}})
+		}
+	}
+	return reqs
+}
+
+// mapNodeToProviderVpcs enqueues every Vpc that has opted in to the
+// cross-Vpc provider role whenever a Node is added, removed, or
+// labelled. Each provider Vpc owns its own per-Node
+// ServiceNATAttachment fan-out, so all of them must reconcile when
+// the Node set changes.
+func (r *VpcReconciler) mapNodeToProviderVpcs(ctx context.Context, _ client.Object) []reconcile.Request {
+	var list juneauv1alpha1.VpcList
+	if err := r.List(ctx, &list); err != nil {
+		return nil
+	}
+	var reqs []reconcile.Request
+	for i := range list.Items {
+		if list.Items[i].Spec.Service.IsProvider() {
+			reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKey{Name: list.Items[i].Name}})
+		}
+	}
+	return reqs
 }

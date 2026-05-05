@@ -132,9 +132,12 @@ func appendInterfaceNode(parent *output.Node, ic *topology.InterfaceContext) {
 		subnetNode := nicNode.Childf("Subnet  %s  (cidr: %s, vni: %d)",
 			ic.Subnet.Name, ic.Subnet.Spec.CIDR, ic.Subnet.Status.VNI)
 		if ic.Vpc != nil {
-			subnetNode.Childf("Vpc  %s  (vpcID: %d, enableService: %t, enforceSecurityGroups: %t)",
+			subnetNode.Childf("Vpc  %s  (vpcID: %d, serviceEnabled: %t, consume: %t, provider: %s, enforceSecurityGroups: %t)",
 				ic.Vpc.Name, ic.Vpc.Status.VpcID,
-				ic.Vpc.Spec.EnableService, ic.Vpc.Spec.EnforceSecurityGroups)
+				ic.Vpc.Spec.ServiceEnabled(),
+				ic.Vpc.Spec.Service.Consumes(),
+				displayOrDash(ic.Vpc.Spec.Service.ProviderSubnet()),
+				ic.Vpc.Spec.EnforceSecurityGroups)
 		} else if ic.Subnet.Spec.Vpc != "" {
 			subnetNode.Childf("Vpc  %s  (not found)", ic.Subnet.Spec.Vpc)
 		}

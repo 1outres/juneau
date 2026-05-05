@@ -208,7 +208,7 @@ func (v *RouteTableCustomValidator) validateRouteTableSpec(ctx context.Context, 
 				errs = append(errs, field.Invalid(routePath.Child("via", "natGateway"), route.Via.NATGateway, fmt.Sprintf("spec.routes[].via.natGateway must be empty when via.type is %q", route.Via.Type)))
 			}
 		case juneauv1alpha1.ViaService:
-			errs = append(errs, field.Forbidden(routePath.Child("via", "type"), "spec.routes[].via.type=service is managed by the controller and cannot be specified manually; set spec.enableService on the Vpc instead"))
+			errs = append(errs, field.Forbidden(routePath.Child("via", "type"), "spec.routes[].via.type=service is managed by the controller and cannot be specified manually; configure spec.service on the Vpc instead"))
 		case juneauv1alpha1.ViaNATGateway:
 			if route.Via.NATGateway == "" {
 				errs = append(errs, field.Required(routePath.Child("via", "natGateway"), "spec.routes[].via.natGateway is required when via.type is natGateway"))

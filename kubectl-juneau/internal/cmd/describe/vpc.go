@@ -77,7 +77,9 @@ func presentVpcTree(w io.Writer, vc *topology.VpcContext) error {
 	root := output.NewNode(fmt.Sprintf("Vpc  %s  (vpcID: %d)", vc.Vpc.Name, vc.Vpc.Status.VpcID))
 
 	spec := root.Child("Spec")
-	spec.Childf("enableService:         %t", vc.Vpc.Spec.EnableService)
+	spec.Childf("serviceEnabled:        %t", vc.Vpc.Spec.ServiceEnabled())
+	spec.Childf("service.consume:       %t", vc.Vpc.Spec.Service.Consumes())
+	spec.Childf("service.provider:      %s", displayOrDash(vc.Vpc.Spec.Service.ProviderSubnet()))
 	spec.Childf("enforceSecurityGroups: %t", vc.Vpc.Spec.EnforceSecurityGroups)
 
 	if len(vc.Subnets) == 0 {

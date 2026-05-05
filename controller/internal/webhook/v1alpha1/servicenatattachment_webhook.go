@@ -32,6 +32,12 @@ import (
 	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
+// ServiceNATAttachmentNameSeparator separates the Node name and Vpc
+// name parts of a ServiceNATAttachment metadata.name. Mirrors the
+// constant used by the controller. Kept here too so the webhook can
+// validate the conformance without a circular import.
+const ServiceNATAttachmentNameSeparator = "."
+
 // nolint:unused
 var servicenatattachmentlog = logf.Log.WithName("servicenatattachment-resource")
 
@@ -45,8 +51,9 @@ func SetupServiceNATAttachmentWebhookWithManager(mgr ctrl.Manager) error {
 // +kubebuilder:webhook:path=/validate-juneau-loutres-me-v1alpha1-servicenatattachment,mutating=false,failurePolicy=fail,sideEffects=None,groups=juneau.loutres.me,resources=servicenatattachments,verbs=create;update,versions=v1alpha1,name=vservicenatattachment-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // ServiceNATAttachmentCustomValidator validates ServiceNATAttachment
-// resources. Each attachment is keyed by Node name; both the metadata
-// name and spec.nodeName must agree, and spec.nodeName is immutable.
+// resources. Each attachment is keyed by (Node name, provider Vpc
+// name); the spec fields must agree with metadata.name and are
+// immutable.
 type ServiceNATAttachmentCustomValidator struct{}
 
 var _ webhook.CustomValidator = &ServiceNATAttachmentCustomValidator{}
@@ -82,16 +89,26 @@ func (v *ServiceNATAttachmentCustomValidator) ValidateDelete(_ context.Context, 
 	return nil, nil
 }
 
+// validateServiceNATAttachment checks the (NodeName, Vpc) tuple
+// invariants: both fields must be non-empty, the metadata.name must
+// be the deterministic concatenation `<node><sep><vpc>`, and neither
+// spec field may change after creation.
 func validateServiceNATAttachment(obj, oldObj *juneauloutresmev1alpha1.ServiceNATAttachment) (admission.Warnings, error) {
 	var errs field.ErrorList
 	specPath := field.NewPath("spec")
 
-	if obj.Spec.NodeName != obj.Name {
-		errs = append(errs, field.Invalid(specPath.Child("nodeName"), obj.Spec.NodeName, "spec.nodeName must equal metadata.name"))
+	expectedName := obj.Spec.NodeName + ServiceNATAttachmentNameSeparator + obj.Spec.Vpc
+	if obj.Name != expectedName {
+		errs = append(errs, field.Invalid(field.NewPath("metadata", "name"), obj.Name, fmt.Sprintf("metadata.name must equal `<spec.nodeName>%s<spec.vpc>` (=%q)", ServiceNATAttachmentNameSeparator, expectedName)))
 	}
 
-	if oldObj != nil && obj.Spec.NodeName != oldObj.Spec.NodeName {
-		errs = append(errs, field.Invalid(specPath.Child("nodeName"), obj.Spec.NodeName, "spec.nodeName is immutable"))
+	if oldObj != nil {
+		if obj.Spec.NodeName != oldObj.Spec.NodeName {
+			errs = append(errs, field.Invalid(specPath.Child("nodeName"), obj.Spec.NodeName, "spec.nodeName is immutable"))
+		}
+		if obj.Spec.Vpc != oldObj.Spec.Vpc {
+			errs = append(errs, field.Invalid(specPath.Child("vpc"), obj.Spec.Vpc, "spec.vpc is immutable"))
+		}
 	}
 
 	if len(errs) > 0 {

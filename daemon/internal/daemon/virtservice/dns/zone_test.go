@@ -48,7 +48,8 @@ func TestClusterZoneResolvesSameVPCService(t *testing.T) {
 		Type:                TypeA,
 		Class:               ClassINET,
 		CallerVPC:           "tenant-a",
-		CallerEnableService: true,
+		CallerServiceEnabled: true,
+		CallerConsume:        true,
 	})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -93,7 +94,8 @@ func TestClusterZoneAcrossVPCDeniedNXDomain(t *testing.T) {
 		Type:                TypeA,
 		Class:               ClassINET,
 		CallerVPC:           "tenant-b",
-		CallerEnableService: true,
+		CallerServiceEnabled: true,
+		CallerConsume:        true,
 	})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -117,7 +119,8 @@ func TestClusterZoneSharedServiceAcrossVPC(t *testing.T) {
 		Type:                TypeA,
 		Class:               ClassINET,
 		CallerVPC:           "tenant-b",
-		CallerEnableService: true,
+		CallerServiceEnabled: true,
+		CallerConsume:        true,
 	})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -130,7 +133,7 @@ func TestClusterZoneSharedServiceAcrossVPC(t *testing.T) {
 	}
 }
 
-func TestClusterZoneEnableServiceOff(t *testing.T) {
+func TestClusterZoneServiceEnabledOff(t *testing.T) {
 	cl := newFakeClient(t,
 		makeService("ns1", "demo", "10.96.1.5",
 			map[string]string{svcpolicy.AnnotationVpc: "tenant-a"}),
@@ -142,13 +145,13 @@ func TestClusterZoneEnableServiceOff(t *testing.T) {
 		Type:                TypeA,
 		Class:               ClassINET,
 		CallerVPC:           "tenant-a",
-		CallerEnableService: false,
+		CallerServiceEnabled: false,
 	})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 	if res.RCode != RCodeNXDomain {
-		t.Errorf("rcode = %d, want NXDomain when EnableService is false", res.RCode)
+		t.Errorf("rcode = %d, want NXDomain when service routing is disabled", res.RCode)
 	}
 }
 
@@ -163,7 +166,8 @@ func TestClusterZoneAAAAReturnsNoData(t *testing.T) {
 		Type:                TypeAAAA,
 		Class:               ClassINET,
 		CallerVPC:           "default",
-		CallerEnableService: true,
+		CallerServiceEnabled: true,
+		CallerConsume:        true,
 	})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -186,7 +190,8 @@ func TestClusterZoneHeadlessServiceNoData(t *testing.T) {
 		Type:                TypeA,
 		Class:               ClassINET,
 		CallerVPC:           "default",
-		CallerEnableService: true,
+		CallerServiceEnabled: true,
+		CallerConsume:        true,
 	})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)

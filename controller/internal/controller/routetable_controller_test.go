@@ -152,7 +152,7 @@ var _ = Describe("RouteTable controller", func() {
 		}).Should(Succeed())
 	})
 
-	It("injects a Service route into the main RouteTable when Vpc.enableService becomes true", func() {
+	It("injects a Service route into the main RouteTable when Vpc Service routing becomes enabled", func() {
 		vpcName := createControllerVpc()
 
 		Eventually(func(g Gomega) {
@@ -164,7 +164,7 @@ var _ = Describe("RouteTable controller", func() {
 
 		var vpc juneauv1alpha1.Vpc
 		Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: vpcName}, &vpc)).To(Succeed())
-		vpc.Spec.EnableService = true
+		vpc.Spec.Service = &juneauv1alpha1.VpcServiceSpec{Consume: true}
 		Expect(k8sClient.Update(context.Background(), &vpc)).To(Succeed())
 
 		Eventually(func(g Gomega) {
@@ -216,7 +216,7 @@ var _ = Describe("RouteTable controller", func() {
 
 		var vpc juneauv1alpha1.Vpc
 		Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: vpcName}, &vpc)).To(Succeed())
-		vpc.Spec.EnableService = true
+		vpc.Spec.Service = &juneauv1alpha1.VpcServiceSpec{Consume: true}
 		Expect(k8sClient.Update(context.Background(), &vpc)).To(Succeed())
 
 		serviceRoute := juneauv1alpha1.Route{

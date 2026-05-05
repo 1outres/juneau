@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -41,12 +42,15 @@ const (
 	// ServiceAnnotationSubnet is intentionally rejected; Service is a
 	// VPC-scoped concept and cannot be tied to a single Subnet.
 	ServiceAnnotationSubnet = "juneau.loutres.me/subnet"
-	// ServiceAnnotationShared opts a Service in to cross-Vpc visibility:
-	// callers in any Vpc with spec.enableService=true can reach the
-	// ClusterIP through per-Node SNAT. Only Services owned by the
-	// default Vpc may set this annotation, since the data plane's
-	// shared-service path is anchored at default-Vpc backends.
+	// ServiceAnnotationShared opts a Service in to cross-Vpc visibility.
+	// The owner Vpc must have spec.service.provider.natSourceSubnet
+	// configured for this annotation to be valid.
 	ServiceAnnotationShared = "juneau.loutres.me/shared-service"
+	// ServiceAnnotationAllowedConsumerVpcs whitelists the caller Vpcs
+	// that may reach the shared Service. Comma-separated Vpc names;
+	// when absent every consume-enabled Vpc is permitted. Each listed
+	// Vpc must exist and have spec.service.consume=true.
+	ServiceAnnotationAllowedConsumerVpcs = "juneau.loutres.me/shared-service-allowed-consumer-vpcs"
 
 	defaultServiceVpc = "default"
 )
@@ -57,7 +61,7 @@ var servicelog = logf.Log.WithName("service-resource")
 // SetupServiceWebhookWithManager registers the webhook for core/v1.Service
 // in the manager. It validates Juneau-specific annotations on Service
 // objects and rejects Services bound to a Vpc that does not have
-// spec.enableService=true.
+// Service routing enabled.
 func SetupServiceWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&corev1.Service{}).
 		WithValidator(&ServiceCustomValidator{Client: mgr.GetClient()}).
@@ -67,8 +71,9 @@ func SetupServiceWebhookWithManager(mgr ctrl.Manager) error {
 // +kubebuilder:webhook:path=/validate--v1-service,mutating=false,failurePolicy=fail,sideEffects=None,groups="",resources=services,verbs=create;update,versions=v1,name=vservice-juneau-loutres-me.kb.io,admissionReviewVersions=v1
 
 // ServiceCustomValidator validates core/v1.Service objects against Juneau
-// constraints. Services pointing at a Vpc with spec.enableService=false
-// are rejected so that no Service is silently unreachable.
+// constraints. Services pointing at a Vpc that does not have Service
+// routing enabled are rejected so that no Service is silently
+// unreachable.
 type ServiceCustomValidator struct {
 	client.Client
 }
@@ -105,10 +110,11 @@ func (v *ServiceCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 
 	if serviceVpc(newSvc) == serviceVpc(oldSvc) &&
 		newSvc.Annotations[ServiceAnnotationSubnet] == oldSvc.Annotations[ServiceAnnotationSubnet] &&
-		newSvc.Annotations[ServiceAnnotationShared] == oldSvc.Annotations[ServiceAnnotationShared] {
-		// Annotations relevant to Juneau are unchanged. Skip re-validation
-		// so that pre-existing Services keep working even if their VPC
-		// later loses enableService=true.
+		newSvc.Annotations[ServiceAnnotationShared] == oldSvc.Annotations[ServiceAnnotationShared] &&
+		newSvc.Annotations[ServiceAnnotationAllowedConsumerVpcs] == oldSvc.Annotations[ServiceAnnotationAllowedConsumerVpcs] {
+		// Annotations relevant to Juneau are unchanged. Skip
+		// re-validation so that pre-existing Services keep working
+		// even if the upstream Vpcs later flip their service config.
 		return nil, nil
 	}
 
@@ -148,17 +154,73 @@ func (v *ServiceCustomValidator) validate(ctx context.Context, svc *corev1.Servi
 		return nil, err
 	}
 
-	if !vpc.Spec.EnableService {
-		errs = append(errs, field.Invalid(annPath.Key(ServiceAnnotationVpc), vpcName, fmt.Sprintf("Vpc %q does not have spec.enableService=true", vpcName)))
+	if !vpc.Spec.ServiceEnabled() {
+		errs = append(errs, field.Invalid(annPath.Key(ServiceAnnotationVpc), vpcName, fmt.Sprintf("Vpc %q does not have Service routing enabled (configure spec.service.consume or spec.service.provider)", vpcName)))
 	}
 
-	if isSharedServiceAnnotation(svc.Annotations[ServiceAnnotationShared]) && vpcName != defaultServiceVpc {
-		// Shared Services route into the default-Vpc fabric (backends and
-		// ServiceNATAttachment NetworkEndpoints both live there). Allowing
-		// non-default ownership would silently broken the return path.
-		errs = append(errs, field.Invalid(annPath.Key(ServiceAnnotationShared), svc.Annotations[ServiceAnnotationShared], "shared-service annotation is only valid on Services owned by the default Vpc"))
+	sharedRequested := isSharedServiceAnnotation(svc.Annotations[ServiceAnnotationShared])
+	if sharedRequested && !vpc.Spec.Service.IsProvider() {
+		// shared-service requires the owner Vpc to have a NAT source
+		// Subnet so per-Node SNAT IPs can be allocated for cross-VPC
+		// callers.
+		errs = append(errs, field.Invalid(annPath.Key(ServiceAnnotationShared), svc.Annotations[ServiceAnnotationShared], fmt.Sprintf("Vpc %q is not configured as a Service provider (set spec.service.provider.natSourceSubnet)", vpcName)))
 	}
 
+	if aclErrs, err := v.validateAllowedConsumers(ctx, svc, sharedRequested, annPath); err != nil {
+		return nil, err
+	} else {
+		errs = append(errs, aclErrs...)
+	}
+
+	return errs, nil
+}
+
+// validateAllowedConsumers enforces that every Vpc listed in the
+// allowed-consumer-vpcs annotation exists and has
+// spec.service.consume=true. The annotation is meaningful only when
+// the Service is also marked shared; if shared is not set, presence of
+// the ACL annotation is rejected outright so users don't think
+// they've configured something that takes effect.
+func (v *ServiceCustomValidator) validateAllowedConsumers(ctx context.Context, svc *corev1.Service, sharedRequested bool, annPath *field.Path) (field.ErrorList, error) {
+	raw, ok := svc.Annotations[ServiceAnnotationAllowedConsumerVpcs]
+	if !ok {
+		return nil, nil
+	}
+
+	aclPath := annPath.Key(ServiceAnnotationAllowedConsumerVpcs)
+	if !sharedRequested {
+		return field.ErrorList{field.Invalid(aclPath, raw, "shared-service-allowed-consumer-vpcs has no effect without the shared-service annotation")}, nil
+	}
+
+	parts := strings.Split(raw, ",")
+	var errs field.ErrorList
+	seen := make(map[string]struct{}, len(parts))
+	for _, p := range parts {
+		name := strings.TrimSpace(p)
+		if name == "" {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			errs = append(errs, field.Invalid(aclPath, name, "duplicate Vpc in allowed-consumer-vpcs"))
+			continue
+		}
+		seen[name] = struct{}{}
+
+		var consumerVpc juneauv1alpha1.Vpc
+		if err := v.Get(ctx, client.ObjectKey{Name: name}, &consumerVpc); err != nil {
+			if errors.IsNotFound(err) {
+				errs = append(errs, field.Invalid(aclPath, name, "Vpc does not exist"))
+				continue
+			}
+			return nil, err
+		}
+		if !consumerVpc.Spec.Service.Consumes() {
+			errs = append(errs, field.Invalid(aclPath, name, fmt.Sprintf("Vpc %q does not have spec.service.consume=true", name)))
+		}
+	}
+	if len(seen) == 0 {
+		errs = append(errs, field.Invalid(aclPath, raw, "must list at least one Vpc when set"))
+	}
 	return errs, nil
 }
 
