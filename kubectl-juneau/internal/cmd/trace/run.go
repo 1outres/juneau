@@ -2,6 +2,7 @@ package trace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -243,8 +244,11 @@ func (s *streamSet) Close() {
 
 // attachStreams dials each node's nodeagent and starts a WatchTrace
 // stream. Returns a streamSet whose Events channel surfaces events
-// from any node; errors surface on Errors but do not abort the
-// overall command.
+// from any node; per-node errors surface on Errors but do not abort
+// the overall command — except when no node attaches successfully,
+// in which case it returns an aggregate error so the caller exits
+// non-zero rather than masking a cluster-wide outage as a clean
+// "no events" trace.
 func (o *Options) attachStreams(ctx context.Context, nodes []string, traceID uint32) (*streamSet, error) {
 	streamCtx, cancel := context.WithCancel(ctx)
 	// Buffer headroom: each node may produce up to 2 setup errors
@@ -259,6 +263,7 @@ func (o *Options) attachStreams(ctx context.Context, nodes []string, traceID uin
 		cancel: cancel,
 	}
 
+	attached := 0
 	for _, node := range nodes {
 		client, err := o.Factory.NodeAgent(streamCtx, node)
 		if err != nil {
@@ -275,6 +280,7 @@ func (o *Options) attachStreams(ctx context.Context, nodes []string, traceID uin
 			continue
 		}
 
+		attached++
 		set.wg.Add(1)
 		go func(node string) {
 			defer set.wg.Done()
@@ -294,7 +300,34 @@ func (o *Options) attachStreams(ctx context.Context, nodes []string, traceID uin
 			}
 		}(node)
 	}
+
+	if attached == 0 {
+		// Surface the failure path explicitly so a misconfigured
+		// cluster (RBAC, daemon outage) does not look like a healthy
+		// trace with zero matching packets.
+		setupErrs := drainErrors(set.errors)
+		set.Close()
+		if len(nodes) == 0 {
+			return nil, fmt.Errorf("trace: no nodes resolved to attach to")
+		}
+		return nil, fmt.Errorf("trace: failed to attach to any of %d node(s): %w",
+			len(nodes), errors.Join(setupErrs...))
+	}
 	return set, nil
+}
+
+// drainErrors empties the buffered error channel without blocking.
+// Used to collect setup-time errors when attachStreams fails open.
+func drainErrors(ch <-chan error) []error {
+	var errs []error
+	for {
+		select {
+		case e := <-ch:
+			errs = append(errs, e)
+		default:
+			return errs
+		}
+	}
 }
 
 // reportError pushes err onto the error channel without blocking.
