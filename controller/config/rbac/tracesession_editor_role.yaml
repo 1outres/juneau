@@ -1,0 +1,34 @@
+# This rule is not used by the project controller itself.
+# It is provided to allow the cluster admin to help manage permissions for users.
+#
+# Grants permissions to create, update, and delete TraceSession resources.
+# Editors can run `kubectl juneau trace` end-to-end without admin rights.
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: controller
+    app.kubernetes.io/managed-by: kustomize
+  name: tracesession-editor-role
+rules:
+- apiGroups:
+  - juneau.loutres.me
+  resources:
+  - tracesessions
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - juneau.loutres.me
+  resources:
+  - tracesessions/status
+  verbs:
+  - get
+  - patch
+  - update

@@ -12,6 +12,8 @@ COPY daemon/go.mod daemon/go.mod
 COPY daemon/go.sum daemon/go.sum
 COPY controller/go.mod controller/go.mod
 COPY controller/go.sum controller/go.sum
+COPY kubectl-juneau/go.mod kubectl-juneau/go.mod
+COPY kubectl-juneau/go.sum kubectl-juneau/go.sum
 COPY test/e2e/go.mod test/e2e/go.mod
 
 # Pre-download module deps so the cache layer is only invalidated when

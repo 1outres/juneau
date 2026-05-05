@@ -234,6 +234,32 @@ type VxlanIngressSubnetVal struct {
 	AclId   uint32
 }
 
+type VxlanIngressTraceConfigVal struct {
+	_            structs.HostLayout
+	ExpiresNs    uint64
+	CaptureFlags uint32
+	Level        uint8
+	Mode         uint8
+	Pad          [2]uint8
+}
+
+type VxlanIngressTraceTupleKey struct {
+	_     structs.HostLayout
+	Scope uint8
+	Proto uint8
+	Pad   [2]uint8
+	VpcId uint32
+	Saddr uint32
+	Daddr uint32
+	Sport uint16
+	Dport uint16
+}
+
+type VxlanIngressTraceTupleVal struct {
+	_       structs.HostLayout
+	TraceId uint32
+}
+
 type VxlanIngressVirtualServiceFlowKey struct {
 	_        structs.HostLayout
 	SubnetId uint32
@@ -347,6 +373,10 @@ type VxlanIngressMapSpecs struct {
 	SgRuleTable           *ebpf.MapSpec `ebpf:"sg_rule_table"`
 	SgRulesInnerProto     *ebpf.MapSpec `ebpf:"sg_rules_inner_proto"`
 	SubnetMap             *ebpf.MapSpec `ebpf:"subnet_map"`
+	TraceActive           *ebpf.MapSpec `ebpf:"trace_active"`
+	TraceConfigMap        *ebpf.MapSpec `ebpf:"trace_config_map"`
+	TraceEvents           *ebpf.MapSpec `ebpf:"trace_events"`
+	TraceTupleMap         *ebpf.MapSpec `ebpf:"trace_tuple_map"`
 	VirtualServiceFlowMap *ebpf.MapSpec `ebpf:"virtual_service_flow_map"`
 	VirtualServiceMap     *ebpf.MapSpec `ebpf:"virtual_service_map"`
 	VxlanIfindex          *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
@@ -401,6 +431,10 @@ type VxlanIngressMaps struct {
 	SgRuleTable           *ebpf.Map `ebpf:"sg_rule_table"`
 	SgRulesInnerProto     *ebpf.Map `ebpf:"sg_rules_inner_proto"`
 	SubnetMap             *ebpf.Map `ebpf:"subnet_map"`
+	TraceActive           *ebpf.Map `ebpf:"trace_active"`
+	TraceConfigMap        *ebpf.Map `ebpf:"trace_config_map"`
+	TraceEvents           *ebpf.Map `ebpf:"trace_events"`
+	TraceTupleMap         *ebpf.Map `ebpf:"trace_tuple_map"`
 	VirtualServiceFlowMap *ebpf.Map `ebpf:"virtual_service_flow_map"`
 	VirtualServiceMap     *ebpf.Map `ebpf:"virtual_service_map"`
 	VxlanIfindex          *ebpf.Map `ebpf:"vxlan_ifindex"`
@@ -431,6 +465,10 @@ func (m *VxlanIngressMaps) Close() error {
 		m.SgRuleTable,
 		m.SgRulesInnerProto,
 		m.SubnetMap,
+		m.TraceActive,
+		m.TraceConfigMap,
+		m.TraceEvents,
+		m.TraceTupleMap,
 		m.VirtualServiceFlowMap,
 		m.VirtualServiceMap,
 		m.VxlanIfindex,

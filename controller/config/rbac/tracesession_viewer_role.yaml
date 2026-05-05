@@ -1,0 +1,27 @@
+# This rule is not used by the project controller itself.
+# It is provided to allow the cluster admin to help manage permissions for users.
+#
+# Grants read-only access to TraceSession resources.
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: controller
+    app.kubernetes.io/managed-by: kustomize
+  name: tracesession-viewer-role
+rules:
+- apiGroups:
+  - juneau.loutres.me
+  resources:
+  - tracesessions
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - juneau.loutres.me
+  resources:
+  - tracesessions/status
+  verbs:
+  - get

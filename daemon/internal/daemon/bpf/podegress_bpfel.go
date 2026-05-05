@@ -234,6 +234,32 @@ type PodEgressSubnetVal struct {
 	AclId   uint32
 }
 
+type PodEgressTraceConfigVal struct {
+	_            structs.HostLayout
+	ExpiresNs    uint64
+	CaptureFlags uint32
+	Level        uint8
+	Mode         uint8
+	Pad          [2]uint8
+}
+
+type PodEgressTraceTupleKey struct {
+	_     structs.HostLayout
+	Scope uint8
+	Proto uint8
+	Pad   [2]uint8
+	VpcId uint32
+	Saddr uint32
+	Daddr uint32
+	Sport uint16
+	Dport uint16
+}
+
+type PodEgressTraceTupleVal struct {
+	_       structs.HostLayout
+	TraceId uint32
+}
+
 type PodEgressVirtualServiceFlowKey struct {
 	_        structs.HostLayout
 	SubnetId uint32
@@ -347,6 +373,10 @@ type PodEgressMapSpecs struct {
 	SgRuleTable           *ebpf.MapSpec `ebpf:"sg_rule_table"`
 	SgRulesInnerProto     *ebpf.MapSpec `ebpf:"sg_rules_inner_proto"`
 	SubnetMap             *ebpf.MapSpec `ebpf:"subnet_map"`
+	TraceActive           *ebpf.MapSpec `ebpf:"trace_active"`
+	TraceConfigMap        *ebpf.MapSpec `ebpf:"trace_config_map"`
+	TraceEvents           *ebpf.MapSpec `ebpf:"trace_events"`
+	TraceTupleMap         *ebpf.MapSpec `ebpf:"trace_tuple_map"`
 	VirtualServiceFlowMap *ebpf.MapSpec `ebpf:"virtual_service_flow_map"`
 	VirtualServiceMap     *ebpf.MapSpec `ebpf:"virtual_service_map"`
 	VxlanIfindex          *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
@@ -356,6 +386,8 @@ type PodEgressMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type PodEgressVariableSpecs struct {
+	AclRuleBtfAnchor *ebpf.VariableSpec `ebpf:"_acl_rule_btf_anchor"`
+	SgRuleBtfAnchor  *ebpf.VariableSpec `ebpf:"_sg_rule_btf_anchor"`
 }
 
 // PodEgressObjects contains all objects after they have been loaded into the kernel.
@@ -401,6 +433,10 @@ type PodEgressMaps struct {
 	SgRuleTable           *ebpf.Map `ebpf:"sg_rule_table"`
 	SgRulesInnerProto     *ebpf.Map `ebpf:"sg_rules_inner_proto"`
 	SubnetMap             *ebpf.Map `ebpf:"subnet_map"`
+	TraceActive           *ebpf.Map `ebpf:"trace_active"`
+	TraceConfigMap        *ebpf.Map `ebpf:"trace_config_map"`
+	TraceEvents           *ebpf.Map `ebpf:"trace_events"`
+	TraceTupleMap         *ebpf.Map `ebpf:"trace_tuple_map"`
 	VirtualServiceFlowMap *ebpf.Map `ebpf:"virtual_service_flow_map"`
 	VirtualServiceMap     *ebpf.Map `ebpf:"virtual_service_map"`
 	VxlanIfindex          *ebpf.Map `ebpf:"vxlan_ifindex"`
@@ -431,6 +467,10 @@ func (m *PodEgressMaps) Close() error {
 		m.SgRuleTable,
 		m.SgRulesInnerProto,
 		m.SubnetMap,
+		m.TraceActive,
+		m.TraceConfigMap,
+		m.TraceEvents,
+		m.TraceTupleMap,
 		m.VirtualServiceFlowMap,
 		m.VirtualServiceMap,
 		m.VxlanIfindex,
@@ -441,6 +481,8 @@ func (m *PodEgressMaps) Close() error {
 //
 // It can be passed to LoadPodEgressObjects or ebpf.CollectionSpec.LoadAndAssign.
 type PodEgressVariables struct {
+	AclRuleBtfAnchor *ebpf.Variable `ebpf:"_acl_rule_btf_anchor"`
+	SgRuleBtfAnchor  *ebpf.Variable `ebpf:"_sg_rule_btf_anchor"`
 }
 
 // PodEgressPrograms contains all programs after they have been loaded into the kernel.

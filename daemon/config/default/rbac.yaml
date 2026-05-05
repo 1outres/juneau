@@ -211,6 +211,23 @@ roleRef:
   name: juneau-networkacl-viewer-role
   apiGroup: rbac.authorization.k8s.io
 ---
+# TraceSession is cluster-scoped and read+status-write by the daemon's
+# trace reconciler. Editor is the smallest stock role that grants
+# status patch (needed for daemons to append themselves to
+# status.observedNodes).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cni-daemon-tracesession-editor-binding
+subjects:
+  - kind: ServiceAccount
+    name: cni-daemon
+    namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: juneau-tracesession-editor-role
+  apiGroup: rbac.authorization.k8s.io
+---
 # Cluster Service / EndpointSlice access lets the Service reconciler
 # populate service_map and backend_map for ClusterIP routing.
 apiVersion: rbac.authorization.k8s.io/v1

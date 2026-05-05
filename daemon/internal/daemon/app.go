@@ -150,6 +150,8 @@ func NewApp() *cli.Command {
 					&juneauv1alpha1.ServiceNATAttachment{}:      {},
 					&juneauv1alpha1.SecurityGroup{}:             {},
 					&juneauv1alpha1.AllocationClaim{}:           {},
+					&juneauv1alpha1.NetworkACL{}:                {},
+					&juneauv1alpha1.TraceSession{}:              {},
 					&corev1.Service{}:                           {},
 					&discoveryv1.EndpointSlice{}:                {},
 				},
@@ -231,6 +233,11 @@ func NewApp() *cli.Command {
 			networkACLInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.NetworkACL{})
 			if err != nil {
 				return fmt.Errorf("get NetworkACL informer: %w", err)
+			}
+
+			traceSessionInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.TraceSession{})
+			if err != nil {
+				return fmt.Errorf("get TraceSession informer: %w", err)
 			}
 
 			cl, err := client.New(kubecfg, client.Options{
@@ -423,7 +430,7 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("lookup node ingress iface %q: %w", nodeIngressIfaceName, err)
 			}
 
-			bpfManager := dataplane.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, vpcInformer, serviceInformer, endpointSliceInformer, externalNetworkAttachmentInformer, natGatewayInformer, serviceNATAttachmentInformer, networkInterfaceInformer, securityGroupInformer, networkACLInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, bpfPinPath, hostIfaceInfo.MAC, nodeUnderlayIP)
+			bpfManager := dataplane.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, vpcInformer, serviceInformer, endpointSliceInformer, externalNetworkAttachmentInformer, natGatewayInformer, serviceNATAttachmentInformer, networkInterfaceInformer, securityGroupInformer, networkACLInformer, traceSessionInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, bpfPinPath, hostIfaceInfo.MAC, nodeUnderlayIP)
 			if err := bpfManager.Start(ctx); err != nil {
 				return fmt.Errorf("initialize BPF manager: %w", err)
 			}
@@ -471,8 +478,15 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("ensure juneau_node NetworkEndpoint: %w", err)
 			}
 
-			grpcServer := grpc.NewServer(cl)
+			grpcServer := grpc.NewServer(grpc.ServerConfig{
+				Client:       cl,
+				TraceBus:     bpfManager.TraceBus(),
+				TraceStore:   bpfManager.TraceStore(),
+				NodeName:     nodeName,
+				DebugTCPAddr: grpc.DefaultDebugTCPAddr,
+			})
 			defer grpcServer.Stop()
+			grpcServer.StartBackground(ctx)
 
 			grpcErrCh := make(chan error, 1)
 			go func() {

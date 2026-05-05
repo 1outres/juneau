@@ -82,4 +82,7 @@ resources:
 - networkacl_admin_role.yaml
 - networkacl_editor_role.yaml
 - networkacl_viewer_role.yaml
+- tracesession_admin_role.yaml
+- tracesession_editor_role.yaml
+- tracesession_viewer_role.yaml
 

@@ -15,6 +15,7 @@
 #include "nat.h"
 #include "policy.h"
 #include "sg.h"
+#include "trace.h"
 
 #define ETH_P_IP 0x0800
 
@@ -29,7 +30,7 @@
 // Non-matching packets pass through unchanged. The function returns -1
 // only on packet rewrite failures.
 static __always_inline int apply_reverse_snat(struct __sk_buff *skb,
-                                              __u32 vpc_id) {
+                                              __u32 vpc_id, __u32 subnet_id) {
   struct iphdr *iph = nat_load_iph(skb);
   if (!iph)
     return 0;
@@ -57,6 +58,9 @@ static __always_inline int apply_reverse_snat(struct __sk_buff *skb,
   cv->last_seen_ns = bpf_ktime_get_ns();
   __be32 new_saddr = cv->new_saddr;
   __be16 new_sport = cv->new_sport;
+  __be32 before_saddr = iph->saddr;
+  __be32 before_daddr = iph->daddr;
+  __u8   before_proto = iph->protocol;
 
   __u8 tcp_flags = 0;
   bool have_tcp_flags = false;
@@ -69,6 +73,29 @@ static __always_inline int apply_reverse_snat(struct __sk_buff *skb,
     return -1;
   if (nat_rewrite_l4_port(skb, true, new_sport) < 0)
     return -1;
+
+  // Trace: reverse SNAT applied. before = (backend Pod IP, caller),
+  // after = (Service ClusterIP, caller). The learned tuple lets the
+  // pod's network namespace see "from ClusterIP" responses match.
+  {
+    struct trace_nat_event __ne = {
+        .vpc_id = vpc_id,
+        .subnet_id = subnet_id,
+        .hook = TRACE_HOOK_POD_INGRESS,
+        .reason = TRACE_REASON_REVERSE_NAT_APPLIED,
+        .scope = TRACE_SCOPE_VPC,
+        .proto = before_proto,
+        .before_saddr = before_saddr,
+        .before_daddr = before_daddr,
+        .before_sport = sport,
+        .before_dport = dport,
+        .after_saddr = new_saddr,
+        .after_daddr = before_daddr,
+        .after_sport = new_sport,
+        .after_dport = dport,
+    };
+    trace_observe_nat(skb, &__ne);
+  }
 
   if (have_tcp_flags)
     ct_observe_tcp(&ck, cv, tcp_flags);
@@ -99,22 +126,62 @@ static __always_inline int handle(struct __sk_buff *skb) {
   if (!subnet)
     return TC_ACT_OK;
 
-  if (apply_reverse_snat(skb, subnet->vpc_id) < 0)
+  // Hook-entry trace event. Keep the trace_id so policy drops below
+  // can attribute themselves to this hook in the timeline.
+  __u32 __trace_id = 0;
+  {
+    struct trace_hook_ctx __ctx = {
+        .reason = TRACE_REASON_ENTER_POD_INGRESS,
+        .hook = TRACE_HOOK_POD_INGRESS,
+        .vpc_id = subnet->vpc_id,
+        .subnet_id = isv->subnet_id,
+        .scope = TRACE_SCOPE_VPC,
+    };
+    __trace_id = trace_classify_and_emit_enter(skb, &__ctx);
+  }
+
+  if (apply_reverse_snat(skb, subnet->vpc_id, isv->subnet_id) < 0) {
+    trace_emit_drop_l3(skb, __trace_id, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_POD_INGRESS, TRACE_SCOPE_VPC,
+                       subnet->vpc_id, isv->subnet_id);
     return TC_ACT_SHOT;
+  }
 
   // Unified policy stage runs after reverse SNAT — the ACL and SG
   // layers evaluate the peer the *Pod* sees, which is the rewritten
   // src (= original ClusterIP for Service responses). Running this
   // after the reverse SNAT keeps user-facing rules ("admit traffic
   // from ClusterIP X") effective.
-  int policy_rc = apply_policy_ingress(skb, subnet->vpc_id, subnet->acl_id);
-  if (policy_rc == -1 || policy_rc == -2)
+  int policy_rc = apply_policy_ingress(skb, subnet->vpc_id, subnet->acl_id,
+                                       __trace_id, TRACE_HOOK_POD_INGRESS,
+                                       isv->subnet_id);
+  if (policy_rc < 0) {
+    // -1 = ACL deny, -3 = SG deny, -2 = internal error.
+    __u32 reason = TRACE_REASON_DROP_SHOT;
+    if (policy_rc == -1)
+      reason = TRACE_REASON_POLICY_ACL_DROP;
+    else if (policy_rc == -3)
+      reason = TRACE_REASON_POLICY_SG_DROP;
+    trace_emit_drop_l3(skb, __trace_id, reason, TRACE_HOOK_POD_INGRESS,
+                       TRACE_SCOPE_VPC, subnet->vpc_id, isv->subnet_id);
     return TC_ACT_SHOT;
+  }
 
+  // Terminal: hand the packet to the kernel for veth dispatch into
+  // the Pod's netns. Emitting here gives the timeline a clear close
+  // for the success path; without it the trace ended with the
+  // hook-entry event and operators could not tell whether the
+  // policy stage admitted the flow or silently dropped further down.
+  trace_emit_pass_kernel_l3(skb, __trace_id, TRACE_HOOK_POD_INGRESS,
+                            TRACE_SCOPE_VPC, subnet->vpc_id, isv->subnet_id);
   return TC_ACT_OK;
 }
 
 SEC("tc")
-int tc_pod_ingress(struct __sk_buff *skb) { return handle(skb); }
+int tc_pod_ingress(struct __sk_buff *skb) {
+  // See tc_pod_egress for why this anchor exists.
+  (void)trace_is_active();
+  return handle(skb);
+}
 
 char __license[] SEC("license") = "Dual MIT/GPL";

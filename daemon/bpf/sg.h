@@ -31,6 +31,23 @@
 #include "maps.h"
 #include "policy_match.h"
 
+// __juneau_bpf_subprog mirrors the macro in trace.h. Defined locally
+// here so sg.h does not have to include trace.h (which would pull
+// the trace ringbuf and event maps into every TU that needs SG
+// helpers).
+#ifndef __juneau_bpf_subprog
+#define __juneau_bpf_subprog __attribute__((noinline)) __attribute__((used))
+#endif
+
+// _sg_rule_btf_anchor forces clang's BTF generator to emit a full
+// STRUCT entry for `struct sg_rule` rather than only the FWD
+// declaration that surfaces when the noinline `sg_eval_one_sg`
+// subprogram below is the only place that references it. Without
+// this, bpf2go fails to load the resulting ELF with
+// "type *btf.Fwd: type is unsized" while parsing sg_rules_inner's
+// value type. The variable itself is never read at runtime.
+const struct sg_rule _sg_rule_btf_anchor;
+
 #ifndef SG_VERDICT_PASS
 // SG_VERDICT_PASS is the evaluator's "no SG attached / nothing to do"
 // signal. Distinct from ALLOW so callers can decide whether to install
@@ -68,6 +85,19 @@ static __always_inline int sg_peer_sg_set_contains(const struct sg_membership_va
   return 0;
 }
 
+// sg_eval_one_sg_args bundles the scalar inputs that sg_eval_one_sg
+// needs. BPF subprograms have a 5-register argument limit; bundling
+// keeps the call signature within that ceiling once the function is
+// promoted out of __always_inline.
+struct sg_eval_one_sg_args {
+  __u32 sg_id;
+  __be32 peer_ip;
+  __u32 max_rules;
+  __u16 dport;
+  __u8  direction;
+  __u8  proto;
+};
+
 // sg_eval_one_sg scans the rules of a single SG for the requested
 // direction. Returns 1 (ALLOW) on match, 0 otherwise.
 //
@@ -76,15 +106,24 @@ static __always_inline int sg_peer_sg_set_contains(const struct sg_membership_va
 // MAX_RULES_PER_SG keeps the verifier instruction budget proportional
 // to real ruleset size on the hot path; we still bound by
 // MAX_RULES_PER_SG so the verifier sees a fixed maximum.
-static __always_inline int sg_eval_one_sg(__u32 sg_id, __u8 direction,
-                                          __u8 proto, __u16 dport,
-                                          __be32 peer_ip,
-                                          const struct sg_membership_val *peer_sgs,
-                                          __u32 max_rules) {
+//
+// Marked as a BPF-to-BPF subprogram (noinline): the rule-scan loop
+// has a 6-way branch per iteration over MAX_RULES_PER_SG=8 rules,
+// which the verifier explores combinatorially when inlined into
+// apply_policy_egress / apply_policy_ingress. Promoting the scan to
+// a subprogram lets the verifier explore the loop body once per
+// program (not per call site × per outer SG iteration), keeping the
+// 1M-insn budget intact once trace.h instrumentation expands the
+// surrounding host program.
+static __juneau_bpf_subprog int
+sg_eval_one_sg(const struct sg_eval_one_sg_args *a,
+               const struct sg_membership_val *peer_sgs) {
+  __u32 sg_id = a->sg_id;
   void *inner = bpf_map_lookup_elem(&sg_rule_table, &sg_id);
   if (!inner)
     return 0;
 
+  __u32 max_rules = a->max_rules;
   if (max_rules > MAX_RULES_PER_SG)
     max_rules = MAX_RULES_PER_SG;
 
@@ -94,15 +133,15 @@ static __always_inline int sg_eval_one_sg(__u32 sg_id, __u8 direction,
     struct sg_rule *r = bpf_map_lookup_elem(inner, &i);
     if (!r)
       break;
-    if (r->direction != direction)
+    if (r->direction != a->direction)
       continue;
-    if (!policy_proto_matches(r->proto, proto))
+    if (!policy_proto_matches(r->proto, a->proto))
       continue;
-    if (!policy_port_matches(r->port_lo, r->port_hi, dport))
+    if (!policy_port_matches(r->port_lo, r->port_hi, a->dport))
       continue;
 
     if (r->peer_kind == SG_PEER_KIND_CIDR) {
-      if (!policy_cidr_matches(r->peer_v4, r->peer_prefixlen, peer_ip))
+      if (!policy_cidr_matches(r->peer_v4, r->peer_prefixlen, a->peer_ip))
         continue;
     } else if (r->peer_kind == SG_PEER_KIND_SG) {
       // peer_v4 holds peer_sg_id in host byte order (no IP semantics).
@@ -119,6 +158,16 @@ static __always_inline int sg_eval_one_sg(__u32 sg_id, __u8 direction,
   return 0;
 }
 
+// sg_eval_args bundles sg_eval's scalar inputs. Bundling keeps the
+// noinline call signature within BPF's 5-register argument limit
+// (counting the two struct pointers).
+struct sg_eval_args {
+  __be32 peer_ip;
+  __u16 dport;
+  __u8 direction;
+  __u8 proto;
+};
+
 // sg_eval evaluates self's full SG set for the chosen direction.
 // Returns SG_VERDICT_ALLOW, SG_VERDICT_DENY or SG_VERDICT_PASS.
 //
@@ -130,11 +179,19 @@ static __always_inline int sg_eval_one_sg(__u32 sg_id, __u8 direction,
 // keep the AWS default of "allow all egress" by returning PASS; CT is
 // not installed in that case so subsequent flows still see the same
 // default behaviour.
-static __always_inline int sg_eval(const struct sg_membership_val *self,
-                                   __u8 direction,
-                                   __u8 proto, __u16 dport,
-                                   __be32 peer_ip,
-                                   const struct sg_membership_val *peer_sgs) {
+//
+// Marked as a BPF-to-BPF subprogram (noinline) so its per-iteration
+// scratch (sg_meta lookups, the `sg_eval_one_sg_args` struct passed
+// to the inner subprogram) lives in its own frame rather than
+// inflating apply_policy_X's stack past the 512-byte combined
+// call-chain ceiling.
+static __juneau_bpf_subprog int sg_eval(const struct sg_membership_val *self,
+                                        const struct sg_membership_val *peer_sgs,
+                                        const struct sg_eval_args *a) {
+  __u8 direction = a->direction;
+  __u8 proto = a->proto;
+  __u16 dport = a->dport;
+  __be32 peer_ip = a->peer_ip;
   // Pod has no SGs attached at all → no enforcement; data plane skips
   // CT installation so we don't pay for state we'd never consult.
   if (self == NULL || self->count == 0)
@@ -186,7 +243,15 @@ static __always_inline int sg_eval(const struct sg_membership_val *self,
     __u32 scan_count = meta->ingress_count + meta->egress_count;
     any_rules = true;
 
-    if (sg_eval_one_sg(sg_id, direction, proto, dport, peer_ip, peer_sgs, scan_count))
+    struct sg_eval_one_sg_args one_args = {
+        .sg_id = sg_id,
+        .peer_ip = peer_ip,
+        .max_rules = scan_count,
+        .dport = dport,
+        .direction = direction,
+        .proto = proto,
+    };
+    if (sg_eval_one_sg(&one_args, peer_sgs))
       return SG_VERDICT_ALLOW;
   }
 

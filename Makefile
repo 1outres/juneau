@@ -89,10 +89,14 @@ build-daemon-bin: build-cni-bin ## Build the daemon binary for Tilt.
 build-bgp-speaker-bin: ## Build the BGP speaker binary for Tilt.
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -C bgp-speaker -o bin/bgpspeaker ./cmd/bgpspeaker/main.go
 
+.PHONY: build-kubectl-juneau-bin
+build-kubectl-juneau-bin: ## Build the kubectl-juneau plugin binary.
+	$(MAKE) -C kubectl-juneau LOCALBIN=$(CURDIR)/kubectl-juneau/bin build
+
 ##@ Quality
 
 .PHONY: lint
-lint: lint-controller lint-daemon lint-bgp-speaker lint-e2e ## Run repository linters.
+lint: lint-controller lint-daemon lint-bgp-speaker lint-kubectl-juneau lint-e2e ## Run repository linters.
 
 .PHONY: lint-controller
 lint-controller:
@@ -106,12 +110,16 @@ lint-daemon: golangci-lint build-cni-bin
 lint-bgp-speaker: golangci-lint
 	cd bgp-speaker && $(GOLANGCI_LINT) run --config ../.golangci.yml ./...
 
+.PHONY: lint-kubectl-juneau
+lint-kubectl-juneau: golangci-lint
+	cd kubectl-juneau && $(GOLANGCI_LINT) run --config ../.golangci.yml ./...
+
 .PHONY: lint-e2e
 lint-e2e: golangci-lint
 	cd test/e2e && $(GOLANGCI_LINT) run --config ../../.golangci.yml ./...
 
 .PHONY: test
-test: test-controller test-daemon test-bgp-speaker ## Run non-E2E tests.
+test: test-controller test-daemon test-bgp-speaker test-kubectl-juneau ## Run non-E2E tests.
 
 .PHONY: test-controller
 test-controller:
@@ -124,6 +132,10 @@ test-daemon: build-cni-bin
 .PHONY: test-bgp-speaker
 test-bgp-speaker:
 	cd bgp-speaker && go test ./...
+
+.PHONY: test-kubectl-juneau
+test-kubectl-juneau:
+	cd kubectl-juneau && go test ./...
 
 .PHONY: verify
 verify: lint test images ## Run CI verification targets.
