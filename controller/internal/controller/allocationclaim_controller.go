@@ -30,9 +30,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
@@ -55,6 +60,12 @@ const (
 // errAllPoolsExhausted indicates that no candidate pool has free capacity for
 // this claim. It is treated as a transient Pending state, not an error.
 var errAllPoolsExhausted = errors.New("no value available in any candidate pool")
+
+// errPoolNotFound indicates that at least one referenced AllocationPool does
+// not yet exist. Like errAllPoolsExhausted, it is transient: the claim is
+// re-queued when a pool watch fires (creation or spec change), and proceeds
+// once the pool object materializes.
+var errPoolNotFound = errors.New("referenced allocation pool does not exist")
 
 // allocationResult is the outcome of an allocation attempt against a single pool.
 type allocationResult struct {
@@ -134,7 +145,7 @@ func (r *AllocationClaimReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 		result, freshPool, err := r.allocate(ctx, &fresh)
 		if err != nil {
-			if errors.Is(err, errAllPoolsExhausted) {
+			if errors.Is(err, errAllPoolsExhausted) || errors.Is(err, errPoolNotFound) {
 				return r.updateStatusPending(ctx, &fresh, err.Error())
 			}
 			return r.updateStatusFailed(ctx, &fresh, err.Error())
@@ -267,14 +278,17 @@ func (r *AllocationClaimReconciler) allocate(ctx context.Context, claim *juneaul
 		return reused, pool, nil
 	}
 
-	var firstPoolErr error
+	var firstMissingPool string
 	for _, ref := range claim.Spec.PoolRefs {
 		var pool juneauloutresmev1alpha1.AllocationPool
 		if err := r.reader().Get(ctx, client.ObjectKey{Name: ref.Name}, &pool); err != nil {
-			if firstPoolErr == nil {
-				firstPoolErr = fmt.Errorf("pool %q not found", ref.Name)
+			if apierrors.IsNotFound(err) {
+				if firstMissingPool == "" {
+					firstMissingPool = ref.Name
+				}
+				continue
 			}
-			continue
+			return allocationResult{}, nil, err
 		}
 
 		switch pool.Spec.Type {
@@ -300,8 +314,8 @@ func (r *AllocationClaimReconciler) allocate(ctx context.Context, claim *juneaul
 			return allocationResult{}, nil, fmt.Errorf("pool %q has unsupported type %q", pool.Name, pool.Spec.Type)
 		}
 	}
-	if firstPoolErr != nil {
-		return allocationResult{}, nil, firstPoolErr
+	if firstMissingPool != "" {
+		return allocationResult{}, nil, fmt.Errorf("%w: %s", errPoolNotFound, firstMissingPool)
 	}
 	return allocationResult{}, nil, errAllPoolsExhausted
 }
@@ -652,8 +666,69 @@ func (r *AllocationClaimReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&juneauloutresmev1alpha1.AllocationClaim{}).
+		Watches(
+			&juneauloutresmev1alpha1.AllocationPool{},
+			handler.EnqueueRequestsFromMapFunc(r.mapPoolToClaims),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+		).
+		Watches(
+			&juneauloutresmev1alpha1.AllocationLease{},
+			handler.EnqueueRequestsFromMapFunc(r.mapLeaseToClaims),
+			builder.WithPredicates(leaseDeletionPredicate),
+		).
 		Named("allocationclaim").
 		Complete(r)
+}
+
+// mapPoolToClaims enqueues every AllocationClaim that references the given
+// pool. Triggered when a pool is created (a previously not-found claim can
+// finally allocate) or its spec changes (for example, capacity grew).
+func (r *AllocationClaimReconciler) mapPoolToClaims(ctx context.Context, obj client.Object) []reconcile.Request {
+	pool, ok := obj.(*juneauloutresmev1alpha1.AllocationPool)
+	if !ok {
+		return nil
+	}
+	return r.claimsReferencingPool(ctx, pool.Name)
+}
+
+// mapLeaseToClaims enqueues every AllocationClaim that references the lease's
+// pool, used when the lease is deleted so claims waiting on capacity can
+// retry. Lease creation/update is intentionally ignored (capacity only
+// decreases on those events; the next claim Reconcile will see the lease via
+// the API reader).
+func (r *AllocationClaimReconciler) mapLeaseToClaims(ctx context.Context, obj client.Object) []reconcile.Request {
+	lease, ok := obj.(*juneauloutresmev1alpha1.AllocationLease)
+	if !ok {
+		return nil
+	}
+	if lease.Spec.PoolRef.Name == "" {
+		return nil
+	}
+	return r.claimsReferencingPool(ctx, lease.Spec.PoolRef.Name)
+}
+
+func (r *AllocationClaimReconciler) claimsReferencingPool(ctx context.Context, poolName string) []reconcile.Request {
+	var claims juneauloutresmev1alpha1.AllocationClaimList
+	if err := r.List(ctx, &claims, client.MatchingFields{claimPoolRefIndex: poolName}); err != nil {
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(claims.Items))
+	for i := range claims.Items {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(&claims.Items[i]),
+		})
+	}
+	return requests
+}
+
+// leaseDeletionPredicate forwards only Delete events so the watch stays
+// quiet during ordinary lease lifecycle (create/update by the claim
+// reconciler itself).
+var leaseDeletionPredicate = predicate.Funcs{
+	CreateFunc:  func(event.CreateEvent) bool { return false },
+	UpdateFunc:  func(event.UpdateEvent) bool { return false },
+	GenericFunc: func(event.GenericEvent) bool { return false },
+	DeleteFunc:  func(event.DeleteEvent) bool { return true },
 }
 
 // parsePrefixes parses a list of CIDR strings into netip.Prefix values.

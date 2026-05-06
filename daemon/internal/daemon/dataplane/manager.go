@@ -15,6 +15,7 @@ import (
 
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/convert"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/link"
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/mapinventory"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/policy"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/program"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/reconciler"
@@ -99,6 +100,8 @@ type Manager struct {
 	podIngress   *program.PodIngress
 	vxlanIngress *program.VxlanIngress
 	nodeIngress  *program.NodeIngress
+
+	mapInventory *mapinventory.Inventory
 }
 
 func (m *Manager) Start(ctx context.Context) error {
@@ -143,11 +146,23 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 	zap.S().Infof("attached TC program to node ingress interface (ifindex: %d)", m.nodeIngressIfindex)
 
+	// Build the BPF map inventory used by the debug RPCs. All maps
+	// are LIBBPF_PIN_BY_NAME so the pod_egress handles transitively
+	// cover every map exported by the data plane.
+	m.mapInventory = mapinventory.NewInventory()
+	if err := mapinventory.RegisterPodEgress(m.mapInventory, m.podEgress); err != nil {
+		return fmt.Errorf("register BPF map inventory: %w", err)
+	}
+
 	if err := m.startReconcilers(ctx); err != nil {
 		return err
 	}
 	return nil
 }
+
+// MapInventory returns the BPF map descriptor registry. nil before
+// Start has populated it. Consumed by the debug gRPC server.
+func (m *Manager) MapInventory() *mapinventory.Inventory { return m.mapInventory }
 
 func (m *Manager) startReconcilers(ctx context.Context) error {
 	subnetReconciler := reconciler.NewSubnet(m.client, m.podEgress)

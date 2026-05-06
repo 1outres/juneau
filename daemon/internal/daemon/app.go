@@ -482,6 +482,7 @@ func NewApp() *cli.Command {
 				Client:       cl,
 				TraceBus:     bpfManager.TraceBus(),
 				TraceStore:   bpfManager.TraceStore(),
+				MapInventory: bpfManager.MapInventory(),
 				NodeName:     nodeName,
 				DebugTCPAddr: grpc.DefaultDebugTCPAddr,
 			})

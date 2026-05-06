@@ -10,6 +10,7 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
 
+	bpfcmd "github.com/1outres/juneau/kubectl-juneau/internal/cmd/bpf"
 	describecmd "github.com/1outres/juneau/kubectl-juneau/internal/cmd/describe"
 	tracecmd "github.com/1outres/juneau/kubectl-juneau/internal/cmd/trace"
 	versioncmd "github.com/1outres/juneau/kubectl-juneau/internal/cmd/version"
@@ -31,7 +32,10 @@ Tier 1 commands focus on declarative state:
   describe  — show the resource chain attached to a Pod / Vpc / Subnet / Service / NetworkInterface
   version   — print build identity
 
-Future tiers will add data-plane (BPF map / CT) and reachability commands.`,
+Tier 2 (data-plane) commands talk to per-Node juneaud over portforward:
+  trace     — drive a TraceSession and stream decision-point events
+  bpf       — list and dump the BPF maps the daemon owns
+`,
 		SilenceUsage:      true,
 		DisableAutoGenTag: true,
 	}
@@ -40,5 +44,6 @@ Future tiers will add data-plane (BPF map / CT) and reachability commands.`,
 	root.AddCommand(versioncmd.NewCommand(f))
 	root.AddCommand(describecmd.NewCommand(f))
 	root.AddCommand(tracecmd.NewCommand(f))
+	root.AddCommand(bpfcmd.NewCommand(f))
 	return root
 }

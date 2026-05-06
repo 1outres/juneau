@@ -1100,6 +1100,537 @@ func (x *TraceEvent) GetAux2() uint32 {
 	return 0
 }
 
+// BPFMapField is one named element of a key or value tuple. Exactly one
+// of u64/ipv4/mac/label/raw should be set; flags is supplemental for
+// bitmask fields and is empty for plain values.
+type BPFMapField struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Types that are valid to be assigned to Value:
+	//
+	//	*BPFMapField_U64
+	//	*BPFMapField_Ipv4
+	//	*BPFMapField_Mac
+	//	*BPFMapField_Label
+	//	*BPFMapField_Raw
+	Value isBPFMapField_Value `protobuf_oneof:"value"`
+	// flags is the human-readable expansion of bitmask fields.
+	// Populated alongside u64; clients that ignore it still see the
+	// numeric value. Empty for non-flag fields.
+	Flags         []string `protobuf:"bytes,20,rep,name=flags,proto3" json:"flags,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BPFMapField) Reset() {
+	*x = BPFMapField{}
+	mi := &file_pkg_debugpb_debug_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BPFMapField) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BPFMapField) ProtoMessage() {}
+
+func (x *BPFMapField) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_debugpb_debug_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BPFMapField.ProtoReflect.Descriptor instead.
+func (*BPFMapField) Descriptor() ([]byte, []int) {
+	return file_pkg_debugpb_debug_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *BPFMapField) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *BPFMapField) GetValue() isBPFMapField_Value {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *BPFMapField) GetU64() uint64 {
+	if x != nil {
+		if x, ok := x.Value.(*BPFMapField_U64); ok {
+			return x.U64
+		}
+	}
+	return 0
+}
+
+func (x *BPFMapField) GetIpv4() string {
+	if x != nil {
+		if x, ok := x.Value.(*BPFMapField_Ipv4); ok {
+			return x.Ipv4
+		}
+	}
+	return ""
+}
+
+func (x *BPFMapField) GetMac() string {
+	if x != nil {
+		if x, ok := x.Value.(*BPFMapField_Mac); ok {
+			return x.Mac
+		}
+	}
+	return ""
+}
+
+func (x *BPFMapField) GetLabel() string {
+	if x != nil {
+		if x, ok := x.Value.(*BPFMapField_Label); ok {
+			return x.Label
+		}
+	}
+	return ""
+}
+
+func (x *BPFMapField) GetRaw() []byte {
+	if x != nil {
+		if x, ok := x.Value.(*BPFMapField_Raw); ok {
+			return x.Raw
+		}
+	}
+	return nil
+}
+
+func (x *BPFMapField) GetFlags() []string {
+	if x != nil {
+		return x.Flags
+	}
+	return nil
+}
+
+type isBPFMapField_Value interface {
+	isBPFMapField_Value()
+}
+
+type BPFMapField_U64 struct {
+	U64 uint64 `protobuf:"varint,10,opt,name=u64,proto3,oneof"` // generic numeric (u8/u16/u32/u64)
+}
+
+type BPFMapField_Ipv4 struct {
+	Ipv4 string `protobuf:"bytes,11,opt,name=ipv4,proto3,oneof"` // dotted-quad (decoder normalises NBO/HBO)
+}
+
+type BPFMapField_Mac struct {
+	Mac string `protobuf:"bytes,12,opt,name=mac,proto3,oneof"` // colon-hex
+}
+
+type BPFMapField_Label struct {
+	Label string `protobuf:"bytes,13,opt,name=label,proto3,oneof"` // resolved enum / sentinel ("CT_ACTION_DNAT")
+}
+
+type BPFMapField_Raw struct {
+	Raw []byte `protobuf:"bytes,14,opt,name=raw,proto3,oneof"` // fallback for unknown shapes
+}
+
+func (*BPFMapField_U64) isBPFMapField_Value() {}
+
+func (*BPFMapField_Ipv4) isBPFMapField_Value() {}
+
+func (*BPFMapField_Mac) isBPFMapField_Value() {}
+
+func (*BPFMapField_Label) isBPFMapField_Value() {}
+
+func (*BPFMapField_Raw) isBPFMapField_Value() {}
+
+// BPFMapFieldSchema describes one field's name and rendering hint.
+// `type` is a stable identifier ("u32", "ipv4", "mac", "enum:ct_action",
+// "flags:svc_flag") that the daemon also uses internally; clients may
+// use it to drive table column formatting.
+type BPFMapFieldSchema struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Type          string                 `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"`
+	Description   string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BPFMapFieldSchema) Reset() {
+	*x = BPFMapFieldSchema{}
+	mi := &file_pkg_debugpb_debug_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BPFMapFieldSchema) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BPFMapFieldSchema) ProtoMessage() {}
+
+func (x *BPFMapFieldSchema) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_debugpb_debug_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BPFMapFieldSchema.ProtoReflect.Descriptor instead.
+func (*BPFMapFieldSchema) Descriptor() ([]byte, []int) {
+	return file_pkg_debugpb_debug_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *BPFMapFieldSchema) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *BPFMapFieldSchema) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *BPFMapFieldSchema) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+// BPFMapSchema is the per-map descriptor returned by ListBPFMaps.
+// kind mirrors cilium/ebpf MapType.String() (HASH, LRU_HASH, LPM_TRIE,
+// HASH_OF_MAPS, ARRAY) so kubectl can format it as-is.
+type BPFMapSchema struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Name        string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Kind        string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	MaxEntries  uint32                 `protobuf:"varint,3,opt,name=max_entries,json=maxEntries,proto3" json:"max_entries,omitempty"`
+	KeySchema   []*BPFMapFieldSchema   `protobuf:"bytes,4,rep,name=key_schema,json=keySchema,proto3" json:"key_schema,omitempty"`
+	ValueSchema []*BPFMapFieldSchema   `protobuf:"bytes,5,rep,name=value_schema,json=valueSchema,proto3" json:"value_schema,omitempty"`
+	// requires_inner_key marks HASH_OF_MAPS-style maps. DumpBPFMap on
+	// such a map without an inner_key returns the outer keys only.
+	RequiresInnerKey bool `protobuf:"varint,6,opt,name=requires_inner_key,json=requiresInnerKey,proto3" json:"requires_inner_key,omitempty"`
+	// inner_key_schema is populated only when requires_inner_key=true.
+	// Mirrors the inner map's key schema so kubectl can validate
+	// --inner-key flags up front.
+	InnerKeySchema []*BPFMapFieldSchema `protobuf:"bytes,7,rep,name=inner_key_schema,json=innerKeySchema,proto3" json:"inner_key_schema,omitempty"`
+	// inner_value_schema mirrors the inner map's value schema (only set
+	// when requires_inner_key=true).
+	InnerValueSchema []*BPFMapFieldSchema `protobuf:"bytes,8,rep,name=inner_value_schema,json=innerValueSchema,proto3" json:"inner_value_schema,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *BPFMapSchema) Reset() {
+	*x = BPFMapSchema{}
+	mi := &file_pkg_debugpb_debug_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BPFMapSchema) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BPFMapSchema) ProtoMessage() {}
+
+func (x *BPFMapSchema) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_debugpb_debug_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BPFMapSchema.ProtoReflect.Descriptor instead.
+func (*BPFMapSchema) Descriptor() ([]byte, []int) {
+	return file_pkg_debugpb_debug_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *BPFMapSchema) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *BPFMapSchema) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *BPFMapSchema) GetMaxEntries() uint32 {
+	if x != nil {
+		return x.MaxEntries
+	}
+	return 0
+}
+
+func (x *BPFMapSchema) GetKeySchema() []*BPFMapFieldSchema {
+	if x != nil {
+		return x.KeySchema
+	}
+	return nil
+}
+
+func (x *BPFMapSchema) GetValueSchema() []*BPFMapFieldSchema {
+	if x != nil {
+		return x.ValueSchema
+	}
+	return nil
+}
+
+func (x *BPFMapSchema) GetRequiresInnerKey() bool {
+	if x != nil {
+		return x.RequiresInnerKey
+	}
+	return false
+}
+
+func (x *BPFMapSchema) GetInnerKeySchema() []*BPFMapFieldSchema {
+	if x != nil {
+		return x.InnerKeySchema
+	}
+	return nil
+}
+
+func (x *BPFMapSchema) GetInnerValueSchema() []*BPFMapFieldSchema {
+	if x != nil {
+		return x.InnerValueSchema
+	}
+	return nil
+}
+
+type ListBPFMapsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListBPFMapsRequest) Reset() {
+	*x = ListBPFMapsRequest{}
+	mi := &file_pkg_debugpb_debug_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListBPFMapsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListBPFMapsRequest) ProtoMessage() {}
+
+func (x *ListBPFMapsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_debugpb_debug_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListBPFMapsRequest.ProtoReflect.Descriptor instead.
+func (*ListBPFMapsRequest) Descriptor() ([]byte, []int) {
+	return file_pkg_debugpb_debug_proto_rawDescGZIP(), []int{11}
+}
+
+type ListBPFMapsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Maps          []*BPFMapSchema        `protobuf:"bytes,1,rep,name=maps,proto3" json:"maps,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListBPFMapsResponse) Reset() {
+	*x = ListBPFMapsResponse{}
+	mi := &file_pkg_debugpb_debug_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListBPFMapsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListBPFMapsResponse) ProtoMessage() {}
+
+func (x *ListBPFMapsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_debugpb_debug_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListBPFMapsResponse.ProtoReflect.Descriptor instead.
+func (*ListBPFMapsResponse) Descriptor() ([]byte, []int) {
+	return file_pkg_debugpb_debug_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ListBPFMapsResponse) GetMaps() []*BPFMapSchema {
+	if x != nil {
+		return x.Maps
+	}
+	return nil
+}
+
+type DumpBPFMapRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// key_filter constrains the dump to entries matching every named
+	// field. Field names must reference the map's key_schema.
+	KeyFilter []*BPFMapField `protobuf:"bytes,2,rep,name=key_filter,json=keyFilter,proto3" json:"key_filter,omitempty"`
+	// inner_key picks the inner map for HASH_OF_MAPS dumps.
+	InnerKey []*BPFMapField `protobuf:"bytes,3,rep,name=inner_key,json=innerKey,proto3" json:"inner_key,omitempty"`
+	// limit caps the streamed entries; 0 means "use server default".
+	// Servers may impose their own ceiling regardless.
+	Limit         uint32 `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DumpBPFMapRequest) Reset() {
+	*x = DumpBPFMapRequest{}
+	mi := &file_pkg_debugpb_debug_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DumpBPFMapRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DumpBPFMapRequest) ProtoMessage() {}
+
+func (x *DumpBPFMapRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_debugpb_debug_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DumpBPFMapRequest.ProtoReflect.Descriptor instead.
+func (*DumpBPFMapRequest) Descriptor() ([]byte, []int) {
+	return file_pkg_debugpb_debug_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *DumpBPFMapRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *DumpBPFMapRequest) GetKeyFilter() []*BPFMapField {
+	if x != nil {
+		return x.KeyFilter
+	}
+	return nil
+}
+
+func (x *DumpBPFMapRequest) GetInnerKey() []*BPFMapField {
+	if x != nil {
+		return x.InnerKey
+	}
+	return nil
+}
+
+func (x *DumpBPFMapRequest) GetLimit() uint32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type BPFMapEntry struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           []*BPFMapField         `protobuf:"bytes,1,rep,name=key,proto3" json:"key,omitempty"`
+	Value         []*BPFMapField         `protobuf:"bytes,2,rep,name=value,proto3" json:"value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BPFMapEntry) Reset() {
+	*x = BPFMapEntry{}
+	mi := &file_pkg_debugpb_debug_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BPFMapEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BPFMapEntry) ProtoMessage() {}
+
+func (x *BPFMapEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_debugpb_debug_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BPFMapEntry.ProtoReflect.Descriptor instead.
+func (*BPFMapEntry) Descriptor() ([]byte, []int) {
+	return file_pkg_debugpb_debug_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *BPFMapEntry) GetKey() []*BPFMapField {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+func (x *BPFMapEntry) GetValue() []*BPFMapField {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
 var File_pkg_debugpb_debug_proto protoreflect.FileDescriptor
 
 const file_pkg_debugpb_debug_proto_rawDesc = "" +
@@ -1166,7 +1697,44 @@ const file_pkg_debugpb_debug_proto_rawDesc = "" +
 	"\faux_dst_port\x18\x15 \x01(\rR\n" +
 	"auxDstPort\x12\x12\n" +
 	"\x04aux1\x18\x16 \x01(\rR\x04aux1\x12\x12\n" +
-	"\x04aux2\x18\x17 \x01(\rR\x04aux2*\xaf\x01\n" +
+	"\x04aux2\x18\x17 \x01(\rR\x04aux2\"\xaa\x01\n" +
+	"\vBPFMapField\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
+	"\x03u64\x18\n" +
+	" \x01(\x04H\x00R\x03u64\x12\x14\n" +
+	"\x04ipv4\x18\v \x01(\tH\x00R\x04ipv4\x12\x12\n" +
+	"\x03mac\x18\f \x01(\tH\x00R\x03mac\x12\x16\n" +
+	"\x05label\x18\r \x01(\tH\x00R\x05label\x12\x12\n" +
+	"\x03raw\x18\x0e \x01(\fH\x00R\x03raw\x12\x14\n" +
+	"\x05flags\x18\x14 \x03(\tR\x05flagsB\a\n" +
+	"\x05value\"]\n" +
+	"\x11BPFMapFieldSchema\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
+	"\x04type\x18\x02 \x01(\tR\x04type\x12 \n" +
+	"\vdescription\x18\x03 \x01(\tR\vdescription\"\x93\x03\n" +
+	"\fBPFMapSchema\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
+	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x1f\n" +
+	"\vmax_entries\x18\x03 \x01(\rR\n" +
+	"maxEntries\x12:\n" +
+	"\n" +
+	"key_schema\x18\x04 \x03(\v2\x1b.debug.v1.BPFMapFieldSchemaR\tkeySchema\x12>\n" +
+	"\fvalue_schema\x18\x05 \x03(\v2\x1b.debug.v1.BPFMapFieldSchemaR\vvalueSchema\x12,\n" +
+	"\x12requires_inner_key\x18\x06 \x01(\bR\x10requiresInnerKey\x12E\n" +
+	"\x10inner_key_schema\x18\a \x03(\v2\x1b.debug.v1.BPFMapFieldSchemaR\x0einnerKeySchema\x12I\n" +
+	"\x12inner_value_schema\x18\b \x03(\v2\x1b.debug.v1.BPFMapFieldSchemaR\x10innerValueSchema\"\x14\n" +
+	"\x12ListBPFMapsRequest\"A\n" +
+	"\x13ListBPFMapsResponse\x12*\n" +
+	"\x04maps\x18\x01 \x03(\v2\x16.debug.v1.BPFMapSchemaR\x04maps\"\xa7\x01\n" +
+	"\x11DumpBPFMapRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x124\n" +
+	"\n" +
+	"key_filter\x18\x02 \x03(\v2\x15.debug.v1.BPFMapFieldR\tkeyFilter\x122\n" +
+	"\tinner_key\x18\x03 \x03(\v2\x15.debug.v1.BPFMapFieldR\binnerKey\x12\x14\n" +
+	"\x05limit\x18\x04 \x01(\rR\x05limit\"c\n" +
+	"\vBPFMapEntry\x12'\n" +
+	"\x03key\x18\x01 \x03(\v2\x15.debug.v1.BPFMapFieldR\x03key\x12+\n" +
+	"\x05value\x18\x02 \x03(\v2\x15.debug.v1.BPFMapFieldR\x05value*\xaf\x01\n" +
 	"\x13InjectProbeStrategy\x12%\n" +
 	"!INJECT_PROBE_STRATEGY_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1eINJECT_PROBE_STRATEGY_POD_EXEC\x10\x01\x12&\n" +
@@ -1221,14 +1789,17 @@ const file_pkg_debugpb_debug_proto_rawDesc = "" +
 	"#TRACE_EVENT_REASON_REDIRECT_IFINDEX\x10\xf4\x03\x12&\n" +
 	"!TRACE_EVENT_REASON_REDIRECT_VXLAN\x10\xf5\x03\x12#\n" +
 	"\x1eTRACE_EVENT_REASON_PASS_KERNEL\x10\xf6\x03\x12!\n" +
-	"\x1cTRACE_EVENT_REASON_DROP_SHOT\x10\xf7\x032\xa9\x02\n" +
+	"\x1cTRACE_EVENT_REASON_DROP_SHOT\x10\xf7\x032\xb9\x03\n" +
 	"\x05Debug\x12A\n" +
 	"\n" +
 	"WatchTrace\x12\x1b.debug.v1.WatchTraceRequest\x1a\x14.debug.v1.TraceEvent0\x01\x12N\n" +
 	"\x10GetTraceSnapshot\x12!.debug.v1.GetTraceSnapshotRequest\x1a\x17.debug.v1.TraceSnapshot\x12J\n" +
 	"\vInjectProbe\x12\x1c.debug.v1.InjectProbeRequest\x1a\x1d.debug.v1.InjectProbeResponse\x12A\n" +
 	"\n" +
-	"LearnTuple\x12\x1b.debug.v1.LearnTupleRequest\x1a\x16.google.protobuf.EmptyB.Z,github.com/1outres/juneau/daemon/pkg/debugpbb\x06proto3"
+	"LearnTuple\x12\x1b.debug.v1.LearnTupleRequest\x1a\x16.google.protobuf.Empty\x12J\n" +
+	"\vListBPFMaps\x12\x1c.debug.v1.ListBPFMapsRequest\x1a\x1d.debug.v1.ListBPFMapsResponse\x12B\n" +
+	"\n" +
+	"DumpBPFMap\x12\x1b.debug.v1.DumpBPFMapRequest\x1a\x15.debug.v1.BPFMapEntry0\x01B.Z,github.com/1outres/juneau/daemon/pkg/debugpbb\x06proto3"
 
 var (
 	file_pkg_debugpb_debug_proto_rawDescOnce sync.Once
@@ -1243,7 +1814,7 @@ func file_pkg_debugpb_debug_proto_rawDescGZIP() []byte {
 }
 
 var file_pkg_debugpb_debug_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_pkg_debugpb_debug_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_pkg_debugpb_debug_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_pkg_debugpb_debug_proto_goTypes = []any{
 	(InjectProbeStrategy)(0),        // 0: debug.v1.InjectProbeStrategy
 	(TupleScope)(0),                 // 1: debug.v1.TupleScope
@@ -1259,7 +1830,14 @@ var file_pkg_debugpb_debug_proto_goTypes = []any{
 	(*LearnTupleRequest)(nil),       // 11: debug.v1.LearnTupleRequest
 	(*TraceTuple)(nil),              // 12: debug.v1.TraceTuple
 	(*TraceEvent)(nil),              // 13: debug.v1.TraceEvent
-	(*emptypb.Empty)(nil),           // 14: google.protobuf.Empty
+	(*BPFMapField)(nil),             // 14: debug.v1.BPFMapField
+	(*BPFMapFieldSchema)(nil),       // 15: debug.v1.BPFMapFieldSchema
+	(*BPFMapSchema)(nil),            // 16: debug.v1.BPFMapSchema
+	(*ListBPFMapsRequest)(nil),      // 17: debug.v1.ListBPFMapsRequest
+	(*ListBPFMapsResponse)(nil),     // 18: debug.v1.ListBPFMapsResponse
+	(*DumpBPFMapRequest)(nil),       // 19: debug.v1.DumpBPFMapRequest
+	(*BPFMapEntry)(nil),             // 20: debug.v1.BPFMapEntry
+	(*emptypb.Empty)(nil),           // 21: google.protobuf.Empty
 }
 var file_pkg_debugpb_debug_proto_depIdxs = []int32{
 	12, // 0: debug.v1.TraceSnapshot.tuples:type_name -> debug.v1.TraceTuple
@@ -1274,19 +1852,32 @@ var file_pkg_debugpb_debug_proto_depIdxs = []int32{
 	2,  // 9: debug.v1.TraceEvent.protocol:type_name -> debug.v1.TraceProtocol
 	4,  // 10: debug.v1.TraceEvent.verdict:type_name -> debug.v1.TraceVerdict
 	1,  // 11: debug.v1.TraceEvent.scope:type_name -> debug.v1.TupleScope
-	6,  // 12: debug.v1.Debug.WatchTrace:input_type -> debug.v1.WatchTraceRequest
-	7,  // 13: debug.v1.Debug.GetTraceSnapshot:input_type -> debug.v1.GetTraceSnapshotRequest
-	9,  // 14: debug.v1.Debug.InjectProbe:input_type -> debug.v1.InjectProbeRequest
-	11, // 15: debug.v1.Debug.LearnTuple:input_type -> debug.v1.LearnTupleRequest
-	13, // 16: debug.v1.Debug.WatchTrace:output_type -> debug.v1.TraceEvent
-	8,  // 17: debug.v1.Debug.GetTraceSnapshot:output_type -> debug.v1.TraceSnapshot
-	10, // 18: debug.v1.Debug.InjectProbe:output_type -> debug.v1.InjectProbeResponse
-	14, // 19: debug.v1.Debug.LearnTuple:output_type -> google.protobuf.Empty
-	16, // [16:20] is the sub-list for method output_type
-	12, // [12:16] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	15, // 12: debug.v1.BPFMapSchema.key_schema:type_name -> debug.v1.BPFMapFieldSchema
+	15, // 13: debug.v1.BPFMapSchema.value_schema:type_name -> debug.v1.BPFMapFieldSchema
+	15, // 14: debug.v1.BPFMapSchema.inner_key_schema:type_name -> debug.v1.BPFMapFieldSchema
+	15, // 15: debug.v1.BPFMapSchema.inner_value_schema:type_name -> debug.v1.BPFMapFieldSchema
+	16, // 16: debug.v1.ListBPFMapsResponse.maps:type_name -> debug.v1.BPFMapSchema
+	14, // 17: debug.v1.DumpBPFMapRequest.key_filter:type_name -> debug.v1.BPFMapField
+	14, // 18: debug.v1.DumpBPFMapRequest.inner_key:type_name -> debug.v1.BPFMapField
+	14, // 19: debug.v1.BPFMapEntry.key:type_name -> debug.v1.BPFMapField
+	14, // 20: debug.v1.BPFMapEntry.value:type_name -> debug.v1.BPFMapField
+	6,  // 21: debug.v1.Debug.WatchTrace:input_type -> debug.v1.WatchTraceRequest
+	7,  // 22: debug.v1.Debug.GetTraceSnapshot:input_type -> debug.v1.GetTraceSnapshotRequest
+	9,  // 23: debug.v1.Debug.InjectProbe:input_type -> debug.v1.InjectProbeRequest
+	11, // 24: debug.v1.Debug.LearnTuple:input_type -> debug.v1.LearnTupleRequest
+	17, // 25: debug.v1.Debug.ListBPFMaps:input_type -> debug.v1.ListBPFMapsRequest
+	19, // 26: debug.v1.Debug.DumpBPFMap:input_type -> debug.v1.DumpBPFMapRequest
+	13, // 27: debug.v1.Debug.WatchTrace:output_type -> debug.v1.TraceEvent
+	8,  // 28: debug.v1.Debug.GetTraceSnapshot:output_type -> debug.v1.TraceSnapshot
+	10, // 29: debug.v1.Debug.InjectProbe:output_type -> debug.v1.InjectProbeResponse
+	21, // 30: debug.v1.Debug.LearnTuple:output_type -> google.protobuf.Empty
+	18, // 31: debug.v1.Debug.ListBPFMaps:output_type -> debug.v1.ListBPFMapsResponse
+	20, // 32: debug.v1.Debug.DumpBPFMap:output_type -> debug.v1.BPFMapEntry
+	27, // [27:33] is the sub-list for method output_type
+	21, // [21:27] is the sub-list for method input_type
+	21, // [21:21] is the sub-list for extension type_name
+	21, // [21:21] is the sub-list for extension extendee
+	0,  // [0:21] is the sub-list for field type_name
 }
 
 func init() { file_pkg_debugpb_debug_proto_init() }
@@ -1294,13 +1885,20 @@ func file_pkg_debugpb_debug_proto_init() {
 	if File_pkg_debugpb_debug_proto != nil {
 		return
 	}
+	file_pkg_debugpb_debug_proto_msgTypes[8].OneofWrappers = []any{
+		(*BPFMapField_U64)(nil),
+		(*BPFMapField_Ipv4)(nil),
+		(*BPFMapField_Mac)(nil),
+		(*BPFMapField_Label)(nil),
+		(*BPFMapField_Raw)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_debugpb_debug_proto_rawDesc), len(file_pkg_debugpb_debug_proto_rawDesc)),
 			NumEnums:      6,
-			NumMessages:   8,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

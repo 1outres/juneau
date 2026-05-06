@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/mapinventory"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/trace"
 	"github.com/1outres/juneau/daemon/pkg/debugpb"
 	"go.uber.org/zap"
@@ -27,6 +28,11 @@ type DebugServer struct {
 	bus      *trace.Bus
 	store    *trace.Store
 	nodeName string
+
+	// inv is the BPF map descriptor table used by ListBPFMaps and
+	// DumpBPFMap. nil before SetMapInventory is called; the RPCs
+	// return FailedPrecondition in that state.
+	inv *mapinventory.Inventory
 
 	// snapshotMu guards the per-trace-id event ringbuffer used by
 	// GetTraceSnapshot. Snapshots are sized small (< 1k events per
