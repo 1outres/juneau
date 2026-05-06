@@ -190,11 +190,25 @@ func (r *Reconciler) findInterfaceForPod(ctx context.Context, namespace, podName
 	return &ifaceList.Items[0], nil
 }
 
+// matchEndpointsForPort returns the endpoint rows that backend the
+// given Service port. Matching mirrors kube-proxy:
+//
+//   - svcPort.Name == "" — accept every endpoint regardless of its
+//     portName. Upstream validation only allows an unnamed Service
+//     port when the Service has a single port, so this cannot collide
+//     with another port on the same Service.
+//
+//   - svcPort.Name is set — accept only endpoints whose portName
+//     matches exactly. Endpoints with empty portName are rejected so a
+//     manually-managed EndpointSlice with missing port names cannot
+//     register a single backend under multiple named Service ports
+//     (which would route e.g. metrics traffic to the http container
+//     port).
 func matchEndpointsForPort(endpoints []endpointInfo, svcPort corev1.ServicePort) []endpointInfo {
 	var matched []endpointInfo
 	wantName := svcPort.Name
 	for _, ep := range endpoints {
-		if wantName == "" || ep.portName == wantName || ep.portName == "" {
+		if wantName == "" || ep.portName == wantName {
 			matched = append(matched, ep)
 		}
 	}
