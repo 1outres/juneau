@@ -245,3 +245,16 @@ func uniqueSubnetCIDR() string {
 	octet := time.Now().UnixNano()%200 + 20
 	return fmt.Sprintf("10.%d.0.0/24", octet)
 }
+
+// uniqueExternalIPv4 returns a TEST-NET-3 (RFC 5737) address that is
+// guaranteed not to overlap with subnet CIDRs handed out by
+// uniqueSubnetCIDR or with the testServiceCIDR (10.96.0.0/12). The
+// last two octets vary by wall-clock so concurrent test specs do not
+// collide on a single Service externalIP value.
+var externalIPCounter uint32
+
+func uniqueExternalIPv4() string {
+	externalIPCounter++
+	v := externalIPCounter
+	return fmt.Sprintf("203.0.113.%d", (v%200)+10)
+}

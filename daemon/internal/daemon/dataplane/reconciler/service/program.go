@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"sort"
 
 	"github.com/cilium/ebpf"
@@ -51,59 +52,89 @@ func (r *Reconciler) programService(
 	}
 
 	out := programSnapshot{backendSig: sig, gen: gen}
-	for _, port := range svc.Spec.Ports {
-		proto := protoToU8(port.Protocol)
-		if proto == 0 {
-			continue
-		}
-		key := bpf.PodEgressServiceKey{
-			ClusterIp: clusterIPHost,
-			Port:      uint16(port.Port),
-			Proto:     proto,
-		}
-		val := bpf.PodEgressServiceVal{
-			OwnerVpcId:   vpc.Status.VpcID,
-			BackendCount: uint32(len(backendsByPort[port])),
-			AffinitySec:  affinitySec,
-			Flags:        flags,
-			Gen:          gen,
-		}
-		if err := r.podEgress.Objs.ServiceMap.Update(&key, &val, ebpf.UpdateAny); err != nil {
-			return programSnapshot{}, fmt.Errorf("update ServiceMap: %w", err)
-		}
-		out.serviceKeys = append(out.serviceKeys, key)
-
-		for idx, rb := range backendsByPort[port] {
-			bk := bpf.PodEgressBackendKey{
-				ClusterIp: clusterIPHost,
+	vips := vipsForService(svc, clusterIPHost)
+	for _, vip := range vips {
+		for _, port := range svc.Spec.Ports {
+			proto := protoToU8(port.Protocol)
+			if proto == 0 {
+				continue
+			}
+			key := bpf.PodEgressServiceKey{
+				ClusterIp: vip,
 				Port:      uint16(port.Port),
 				Proto:     proto,
-				Index:     uint32(idx),
 			}
-			bv := rb.val
-			if err := r.podEgress.Objs.BackendMap.Update(&bk, &bv, ebpf.UpdateAny); err != nil {
-				return programSnapshot{}, fmt.Errorf("update BackendMap: %w", err)
+			val := bpf.PodEgressServiceVal{
+				OwnerVpcId:   vpc.Status.VpcID,
+				BackendCount: uint32(len(backendsByPort[port])),
+				AffinitySec:  affinitySec,
+				Flags:        flags,
+				Gen:          gen,
 			}
-			out.backendKeys = append(out.backendKeys, bk)
-		}
+			if err := r.podEgress.Objs.ServiceMap.Update(&key, &val, ebpf.UpdateAny); err != nil {
+				return programSnapshot{}, fmt.Errorf("update ServiceMap: %w", err)
+			}
+			out.serviceKeys = append(out.serviceKeys, key)
 
-		if hasACL {
-			for _, callerVpcID := range allowedVpcIDs {
-				ak := bpf.PodEgressServiceAclKey{
-					ClusterIp:   clusterIPHost,
-					Port:        uint16(port.Port),
-					Proto:       proto,
-					CallerVpcId: callerVpcID,
+			for idx, rb := range backendsByPort[port] {
+				bk := bpf.PodEgressBackendKey{
+					ClusterIp: vip,
+					Port:      uint16(port.Port),
+					Proto:     proto,
+					Index:     uint32(idx),
 				}
-				one := uint8(1)
-				if err := r.podEgress.Objs.ServiceAclMap.Update(&ak, &one, ebpf.UpdateAny); err != nil {
-					return programSnapshot{}, fmt.Errorf("update ServiceAclMap: %w", err)
+				bv := rb.val
+				if err := r.podEgress.Objs.BackendMap.Update(&bk, &bv, ebpf.UpdateAny); err != nil {
+					return programSnapshot{}, fmt.Errorf("update BackendMap: %w", err)
 				}
-				out.aclKeys = append(out.aclKeys, ak)
+				out.backendKeys = append(out.backendKeys, bk)
+			}
+
+			if hasACL {
+				for _, callerVpcID := range allowedVpcIDs {
+					ak := bpf.PodEgressServiceAclKey{
+						ClusterIp:   vip,
+						Port:        uint16(port.Port),
+						Proto:       proto,
+						CallerVpcId: callerVpcID,
+					}
+					one := uint8(1)
+					if err := r.podEgress.Objs.ServiceAclMap.Update(&ak, &one, ebpf.UpdateAny); err != nil {
+						return programSnapshot{}, fmt.Errorf("update ServiceAclMap: %w", err)
+					}
+					out.aclKeys = append(out.aclKeys, ak)
+				}
 			}
 		}
 	}
 	return out, nil
+}
+
+// vipsForService returns every VIP this Service should be reachable
+// at on the data plane: the primary ClusterIP plus any IPv4
+// spec.externalIPs entry. Non-IPv4 entries (IPv6, malformed) are
+// dropped with a warning so the rest of the Service still programmes
+// correctly. Duplicates (e.g. an externalIP equal to the ClusterIP)
+// are skipped — service_map updates are last-write-wins, but emitting
+// the same key twice would also bloat the snapshot.
+func vipsForService(svc *corev1.Service, primaryHost uint32) []uint32 {
+	vips := []uint32{primaryHost}
+	seen := map[uint32]struct{}{primaryHost: {}}
+	for _, raw := range svc.Spec.ExternalIPs {
+		ip := net.ParseIP(raw).To4()
+		if ip == nil {
+			zap.S().Warnf("service: %s/%s skipping non-IPv4 externalIP %q",
+				svc.Namespace, svc.Name, raw)
+			continue
+		}
+		host := binary.BigEndian.Uint32(ip)
+		if _, dup := seen[host]; dup {
+			continue
+		}
+		seen[host] = struct{}{}
+		vips = append(vips, host)
+	}
+	return vips
 }
 
 // pruneStale removes BPF entries the previous reconcile pass owned

@@ -22,8 +22,10 @@ import (
 	"net"
 	"reflect"
 	"slices"
+	"sort"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,6 +40,12 @@ import (
 
 	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
+
+// serviceVpcAnnotation mirrors webhook.ServiceAnnotationVpc and
+// svcpolicy.AnnotationVpc. Duplicated as a literal so the controller
+// package does not pull the daemon-side svcpolicy or the webhook
+// package into its dependency graph.
+const serviceVpcAnnotation = "juneau.loutres.me/vpc"
 
 const (
 	routeTableReasonDeleting           = "Deleting"
@@ -64,6 +72,7 @@ type RouteTableReconciler struct {
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=routetables/finalizers,verbs=update
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=allocationclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=allocationclaims/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -129,6 +138,23 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				Type: juneauloutresmev1alpha1.ViaService,
 			},
 		})
+	}
+
+	// Per-Service /32 routes for spec.externalIPs entries owned by this
+	// Vpc. The BPF FIB is an LPM_TRIE so a /32 wins over the cluster
+	// Service CIDR (whether or not the externalIP is inside it). Only
+	// the owner Vpc's RouteTables get the route — injecting it into
+	// every Vpc would silently strand legitimate egress through other
+	// Vpcs to the same IP.
+	if vpc.Spec.ServiceEnabled() {
+		extRoutes, err := r.collectExternalIPRoutes(ctx, &vpc)
+		if err != nil {
+			if updateErr := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, fmt.Sprintf("failed to collect Service externalIPs: %v", err)); updateErr != nil {
+				return ctrl.Result{}, updateErr
+			}
+			return ctrl.Result{}, err
+		}
+		statusRoutes = append(statusRoutes, extRoutes...)
 	}
 
 	// The default VPC's main RouteTable optionally carries a 0/0
@@ -312,6 +338,7 @@ func (r *RouteTableReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&juneauloutresmev1alpha1.Vpc{}, handler.EnqueueRequestsFromMapFunc(r.mapVpcToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.AllocationClaim{}, handler.EnqueueRequestsFromMapFunc(r.mapClaimToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.NATGateway{}, handler.EnqueueRequestsFromMapFunc(r.mapNATGatewayToRouteTables)).
+		Watches(&corev1.Service{}, handler.EnqueueRequestsFromMapFunc(r.mapServiceToRouteTables)).
 		Named("routetable").
 		Complete(r)
 }
@@ -452,4 +479,81 @@ func (r *RouteTableReconciler) mapNetworkEndpointToRouteTables(ctx context.Conte
 	}
 
 	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: routeTableName}}}
+}
+
+// owningVpcOfService returns the Vpc that the Service is anchored to.
+// Mirrors svcpolicy.OwningVpc / webhook.serviceVpc; duplicated here so
+// the controller package does not pull either side into its imports.
+func owningVpcOfService(svc *corev1.Service) string {
+	if v := svc.Annotations[serviceVpcAnnotation]; v != "" {
+		return v
+	}
+	return defaultVpcName
+}
+
+// collectExternalIPRoutes returns one /32 via.type=service route per
+// IPv4 entry in spec.externalIPs across every Service owned by vpc.
+// ExternalName Services have no backends and are skipped. Non-IPv4
+// entries are dropped silently here; the daemon-side reconciler emits
+// a per-Service warning for those, so a duplicate log here would just
+// be noise. The result is sorted by Dst for stable Status.Routes
+// ordering across reconciles.
+func (r *RouteTableReconciler) collectExternalIPRoutes(ctx context.Context, vpc *juneauloutresmev1alpha1.Vpc) ([]juneauloutresmev1alpha1.Route, error) {
+	var svcs corev1.ServiceList
+	if err := r.List(ctx, &svcs); err != nil {
+		return nil, fmt.Errorf("list services: %w", err)
+	}
+
+	seen := make(map[string]struct{})
+	var routes []juneauloutresmev1alpha1.Route
+	for i := range svcs.Items {
+		svc := &svcs.Items[i]
+		if owningVpcOfService(svc) != vpc.Name {
+			continue
+		}
+		if svc.Spec.Type == corev1.ServiceTypeExternalName {
+			continue
+		}
+		for _, raw := range svc.Spec.ExternalIPs {
+			ip := net.ParseIP(raw)
+			if ip == nil || ip.To4() == nil {
+				continue
+			}
+			cidr := ip.To4().String() + "/32"
+			if _, dup := seen[cidr]; dup {
+				continue
+			}
+			seen[cidr] = struct{}{}
+			routes = append(routes, juneauloutresmev1alpha1.Route{
+				Dst: cidr,
+				Via: juneauloutresmev1alpha1.RouteVia{
+					Type: juneauloutresmev1alpha1.ViaService,
+				},
+			})
+		}
+	}
+	sort.Slice(routes, func(i, j int) bool { return routes[i].Dst < routes[j].Dst })
+	return routes, nil
+}
+
+// mapServiceToRouteTables re-enqueues every RouteTable in the cluster
+// when a Service changes. A finer-grained mapping (only the owner
+// Vpc's RouteTables) would mishandle ownership transitions: when a
+// Service's juneau.loutres.me/vpc annotation changes we need to
+// refresh both the old and the new owner's RouteTables. Service
+// events are infrequent compared to Subnet/Pod churn, so the broader
+// fan-out is acceptable.
+func (r *RouteTableReconciler) mapServiceToRouteTables(ctx context.Context, _ client.Object) []reconcile.Request {
+	var routeTableList juneauloutresmev1alpha1.RouteTableList
+	if err := r.List(ctx, &routeTableList); err != nil {
+		log.FromContext(ctx).Error(err, "list RouteTables for Service fan-out")
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(routeTableList.Items))
+	for i := range routeTableList.Items {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: client.ObjectKey{Name: routeTableList.Items[i].Name},
+		})
+	}
+	return requests
 }

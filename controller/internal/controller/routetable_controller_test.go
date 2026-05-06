@@ -6,6 +6,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -231,7 +232,161 @@ var _ = Describe("RouteTable controller", func() {
 			g.Expect(extra.Status.Routes).To(ContainElement(serviceRoute))
 		}).Should(Succeed())
 	})
+
+	Context("Service.spec.externalIPs injection", func() {
+		It("injects /32 SERVICE routes for each owner-Vpc Service externalIP", func() {
+			vpcName := createControllerVpc()
+			enableVpcServiceConsume(vpcName)
+
+			svcName := uniqueTestName("svc")
+			extA := uniqueExternalIPv4()
+			extB := uniqueExternalIPv4()
+			Expect(k8sClient.Create(context.Background(), buildExternalIPService(svcName, "default", vpcName, []string{extA, extB}))).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				rt := getControllerRouteTable(vpcName)
+				g.Expect(rt.Status.Routes).To(ContainElement(juneauv1alpha1.Route{
+					Dst: extA + "/32",
+					Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
+				}))
+				g.Expect(rt.Status.Routes).To(ContainElement(juneauv1alpha1.Route{
+					Dst: extB + "/32",
+					Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
+				}))
+			}).Should(Succeed())
+		})
+
+		It("removes /32 SERVICE routes when an externalIP entry is dropped", func() {
+			vpcName := createControllerVpc()
+			enableVpcServiceConsume(vpcName)
+
+			svcName := uniqueTestName("svc")
+			extA := uniqueExternalIPv4()
+			extB := uniqueExternalIPv4()
+			svc := buildExternalIPService(svcName, "default", vpcName, []string{extA, extB})
+			Expect(k8sClient.Create(context.Background(), svc)).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				rt := getControllerRouteTable(vpcName)
+				g.Expect(rt.Status.Routes).To(ContainElement(juneauv1alpha1.Route{
+					Dst: extB + "/32",
+					Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
+				}))
+			}).Should(Succeed())
+
+			var current corev1.Service
+			Expect(k8sClient.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: svcName}, &current)).To(Succeed())
+			current.Spec.ExternalIPs = []string{extA}
+			Expect(k8sClient.Update(context.Background(), &current)).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				rt := getControllerRouteTable(vpcName)
+				g.Expect(rt.Status.Routes).To(ContainElement(juneauv1alpha1.Route{
+					Dst: extA + "/32",
+					Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
+				}))
+				g.Expect(rt.Status.Routes).NotTo(ContainElement(juneauv1alpha1.Route{
+					Dst: extB + "/32",
+					Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
+				}))
+			}).Should(Succeed())
+		})
+
+		It("does not inject externalIPs of Services owned by another Vpc", func() {
+			ownerVpc := createControllerVpc()
+			otherVpc := createControllerVpc()
+			enableVpcServiceConsume(ownerVpc)
+			enableVpcServiceConsume(otherVpc)
+
+			extOwner := uniqueExternalIPv4()
+			extOther := uniqueExternalIPv4()
+			Expect(k8sClient.Create(context.Background(), buildExternalIPService(uniqueTestName("svc"), "default", ownerVpc, []string{extOwner}))).To(Succeed())
+			Expect(k8sClient.Create(context.Background(), buildExternalIPService(uniqueTestName("svc"), "default", otherVpc, []string{extOther}))).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				rt := getControllerRouteTable(ownerVpc)
+				g.Expect(rt.Status.Routes).To(ContainElement(juneauv1alpha1.Route{
+					Dst: extOwner + "/32",
+					Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
+				}))
+				g.Expect(rt.Status.Routes).NotTo(ContainElement(juneauv1alpha1.Route{
+					Dst: extOther + "/32",
+					Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
+				}))
+			}).Should(Succeed())
+		})
+
+		It("ignores ExternalName Services and IPv6 / duplicate externalIPs", func() {
+			vpcName := createControllerVpc()
+			enableVpcServiceConsume(vpcName)
+
+			extDup := uniqueExternalIPv4()
+
+			// ExternalName Service must not contribute a /32 even if it
+			// somehow carries spec.externalIPs (the field is silently
+			// ignored by upstream for that type).
+			extName := uniqueTestName("svc-ext")
+			Expect(k8sClient.Create(context.Background(), &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace:   "default",
+					Name:        extName,
+					Annotations: map[string]string{serviceVpcAnnotation: vpcName},
+				},
+				Spec: corev1.ServiceSpec{
+					Type:         corev1.ServiceTypeExternalName,
+					ExternalName: "example.com",
+				},
+			})).To(Succeed())
+
+			// IPv6 entries are dropped silently by the controller (the
+			// daemon-side reconciler emits a more visible warning);
+			// duplicates collapse to a single /32 route.
+			Expect(k8sClient.Create(context.Background(), buildExternalIPService(uniqueTestName("svc"), "default", vpcName,
+				[]string{"2001:db8::1", extDup, extDup}))).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				rt := getControllerRouteTable(vpcName)
+				count := 0
+				for _, route := range rt.Status.Routes {
+					if route.Via.Type != juneauv1alpha1.ViaService {
+						continue
+					}
+					if route.Dst == testServiceCIDR.String() {
+						continue
+					}
+					count++
+					g.Expect(route.Dst).To(Equal(extDup + "/32"))
+				}
+				g.Expect(count).To(Equal(1))
+			}).Should(Succeed())
+		})
+	})
 })
+
+func enableVpcServiceConsume(vpcName string) {
+	var vpc juneauv1alpha1.Vpc
+	Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: vpcName}, &vpc)).To(Succeed())
+	vpc.Spec.Service = &juneauv1alpha1.VpcServiceSpec{Consume: true}
+	Expect(k8sClient.Update(context.Background(), &vpc)).To(Succeed())
+}
+
+func buildExternalIPService(name, namespace, vpcName string, externalIPs []string) *corev1.Service {
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:   namespace,
+			Name:        name,
+			Annotations: map[string]string{serviceVpcAnnotation: vpcName},
+		},
+		Spec: corev1.ServiceSpec{
+			Type: corev1.ServiceTypeClusterIP,
+			Ports: []corev1.ServicePort{
+				{Port: 80, Protocol: corev1.ProtocolTCP},
+			},
+			Selector:    map[string]string{"app": name},
+			ExternalIPs: externalIPs,
+		},
+	}
+}
 
 func createControllerVpc() string {
 	name := uniqueTestName("vpc")
