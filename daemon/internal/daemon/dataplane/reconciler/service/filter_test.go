@@ -120,15 +120,20 @@ func TestApplyPolicy_InternalLocal(t *testing.T) {
 		}
 	})
 
-	t.Run("empty localNode → policy skipped (defensive)", func(t *testing.T) {
+	t.Run("empty localNode → fail-closed (drop all)", func(t *testing.T) {
+		// iTP=Local without a known local node is a misconfiguration
+		// (--node-name is Required at boot). Defence-in-depth: fail
+		// closed by dropping every backend so the policy is never
+		// silently bypassed. Matches kube-proxy parity (no local
+		// backend → drop).
 		in := map[corev1.ServicePort][]resolvedBackend{
 			port: {
 				makeBackend(0x0a000001, "node-b", true, true, false),
 			},
 		}
 		got := applyPolicy(in, policy, "")
-		if n := len(got[port]); n != 1 {
-			t.Errorf("empty localNode must skip Local filter; got %d", n)
+		if n := len(got[port]); n != 0 {
+			t.Errorf("empty localNode under iTP=Local must drop all backends (kube-proxy parity), got %d", n)
 		}
 	})
 }

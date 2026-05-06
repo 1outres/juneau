@@ -1,6 +1,7 @@
 package service
 
 import (
+	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/1outres/juneau/daemon/internal/daemon/svcpolicy"
@@ -68,14 +69,17 @@ func admitByConditions(backends []resolvedBackend) []resolvedBackend {
 	return fallback
 }
 
+// retainLocal restricts the candidate set to backends whose endpoint
+// nodeName matches localNode. Returns nil when localNode is empty:
+// iTP=Local without a known local Node identity is a misconfiguration
+// (the boot-time --node-name flag is Required, so this branch should
+// be unreachable in production), but we fail closed here as
+// defence-in-depth so the policy is never silently bypassed. Mirrors
+// kube-proxy: no local backend → drop, never fall back to remote.
 func retainLocal(backends []resolvedBackend, localNode string) []resolvedBackend {
 	if localNode == "" {
-		// Without a known local node we cannot enforce locality —
-		// dropping every backend would silently break Service
-		// reachability. Return the original set; the operator-facing
-		// daemon log surfaces the missing node configuration via the
-		// boot-time --node-name validation.
-		return backends
+		zap.S().Warn("service: retainLocal called with empty localNode; iTP=Local cannot be enforced, dropping all backends. Check daemon --node-name flag.")
+		return nil
 	}
 	out := backends[:0:0]
 	for _, b := range backends {
