@@ -33,6 +33,8 @@ const (
 	Debug_GetTraceSnapshot_FullMethodName = "/debug.v1.Debug/GetTraceSnapshot"
 	Debug_InjectProbe_FullMethodName      = "/debug.v1.Debug/InjectProbe"
 	Debug_LearnTuple_FullMethodName       = "/debug.v1.Debug/LearnTuple"
+	Debug_ListBPFMaps_FullMethodName      = "/debug.v1.Debug/ListBPFMaps"
+	Debug_DumpBPFMap_FullMethodName       = "/debug.v1.Debug/DumpBPFMap"
 )
 
 // DebugClient is the client API for Debug service.
@@ -62,6 +64,18 @@ type DebugClient interface {
 	// daemon over to the daemons whose dataplane may also see the
 	// packet.
 	LearnTuple(ctx context.Context, in *LearnTupleRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// ListBPFMaps enumerates the BPF maps this daemon owns along with
+	// their key/value field schema. The schema is what kubectl uses to
+	// render dumped entries; shipping it on the wire (instead of
+	// hard-coding it on the client) keeps clients forward-compatible
+	// when the daemon adds new maps or fields.
+	ListBPFMaps(ctx context.Context, in *ListBPFMapsRequest, opts ...grpc.CallOption) (*ListBPFMapsResponse, error)
+	// DumpBPFMap streams entries of one map. Optional key_filter
+	// restricts the result; when every key field is supplied a
+	// single-key Lookup is issued, otherwise a server-side linear
+	// scan is performed. HASH_OF_MAPS dumps require inner_key to
+	// pick the inner map (e.g. fib_map needs table_id).
+	DumpBPFMap(ctx context.Context, in *DumpBPFMapRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[BPFMapEntry], error)
 }
 
 type debugClient struct {
@@ -121,6 +135,35 @@ func (c *debugClient) LearnTuple(ctx context.Context, in *LearnTupleRequest, opt
 	return out, nil
 }
 
+func (c *debugClient) ListBPFMaps(ctx context.Context, in *ListBPFMapsRequest, opts ...grpc.CallOption) (*ListBPFMapsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListBPFMapsResponse)
+	err := c.cc.Invoke(ctx, Debug_ListBPFMaps_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *debugClient) DumpBPFMap(ctx context.Context, in *DumpBPFMapRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[BPFMapEntry], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Debug_ServiceDesc.Streams[1], Debug_DumpBPFMap_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[DumpBPFMapRequest, BPFMapEntry]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Debug_DumpBPFMapClient = grpc.ServerStreamingClient[BPFMapEntry]
+
 // DebugServer is the server API for Debug service.
 // All implementations must embed UnimplementedDebugServer
 // for forward compatibility.
@@ -148,6 +191,18 @@ type DebugServer interface {
 	// daemon over to the daemons whose dataplane may also see the
 	// packet.
 	LearnTuple(context.Context, *LearnTupleRequest) (*emptypb.Empty, error)
+	// ListBPFMaps enumerates the BPF maps this daemon owns along with
+	// their key/value field schema. The schema is what kubectl uses to
+	// render dumped entries; shipping it on the wire (instead of
+	// hard-coding it on the client) keeps clients forward-compatible
+	// when the daemon adds new maps or fields.
+	ListBPFMaps(context.Context, *ListBPFMapsRequest) (*ListBPFMapsResponse, error)
+	// DumpBPFMap streams entries of one map. Optional key_filter
+	// restricts the result; when every key field is supplied a
+	// single-key Lookup is issued, otherwise a server-side linear
+	// scan is performed. HASH_OF_MAPS dumps require inner_key to
+	// pick the inner map (e.g. fib_map needs table_id).
+	DumpBPFMap(*DumpBPFMapRequest, grpc.ServerStreamingServer[BPFMapEntry]) error
 	mustEmbedUnimplementedDebugServer()
 }
 
@@ -169,6 +224,12 @@ func (UnimplementedDebugServer) InjectProbe(context.Context, *InjectProbeRequest
 }
 func (UnimplementedDebugServer) LearnTuple(context.Context, *LearnTupleRequest) (*emptypb.Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method LearnTuple not implemented")
+}
+func (UnimplementedDebugServer) ListBPFMaps(context.Context, *ListBPFMapsRequest) (*ListBPFMapsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListBPFMaps not implemented")
+}
+func (UnimplementedDebugServer) DumpBPFMap(*DumpBPFMapRequest, grpc.ServerStreamingServer[BPFMapEntry]) error {
+	return status.Errorf(codes.Unimplemented, "method DumpBPFMap not implemented")
 }
 func (UnimplementedDebugServer) mustEmbedUnimplementedDebugServer() {}
 func (UnimplementedDebugServer) testEmbeddedByValue()               {}
@@ -256,6 +317,35 @@ func _Debug_LearnTuple_Handler(srv interface{}, ctx context.Context, dec func(in
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Debug_ListBPFMaps_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListBPFMapsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DebugServer).ListBPFMaps(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Debug_ListBPFMaps_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DebugServer).ListBPFMaps(ctx, req.(*ListBPFMapsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Debug_DumpBPFMap_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(DumpBPFMapRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(DebugServer).DumpBPFMap(m, &grpc.GenericServerStream[DumpBPFMapRequest, BPFMapEntry]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Debug_DumpBPFMapServer = grpc.ServerStreamingServer[BPFMapEntry]
+
 // Debug_ServiceDesc is the grpc.ServiceDesc for Debug service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -275,11 +365,20 @@ var Debug_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "LearnTuple",
 			Handler:    _Debug_LearnTuple_Handler,
 		},
+		{
+			MethodName: "ListBPFMaps",
+			Handler:    _Debug_ListBPFMaps_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
 			StreamName:    "WatchTrace",
 			Handler:       _Debug_WatchTrace_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "DumpBPFMap",
+			Handler:       _Debug_DumpBPFMap_Handler,
 			ServerStreams: true,
 		},
 	},

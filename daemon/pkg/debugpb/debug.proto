@@ -41,6 +41,20 @@ service Debug {
   // daemon over to the daemons whose dataplane may also see the
   // packet.
   rpc LearnTuple(LearnTupleRequest) returns (google.protobuf.Empty);
+
+  // ListBPFMaps enumerates the BPF maps this daemon owns along with
+  // their key/value field schema. The schema is what kubectl uses to
+  // render dumped entries; shipping it on the wire (instead of
+  // hard-coding it on the client) keeps clients forward-compatible
+  // when the daemon adds new maps or fields.
+  rpc ListBPFMaps(ListBPFMapsRequest) returns (ListBPFMapsResponse);
+
+  // DumpBPFMap streams entries of one map. Optional key_filter
+  // restricts the result; when every key field is supplied a
+  // single-key Lookup is issued, otherwise a server-side linear
+  // scan is performed. HASH_OF_MAPS dumps require inner_key to
+  // pick the inner map (e.g. fib_map needs table_id).
+  rpc DumpBPFMap(DumpBPFMapRequest) returns (stream BPFMapEntry);
 }
 
 message WatchTraceRequest {
@@ -186,6 +200,91 @@ enum TraceVerdict {
   TRACE_VERDICT_OK = 1;
   TRACE_VERDICT_DROP = 2;
   TRACE_VERDICT_REDIRECT = 3;
+}
+
+// ---- BPF map inspection -------------------------------------------------
+//
+// The shape is "schema-on-the-wire": the daemon describes each map's
+// fields in ListBPFMaps, then DumpBPFMap streams BPFMapEntry values whose
+// fields reference those names. kubectl renders entries generically from
+// the schema, so a new map added to the daemon is visible in `kubectl
+// juneau bpf list` and dumpable without any client change.
+//
+// Field values are typed (uint64 / ipv4 / mac / label / raw) so kubectl
+// can render them without re-decoding raw bytes. Bitmask fields surface
+// as a `flags` list so the user sees `[SVC_FLAG_SHARED, SVC_FLAG_HAS_ACL]`
+// instead of `0x3`.
+
+// BPFMapField is one named element of a key or value tuple. Exactly one
+// of u64/ipv4/mac/label/raw should be set; flags is supplemental for
+// bitmask fields and is empty for plain values.
+message BPFMapField {
+  string name = 1;
+  oneof value {
+    uint64 u64 = 10;     // generic numeric (u8/u16/u32/u64)
+    string ipv4 = 11;    // dotted-quad (decoder normalises NBO/HBO)
+    string mac = 12;     // colon-hex
+    string label = 13;   // resolved enum / sentinel ("CT_ACTION_DNAT")
+    bytes raw = 14;      // fallback for unknown shapes
+  }
+  // flags is the human-readable expansion of bitmask fields.
+  // Populated alongside u64; clients that ignore it still see the
+  // numeric value. Empty for non-flag fields.
+  repeated string flags = 20;
+}
+
+// BPFMapFieldSchema describes one field's name and rendering hint.
+// `type` is a stable identifier ("u32", "ipv4", "mac", "enum:ct_action",
+// "flags:svc_flag") that the daemon also uses internally; clients may
+// use it to drive table column formatting.
+message BPFMapFieldSchema {
+  string name = 1;
+  string type = 2;
+  string description = 3;
+}
+
+// BPFMapSchema is the per-map descriptor returned by ListBPFMaps.
+// kind mirrors cilium/ebpf MapType.String() (HASH, LRU_HASH, LPM_TRIE,
+// HASH_OF_MAPS, ARRAY) so kubectl can format it as-is.
+message BPFMapSchema {
+  string name = 1;
+  string kind = 2;
+  uint32 max_entries = 3;
+  repeated BPFMapFieldSchema key_schema = 4;
+  repeated BPFMapFieldSchema value_schema = 5;
+  // requires_inner_key marks HASH_OF_MAPS-style maps. DumpBPFMap on
+  // such a map without an inner_key returns the outer keys only.
+  bool requires_inner_key = 6;
+  // inner_key_schema is populated only when requires_inner_key=true.
+  // Mirrors the inner map's key schema so kubectl can validate
+  // --inner-key flags up front.
+  repeated BPFMapFieldSchema inner_key_schema = 7;
+  // inner_value_schema mirrors the inner map's value schema (only set
+  // when requires_inner_key=true).
+  repeated BPFMapFieldSchema inner_value_schema = 8;
+}
+
+message ListBPFMapsRequest {}
+
+message ListBPFMapsResponse {
+  repeated BPFMapSchema maps = 1;
+}
+
+message DumpBPFMapRequest {
+  string name = 1;
+  // key_filter constrains the dump to entries matching every named
+  // field. Field names must reference the map's key_schema.
+  repeated BPFMapField key_filter = 2;
+  // inner_key picks the inner map for HASH_OF_MAPS dumps.
+  repeated BPFMapField inner_key = 3;
+  // limit caps the streamed entries; 0 means "use server default".
+  // Servers may impose their own ceiling regardless.
+  uint32 limit = 4;
+}
+
+message BPFMapEntry {
+  repeated BPFMapField key = 1;
+  repeated BPFMapField value = 2;
 }
 
 enum TraceEventReason {

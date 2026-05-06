@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/mapinventory"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/trace"
 	"github.com/1outres/juneau/daemon/pkg/cnipb"
 	"github.com/1outres/juneau/daemon/pkg/debugpb"
@@ -230,7 +231,10 @@ type ServerConfig struct {
 	Client     client.Client
 	TraceBus   *trace.Bus
 	TraceStore *trace.Store
-	NodeName   string
+	// MapInventory backs the ListBPFMaps / DumpBPFMap RPCs. Optional;
+	// the RPCs return FailedPrecondition when nil.
+	MapInventory *mapinventory.Inventory
+	NodeName     string
 	// DebugTCPAddr binds the debug-only gRPC server. Empty disables
 	// the debug surface entirely (useful when trace state is not
 	// available or the operator wants to lock the daemon down).
@@ -251,6 +255,9 @@ func NewServer(cfg ServerConfig) *Server {
 	if cfg.TraceBus != nil && cfg.TraceStore != nil && cfg.DebugTCPAddr != "" {
 		s.debugServer = grpc.NewServer()
 		s.debug = NewDebugServer(cfg.TraceBus, cfg.TraceStore, cfg.NodeName, SnapshotBacklog)
+		if cfg.MapInventory != nil {
+			s.debug.SetMapInventory(cfg.MapInventory)
+		}
 		debugpb.RegisterDebugServer(s.debugServer, s.debug)
 		s.debugAddr = cfg.DebugTCPAddr
 	}
