@@ -153,6 +153,10 @@ func (r *Reconciler) delete(key string) error {
 		return nil
 	}
 	r.deleteSnapshot(prev)
+	// Drop the bookkeeping entry as well — otherwise deleted Services
+	// leak snapshots indefinitely under churn and subsequent fan-out
+	// events keep retrying BPF deletions for already-removed keys.
+	r.removeSnapshot(key)
 	return nil
 }
 
@@ -251,6 +255,12 @@ func (r *Reconciler) storeSnapshot(key string, snap programSnapshot) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.snapshots[key] = snap
+}
+
+func (r *Reconciler) removeSnapshot(key string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.snapshots, key)
 }
 
 // programSnapshot remembers the eBPF map keys this reconciler installed
