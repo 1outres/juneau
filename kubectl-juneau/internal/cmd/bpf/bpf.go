@@ -7,7 +7,7 @@
 //
 //   - cmd/bpf/*.go              cobra wiring + flag parsing
 //   - internal/bpfmap/          domain logic (gRPC client, fan-out,
-//                               renderers).
+//     renderers).
 //   - daemon/.../mapinventory   schema source of truth.
 //
 // Flow for `bpf dump`: cmd parses --filter → bpfmap.Client.DumpMap

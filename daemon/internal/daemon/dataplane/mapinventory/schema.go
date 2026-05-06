@@ -91,26 +91,6 @@ type Field struct {
 	Flags *FlagDict
 }
 
-// fixedWidth returns the byte width baked into the type, or -1 for
-// types whose width is caller-provided.
-func (t FieldType) fixedWidth() int {
-	switch t {
-	case FieldU8:
-		return 1
-	case FieldU16:
-		return 2
-	case FieldU32, FieldIPv4, FieldIPv4BE:
-		return 4
-	case FieldU64:
-		return 8
-	case FieldPort, FieldPortBE:
-		return 2
-	case FieldMAC:
-		return 6
-	}
-	return -1
-}
-
 // Schema is an ordered list of Fields plus the total bytes the
 // fields occupy. The byte total must match the actual BPF map's
 // KeySize / ValueSize at registration time; a mismatch is a

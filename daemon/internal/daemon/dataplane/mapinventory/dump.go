@@ -131,7 +131,7 @@ func dumpHashOfMaps(ctx context.Context, d *Descriptor, opts DumpOptions, emit E
 	if err != nil {
 		return fmt.Errorf("open inner map (id=%d): %w", innerID, err)
 	}
-	defer inner.Close()
+	defer func() { _ = inner.Close() }()
 
 	emitted := uint32(0)
 	return iterateFlat(inner, d.InnerKey.Width(), d.InnerValue.Width(), opts.Limit, func(k, v []byte) (bool, error) {

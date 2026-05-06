@@ -59,7 +59,9 @@ func RenderDumpTable(w io.Writer, r DumpResult) error {
 		}
 	}
 	if len(r.Entries) == 0 {
-		fmt.Fprintln(w, "(no entries)")
+		if _, err := fmt.Fprintln(w, "(no entries)"); err != nil {
+			return err
+		}
 	}
 	// Warnings are surfaced by the cmd layer (they belong on stderr)
 	// so the table renderer keeps stdout clean for piping.

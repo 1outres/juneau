@@ -120,8 +120,8 @@ func (o *dumpOptions) Run(ctx context.Context) error {
 	}
 
 	var (
-		mu       sync.Mutex
-		entries  []bpfmap.Entry
+		mu      sync.Mutex
+		entries []bpfmap.Entry
 	)
 	emit := func(e bpfmap.Entry) error {
 		mu.Lock()
@@ -155,7 +155,7 @@ func (o *dumpOptions) Run(ctx context.Context) error {
 		return err
 	}
 	for _, w := range warnings {
-		fmt.Fprintf(o.Factory.Streams().ErrOut, "warning: node %s: %v\n", w.Node, w.Err)
+		_, _ = fmt.Fprintf(o.Factory.Streams().ErrOut, "warning: node %s: %v\n", w.Node, w.Err)
 	}
 	return nil
 }

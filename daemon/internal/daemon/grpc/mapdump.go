@@ -111,6 +111,3 @@ func (d *DebugServer) DumpBPFMap(req *debugpb.DumpBPFMapRequest, srv debugpb.Deb
 func (d *DebugServer) SetMapInventory(inv *mapinventory.Inventory) {
 	d.inv = inv
 }
-
-// hasMapInventory reports whether SetMapInventory has been called.
-func (d *DebugServer) hasMapInventory() bool { return d.inv != nil }

@@ -109,7 +109,7 @@ func (c *FactoryClient) ListMaps(ctx context.Context, node string) ([]Schema, er
 	if err != nil {
 		return nil, err
 	}
-	defer agent.Close()
+	defer func() { _ = agent.Close() }()
 	resp, err := agent.Debug().ListBPFMaps(ctx, &debugpb.ListBPFMapsRequest{})
 	if err != nil {
 		return nil, err
@@ -128,7 +128,7 @@ func (c *FactoryClient) DumpMap(ctx context.Context, node, mapName string, opts 
 	if err != nil {
 		return err
 	}
-	defer agent.Close()
+	defer func() { _ = agent.Close() }()
 
 	stream, err := agent.Debug().DumpBPFMap(ctx, &debugpb.DumpBPFMapRequest{
 		Name:      mapName,

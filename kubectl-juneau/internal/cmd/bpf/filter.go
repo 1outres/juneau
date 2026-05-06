@@ -19,7 +19,7 @@ import (
 //   - "aa:bb:cc:dd:ee:ff"      → mac
 //   - "0x42" / "42" / "1234"   → uint64
 //   - everything else          → label (lets users say
-//                                "proto=TCP" or "action=CT_ACTION_DNAT")
+//     "proto=TCP" or "action=CT_ACTION_DNAT")
 //
 // A label form is meaningful only when the daemon's schema marks the
 // field as enum; the codec on the daemon side rejects mismatches with

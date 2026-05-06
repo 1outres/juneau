@@ -75,7 +75,7 @@ func (o *listOptions) Run(ctx context.Context) error {
 		return err
 	}
 	for _, w := range warnings {
-		fmt.Fprintf(o.Factory.Streams().ErrOut, "warning: node %s: %v\n", w.Node, w.Err)
+		_, _ = fmt.Fprintf(o.Factory.Streams().ErrOut, "warning: node %s: %v\n", w.Node, w.Err)
 	}
 	return nil
 }

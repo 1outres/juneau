@@ -129,7 +129,7 @@ func TestRoundTripServiceFlags(t *testing.T) {
 		mapField("owner_vpc_id", uint64(1)),
 		mapField("backend_count", uint64(3)),
 		mapField("affinity_sec", uint64(0)),
-		mapField("flags", uint64(SVCFlagDict.bits[0].mask|SVCFlagDict.bits[1].mask)),
+		mapField("flags", SVCFlagDict.bits[0].mask|SVCFlagDict.bits[1].mask),
 	})
 	flagsField := mapByName(got)["flags"]
 	if flagsField == nil {
