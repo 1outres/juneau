@@ -430,4 +430,124 @@ var _ = Describe("Allocation controllers", func() {
 		// Two claims fit in poolA (192.0.2.1, 192.0.2.2); the third spills over to poolB (198.51.100.1).
 		Expect(ips).To(ConsistOf("192.0.2.1", "192.0.2.2", "198.51.100.1"))
 	})
+
+	It("retries a Pending claim once its referenced pool is created", func() {
+		poolName := uniqueTestName("pool-late")
+		ownerName := uniqueTestName("owner-late")
+		claimName := uniqueTestName("claim-late")
+
+		owner := &juneauv1alpha1.Vpc{ObjectMeta: metav1.ObjectMeta{Name: ownerName}}
+		Expect(k8sClient.Create(ctx, owner)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, owner) })
+
+		claim := &juneauv1alpha1.AllocationClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: claimName},
+			Spec: juneauv1alpha1.AllocationClaimSpec{
+				PoolRefs:    []juneauv1alpha1.AllocationPoolReference{{Name: poolName}},
+				ResourceRef: juneauv1alpha1.AllocationResourceReference{APIVersion: juneauv1alpha1.GroupVersion.String(), Kind: "Vpc", Name: ownerName},
+				Attribute:   "status.vni",
+			},
+		}
+		Expect(k8sClient.Create(ctx, claim)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, claim) })
+
+		// Pool not found is now reported as Pending (transient), not
+		// AllocationFailed: it is awaiting an event that may yet come.
+		Eventually(func(g Gomega) {
+			var fresh juneauv1alpha1.AllocationClaim
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: claimName}, &fresh)).To(Succeed())
+			g.Expect(fresh.Status.Phase).To(Equal(juneauv1alpha1.AllocationClaimPhasePending))
+			cond := meta.FindStatusCondition(fresh.Status.Conditions, juneauv1alpha1.AllocationClaimStatusReady)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Reason).To(Equal("Pending"))
+		}).Should(Succeed())
+
+		pool := &juneauv1alpha1.AllocationPool{
+			ObjectMeta: metav1.ObjectMeta{Name: poolName},
+			Spec: juneauv1alpha1.AllocationPoolSpec{
+				Type:     juneauv1alpha1.AllocationTypeNumber,
+				Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+				Number:   &juneauv1alpha1.AllocationPoolNumberSpec{Min: 5, Max: 10},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+
+		Eventually(func(g Gomega) {
+			var fresh juneauv1alpha1.AllocationClaim
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: claimName}, &fresh)).To(Succeed())
+			g.Expect(fresh.Status.Phase).To(Equal(juneauv1alpha1.AllocationClaimPhaseAllocated))
+			g.Expect(fresh.Status.Value.Number).To(Equal(uint64(5)))
+		}).Should(Succeed())
+	})
+
+	It("retries a Pending claim once a lease is deleted (capacity returns)", func() {
+		poolName := uniqueTestName("pool-cap")
+		pool := &juneauv1alpha1.AllocationPool{
+			ObjectMeta: metav1.ObjectMeta{Name: poolName},
+			Spec: juneauv1alpha1.AllocationPoolSpec{
+				Type:     juneauv1alpha1.AllocationTypeNumber,
+				Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+				Number:   &juneauv1alpha1.AllocationPoolNumberSpec{Min: 7, Max: 7},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+
+		ownerA := &juneauv1alpha1.Vpc{ObjectMeta: metav1.ObjectMeta{Name: uniqueTestName("cap-owner-a")}}
+		ownerB := &juneauv1alpha1.Vpc{ObjectMeta: metav1.ObjectMeta{Name: uniqueTestName("cap-owner-b")}}
+		Expect(k8sClient.Create(ctx, ownerA)).To(Succeed())
+		Expect(k8sClient.Create(ctx, ownerB)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, ownerA)
+			_ = k8sClient.Delete(ctx, ownerB)
+		})
+
+		claimA := &juneauv1alpha1.AllocationClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: uniqueTestName("cap-claim-a")},
+			Spec: juneauv1alpha1.AllocationClaimSpec{
+				PoolRefs:    []juneauv1alpha1.AllocationPoolReference{{Name: poolName}},
+				ResourceRef: juneauv1alpha1.AllocationResourceReference{APIVersion: juneauv1alpha1.GroupVersion.String(), Kind: "Vpc", Name: ownerA.Name},
+				Attribute:   "status.vni",
+			},
+		}
+		claimB := &juneauv1alpha1.AllocationClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: uniqueTestName("cap-claim-b")},
+			Spec: juneauv1alpha1.AllocationClaimSpec{
+				PoolRefs:    []juneauv1alpha1.AllocationPoolReference{{Name: poolName}},
+				ResourceRef: juneauv1alpha1.AllocationResourceReference{APIVersion: juneauv1alpha1.GroupVersion.String(), Kind: "Vpc", Name: ownerB.Name},
+				Attribute:   "status.vni",
+			},
+		}
+		Expect(k8sClient.Create(ctx, claimA)).To(Succeed())
+		Expect(k8sClient.Create(ctx, claimB)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, claimA)
+			_ = k8sClient.Delete(ctx, claimB)
+		})
+
+		Eventually(func(g Gomega) {
+			var fresh juneauv1alpha1.AllocationClaim
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: claimA.Name}, &fresh)).To(Succeed())
+			g.Expect(fresh.Status.Phase).To(Equal(juneauv1alpha1.AllocationClaimPhaseAllocated))
+			g.Expect(fresh.Status.Value.Number).To(Equal(uint64(7)))
+		}).Should(Succeed())
+		Eventually(func(g Gomega) {
+			var fresh juneauv1alpha1.AllocationClaim
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: claimB.Name}, &fresh)).To(Succeed())
+			g.Expect(fresh.Status.Phase).To(Equal(juneauv1alpha1.AllocationClaimPhasePending))
+		}).Should(Succeed())
+
+		// Deleting claimA triggers its finalizer to delete the lease,
+		// which fires the AllocationLease delete watch and re-queues
+		// claimB. claimB then sees the freed capacity and allocates 7.
+		Expect(k8sClient.Delete(ctx, claimA)).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			var fresh juneauv1alpha1.AllocationClaim
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: claimB.Name}, &fresh)).To(Succeed())
+			g.Expect(fresh.Status.Phase).To(Equal(juneauv1alpha1.AllocationClaimPhaseAllocated))
+			g.Expect(fresh.Status.Value.Number).To(Equal(uint64(7)))
+		}).Should(Succeed())
+	})
 })
