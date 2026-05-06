@@ -45,7 +45,7 @@ func (r *Reconciler) programService(
 ) (programSnapshot, error) {
 	flags := serviceFlags(svc, policy, hasACL)
 	affinitySec := affinitySecondsClamp(policy.Affinity)
-	sig := backendSignature(svc, backendsByPort)
+	sig := backendSignature(svc, flags, affinitySec, backendsByPort)
 	gen := prev.gen
 	if sig != prev.backendSig {
 		gen++
@@ -227,15 +227,24 @@ func affinitySecondsClamp(p svcpolicy.AffinityPolicy) uint32 {
 }
 
 // backendSignature produces a stable fingerprint of the per-port
-// backend set. service_val.gen bumps when this fingerprint changes
+// backend set together with the policy fields written to
+// service_val. service_val.gen bumps when this fingerprint changes
 // across reconciles; matching fingerprints leave gen alone so cached
 // affinity bindings remain valid.
 //
-// The fingerprint is derived from the canonical (port, index, val)
+// flags and affinitySec are folded in first so any policy change
+// (sessionAffinity timeout adjustment, iTP toggle, ACL bit flip, etc.)
+// also bumps gen and invalidates already-bound service_affinity_map
+// entries — required for those policy changes to take effect on
+// already-bound clients instead of waiting for the old TTL to expire.
+//
+// The remainder is derived from the canonical (port, index, val)
 // projection so reordering or unrelated re-resolution noise (e.g. a
 // stable Service stale-touch from the FanOut) doesn't bump gen.
-func backendSignature(svc *corev1.Service, backendsByPort map[corev1.ServicePort][]resolvedBackend) string {
+func backendSignature(svc *corev1.Service, flags uint32, affinitySec uint32, backendsByPort map[corev1.ServicePort][]resolvedBackend) string {
 	h := sha256.New()
+	_ = binary.Write(h, binary.BigEndian, flags)
+	_ = binary.Write(h, binary.BigEndian, affinitySec)
 	for _, port := range svc.Spec.Ports {
 		proto := protoToU8(port.Protocol)
 		_ = binary.Write(h, binary.BigEndian, uint16(port.Port))

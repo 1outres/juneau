@@ -129,9 +129,9 @@ func TestBackendSignature_StableAcrossExternalIPsChange(t *testing.T) {
 		},
 	}
 
-	noExt := backendSignature(mkSvc(nil), backends)
-	withExt := backendSignature(mkSvc([]string{"192.0.2.10"}), backends)
-	withMore := backendSignature(mkSvc([]string{"192.0.2.10", "192.0.2.11"}), backends)
+	noExt := backendSignature(mkSvc(nil), 0, 0, backends)
+	withExt := backendSignature(mkSvc([]string{"192.0.2.10"}), 0, 0, backends)
+	withMore := backendSignature(mkSvc([]string{"192.0.2.10", "192.0.2.11"}), 0, 0, backends)
 	if noExt != withExt || withExt != withMore {
 		t.Errorf("backendSignature must not depend on externalIPs (gen would bump and break affinity)")
 	}

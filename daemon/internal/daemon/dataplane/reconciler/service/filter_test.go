@@ -169,7 +169,7 @@ func TestBackendSignature_StableAcrossOrder(t *testing.T) {
 			{val: bpf.PodEgressBackendVal{BackendIp: 0x0a000001, BackendPort: 80, BackendSubnetId: 1}},
 		},
 	}
-	if backendSignature(svc, a) != backendSignature(svc, b) {
+	if backendSignature(svc, 0, 0, a) != backendSignature(svc, 0, 0, b) {
 		t.Errorf("signature must be order-independent")
 	}
 }
@@ -184,7 +184,44 @@ func TestBackendSignature_ChangesOnSetMutation(t *testing.T) {
 	b := map[corev1.ServicePort][]resolvedBackend{
 		port: {{val: bpf.PodEgressBackendVal{BackendIp: 0x0a000003, BackendPort: 80, BackendSubnetId: 1}}},
 	}
-	if backendSignature(svc, a) == backendSignature(svc, b) {
+	if backendSignature(svc, 0, 0, a) == backendSignature(svc, 0, 0, b) {
 		t.Errorf("signature must change when backend IP changes")
+	}
+}
+
+func TestBackendSignature_BumpsOnAffinityTimeoutChange(t *testing.T) {
+	// Same backend set, but affinitySec went from 60 → 86400. The
+	// signature must change so service_val.gen bumps and existing
+	// service_affinity_map entries are invalidated; otherwise clients
+	// keep getting the old TTL until it expires naturally.
+	port := corev1.ServicePort{Port: 80, Protocol: corev1.ProtocolTCP}
+	svc := &corev1.Service{Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{port}}}
+	backends := map[corev1.ServicePort][]resolvedBackend{
+		port: {
+			{val: bpf.PodEgressBackendVal{BackendIp: 0x0a000001, BackendPort: 80, BackendSubnetId: 1}},
+		},
+	}
+	sigA := backendSignature(svc, 0, 60, backends)
+	sigB := backendSignature(svc, 0, 86400, backends)
+	if sigA == sigB {
+		t.Errorf("backendSignature must change when affinitySec changes (otherwise gen never bumps and clients keep stale TTL)")
+	}
+}
+
+func TestBackendSignature_BumpsOnFlagsChange(t *testing.T) {
+	// Same backend set, but flags toggled (e.g. iTP=Cluster → iTP=Local
+	// or sessionAffinity on/off). The signature must change so cached
+	// affinity bindings made under the old policy are invalidated.
+	port := corev1.ServicePort{Port: 80, Protocol: corev1.ProtocolTCP}
+	svc := &corev1.Service{Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{port}}}
+	backends := map[corev1.ServicePort][]resolvedBackend{
+		port: {
+			{val: bpf.PodEgressBackendVal{BackendIp: 0x0a000001, BackendPort: 80, BackendSubnetId: 1}},
+		},
+	}
+	sigCluster := backendSignature(svc, 0, 0, backends)
+	sigLocal := backendSignature(svc, svcFlagInternalLocal, 0, backends)
+	if sigCluster == sigLocal {
+		t.Errorf("backendSignature must change when iTP toggles (flags change)")
 	}
 }
