@@ -26,21 +26,22 @@ func NewCachedVPCResolver(cl client.Client) *CachedVPCResolver {
 }
 
 // LookupByID scans the cached Vpc list for a match on Status.VpcID and
-// returns its name + enableService bit. Reports ok=false when no Vpc
-// in cache matches; the handler then answers ServerFailure rather than
-// risk applying policy with a bogus identity.
-func (r *CachedVPCResolver) LookupByID(ctx context.Context, vpcID uint32) (string, bool, bool) {
+// returns its name plus the two service-related opt-ins. Reports
+// ok=false when no Vpc in cache matches; the handler then answers
+// ServerFailure rather than risk applying policy with a bogus identity.
+func (r *CachedVPCResolver) LookupByID(ctx context.Context, vpcID uint32) (string, bool, bool, bool) {
 	if vpcID == 0 {
-		return "", false, false
+		return "", false, false, false
 	}
 	var list juneauv1alpha1.VpcList
 	if err := r.client.List(ctx, &list); err != nil {
-		return "", false, false
+		return "", false, false, false
 	}
 	for i := range list.Items {
 		if list.Items[i].Status.VpcID == vpcID {
-			return list.Items[i].Name, list.Items[i].Spec.EnableService, true
+			vpc := &list.Items[i]
+			return vpc.Name, vpc.Spec.ServiceEnabled(), vpc.Spec.Service.Consumes(), true
 		}
 	}
-	return "", false, false
+	return "", false, false, false
 }

@@ -248,8 +248,8 @@ func (r *Subnet) FanOutNetworkACLToSubnets(obj any) []string {
 }
 
 // FanOutVpcToSubnets re-enqueues every Subnet that belongs to the
-// changed Vpc. Used so that VpcID/enableService changes propagate into
-// subnet_map without waiting for an unrelated Subnet event.
+// changed Vpc. Used so that VpcID / spec.service changes propagate
+// into subnet_map without waiting for an unrelated Subnet event.
 func (r *Subnet) FanOutVpcToSubnets(obj any) []string {
 	vpc, ok := obj.(*juneauv1alpha1.Vpc)
 	if !ok {

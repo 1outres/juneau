@@ -748,14 +748,17 @@ handle_service_host_remote(struct __sk_buff *skb, struct ethhdr *eth,
   return bpf_redirect(fib_params.ifindex, 0);
 }
 
-// handle_service_shared dispatches a shared-Service flow. The caller
-// lives in a non-default Vpc with EnableService=true; the backend lives
-// in the default Vpc. We rewrite the packet with both DNAT (dst →
-// backend Pod) and SNAT (src → this Node's SNAT IP, allocated to a
-// previously-unused source port to keep reverse CT keys unique across
-// concurrent callers), record forward and reverse ct_map entries, and
-// dispatch through dispatch_after_dnat against the backend's Subnet so
-// the rewritten packet flows over the default Vpc fabric.
+// handle_service_shared dispatches a cross-Vpc shared-Service flow.
+// The caller lives in a Vpc that has spec.service.consume=true (or is
+// the same Vpc as the backend); the backend lives in the provider
+// Vpc (the Vpc whose spec.service.provider.natSourceSubnet anchors
+// this Node's SNAT IP). We rewrite the packet with both DNAT (dst →
+// backend Pod) and SNAT (src → this Node's SNAT IP for the provider
+// Vpc, allocated to a previously-unused source port to keep reverse
+// CT keys unique across concurrent callers), record forward and
+// reverse ct_map entries, and dispatch through dispatch_after_dnat
+// against the backend's Subnet so the rewritten packet flows over the
+// provider Vpc's fabric.
 static __always_inline int
 handle_service_shared(struct __sk_buff *skb, struct iphdr *iph,
                       const struct subnet_val *caller_subnet,
@@ -765,11 +768,23 @@ handle_service_shared(struct __sk_buff *skb, struct iphdr *iph,
   if (iph->protocol != IPPROTO_TCP && iph->protocol != IPPROTO_UDP)
     return TC_ACT_SHOT;
 
-  // Resolve this Node's SNAT IP. service_nat_ip is a single-entry array
-  // populated by the daemon from the local ServiceNATAttachment status;
-  // a zero value means the attachment is not yet ready.
-  __u32 snat_key = 0;
-  const __u32 *snat_ip_be = bpf_map_lookup_elem(&service_nat_ip, &snat_key);
+  // Resolve the backend's Subnet → Vpc up front: the provider Vpc id
+  // keys both the SNAT IP table and the reverse CT entry, and the
+  // dispatch step also needs the Subnet's table_id. Doing the lookup
+  // once here keeps the verifier happy on hot-path reuse.
+  struct subnet_key backend_sk = {.subnet_id = bv->backend_subnet_id};
+  const struct subnet_val *backend_subnet =
+      bpf_map_lookup_elem(&subnet_map, &backend_sk);
+  if (!backend_subnet)
+    return TC_ACT_SHOT;
+  __u32 provider_vpc_id = backend_subnet->vpc_id;
+
+  // Resolve this Node's SNAT IP for the provider Vpc. service_nat_ip
+  // is keyed by provider vpc_id and populated by the daemon from
+  // local ServiceNATAttachment.status.assignedIP entries; a missing
+  // or zero value means the attachment is not yet ready.
+  const __u32 *snat_ip_be =
+      bpf_map_lookup_elem(&service_nat_ip, &provider_vpc_id);
   if (!snat_ip_be || *snat_ip_be == 0)
     return TC_ACT_SHOT;
   __be32 snat_ip = *snat_ip_be;
@@ -820,25 +835,17 @@ handle_service_shared(struct __sk_buff *skb, struct iphdr *iph,
       __u32 candidate_host = 1024 + ((seed + i) % (65536 - 1024));
       __be16 candidate = bpf_htons((__u16)candidate_host);
 
+      // The reverse entry lives in the provider Vpc's keyspace,
+      // matching what the backend's pod_egress / our vxlan_ingress
+      // will look up on the reply leg.
       struct ct_key rev_key = {
-          // The reverse entry lives in the target Vpc's keyspace
-          // (default Vpc, where backends and SNAT IPs live).
-          .scope = bv->backend_subnet_id ? caller_vpc_id : caller_vpc_id,
+          .scope = provider_vpc_id,
           .saddr = backend_addr_be,
           .daddr = snat_ip,
           .sport = backend_port_be,
           .dport = candidate,
           .proto = iph->protocol,
       };
-      // Resolve the backend's Vpc id from its Subnet so the reverse
-      // entry's scope matches what the backend's pod_egress / our
-      // vxlan_ingress will use when looking it up.
-      struct subnet_key bsk = {.subnet_id = bv->backend_subnet_id};
-      const struct subnet_val *backend_subnet =
-          bpf_map_lookup_elem(&subnet_map, &bsk);
-      if (!backend_subnet)
-        return TC_ACT_SHOT;
-      rev_key.scope = backend_subnet->vpc_id;
 
       struct ct_val rev_val = {
           .new_saddr = cluster_ip_be,
@@ -924,21 +931,15 @@ handle_service_shared(struct __sk_buff *skb, struct iphdr *iph,
       ct_observe_tcp(&fwd_key, cv, tcp_flags);
   }
 
-  // Dispatch in the *backend's* Vpc routing table so the rewritten
-  // packet finds the connected route to the backend Pod.
-  struct subnet_key bsk = {.subnet_id = bv->backend_subnet_id};
-  const struct subnet_val *backend_subnet =
-      bpf_map_lookup_elem(&subnet_map, &bsk);
-  if (!backend_subnet)
-    return TC_ACT_SHOT;
-
   struct iphdr *new_iph = load_iph(skb);
   if (!new_iph)
     return TC_ACT_SHOT;
   struct ethhdr *new_eth =
       (struct ethhdr *)((void *)new_iph - sizeof(struct ethhdr));
 
-  return dispatch_after_dnat(skb, new_eth, new_iph, backend_subnet->vpc_id,
+  // Dispatch in the *backend's* Vpc routing table so the rewritten
+  // packet finds the connected route to the backend Pod.
+  return dispatch_after_dnat(skb, new_eth, new_iph, provider_vpc_id,
                              backend_subnet->table_id, backend_addr_be);
 }
 
@@ -979,6 +980,22 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
   bool is_shared = (sv->flags & SVC_FLAG_SHARED) != 0;
   if (sv->owner_vpc_id != subnet->vpc_id && !is_shared)
     return TC_ACT_SHOT;
+  // Per-Service consumer ACL: when SVC_FLAG_HAS_ACL is set, only the
+  // (cluster_ip, port, proto, caller_vpc_id) tuples explicitly
+  // present in service_acl_map are admitted. Absent flag → every
+  // consume-enabled Vpc is admitted by default. Same-Vpc callers
+  // always pass; the ACL applies only to the cross-Vpc shared path.
+  if (is_shared && sv->owner_vpc_id != subnet->vpc_id &&
+      (sv->flags & SVC_FLAG_HAS_ACL)) {
+    struct service_acl_key ak = {
+        .cluster_ip = sk.cluster_ip,
+        .port = sk.port,
+        .proto = sk.proto,
+        .caller_vpc_id = subnet->vpc_id,
+    };
+    if (!bpf_map_lookup_elem(&service_acl_map, &ak))
+      return TC_ACT_SHOT;
+  }
   if (sv->backend_count == 0)
     return TC_ACT_SHOT;
 

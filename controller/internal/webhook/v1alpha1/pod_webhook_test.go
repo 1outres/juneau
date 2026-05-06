@@ -60,7 +60,7 @@ func customSubnetFixture() juneauv1alpha1.Subnet {
 	vpcName := webhookUniqueTestName("vpc")
 	Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Vpc{
 		ObjectMeta: metav1.ObjectMeta{Name: vpcName},
-		Spec:       juneauv1alpha1.VpcSpec{EnableService: true},
+		Spec:       juneauv1alpha1.VpcSpec{Service: &juneauv1alpha1.VpcServiceSpec{Consume: true}},
 	})).To(Succeed())
 	DeferCleanup(func() {
 		_ = webhookK8sClient.Delete(context.Background(), &juneauv1alpha1.Vpc{ObjectMeta: metav1.ObjectMeta{Name: vpcName}})

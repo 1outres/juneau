@@ -94,6 +94,89 @@ var _ = Describe("Vpc/Subnet controllers", func() {
 		}).Should(Succeed())
 	})
 
+	// When a Vpc opts in to the cross-Vpc provider role, admission no
+	// longer enforces that spec.service.provider.natSourceSubnet
+	// resolves; the controller surfaces missing/foreign references via
+	// the Ready condition and reconciles back to Ready=True once the
+	// Subnet appears with the right ownership.
+	It("marks a provider Vpc NotReady when the natSourceSubnet is missing, and recovers when it appears", func() {
+		vpcName := uniqueTestName("vpc")
+		subnetName := uniqueTestName("subnet")
+
+		Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.Vpc{
+			ObjectMeta: metav1.ObjectMeta{Name: vpcName},
+			Spec: juneauv1alpha1.VpcSpec{Service: &juneauv1alpha1.VpcServiceSpec{
+				Provider: &juneauv1alpha1.VpcServiceProviderSpec{NATSourceSubnet: subnetName},
+			}},
+		})).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			var vpc juneauv1alpha1.Vpc
+			g.Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: vpcName}, &vpc)).To(Succeed())
+			ready := meta.FindStatusCondition(vpc.Status.Conditions, juneauv1alpha1.VpcStatusReady)
+			g.Expect(ready).NotTo(BeNil())
+			g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(ready.Reason).To(Equal(vpcReasonProviderSubnetMissing))
+		}).Should(Succeed())
+
+		Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.Subnet{
+			ObjectMeta: metav1.ObjectMeta{Name: subnetName},
+			Spec: juneauv1alpha1.SubnetSpec{
+				Vpc:  vpcName,
+				CIDR: uniqueSubnetCIDR(),
+			},
+		})).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			var vpc juneauv1alpha1.Vpc
+			g.Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: vpcName}, &vpc)).To(Succeed())
+			ready := meta.FindStatusCondition(vpc.Status.Conditions, juneauv1alpha1.VpcStatusReady)
+			g.Expect(ready).NotTo(BeNil())
+			g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+		}).Should(Succeed())
+	})
+
+	It("marks a provider Vpc NotReady when the natSourceSubnet is owned by a different Vpc", func() {
+		ownerVpc := uniqueTestName("vpc-owner")
+		otherVpc := uniqueTestName("vpc-other")
+		subnetName := uniqueTestName("subnet")
+
+		Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.Vpc{
+			ObjectMeta: metav1.ObjectMeta{Name: ownerVpc},
+		})).To(Succeed())
+		Eventually(func(g Gomega) {
+			var vpc juneauv1alpha1.Vpc
+			g.Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: ownerVpc}, &vpc)).To(Succeed())
+			ready := meta.FindStatusCondition(vpc.Status.Conditions, juneauv1alpha1.VpcStatusReady)
+			g.Expect(ready).NotTo(BeNil())
+			g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+		}).Should(Succeed())
+
+		Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.Subnet{
+			ObjectMeta: metav1.ObjectMeta{Name: subnetName},
+			Spec: juneauv1alpha1.SubnetSpec{
+				Vpc:  ownerVpc,
+				CIDR: uniqueSubnetCIDR(),
+			},
+		})).To(Succeed())
+
+		Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.Vpc{
+			ObjectMeta: metav1.ObjectMeta{Name: otherVpc},
+			Spec: juneauv1alpha1.VpcSpec{Service: &juneauv1alpha1.VpcServiceSpec{
+				Provider: &juneauv1alpha1.VpcServiceProviderSpec{NATSourceSubnet: subnetName},
+			}},
+		})).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			var vpc juneauv1alpha1.Vpc
+			g.Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: otherVpc}, &vpc)).To(Succeed())
+			ready := meta.FindStatusCondition(vpc.Status.Conditions, juneauv1alpha1.VpcStatusReady)
+			g.Expect(ready).NotTo(BeNil())
+			g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(ready.Reason).To(Equal(vpcReasonProviderSubnetForeign))
+		}).Should(Succeed())
+	})
+
 	It("keeps DNS VIP / MAC stable across reconciles", func() {
 		vpcName := uniqueTestName("vpc")
 		subnetName := uniqueTestName("subnet")

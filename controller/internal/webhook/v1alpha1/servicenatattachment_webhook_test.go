@@ -12,29 +12,40 @@ import (
 )
 
 var _ = Describe("ServiceNATAttachment webhook", func() {
-	It("rejects missing spec.nodeName", func() {
+	It("rejects missing spec.nodeName / spec.vpc", func() {
 		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.ServiceNATAttachment{
 			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("sna")},
 		})
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("spec.nodeName"))
+		Expect(err.Error()).To(SatisfyAny(
+			ContainSubstring("spec.nodeName"),
+			ContainSubstring("spec.vpc"),
+		))
 	})
 
-	It("rejects spec.nodeName that differs from metadata.name", func() {
-		name := webhookUniqueTestName("sna")
+	It("rejects metadata.name that does not match `<spec.nodeName>.<spec.vpc>`", func() {
+		nodeName := webhookUniqueTestName("node")
 		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.ServiceNATAttachment{
-			ObjectMeta: metav1.ObjectMeta{Name: name},
-			Spec:       juneauv1alpha1.ServiceNATAttachmentSpec{NodeName: name + "-other"},
+			ObjectMeta: metav1.ObjectMeta{Name: nodeName + ".not-the-right-vpc"},
+			Spec: juneauv1alpha1.ServiceNATAttachmentSpec{
+				NodeName: nodeName,
+				Vpc:      "actual-vpc",
+			},
 		})
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("spec.nodeName must equal metadata.name"))
+		Expect(err.Error()).To(ContainSubstring("metadata.name must equal"))
 	})
 
-	It("accepts a matching name/spec.nodeName pair", func() {
-		name := webhookUniqueTestName("sna")
+	It("accepts a matching name / spec triple", func() {
+		nodeName := webhookUniqueTestName("node")
+		vpcName := "default" // no Subnet need exist for the attachment-side webhook check
+		name := nodeName + "." + vpcName
 		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.ServiceNATAttachment{
 			ObjectMeta: metav1.ObjectMeta{Name: name},
-			Spec:       juneauv1alpha1.ServiceNATAttachmentSpec{NodeName: name},
+			Spec: juneauv1alpha1.ServiceNATAttachmentSpec{
+				NodeName: nodeName,
+				Vpc:      vpcName,
+			},
 		})).To(Succeed())
 		DeferCleanup(func() {
 			_ = webhookK8sClient.Delete(context.Background(), &juneauv1alpha1.ServiceNATAttachment{
@@ -43,11 +54,16 @@ var _ = Describe("ServiceNATAttachment webhook", func() {
 		})
 	})
 
-	It("rejects mutating spec.nodeName", func() {
-		name := webhookUniqueTestName("sna")
+	It("rejects mutating spec.nodeName or spec.vpc", func() {
+		nodeName := webhookUniqueTestName("node")
+		vpcName := "default"
+		name := nodeName + "." + vpcName
 		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.ServiceNATAttachment{
 			ObjectMeta: metav1.ObjectMeta{Name: name},
-			Spec:       juneauv1alpha1.ServiceNATAttachmentSpec{NodeName: name},
+			Spec: juneauv1alpha1.ServiceNATAttachmentSpec{
+				NodeName: nodeName,
+				Vpc:      vpcName,
+			},
 		})).To(Succeed())
 		DeferCleanup(func() {
 			_ = webhookK8sClient.Delete(context.Background(), &juneauv1alpha1.ServiceNATAttachment{
@@ -57,9 +73,16 @@ var _ = Describe("ServiceNATAttachment webhook", func() {
 
 		var fetched juneauv1alpha1.ServiceNATAttachment
 		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Name: name}, &fetched)).To(Succeed())
-		fetched.Spec.NodeName = name + "-other"
-		err := webhookK8sClient.Update(context.Background(), &fetched)
+		mutNode := fetched.DeepCopy()
+		mutNode.Spec.NodeName = nodeName + "-other"
+		err := webhookK8sClient.Update(context.Background(), mutNode)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("spec.nodeName is immutable"))
+
+		mutVpc := fetched.DeepCopy()
+		mutVpc.Spec.Vpc = "other-vpc"
+		err = webhookK8sClient.Update(context.Background(), mutVpc)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.vpc is immutable"))
 	})
 })

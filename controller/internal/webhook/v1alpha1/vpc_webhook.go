@@ -86,13 +86,9 @@ func (v *VpcCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Obj
 	}
 	vpclog.Info("Validation for Vpc upon creation", "name", vpc.GetName())
 
-	var errs field.ErrorList
-	if vpc.Spec.EnableService {
-		serviceErrs, err := v.validateServiceEnabled(ctx, vpc, field.NewPath("spec").Child("enableService"))
-		if err != nil {
-			return nil, err
-		}
-		errs = append(errs, serviceErrs...)
+	errs, err := v.validate(ctx, vpc, nil)
+	if err != nil {
+		return nil, err
 	}
 
 	if len(errs) > 0 {
@@ -116,13 +112,9 @@ func (v *VpcCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj 
 	}
 	vpclog.Info("Validation for Vpc upon update", "name", vpc.GetName())
 
-	var errs field.ErrorList
-	if vpc.Spec.EnableService && !oldVpc.Spec.EnableService {
-		serviceErrs, err := v.validateServiceEnabled(ctx, vpc, field.NewPath("spec").Child("enableService"))
-		if err != nil {
-			return nil, err
-		}
-		errs = append(errs, serviceErrs...)
+	errs, err := v.validate(ctx, vpc, oldVpc)
+	if err != nil {
+		return nil, err
 	}
 
 	if len(errs) > 0 {
@@ -134,10 +126,43 @@ func (v *VpcCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj 
 	return nil, nil
 }
 
+// validate implements the create/update common validation: checks that
+// no Subnet in this VPC overlaps the cluster Service CIDR when service
+// routing is enabled.
+//
+// The provider NAT-source-Subnet reference is intentionally NOT
+// validated here. Doing so creates a chicken-and-egg admission deadlock
+// when a Vpc and its NAT-source Subnet are submitted together (the Vpc
+// references a Subnet that does not yet exist, and the Subnet
+// references a Vpc that the rejected Vpc admission prevented from being
+// created). The reference is instead validated by the Vpc controller
+// and surfaced as a Status condition; see VpcReconciler.
+//
+// oldVpc may be nil (create path); when non-nil it is used to skip the
+// expensive Service-CIDR overlap scan when the VPC's service-enabled
+// state didn't actually flip.
+func (v *VpcCustomValidator) validate(ctx context.Context, vpc, oldVpc *juneauv1alpha1.Vpc) (field.ErrorList, error) {
+	var errs field.ErrorList
+
+	servicePath := field.NewPath("spec").Child("service")
+
+	if vpc.Spec.ServiceEnabled() {
+		if oldVpc == nil || !oldVpc.Spec.ServiceEnabled() {
+			serviceErrs, err := v.validateServiceEnabled(ctx, vpc, servicePath)
+			if err != nil {
+				return nil, err
+			}
+			errs = append(errs, serviceErrs...)
+		}
+	}
+
+	return errs, nil
+}
+
 // validateServiceEnabled checks that no Subnet in this VPC has a CIDR
-// that overlaps with the cluster Service CIDR. The check protects against
-// enabling Service routing on a VPC where Pod IPs would collide with
-// ClusterIPs.
+// that overlaps with the cluster Service CIDR. The check protects
+// against enabling Service routing on a VPC where Pod IPs would
+// collide with ClusterIPs.
 func (v *VpcCustomValidator) validateServiceEnabled(ctx context.Context, vpc *juneauv1alpha1.Vpc, path *field.Path) (field.ErrorList, error) {
 	if v.ServiceCIDR == nil {
 		return nil, nil
@@ -158,7 +183,7 @@ func (v *VpcCustomValidator) validateServiceEnabled(ctx context.Context, vpc *ju
 			continue
 		}
 		if cidrsOverlap(subnetCIDR, v.ServiceCIDR) {
-			errs = append(errs, field.Invalid(path, vpc.Spec.EnableService, fmt.Sprintf("Subnet %q (CIDR %q) overlaps with Service CIDR %q", subnet.Name, subnet.Spec.CIDR, v.ServiceCIDR.String())))
+			errs = append(errs, field.Invalid(path, vpc.Spec.Service, fmt.Sprintf("Subnet %q (CIDR %q) overlaps with Service CIDR %q", subnet.Name, subnet.Spec.CIDR, v.ServiceCIDR.String())))
 		}
 	}
 	return errs, nil

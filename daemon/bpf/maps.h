@@ -45,6 +45,20 @@
 #define MAX_BACKEND_MAP 65536
 #endif
 
+#ifndef MAX_SERVICE_NAT_IP
+// MAX_SERVICE_NAT_IP bounds service_nat_ip, the per-Node SNAT IP table
+// keyed by provider Vpc id. One entry per (this Node, provider Vpc)
+// pair; in practice the number of provider Vpcs is small (default Vpc
+// + a few tenant Vpcs) so this is generously sized.
+#define MAX_SERVICE_NAT_IP 256
+#endif
+
+#ifndef MAX_SERVICE_ACL
+// MAX_SERVICE_ACL bounds service_acl_map, the per-(Service × consumer
+// Vpc) ACL allow-list. Sized for ~64k (Service × consumer) pairs.
+#define MAX_SERVICE_ACL 65536
+#endif
+
 #ifndef MAX_CT_MAP
 #define MAX_CT_MAP 524288
 #endif
@@ -274,16 +288,18 @@ struct {
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } host_underlay SEC(".maps");
 
-// service_nat_ip holds this node's per-Node SNAT source IP for the
-// shared-Service path (in network byte order). Populated by the daemon
-// from the local ServiceNATAttachment.status.assignedIP. A value of 0
-// means "no SNAT IP available", in which case the shared-Service path
+// service_nat_ip holds this node's per-(Node × provider Vpc) SNAT
+// source IPs (values in network byte order) keyed by the provider's
+// vpc_id. Populated by the daemon from every local
+// ServiceNATAttachment.status.assignedIP whose spec.vpc resolves to a
+// known Vpc. When handle_service_shared looks up the destination
+// Service's owner Vpc and finds no entry, the shared-Service path
 // drops the packet rather than emitting traffic with a zero source.
 struct {
-  __uint(type, BPF_MAP_TYPE_ARRAY);
-  __uint(max_entries, 1);
-  __type(key, __u32);
-  __type(value, __u32);
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_SERVICE_NAT_IP);
+  __type(key, __u32);   // provider vpc_id
+  __type(value, __u32); // SNAT IP, network byte order
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } service_nat_ip SEC(".maps");
 
@@ -369,11 +385,20 @@ struct service_key {
   __u8 _pad;
 };
 
-// SVC_FLAG_SHARED marks a Service as reachable from any Vpc with
-// EnableService=true, regardless of owner_vpc_id. The data plane treats
-// shared Services as if owner_vpc_id matched and routes them through
-// the SNAT-aware shared path.
+// SVC_FLAG_SHARED marks a Service as reachable from other Vpcs (any
+// Vpc with spec.service.consume=true that passes the per-Service
+// consumer ACL when set). The data plane treats shared Services as
+// if owner_vpc_id matched and routes them through the SNAT-aware
+// shared path.
 #define SVC_FLAG_SHARED (1U << 0)
+
+// SVC_FLAG_HAS_ACL signals that service_acl_map carries an explicit
+// whitelist for this Service. When set, only callers whose
+// (cluster_ip, port, proto, caller_vpc_id) tuple is present in
+// service_acl_map are admitted. When unset every consume-enabled Vpc
+// is admitted by default. Only meaningful in combination with
+// SVC_FLAG_SHARED.
+#define SVC_FLAG_HAS_ACL (1U << 1)
 
 struct service_val {
   __u32 owner_vpc_id;   // Vpc that owns the Service; checked against caller_vpc_id
@@ -389,6 +414,28 @@ struct {
   __type(value, struct service_val);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } service_map SEC(".maps");
+
+// service_acl_map encodes the per-(Service × consumer Vpc) admit list
+// used when service_val.flags & SVC_FLAG_HAS_ACL. Entries are written
+// by the user-space Service reconciler from
+// juneau.loutres.me/shared-service-allowed-consumer-vpcs annotations
+// and consulted by handle_service_shared on the forward path.
+// Existence is the verdict: present → admitted, absent → dropped.
+struct service_acl_key {
+  __u32 cluster_ip;     // network byte order, matches service_key.cluster_ip
+  __u16 port;
+  __u8 proto;
+  __u8 _pad;
+  __u32 caller_vpc_id;
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_SERVICE_ACL);
+  __type(key, struct service_acl_key);
+  __type(value, __u8);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} service_acl_map SEC(".maps");
 
 // backend_map enumerates the actual backend Pods for a Service. The
 // index is selected by hashing the client tuple (with affinity) modulo

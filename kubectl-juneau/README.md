@@ -35,7 +35,7 @@ Walks Pod → NetworkInterface → Subnet → Vpc → RouteTable → NetworkACL
 Pod  default/nginx  (Node: worker-1, podIP: 10.80.0.5)
 `-- NetworkInterface  nginx.eth0  (phase: Ready, address: 10.80.0.5)
     |-- Subnet  app-subnet  (cidr: 10.80.0.0/24, vni: 2)
-    |   |-- Vpc  app-vpc  (vpcID: 2, enableService: true, enforceSecurityGroups: false)
+    |   |-- Vpc  app-vpc  (vpcID: 2, serviceEnabled: true, consume: true, provider: -, enforceSecurityGroups: false)
     |   |-- RouteTable  app-vpc  (main, 3 routes)
     |   |   |-- 10.80.0.0/24  ->  connected (app-subnet)
     |   |   |-- 10.80.1.0/24  ->  connected (client-subnet)

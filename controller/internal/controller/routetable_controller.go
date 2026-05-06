@@ -52,9 +52,10 @@ type RouteTableReconciler struct {
 	Scheme *runtime.Scheme
 
 	// ServiceCIDR is the cluster-wide CIDR used by Kubernetes Services.
-	// When the owning VPC has spec.enableService=true, the reconciler
-	// injects a route for this CIDR with via.type=service into the
-	// RouteTable's status.routes.
+	// When the owning VPC has Service routing enabled (any of
+	// spec.service.provider / spec.service.consume configured), the
+	// reconciler injects a route for this CIDR with via.type=service
+	// into the RouteTable's status.routes.
 	ServiceCIDR *net.IPNet
 }
 
@@ -121,7 +122,7 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		subnetNames = append(subnetNames, subnet.Name)
 	}
 
-	if vpc.Spec.EnableService && r.ServiceCIDR != nil {
+	if vpc.Spec.ServiceEnabled() && r.ServiceCIDR != nil {
 		statusRoutes = append(statusRoutes, juneauloutresmev1alpha1.Route{
 			Dst: r.ServiceCIDR.String(),
 			Via: juneauloutresmev1alpha1.RouteVia{

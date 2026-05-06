@@ -16,22 +16,24 @@ import (
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/program"
 )
 
-// ServiceNAT mirrors the local Node's ServiceNATAttachment.assignedIP
-// into the service_nat_ip BPF map so pod_egress.handle_service_shared
-// can stamp shared-Service flows with this Node's SNAT source IP.
+// ServiceNAT mirrors every local-Node ServiceNATAttachment into the
+// service_nat_ip BPF map, keyed by the provider Vpc id, so
+// pod_egress.handle_service_shared can stamp shared-Service flows
+// with the right SNAT source IP for the Service's owner Vpc.
 //
-// The map is a single-entry array shared across the whole dataplane
-// for this Node. The reconciler only writes the slot for events keyed
-// to its own Node; cluster-wide informer fan-out for other Nodes'
-// attachments is filtered out by planAction so we don't clobber our
-// own slot when reacting to unrelated objects.
+// One Node hosts at most one attachment per provider Vpc (the
+// VpcReconciler enforces the (Node, Vpc) uniqueness via metadata.name);
+// the BPF HASH map can therefore carry one entry per provider Vpc.
+// The reconciler tracks the set of provider Vpc ids it has installed
+// so it can cleanly delete entries when an attachment is removed or
+// its provider Vpc is no longer configured.
 type ServiceNAT struct {
 	client    client.Client
 	podEgress *program.PodEgress
 	nodeName  string
 
 	mu        sync.Mutex
-	installed bool
+	installed map[uint32]struct{} // provider vpc_id -> installed
 }
 
 func NewServiceNAT(cl client.Client, podEgress *program.PodEgress, nodeName string) *ServiceNAT {
@@ -39,14 +41,15 @@ func NewServiceNAT(cl client.Client, podEgress *program.PodEgress, nodeName stri
 		client:    cl,
 		podEgress: podEgress,
 		nodeName:  nodeName,
+		installed: map[uint32]struct{}{},
 	}
 }
 
 func (r *ServiceNAT) Name() string { return "service_nat" }
 
-// natAction enumerates the possible reactions to a ServiceNATAttachment
-// event. Decoupling the decision from the side effect lets planAction
-// be unit-tested without touching the eBPF map.
+// natAction enumerates the possible reactions to a
+// ServiceNATAttachment event. Decoupling the decision from the side
+// effect lets planAction be unit-tested without touching the eBPF map.
 type natAction uint8
 
 const (
@@ -55,42 +58,57 @@ const (
 	natClear
 )
 
+// natPlan is the resolved decision planAction returns to Reconcile.
+// vpcID is meaningful for natWrite/natClear; address only for
+// natWrite.
+type natPlan struct {
+	action  natAction
+	vpcID   uint32
+	address string
+}
+
 // planAction decides what to do with an incoming reconcile event.
 //
 // The shared informer delivers events for every Node's
-// ServiceNATAttachment, but each daemon only owns one slot in
-// service_nat_ip (its own Node's). Events for other Nodes are
-// completely irrelevant to that slot, so they must be a no-op —
-// in particular, calling clear() on them would wipe the slot we just
-// filled for our own Node.
+// ServiceNATAttachment, but each daemon only owns the slot keyed by
+// the local Node. Events for other Nodes are completely irrelevant
+// and must be a no-op.
 //
-// When the event IS for our Node:
-//   - missing object → clear (the attachment was deleted)
-//   - spec.NodeName moved to a different Node → clear (defensive: the
-//     name<->NodeName convention should keep this from happening, but
-//     if it does, we're no longer the owner)
-//   - empty assignedIP → clear (controller hasn't allocated yet)
-//   - valid IPv4 assignedIP → write
-//   - non-IPv4 assignedIP → error (caller decides whether to retry)
-func planAction(key, ourNode string, attachment *juneauv1alpha1.ServiceNATAttachment, notFound bool) (natAction, string, error) {
-	if key != ourNode {
-		return natNoop, "", nil
-	}
+// When the event IS for our Node, we map spec.vpc → vpc_id via the
+// supplied lookup (the Vpc cache). The lookup may report unknownVpc
+// when the Vpc has not yet been reconciled: in that case we keep the
+// slot installed (if any) and let the next Vpc event re-trigger the
+// reconcile. The same caution applies when the Vpc has VpcID=0.
+func planAction(
+	key, ourNode string,
+	attachment *juneauv1alpha1.ServiceNATAttachment,
+	notFound bool,
+	vpcID uint32,
+	vpcResolved bool,
+) (natPlan, error) {
 	if notFound {
-		return natClear, "", nil
+		return natPlan{action: natClear, vpcID: 0}, nil
 	}
 	if attachment.Spec.NodeName != ourNode {
-		return natClear, "", nil
+		return natPlan{action: natNoop}, nil
 	}
 	address := strings.TrimSpace(attachment.Status.AssignedIP)
 	if address == "" {
-		return natClear, "", nil
+		// Controller has not yet allocated; clear the slot we may
+		// have installed earlier so we don't leave stale state if
+		// the attachment moved Vpcs.
+		return natPlan{action: natClear, vpcID: vpcID}, nil
+	}
+	if !vpcResolved || vpcID == 0 {
+		// Provider Vpc not yet known. Hold the existing entry (if
+		// any) and let a Vpc event re-fire the reconcile.
+		return natPlan{action: natNoop}, nil
 	}
 	parsed := net.ParseIP(address)
 	if parsed == nil || parsed.To4() == nil {
-		return natNoop, "", fmt.Errorf("invalid assignedIP %q on ServiceNATAttachment %q", address, key)
+		return natPlan{}, fmt.Errorf("invalid assignedIP %q on ServiceNATAttachment %q", address, key)
 	}
-	return natWrite, address, nil
+	return natPlan{action: natWrite, vpcID: vpcID, address: address}, nil
 }
 
 func (r *ServiceNAT) Reconcile(ctx context.Context, key string) error {
@@ -101,51 +119,111 @@ func (r *ServiceNAT) Reconcile(ctx context.Context, key string) error {
 		return err
 	}
 
-	action, address, err := planAction(key, r.nodeName, &attachment, notFound)
+	var (
+		vpcID       uint32
+		vpcResolved bool
+	)
+	if !notFound && attachment.Spec.Vpc != "" {
+		var vpc juneauv1alpha1.Vpc
+		if vpcErr := r.client.Get(ctx, client.ObjectKey{Name: attachment.Spec.Vpc}, &vpc); vpcErr == nil {
+			vpcID = vpc.Status.VpcID
+			vpcResolved = true
+		} else if !apierrors.IsNotFound(vpcErr) {
+			return vpcErr
+		}
+	}
+
+	plan, err := planAction(key, r.nodeName, &attachment, notFound, vpcID, vpcResolved)
 	if err != nil {
 		return err
 	}
 
-	switch action {
+	switch plan.action {
 	case natNoop:
 		return nil
 	case natClear:
-		return r.clear(key)
+		return r.clearForKey(key, plan.vpcID)
 	case natWrite:
-		hostIP, err := convert.IPv4ToBPFNetworkOrder(net.ParseIP(address))
-		if err != nil {
-			return fmt.Errorf("parse assignedIP %q: %w", address, err)
-		}
-		if err := r.podEgress.Objs.ServiceNatIp.Update(uint32(0), hostIP, ebpf.UpdateAny); err != nil {
-			return fmt.Errorf("update service_nat_ip: %w", err)
-		}
-		r.mu.Lock()
-		r.installed = true
-		r.mu.Unlock()
-		return nil
+		return r.write(plan.vpcID, plan.address)
 	}
 	return nil
 }
 
-func (r *ServiceNAT) clear(_ string) error {
+// write installs the SNAT IP for the given provider Vpc, replacing
+// the previous entry for that key if any.
+func (r *ServiceNAT) write(vpcID uint32, address string) error {
+	hostIP, err := convert.IPv4ToBPFNetworkOrder(net.ParseIP(address))
+	if err != nil {
+		return fmt.Errorf("parse assignedIP %q: %w", address, err)
+	}
+	if err := r.podEgress.Objs.ServiceNatIp.Update(vpcID, hostIP, ebpf.UpdateAny); err != nil {
+		return fmt.Errorf("update service_nat_ip[%d]: %w", vpcID, err)
+	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if !r.installed {
-		return nil
-	}
-	// service_nat_ip is a single-entry ARRAY map, so we cannot delete
-	// the slot — overwrite with 0, which the BPF-side check treats as
-	// "no SNAT IP available" and drops shared-Service traffic.
-	if err := r.podEgress.Objs.ServiceNatIp.Update(uint32(0), uint32(0), ebpf.UpdateAny); err != nil {
-		return fmt.Errorf("clear service_nat_ip: %w", err)
-	}
-	r.installed = false
+	r.installed[vpcID] = struct{}{}
+	r.mu.Unlock()
 	return nil
 }
 
-// CloseAll resets the BPF map to 0 on shutdown so traffic doesn't get
-// stamped with a stale source IP if the daemon restarts before the
-// reconciler converges.
+// clearForKey removes the slot for vpcID. When vpcID is 0 (the Vpc
+// for the deleted attachment is not known) we have no slot to clear,
+// because we never installed one. The map_delete is idempotent.
+func (r *ServiceNAT) clearForKey(_ string, vpcID uint32) error {
+	if vpcID == 0 {
+		return nil
+	}
+	r.mu.Lock()
+	_, present := r.installed[vpcID]
+	r.mu.Unlock()
+	if !present {
+		return nil
+	}
+	if err := r.podEgress.Objs.ServiceNatIp.Delete(vpcID); err != nil && err != ebpf.ErrKeyNotExist {
+		return fmt.Errorf("delete service_nat_ip[%d]: %w", vpcID, err)
+	}
+	r.mu.Lock()
+	delete(r.installed, vpcID)
+	r.mu.Unlock()
+	return nil
+}
+
+// CloseAll resets every installed slot to absent on shutdown so
+// traffic doesn't get stamped with a stale source IP if the daemon
+// restarts before the reconciler converges.
 func (r *ServiceNAT) CloseAll() error {
-	return r.clear("")
+	r.mu.Lock()
+	keys := make([]uint32, 0, len(r.installed))
+	for k := range r.installed {
+		keys = append(keys, k)
+	}
+	r.installed = map[uint32]struct{}{}
+	r.mu.Unlock()
+	var firstErr error
+	for _, k := range keys {
+		if err := r.podEgress.Objs.ServiceNatIp.Delete(k); err != nil && err != ebpf.ErrKeyNotExist && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// FanOutVpcToAttachments enqueues every ServiceNATAttachment whose
+// spec.vpc names the changed Vpc. Used by the Runner so a flip of
+// Vpc.Status.VpcID propagates without needing a separate watcher.
+func (r *ServiceNAT) FanOutVpcToAttachments(obj any) []string {
+	vpc, ok := obj.(*juneauv1alpha1.Vpc)
+	if !ok {
+		return nil
+	}
+	var list juneauv1alpha1.ServiceNATAttachmentList
+	if err := r.client.List(context.Background(), &list); err != nil {
+		return nil
+	}
+	keys := make([]string, 0, len(list.Items))
+	for i := range list.Items {
+		if list.Items[i].Spec.Vpc == vpc.Name {
+			keys = append(keys, list.Items[i].Name)
+		}
+	}
+	return keys
 }

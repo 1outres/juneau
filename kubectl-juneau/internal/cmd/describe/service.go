@@ -90,7 +90,10 @@ func presentServiceTree(w io.Writer, sc *topology.ServiceContext) error {
 		vpcLabel = "Vpc  default  (default Vpc)"
 	}
 	if sc.Vpc != nil {
-		vpcLabel += fmt.Sprintf("  enableService: %t", sc.Vpc.Spec.EnableService)
+		vpcLabel += fmt.Sprintf("  serviceEnabled: %t  consume: %t  provider: %s",
+			sc.Vpc.Spec.ServiceEnabled(),
+			sc.Vpc.Spec.Service.Consumes(),
+			displayOrDash(sc.Vpc.Spec.Service.ProviderSubnet()))
 	} else if sc.VpcName != "" {
 		vpcLabel += "  (not found)"
 	}

@@ -93,7 +93,12 @@ func (z *ClusterZone) Resolve(ctx context.Context, q Query) (Response, error) {
 		return Response{}, fmt.Errorf("get service %s/%s: %w", nsName, svcName, err)
 	}
 
-	if !svcpolicy.ResolvableFrom(&svc, q.CallerVPC, q.CallerEnableService) {
+	caller := svcpolicy.CallerVpc{
+		Name:           q.CallerVPC,
+		ServiceEnabled: q.CallerServiceEnabled,
+		Consume:        q.CallerConsume,
+	}
+	if !svcpolicy.ResolvableFrom(&svc, caller) {
 		// Treat as NXDOMAIN to avoid leaking the existence of
 		// Services the caller VPC can't reach.
 		return Response{RCode: RCodeNXDomain, Authoritative: true}, nil

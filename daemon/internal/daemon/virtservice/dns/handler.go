@@ -13,14 +13,17 @@ import (
 )
 
 // VPCResolver maps a numeric VPC ID (the value the BPF flow map records)
-// back to the Vpc.metadata.name + Vpc.spec.enableService that resolvers
-// need to apply policy. The handler keeps this on the dependency
-// boundary so we can fake it in tests without instantiating informers.
+// back to the Vpc.metadata.name plus the two service-related opt-ins
+// that resolvers need to apply policy. The handler keeps this on the
+// dependency boundary so we can fake it in tests without instantiating
+// informers.
 type VPCResolver interface {
-	// LookupByID returns (name, enableService, ok). ok==false means
-	// "no Vpc with this ID is currently in cache" — the handler
+	// LookupByID returns (name, serviceEnabled, consume, ok). ok==false
+	// means "no Vpc with this ID is currently in cache" — the handler
 	// answers ServerFailure in that case rather than guess.
-	LookupByID(ctx context.Context, vpcID uint32) (name string, enableService bool, ok bool)
+	// serviceEnabled mirrors Vpc.Spec.ServiceEnabled() and consume
+	// mirrors Vpc.Spec.Service.Consume.
+	LookupByID(ctx context.Context, vpcID uint32) (name string, serviceEnabled, consume bool, ok bool)
 }
 
 // Handler glues the packet plane PacketHandler interface to a Resolver.
@@ -62,19 +65,20 @@ func (h *Handler) HandlePacket(ctx context.Context, req virtservice.PacketReques
 		return nil
 	}
 
-	vpcName, enableService, ok := h.vpcs.LookupByID(ctx, req.Tenant.VPCID)
+	vpcName, serviceEnabled, consume, ok := h.vpcs.LookupByID(ctx, req.Tenant.VPCID)
 	if !ok {
 		zap.S().Warnf("dns: unknown VPC id=%d (tenant=%+v); answering ServerFailure", req.Tenant.VPCID, req.Tenant)
 		return h.writeRCode(resp, parsed, dnsmessage.RCodeServerFailure)
 	}
 
 	q := Query{
-		Name:                parsed.questionName,
-		Type:                parsed.questionType,
-		Class:               parsed.questionClass,
-		CallerVPC:           vpcName,
-		CallerEnableService: enableService,
-		CallerIP:            req.ClientIP,
+		Name:                 parsed.questionName,
+		Type:                 parsed.questionType,
+		Class:                parsed.questionClass,
+		CallerVPC:            vpcName,
+		CallerServiceEnabled: serviceEnabled,
+		CallerConsume:        consume,
+		CallerIP:             req.ClientIP,
 	}
 
 	res, err := h.resolver.Resolve(ctx, q)

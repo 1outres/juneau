@@ -33,10 +33,14 @@ const (
 	// AnnotationServiceVpc selects the Vpc a Service belongs to.
 	// Empty (or "default") implicitly resolves to the default Vpc.
 	AnnotationServiceVpc = "juneau.loutres.me/vpc"
-	// AnnotationServiceShared marks a default-Vpc Service as
-	// reachable from every Vpc with EnableService=true. Value "true"
-	// (string) opts in.
+	// AnnotationServiceShared marks a Service as reachable from
+	// other Vpcs that have spec.service.consume=true (subject to the
+	// per-Service ACL when set). Value "true" (string) opts in.
 	AnnotationServiceShared = "juneau.loutres.me/shared-service"
+	// AnnotationServiceAllowedConsumerVpcs whitelists consumer Vpcs
+	// for a shared Service. Comma-separated Vpc names; absent means
+	// every consume-enabled Vpc is permitted.
+	AnnotationServiceAllowedConsumerVpcs = "juneau.loutres.me/shared-service-allowed-consumer-vpcs"
 )
 
 // DefaultVpcName is the well-known name of the default Vpc that

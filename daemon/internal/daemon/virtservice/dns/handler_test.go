@@ -11,13 +11,14 @@ import (
 )
 
 type stubVPCResolver struct {
-	name          string
-	enableService bool
-	ok            bool
+	name           string
+	serviceEnabled bool
+	consume        bool
+	ok             bool
 }
 
-func (s stubVPCResolver) LookupByID(_ context.Context, _ uint32) (string, bool, bool) {
-	return s.name, s.enableService, s.ok
+func (s stubVPCResolver) LookupByID(_ context.Context, _ uint32) (string, bool, bool, bool) {
+	return s.name, s.serviceEnabled, s.consume, s.ok
 }
 
 type captureResponder struct {
@@ -79,7 +80,7 @@ func TestHandlerEchoesQueryAndAnswers(t *testing.T) {
 			},
 		},
 	}
-	h := NewHandler(resolver, stubVPCResolver{name: "tenant-a", enableService: true, ok: true})
+	h := NewHandler(resolver, stubVPCResolver{name: "tenant-a", serviceEnabled: true, consume: true, ok: true})
 
 	wire := packQuery(t, "demo.ns1.svc.cluster.local.", dnsmessage.TypeA, 0xbeef, 0)
 	resp := &captureResponder{}
@@ -176,7 +177,7 @@ func TestHandlerTruncatesOversizedResponse(t *testing.T) {
 	}
 	h := NewHandler(stubResolver{
 		resp: Response{RCode: RCodeNoError, Answers: answers, Authoritative: true},
-	}, stubVPCResolver{name: "tenant-a", enableService: true, ok: true})
+	}, stubVPCResolver{name: "tenant-a", serviceEnabled: true, consume: true, ok: true})
 
 	wire := packQuery(t, "demo.ns1.svc.cluster.local.", dnsmessage.TypeA, 1, 0)
 	resp := &captureResponder{}

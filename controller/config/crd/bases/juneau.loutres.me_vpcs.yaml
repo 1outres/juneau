@@ -43,12 +43,6 @@ spec:
           spec:
             description: VpcSpec defines the desired state of Vpc.
             properties:
-              enableService:
-                description: |-
-                  EnableService enables Service routing within this VPC. When true,
-                  the controller injects a Service-typed route into every RouteTable
-                  belonging to this VPC, so Pods in the VPC can reach Services in it.
-                type: boolean
               enforceSecurityGroups:
                 description: |-
                   EnforceSecurityGroups makes SecurityGroup attachment mandatory for
@@ -57,6 +51,48 @@ spec:
                   resolves to zero valid SGs) are rejected at admission. Existing
                   Pods are not retroactively affected when this flag is toggled.
                 type: boolean
+              service:
+                description: |-
+                  Service configures Service routing for this VPC. When nil, the
+                  VPC has no Service routing — its Pods cannot reach any
+                  ClusterIP and the controller does not inject a Service-typed
+                  route into the VPC's main RouteTable.
+
+                  Two cross-VPC roles are independently configurable under this
+                  field: Provider (this VPC hosts Services that other VPCs may
+                  reach) and Consume (this VPC's Pods may reach shared Services
+                  hosted in other VPCs). Setting either implicitly enables
+                  Service routing for the VPC.
+                properties:
+                  consume:
+                    description: |-
+                      Consume, when true, allows Pods in this VPC to call shared
+                      Services hosted in other VPCs. The per-Service ACL annotation
+                      (juneau.loutres.me/shared-service-allowed-consumer-vpcs) may
+                      further restrict which provider Services this VPC can reach.
+                    type: boolean
+                  provider:
+                    description: |-
+                      Provider, when set, makes Services in this VPC eligible to be
+                      marked as cross-VPC shared via the
+                      juneau.loutres.me/shared-service annotation. Per-Node SNAT IPs
+                      are allocated from the configured Subnet so that backend
+                      replies flow over this VPC's fabric back to the originating
+                      caller's Node.
+                    properties:
+                      natSourceSubnet:
+                        description: |-
+                          NATSourceSubnet names a Subnet in this VPC from which per-Node
+                          SNAT source IPs are allocated for cross-VPC callers reaching
+                          shared Services owned by this VPC. The Subnet must exist and
+                          belong to this VPC. Required to mark Services in this VPC as
+                          shared.
+                        minLength: 1
+                        type: string
+                    required:
+                    - natSourceSubnet
+                    type: object
+                type: object
             type: object
           status:
             description: VpcStatus defines the observed state of Vpc.

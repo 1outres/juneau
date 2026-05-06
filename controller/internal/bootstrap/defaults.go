@@ -6,6 +6,7 @@ import (
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
@@ -23,12 +24,23 @@ const (
 )
 
 // EnsureDefaults creates default VPC and Subnet if they don't already exist.
+//
+// Ordering is load-bearing: ensureDefaultVpc creates the Vpc *without*
+// the provider role because the provider's natSourceSubnet must
+// reference an existing Subnet (the Vpc webhook enforces this). Once
+// ensureDefaultSubnet has materialised the default Subnet,
+// ensureDefaultVpcProvider patches the Vpc to add the provider role
+// so cross-Vpc shared Services have a SNAT source out of the box.
 func EnsureDefaults(ctx context.Context, c client.Client, logger logr.Logger, defaultSubnetCIDR string) error {
 	if err := ensureDefaultVpc(ctx, c, logger); err != nil {
 		return err
 	}
 
 	if err := ensureDefaultSubnet(ctx, c, logger, defaultSubnetCIDR); err != nil {
+		return err
+	}
+
+	if err := ensureDefaultVpcProvider(ctx, c, logger); err != nil {
 		return err
 	}
 
@@ -150,19 +162,56 @@ func ensureDefaultVpc(ctx context.Context, c client.Client, logger logr.Logger) 
 				Name: defaultVpcName,
 			},
 			Spec: juneauv1alpha1.VpcSpec{
-				// Enable Service routing on the default VPC so
-				// Services without the juneau.loutres.me/vpc
-				// annotation (which implicitly target default)
-				// are not rejected by the webhook. While default
-				// Subnet Pods are still routed to cni_host and
-				// use kube-proxy / iptables, this keeps the
-				// CRD-level surface consistent.
-				EnableService: true,
+				// Bootstrap the default Vpc with Service routing
+				// enabled (Consume=true) so Services without the
+				// juneau.loutres.me/vpc annotation (which
+				// implicitly target default) are not rejected
+				// by the webhook. The default Vpc opts in to
+				// consuming shared Services from other Vpcs by
+				// default; making it a Service provider
+				// (Provider.NATSourceSubnet) is a separate,
+				// explicit user action.
+				Service: &juneauv1alpha1.VpcServiceSpec{
+					Consume: true,
+				},
 			},
 		})
 	}
 
 	return nil
+}
+
+// ensureDefaultVpcProvider promotes the default Vpc to a Service
+// provider once the default Subnet exists. Idempotent: returns
+// without writing when the spec already matches. Retries on
+// conflict because the VpcReconciler may be concurrently writing
+// status fields.
+func ensureDefaultVpcProvider(ctx context.Context, c client.Client, logger logr.Logger) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var vpc juneauv1alpha1.Vpc
+		if err := c.Get(ctx, client.ObjectKey{Name: defaultVpcName}, &vpc); err != nil {
+			return err
+		}
+		if vpc.Spec.Service != nil &&
+			vpc.Spec.Service.Provider != nil &&
+			vpc.Spec.Service.Provider.NATSourceSubnet == defaultSubnetName {
+			return nil
+		}
+		if vpc.Spec.Service == nil {
+			vpc.Spec.Service = &juneauv1alpha1.VpcServiceSpec{}
+		}
+		// Default Vpc consumes other Vpcs' shared Services and
+		// provides its own Services into the cross-Vpc fabric. Both
+		// opt-ins are reasonable defaults for a cluster-wide shared
+		// backbone.
+		vpc.Spec.Service.Consume = true
+		vpc.Spec.Service.Provider = &juneauv1alpha1.VpcServiceProviderSpec{
+			NATSourceSubnet: defaultSubnetName,
+		}
+		logger.Info("promoting default Vpc to Service provider",
+			"natSourceSubnet", defaultSubnetName)
+		return c.Update(ctx, &vpc)
+	})
 }
 
 func ensureDefaultSubnet(ctx context.Context, c client.Client, logger logr.Logger, cidr string) error {

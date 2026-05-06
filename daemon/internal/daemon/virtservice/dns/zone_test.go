@@ -44,11 +44,12 @@ func TestClusterZoneResolvesSameVPCService(t *testing.T) {
 	z := NewClusterZone(cl, DefaultClusterDomain, 30)
 
 	res, err := z.Resolve(context.Background(), Query{
-		Name:                "demo.ns1.svc.cluster.local.",
-		Type:                TypeA,
-		Class:               ClassINET,
-		CallerVPC:           "tenant-a",
-		CallerEnableService: true,
+		Name:                 "demo.ns1.svc.cluster.local.",
+		Type:                 TypeA,
+		Class:                ClassINET,
+		CallerVPC:            "tenant-a",
+		CallerServiceEnabled: true,
+		CallerConsume:        true,
 	})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -89,11 +90,12 @@ func TestClusterZoneAcrossVPCDeniedNXDomain(t *testing.T) {
 	z := NewClusterZone(cl, DefaultClusterDomain, 30)
 
 	res, err := z.Resolve(context.Background(), Query{
-		Name:                "demo.ns1.svc.cluster.local.",
-		Type:                TypeA,
-		Class:               ClassINET,
-		CallerVPC:           "tenant-b",
-		CallerEnableService: true,
+		Name:                 "demo.ns1.svc.cluster.local.",
+		Type:                 TypeA,
+		Class:                ClassINET,
+		CallerVPC:            "tenant-b",
+		CallerServiceEnabled: true,
+		CallerConsume:        true,
 	})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -113,11 +115,12 @@ func TestClusterZoneSharedServiceAcrossVPC(t *testing.T) {
 	z := NewClusterZone(cl, DefaultClusterDomain, 30)
 
 	res, err := z.Resolve(context.Background(), Query{
-		Name:                "demo.ns1.svc.cluster.local.",
-		Type:                TypeA,
-		Class:               ClassINET,
-		CallerVPC:           "tenant-b",
-		CallerEnableService: true,
+		Name:                 "demo.ns1.svc.cluster.local.",
+		Type:                 TypeA,
+		Class:                ClassINET,
+		CallerVPC:            "tenant-b",
+		CallerServiceEnabled: true,
+		CallerConsume:        true,
 	})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -130,7 +133,7 @@ func TestClusterZoneSharedServiceAcrossVPC(t *testing.T) {
 	}
 }
 
-func TestClusterZoneEnableServiceOff(t *testing.T) {
+func TestClusterZoneServiceEnabledOff(t *testing.T) {
 	cl := newFakeClient(t,
 		makeService("ns1", "demo", "10.96.1.5",
 			map[string]string{svcpolicy.AnnotationVpc: "tenant-a"}),
@@ -138,17 +141,17 @@ func TestClusterZoneEnableServiceOff(t *testing.T) {
 	z := NewClusterZone(cl, DefaultClusterDomain, 30)
 
 	res, err := z.Resolve(context.Background(), Query{
-		Name:                "demo.ns1.svc.cluster.local.",
-		Type:                TypeA,
-		Class:               ClassINET,
-		CallerVPC:           "tenant-a",
-		CallerEnableService: false,
+		Name:                 "demo.ns1.svc.cluster.local.",
+		Type:                 TypeA,
+		Class:                ClassINET,
+		CallerVPC:            "tenant-a",
+		CallerServiceEnabled: false,
 	})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 	if res.RCode != RCodeNXDomain {
-		t.Errorf("rcode = %d, want NXDomain when EnableService is false", res.RCode)
+		t.Errorf("rcode = %d, want NXDomain when service routing is disabled", res.RCode)
 	}
 }
 
@@ -159,11 +162,12 @@ func TestClusterZoneAAAAReturnsNoData(t *testing.T) {
 	z := NewClusterZone(cl, DefaultClusterDomain, 30)
 
 	res, err := z.Resolve(context.Background(), Query{
-		Name:                "demo.ns1.svc.cluster.local.",
-		Type:                TypeAAAA,
-		Class:               ClassINET,
-		CallerVPC:           "default",
-		CallerEnableService: true,
+		Name:                 "demo.ns1.svc.cluster.local.",
+		Type:                 TypeAAAA,
+		Class:                ClassINET,
+		CallerVPC:            "default",
+		CallerServiceEnabled: true,
+		CallerConsume:        true,
 	})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -182,11 +186,12 @@ func TestClusterZoneHeadlessServiceNoData(t *testing.T) {
 	z := NewClusterZone(cl, DefaultClusterDomain, 30)
 
 	res, err := z.Resolve(context.Background(), Query{
-		Name:                "headless.ns1.svc.cluster.local.",
-		Type:                TypeA,
-		Class:               ClassINET,
-		CallerVPC:           "default",
-		CallerEnableService: true,
+		Name:                 "headless.ns1.svc.cluster.local.",
+		Type:                 TypeA,
+		Class:                ClassINET,
+		CallerVPC:            "default",
+		CallerServiceEnabled: true,
+		CallerConsume:        true,
 	})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)

@@ -14,8 +14,8 @@ import (
 //
 //   - Pod in custom VPC resolves same-VPC Service        (basic happy path)
 //   - Cross-VPC isolation: non-shared Service is NXDOMAIN from another VPC
-//   - Shared Service is resolvable from any EnableService VPC
-//   - EnableService=false VPC cannot resolve svc.cluster.local
+//   - Shared Service is resolvable from a consume-enabled caller VPC
+//   - VPC without service routing cannot resolve svc.cluster.local
 //   - External names are forwarded to upstream resolvers
 //   - TCP fallback works (forced +tcp resolution)
 //
@@ -109,7 +109,8 @@ kind: Vpc
 metadata:
   name: %s
 spec:
-  enableService: true
+  service:
+    consume: true
 ---
 apiVersion: juneau.loutres.me/v1alpha1
 kind: Subnet
@@ -123,11 +124,12 @@ spec:
 		createNamespace(namespace)
 
 		// Server + Service live in the default Vpc and are annotated
-		// shared; client lives in vpc-b. Per svcpolicy, shared default-VPC
-		// Services must resolve from any EnableService VPC.
+		// shared; client lives in vpc-b. Per svcpolicy, shared
+		// default-VPC Services resolve from any consume-enabled VPC
+		// that passes the per-Service ACL.
 		Expect(applyManifest(podManifest(namespace, serverPodName, workerNodes[0], "", true))).To(Succeed())
 		Expect(applyManifest(podManifest(namespace, clientPodName, workerNodes[0], subnetB, false))).To(Succeed())
-		Expect(applyManifest(sharedServiceManifest(namespace, serverPodName, serverPodName))).To(Succeed())
+		Expect(applyManifest(sharedServiceManifest(namespace, serverPodName, serverPodName, defaultVpcName, nil))).To(Succeed())
 		waitPodsReady(namespace, serverPodName, clientPodName)
 		waitServiceEndpoints(namespace, serverPodName)
 
@@ -220,7 +222,7 @@ spec:
 			"default-Vpc Pods must not have dnsConfig injected, got %q", strings.TrimSpace(dnsConfig))
 	})
 
-	It("denies svc.cluster.local resolution from a VPC without enableService", func() {
+	It("denies svc.cluster.local resolution from a VPC without service routing", func() {
 		base := sanitizeName("dns-disabled")
 		namespace := "e2e-" + base
 		vpcB := "vpc-b-" + base
@@ -233,7 +235,11 @@ spec:
 			runBestEffort(repoRoot, "kubectl", "delete", "vpc", vpcB, "--ignore-not-found=true")
 		})
 
-		// vpcB is created with enableService omitted (default false).
+		// vpcB is created with no spec.service config, so
+		// Vpc.Spec.ServiceEnabled() reports false. The DNS resolver
+		// answers NXDOMAIN even for shared Services in that case
+		// because the data plane wouldn't forward Pod → ClusterIP
+		// traffic regardless.
 		Expect(applyManifest(fmt.Sprintf(`apiVersion: juneau.loutres.me/v1alpha1
 kind: Vpc
 metadata:
@@ -253,33 +259,37 @@ spec:
 		Expect(applyManifest(podManifest(namespace, clientPodName, workerNodes[0], subnetB, false))).To(Succeed())
 		waitPodsReady(namespace, clientPodName)
 
-		// Try to resolve the canonical kubernetes Service. svcpolicy
-		// classifies this as shared, so the only thing standing
-		// between the caller and an answer is enableService=false.
+		// kubernetes.default.svc is no longer implicitly shared
+		// (D6); cross-Vpc resolution requires both
+		// service.consume=true on the caller AND an explicit shared
+		// annotation on the Service. vpcB has neither, so the
+		// nslookup must fail.
 		out, err := kubectlOutput(repoRoot, "exec", "-n", namespace, clientPodName, "--", "nslookup", "kubernetes.default.svc.cluster.local")
-		Expect(err).To(HaveOccurred(), "nslookup should fail when enableService=false, got: %s", out)
+		Expect(err).To(HaveOccurred(), "nslookup should fail when service routing is disabled, got: %s", out)
 		Expect(strings.ToLower(out)).NotTo(ContainSubstring("answer:"))
 	})
 })
 
-// twoVpcManifest renders two independent Vpcs (both enableService=true)
-// with one Subnet each. Used by specs that need a cross-VPC fixture
-// without dragging in the connectivity matrix's CIDR derivation
-// (which can drift into reserved ranges).
+// twoVpcManifest renders two independent Vpcs (both with
+// service.consume=true) with one Subnet each. Used by specs that
+// need a cross-VPC fixture without dragging in the connectivity
+// matrix's CIDR derivation (which can drift into reserved ranges).
 func twoVpcManifest(vpcA, vpcB, subnetA, cidrA, subnetB, cidrB string) string {
 	return fmt.Sprintf(`apiVersion: juneau.loutres.me/v1alpha1
 kind: Vpc
 metadata:
   name: %s
 spec:
-  enableService: true
+  service:
+    consume: true
 ---
 apiVersion: juneau.loutres.me/v1alpha1
 kind: Vpc
 metadata:
   name: %s
 spec:
-  enableService: true
+  service:
+    consume: true
 ---
 apiVersion: juneau.loutres.me/v1alpha1
 kind: Subnet

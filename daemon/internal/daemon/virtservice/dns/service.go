@@ -257,10 +257,11 @@ func (s *Service) tearDown(b subnetBinding) error {
 }
 
 // FanOutVpcToSubnets re-enqueues every Subnet that belongs to a Vpc
-// whose .Status.VpcID or .Spec.EnableService might have changed. The
-// DNS resolver caches caller-VPC identity at handler-call time so the
-// only Subnet-level state to recompute is "has this Subnet's owning
-// VPC come into existence yet?" — answered by re-running Reconcile.
+// whose .Status.VpcID or .Spec.Service config might have changed.
+// The DNS resolver caches caller-VPC identity at handler-call time
+// so the only Subnet-level state to recompute is "has this Subnet's
+// owning VPC come into existence yet?" — answered by re-running
+// Reconcile.
 func (s *Service) FanOutVpcToSubnets(obj any) []string {
 	vpc, ok := obj.(*juneauv1alpha1.Vpc)
 	if !ok {

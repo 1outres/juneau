@@ -250,6 +250,15 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 		if err := m.serviceNATRunner.Watch(m.serviceNATAttachmentInformer, runner.MetaNamespaceKey); err != nil {
 			return fmt.Errorf("watch ServiceNATAttachment: %w", err)
 		}
+		// Vpc.Status.VpcID is the per-Node SNAT IP map key. A change
+		// (allocation, deletion, status backfill) must re-fire the
+		// reconciler for every attachment that references the Vpc so
+		// the BPF entry tracks the live identity.
+		if m.vpcInformer != nil {
+			if err := m.serviceNATRunner.WatchFanOut(m.vpcInformer, serviceNAT.FanOutVpcToAttachments); err != nil {
+				return fmt.Errorf("watch Vpc (service NAT fan-out): %w", err)
+			}
+		}
 		m.serviceNATRunner.Start(ctx, 1)
 	}
 
@@ -337,7 +346,7 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 		if err := m.serviceRunner.WatchFanOut(m.subnetInformer, svc.FanOutAllServices); err != nil {
 			return fmt.Errorf("watch Subnet (service fan-out): %w", err)
 		}
-		// Vpc.spec.enableService toggle and VpcID allocation propagate
+		// Vpc.spec.service config flips and VpcID allocation propagate
 		// to every Service this VPC owns.
 		if m.vpcInformer != nil {
 			if err := m.serviceRunner.WatchFanOut(m.vpcInformer, svc.FanOutAllServices); err != nil {
