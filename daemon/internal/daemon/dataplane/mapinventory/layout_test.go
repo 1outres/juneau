@@ -67,6 +67,13 @@ func TestSchemaLayoutMatchesGenerated(t *testing.T) {
 			valueSize: unsafe.Sizeof(bpf.PodEgressBackendVal{}),
 		},
 		{
+			name:      "service_affinity_map",
+			key:       schemaServiceAffinityKey(),
+			val:       schemaServiceAffinityVal(),
+			keySize:   unsafe.Sizeof(bpf.PodEgressServiceAffinityKey{}),
+			valueSize: unsafe.Sizeof(bpf.PodEgressServiceAffinityVal{}),
+		},
+		{
 			name:      "ct_map",
 			key:       schemaCTKey(),
 			val:       schemaCTVal(),
@@ -199,6 +206,24 @@ func schemaServiceVal() Schema {
 		FieldU32Named("backend_count"),
 		FieldU32Named("affinity_sec"),
 		FieldFlagsNamed("flags", 4, SVCFlagDict),
+		FieldU32Named("gen"),
+	}}
+}
+
+func schemaServiceAffinityKey() Schema {
+	return Schema{Fields: []Field{
+		FieldIPv4BENamed("cluster_ip"),
+		FieldPortNamed("port"),
+		FieldEnumNamed("proto", 1, IPProtoEnum),
+		FieldPadOf(1),
+		FieldIPv4BENamed("client_ip"),
+	}}
+}
+func schemaServiceAffinityVal() Schema {
+	return Schema{Fields: []Field{
+		FieldU32Named("backend_index"),
+		FieldU32Named("backend_gen"),
+		FieldU64Named("expires_at_ns"),
 	}}
 }
 

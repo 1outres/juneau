@@ -176,6 +176,22 @@ type PodEgressServiceAclKey struct {
 	CallerVpcId uint32
 }
 
+type PodEgressServiceAffinityKey struct {
+	_         structs.HostLayout
+	ClusterIp uint32
+	Port      uint16
+	Proto     uint8
+	Pad       uint8
+	ClientIp  uint32
+}
+
+type PodEgressServiceAffinityVal struct {
+	_            structs.HostLayout
+	BackendIndex uint32
+	BackendGen   uint32
+	ExpiresAtNs  uint64
+}
+
 type PodEgressServiceKey struct {
 	_         structs.HostLayout
 	ClusterIp uint32
@@ -190,6 +206,7 @@ type PodEgressServiceVal struct {
 	BackendCount uint32
 	AffinitySec  uint32
 	Flags        uint32
+	Gen          uint32
 }
 
 type PodEgressSgMembershipKey struct {
@@ -376,6 +393,7 @@ type PodEgressMapSpecs struct {
 	NatDnatMap            *ebpf.MapSpec `ebpf:"nat_dnat_map"`
 	NatSnatMap            *ebpf.MapSpec `ebpf:"nat_snat_map"`
 	ServiceAclMap         *ebpf.MapSpec `ebpf:"service_acl_map"`
+	ServiceAffinityMap    *ebpf.MapSpec `ebpf:"service_affinity_map"`
 	ServiceMap            *ebpf.MapSpec `ebpf:"service_map"`
 	ServiceNatIp          *ebpf.MapSpec `ebpf:"service_nat_ip"`
 	SgMembershipMap       *ebpf.MapSpec `ebpf:"sg_membership_map"`
@@ -437,6 +455,7 @@ type PodEgressMaps struct {
 	NatDnatMap            *ebpf.Map `ebpf:"nat_dnat_map"`
 	NatSnatMap            *ebpf.Map `ebpf:"nat_snat_map"`
 	ServiceAclMap         *ebpf.Map `ebpf:"service_acl_map"`
+	ServiceAffinityMap    *ebpf.Map `ebpf:"service_affinity_map"`
 	ServiceMap            *ebpf.Map `ebpf:"service_map"`
 	ServiceNatIp          *ebpf.Map `ebpf:"service_nat_ip"`
 	SgMembershipMap       *ebpf.Map `ebpf:"sg_membership_map"`
@@ -472,6 +491,7 @@ func (m *PodEgressMaps) Close() error {
 		m.NatDnatMap,
 		m.NatSnatMap,
 		m.ServiceAclMap,
+		m.ServiceAffinityMap,
 		m.ServiceMap,
 		m.ServiceNatIp,
 		m.SgMembershipMap,

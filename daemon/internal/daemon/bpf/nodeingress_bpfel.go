@@ -176,6 +176,22 @@ type NodeIngressServiceAclKey struct {
 	CallerVpcId uint32
 }
 
+type NodeIngressServiceAffinityKey struct {
+	_         structs.HostLayout
+	ClusterIp uint32
+	Port      uint16
+	Proto     uint8
+	Pad       uint8
+	ClientIp  uint32
+}
+
+type NodeIngressServiceAffinityVal struct {
+	_            structs.HostLayout
+	BackendIndex uint32
+	BackendGen   uint32
+	ExpiresAtNs  uint64
+}
+
 type NodeIngressServiceKey struct {
 	_         structs.HostLayout
 	ClusterIp uint32
@@ -190,6 +206,7 @@ type NodeIngressServiceVal struct {
 	BackendCount uint32
 	AffinitySec  uint32
 	Flags        uint32
+	Gen          uint32
 }
 
 type NodeIngressSgMembershipKey struct {
@@ -376,6 +393,7 @@ type NodeIngressMapSpecs struct {
 	NatDnatMap            *ebpf.MapSpec `ebpf:"nat_dnat_map"`
 	NatSnatMap            *ebpf.MapSpec `ebpf:"nat_snat_map"`
 	ServiceAclMap         *ebpf.MapSpec `ebpf:"service_acl_map"`
+	ServiceAffinityMap    *ebpf.MapSpec `ebpf:"service_affinity_map"`
 	ServiceMap            *ebpf.MapSpec `ebpf:"service_map"`
 	ServiceNatIp          *ebpf.MapSpec `ebpf:"service_nat_ip"`
 	SgMembershipMap       *ebpf.MapSpec `ebpf:"sg_membership_map"`
@@ -435,6 +453,7 @@ type NodeIngressMaps struct {
 	NatDnatMap            *ebpf.Map `ebpf:"nat_dnat_map"`
 	NatSnatMap            *ebpf.Map `ebpf:"nat_snat_map"`
 	ServiceAclMap         *ebpf.Map `ebpf:"service_acl_map"`
+	ServiceAffinityMap    *ebpf.Map `ebpf:"service_affinity_map"`
 	ServiceMap            *ebpf.Map `ebpf:"service_map"`
 	ServiceNatIp          *ebpf.Map `ebpf:"service_nat_ip"`
 	SgMembershipMap       *ebpf.Map `ebpf:"sg_membership_map"`
@@ -470,6 +489,7 @@ func (m *NodeIngressMaps) Close() error {
 		m.NatDnatMap,
 		m.NatSnatMap,
 		m.ServiceAclMap,
+		m.ServiceAffinityMap,
 		m.ServiceMap,
 		m.ServiceNatIp,
 		m.SgMembershipMap,

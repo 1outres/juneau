@@ -196,6 +196,8 @@ var CTScopeEnum = NewEnumDict("ct_scope", map[uint64]string{
 var SVCFlagDict = NewFlagDict("svc_flag", []FlagBit{
 	{Mask: 1 << 0, Label: "SVC_FLAG_SHARED"},
 	{Mask: 1 << 1, Label: "SVC_FLAG_HAS_ACL"},
+	{Mask: 1 << 2, Label: "SVC_FLAG_AFFINITY_CLIENT_IP"},
+	{Mask: 1 << 3, Label: "SVC_FLAG_INTERNAL_LOCAL"},
 })
 
 // VirtSvcFlagDict reserves the field even though no bits are defined
