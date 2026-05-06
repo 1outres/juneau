@@ -63,8 +63,12 @@ func registerSubnet(inv *Inventory, p *program.PodEgress) error {
 			FieldU32Named("vpc_id"),
 			FieldMACNamed("gw_mac"),
 			FieldPadOf(2),
-			FieldIPv4BENamed("gw_addr", "gateway IPv4 (network byte order)"),
-			FieldU32Named("mask"),
+			// gw_addr / mask: convert.IPv4ToUint32 / IPMaskToUint32
+			// store the numeric form (BigEndian.Uint32 of the bytes)
+			// — on a LE host the in-memory bytes are reversed from
+			// NBO. FieldIPv4 reads that layout correctly.
+			FieldIPv4Named("gw_addr"),
+			FieldIPv4Named("mask", "subnet netmask"),
 			FieldU32Named("acl_id", "0 means no NetworkACL attached"),
 		}},
 	})
@@ -102,7 +106,9 @@ func registerArpTable(inv *Inventory, p *program.PodEgress) error {
 		Map:  p.Objs.ArpTable,
 		Key: Schema{Fields: []Field{
 			FieldU32Named("subnet_id"),
-			FieldIPv4BENamed("ipaddr"),
+			// ipaddr: writer is convert.IPv4ToUint32 (host-order
+			// numeric layout, LE bytes [d,c,b,a]).
+			FieldIPv4Named("ipaddr"),
 		}},
 		Value: Schema{Fields: []Field{
 			FieldMACNamed("mac"),
@@ -121,7 +127,8 @@ func registerFdb(inv *Inventory, p *program.PodEgress) error {
 		}},
 		Value: Schema{Fields: []Field{
 			FieldU32Named("ifindex", "0 means remote (use vtep_ip via VXLAN)"),
-			FieldIPv4BENamed("vtep_ip"),
+			// vtep_ip writer: convert.IPv4ToUint32 (host-order layout).
+			FieldIPv4Named("vtep_ip"),
 		}},
 	})
 }
@@ -209,15 +216,16 @@ func registerBGPAddressPools(inv *Inventory, p *program.PodEgress) error {
 }
 
 func registerNATSnat(inv *Inventory, p *program.PodEgress) error {
+	// nat_*_map writer: convert.IPv4ToUint32 (host-order layout).
 	return inv.Register(&Descriptor{
 		Name: "nat_snat_map",
 		Map:  p.Objs.NatSnatMap,
 		Key: Schema{Fields: []Field{
 			FieldU32Named("subnet_id"),
-			FieldIPv4BENamed("addr"),
+			FieldIPv4Named("addr"),
 		}},
 		Value: Schema{Fields: []Field{
-			FieldIPv4BENamed("addr"),
+			FieldIPv4Named("addr"),
 		}},
 	})
 }
@@ -227,21 +235,23 @@ func registerNATDnat(inv *Inventory, p *program.PodEgress) error {
 		Name: "nat_dnat_map",
 		Map:  p.Objs.NatDnatMap,
 		Key: Schema{Fields: []Field{
-			FieldIPv4BENamed("addr"),
+			FieldIPv4Named("addr"),
 		}},
 		Value: Schema{Fields: []Field{
 			FieldU32Named("subnet_id"),
-			FieldIPv4BENamed("addr"),
+			FieldIPv4Named("addr"),
 		}},
 	})
 }
 
 func registerService(inv *Inventory, p *program.PodEgress) error {
+	// service.go writer: binary.BigEndian.Uint32 → host-order numeric.
+	// Port is written as plain uint16 host-order.
 	return inv.Register(&Descriptor{
 		Name: "service_map",
 		Map:  p.Objs.ServiceMap,
 		Key: Schema{Fields: []Field{
-			FieldIPv4BENamed("cluster_ip"),
+			FieldIPv4Named("cluster_ip"),
 			FieldPortNamed("port"),
 			FieldEnumNamed("proto", 1, IPProtoEnum),
 			FieldPadOf(1),
@@ -260,7 +270,7 @@ func registerServiceACL(inv *Inventory, p *program.PodEgress) error {
 		Name: "service_acl_map",
 		Map:  p.Objs.ServiceAclMap,
 		Key: Schema{Fields: []Field{
-			FieldIPv4BENamed("cluster_ip"),
+			FieldIPv4Named("cluster_ip"),
 			FieldPortNamed("port"),
 			FieldEnumNamed("proto", 1, IPProtoEnum),
 			FieldPadOf(1),
@@ -277,14 +287,14 @@ func registerBackend(inv *Inventory, p *program.PodEgress) error {
 		Name: "backend_map",
 		Map:  p.Objs.BackendMap,
 		Key: Schema{Fields: []Field{
-			FieldIPv4BENamed("cluster_ip"),
+			FieldIPv4Named("cluster_ip"),
 			FieldPortNamed("port"),
 			FieldEnumNamed("proto", 1, IPProtoEnum),
 			FieldPadOf(1),
 			FieldU32Named("index"),
 		}},
 		Value: Schema{Fields: []Field{
-			FieldIPv4BENamed("backend_ip"),
+			FieldIPv4Named("backend_ip"),
 			FieldPortNamed("backend_port"),
 			FieldEnumNamed("kind", 1, BackendKindEnum),
 			FieldPadOf(1),
@@ -294,6 +304,11 @@ func registerBackend(inv *Inventory, p *program.PodEgress) error {
 }
 
 func registerCT(inv *Inventory, p *program.PodEgress) error {
+	// ct_map keys are populated by BPF directly from iph->saddr /
+	// th->source / etc. — NBO bytes. Values can come from either BPF
+	// (NBO from iph) or userspace; on this build every NAT path
+	// sources from iph or BPF byteswaps to match, so NBO is the
+	// stable contract.
 	return inv.Register(&Descriptor{
 		Name: "ct_map",
 		Map:  p.Objs.CtMap,
@@ -301,16 +316,16 @@ func registerCT(inv *Inventory, p *program.PodEgress) error {
 			FieldEnumNamed("scope", 4, CTScopeEnum, "0=host keyspace, otherwise vpc_id"),
 			FieldIPv4BENamed("saddr"),
 			FieldIPv4BENamed("daddr"),
-			FieldPortNamed("sport"),
-			FieldPortNamed("dport"),
+			FieldPortBENamed("sport"),
+			FieldPortBENamed("dport"),
 			FieldEnumNamed("proto", 1, IPProtoEnum),
 			FieldPadOf(3),
 		}},
 		Value: Schema{Fields: []Field{
 			FieldIPv4BENamed("new_saddr"),
 			FieldIPv4BENamed("new_daddr"),
-			FieldPortNamed("new_sport"),
-			FieldPortNamed("new_dport"),
+			FieldPortBENamed("new_sport"),
+			FieldPortBENamed("new_dport"),
 			FieldU32Named("next_subnet_id"),
 			FieldEnumNamed("action", 1, CTActionEnum),
 			FieldEnumNamed("state", 1, CTStateEnum),
