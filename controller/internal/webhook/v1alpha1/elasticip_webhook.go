@@ -42,7 +42,7 @@ var elasticiplog = logf.Log.WithName("elasticip-resource")
 // SetupElasticIPWebhookWithManager registers the webhook for ElasticIP in the manager.
 func SetupElasticIPWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&juneauloutresmev1alpha1.ElasticIP{}).
-		WithValidator(&ElasticIPCustomValidator{Client: mgr.GetClient()}).
+		WithValidator(&ElasticIPCustomValidator{Reader: mgr.GetAPIReader()}).
 		WithDefaulter(&ElasticIPCustomDefaulter{}).
 		Complete()
 }
@@ -86,7 +86,7 @@ func (d *ElasticIPCustomDefaulter) Default(ctx context.Context, obj runtime.Obje
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
 // as this struct is used only for temporary operations and does not need to be deeply copied.
 type ElasticIPCustomValidator struct {
-	client.Client
+	client.Reader
 }
 
 var _ webhook.CustomValidator = &ElasticIPCustomValidator{}

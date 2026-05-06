@@ -42,7 +42,7 @@ var bgpadvertisementlog = logf.Log.WithName("bgpadvertisement-resource")
 // SetupBGPAdvertisementWebhookWithManager registers the webhook for BGPAdvertisement in the manager.
 func SetupBGPAdvertisementWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&juneauloutresmev1alpha1.BGPAdvertisement{}).
-		WithValidator(&BGPAdvertisementCustomValidator{Client: mgr.GetClient()}).
+		WithValidator(&BGPAdvertisementCustomValidator{Reader: mgr.GetAPIReader()}).
 		WithDefaulter(&BGPAdvertisementCustomDefaulter{}).
 		Complete()
 }
@@ -78,7 +78,7 @@ func (d *BGPAdvertisementCustomDefaulter) Default(_ context.Context, obj runtime
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
 // as this struct is used only for temporary operations and does not need to be deeply copied.
 type BGPAdvertisementCustomValidator struct {
-	client.Client
+	client.Reader
 }
 
 var _ webhook.CustomValidator = &BGPAdvertisementCustomValidator{}

@@ -19,6 +19,7 @@ import (
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/policy"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/program"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/reconciler"
+	servicereconciler "github.com/1outres/juneau/daemon/internal/daemon/dataplane/reconciler/service"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/trace"
 	"github.com/1outres/juneau/daemon/internal/daemon/runner"
 )
@@ -85,6 +86,9 @@ type Manager struct {
 
 	conntrackCancel context.CancelFunc
 	conntrackDone   chan struct{}
+
+	affinityGCCancel context.CancelFunc
+	affinityGCDone   chan struct{}
 
 	podAttacher *link.PodAttacher
 	fib         *reconciler.Fib
@@ -348,7 +352,7 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	}
 
 	if m.serviceInformer != nil && m.endpointSliceInformer != nil {
-		svc := reconciler.NewService(m.client, m.podEgress, m.juNodeUnderlayIP)
+		svc := servicereconciler.NewReconciler(m.client, m.podEgress, m.juNodeUnderlayIP, m.nodeName)
 		m.serviceRunner = runner.New(svc)
 		if err := m.serviceRunner.Watch(m.serviceInformer, runner.MetaNamespaceKey); err != nil {
 			return fmt.Errorf("watch Service: %w", err)
@@ -372,6 +376,7 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	}
 
 	m.startConntrackGC(ctx)
+	m.startAffinityGC(ctx)
 
 	if err := m.startTrace(ctx); err != nil {
 		return fmt.Errorf("start trace plane: %w", err)
@@ -458,6 +463,22 @@ func (m *Manager) startConntrackGC(ctx context.Context) {
 	}()
 }
 
+// startAffinityGC spawns the periodic service_affinity_map garbage
+// collector. The map is LRU_HASH and the BPF fast path tolerates
+// stale entries (gen + bound checks invalidate them implicitly), so
+// the GC is purely an opportunistic capacity reclaim — no Service
+// event drives it and there is no Runner to integrate with.
+func (m *Manager) startAffinityGC(ctx context.Context) {
+	gc := servicereconciler.NewAffinityGC(m.podEgress.Objs.ServiceAffinityMap, servicereconciler.AffinityGCInterval)
+	cctx, cancel := context.WithCancel(ctx)
+	m.affinityGCCancel = cancel
+	m.affinityGCDone = make(chan struct{})
+	go func() {
+		defer close(m.affinityGCDone)
+		gc.Run(cctx)
+	}()
+}
+
 func (m *Manager) Stop() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -475,6 +496,12 @@ func (m *Manager) Stop() error {
 		m.conntrackCancel()
 		<-m.conntrackDone
 		m.conntrackCancel = nil
+	}
+
+	if m.affinityGCCancel != nil {
+		m.affinityGCCancel()
+		<-m.affinityGCDone
+		m.affinityGCCancel = nil
 	}
 
 	if m.podAttacher != nil {

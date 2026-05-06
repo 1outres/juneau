@@ -64,7 +64,7 @@ var servicelog = logf.Log.WithName("service-resource")
 // Service routing enabled.
 func SetupServiceWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&corev1.Service{}).
-		WithValidator(&ServiceCustomValidator{Client: mgr.GetClient()}).
+		WithValidator(&ServiceCustomValidator{Reader: mgr.GetAPIReader()}).
 		Complete()
 }
 
@@ -75,7 +75,7 @@ func SetupServiceWebhookWithManager(mgr ctrl.Manager) error {
 // routing enabled are rejected so that no Service is silently
 // unreachable.
 type ServiceCustomValidator struct {
-	client.Client
+	client.Reader
 }
 
 var _ webhook.CustomValidator = &ServiceCustomValidator{}

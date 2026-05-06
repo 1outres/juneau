@@ -59,6 +59,15 @@
 #define MAX_SERVICE_ACL 65536
 #endif
 
+#ifndef MAX_SERVICE_AFFINITY_MAP
+// MAX_SERVICE_AFFINITY_MAP bounds service_affinity_map, the per-(Service
+// × client IP) sticky-backend cache used when sessionAffinity=ClientIP
+// is configured. LRU_HASH so capacity overflow degrades gracefully:
+// evicted entries cause a fresh selection on the next packet rather
+// than a correctness violation.
+#define MAX_SERVICE_AFFINITY_MAP 65536
+#endif
+
 #ifndef MAX_CT_MAP
 #define MAX_CT_MAP 524288
 #endif
@@ -400,11 +409,34 @@ struct service_key {
 // SVC_FLAG_SHARED.
 #define SVC_FLAG_HAS_ACL (1U << 1)
 
+// SVC_FLAG_AFFINITY_CLIENT_IP marks a Service whose backend selection
+// is sticky per caller IP. Set by the reconciler when
+// Service.spec.sessionAffinity=ClientIP. The data plane consults
+// service_affinity_map keyed by caller IP and returns the cached
+// backend index when the entry is fresh (expires_at_ns > now and
+// backend_gen matches service_val.gen).
+#define SVC_FLAG_AFFINITY_CLIENT_IP (1U << 2)
+
+// SVC_FLAG_INTERNAL_LOCAL records that the reconciler installed only
+// node-local backends for this Service because Service.spec
+// .internalTrafficPolicy=Local. The flag has no effect on the BPF
+// fast path — locality filtering already happens at reconcile time
+// by writing only local backends into backend_map. The bit is
+// retained for observability and so dump tooling can compare the
+// programmed state against the spec.
+#define SVC_FLAG_INTERNAL_LOCAL (1U << 3)
+
 struct service_val {
   __u32 owner_vpc_id;   // Vpc that owns the Service; checked against caller_vpc_id
   __u32 backend_count;
-  __u32 affinity_sec;
+  __u32 affinity_sec;   // sessionAffinity ClientIP timeout in seconds; 0 unless SVC_FLAG_AFFINITY_CLIENT_IP set
   __u32 flags;          // bitmask: SVC_FLAG_*
+  // gen increases every time the reconciler rewrites the backend set
+  // for this Service. Cached service_affinity_map entries that
+  // captured an older gen are treated as stale and re-selected,
+  // preventing affinity-induced index drift when a Pod backend goes
+  // away.
+  __u32 gen;
 };
 
 struct {
@@ -464,6 +496,34 @@ struct {
   __type(value, struct backend_val);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } backend_map SEC(".maps");
+
+// service_affinity_map caches sessionAffinity=ClientIP decisions:
+// a single backend index per (Service tuple × caller IP), valid for
+// service_val.affinity_sec seconds since the last hit. LRU_HASH so the
+// table self-evicts under pressure; correctness only requires that a
+// stale entry not bind to a freed backend index, which is enforced by
+// matching backend_gen against service_val.gen on lookup.
+struct service_affinity_key {
+  __u32 cluster_ip;     // host order, mirrors service_key.cluster_ip
+  __u16 port;
+  __u8 proto;
+  __u8 _pad;
+  __u32 client_ip;      // host order; AF_INET only
+};
+
+struct service_affinity_val {
+  __u32 backend_index;  // index into backend_map for the sticky backend
+  __u32 backend_gen;    // service_val.gen at write time; mismatch invalidates
+  __u64 expires_at_ns;  // CLOCK_MONOTONIC; 0 means "never recorded"
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_LRU_HASH);
+  __uint(max_entries, MAX_SERVICE_AFFINITY_MAP);
+  __type(key, struct service_affinity_key);
+  __type(value, struct service_affinity_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} service_affinity_map SEC(".maps");
 
 // ct_map is the conntrack table shared by Service and NAPT flows. Both
 // directions of a flow are stored as separate entries:

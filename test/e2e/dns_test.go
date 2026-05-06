@@ -143,6 +143,54 @@ spec:
 		}, 30*time.Second, time.Second).Should(Succeed())
 	})
 
+	It("resolves a Type=ExternalName Service as a CNAME and chases it via upstream", func() {
+		ctx := newCaseContext(connectivityScenario{name: "dns-externalname"})
+		currentCase = &ctx
+		DeferCleanup(func() { currentCase = nil })
+
+		createNamespace(ctx.namespace)
+		DeferCleanup(cleanupCaseResources, ctx)
+		createCustomNetwork(ctx, false, true)
+
+		By("creating an ExternalName Service in the same Vpc + a client Pod")
+		createClientPod(ctx, workerNodes[0], ctx.serverSubnet)
+		// example.com is RFC 2606 reserved and resolvable through the
+		// daemon's default upstream — picking it lets us verify both
+		// the new CNAME RR and that the stub resolver's re-query
+		// reaches the upstream forwarder in one go.
+		const externalName = "example.com"
+		const svcName = "extname"
+		Expect(applyManifest(fmt.Sprintf(`apiVersion: v1
+kind: Service
+metadata:
+  namespace: %s
+  name: %s
+  annotations:
+    juneau.loutres.me/vpc: %s
+spec:
+  type: ExternalName
+  externalName: %s
+`, ctx.namespace, svcName, ctx.vpcName, externalName))).To(Succeed())
+		waitPodsReady(ctx.namespace, clientPodName)
+
+		fqdn := fmt.Sprintf("%s.%s.svc.cluster.local", svcName, ctx.namespace)
+
+		By("expecting nslookup to surface the CNAME alias and resolve to a public IP")
+		Eventually(func(g Gomega) {
+			out, err := kubectlOutput(repoRoot, "exec", "-n", ctx.namespace, clientPodName, "--", "nslookup", fqdn)
+			g.Expect(err).NotTo(HaveOccurred(), "out=%s", out)
+			// busybox nslookup prints CNAME aliases as
+			//   "<query>  canonical name = <target>."
+			// The dot suffix is normalised in / out so just check the
+			// substring; falling through to the upstream answers
+			// adds a final "Address: <ipv4>" line we already assert
+			// via the pattern below.
+			lower := strings.ToLower(out)
+			g.Expect(lower).To(ContainSubstring(externalName), "expected externalName target in output: %s", out)
+			g.Expect(lower).To(ContainSubstring("address"), "expected at least one Address line: %s", out)
+		}, 30*time.Second, time.Second).Should(Succeed())
+	})
+
 	It("forwards external names to the configured upstream resolver", func() {
 		ctx := newCaseContext(connectivityScenario{name: "dns-external"})
 		currentCase = &ctx

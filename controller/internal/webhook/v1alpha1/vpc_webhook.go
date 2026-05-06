@@ -41,7 +41,7 @@ var vpclog = logf.Log.WithName("vpc-resource")
 // SetupVpcWebhookWithManager registers the webhook for Vpc in the manager.
 func SetupVpcWebhookWithManager(mgr ctrl.Manager, serviceCIDR *net.IPNet) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&juneauv1alpha1.Vpc{}).
-		WithValidator(&VpcCustomValidator{Client: mgr.GetClient(), ServiceCIDR: serviceCIDR}).
+		WithValidator(&VpcCustomValidator{Reader: mgr.GetAPIReader(), ServiceCIDR: serviceCIDR}).
 		WithDefaulter(&VpcCustomDefaulter{}).
 		Complete()
 }
@@ -72,7 +72,7 @@ func (d *VpcCustomDefaulter) Default(ctx context.Context, obj runtime.Object) er
 // VpcCustomValidator struct is responsible for validating the Vpc resource
 // when it is created, updated, or deleted.
 type VpcCustomValidator struct {
-	client.Client
+	client.Reader
 	ServiceCIDR *net.IPNet
 }
 

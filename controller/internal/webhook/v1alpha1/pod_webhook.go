@@ -96,8 +96,8 @@ var podlog = logf.Log.WithName("pod-resource")
 // separate webhook handlers under the same registration.
 func SetupPodWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&corev1.Pod{}).
-		WithDefaulter(&PodDNSDefaulter{Client: mgr.GetClient()}).
-		WithValidator(&PodSecurityGroupValidator{Client: mgr.GetClient()}).
+		WithDefaulter(&PodDNSDefaulter{Reader: mgr.GetAPIReader()}).
+		WithValidator(&PodSecurityGroupValidator{Reader: mgr.GetAPIReader()}).
 		Complete()
 }
 
@@ -109,7 +109,7 @@ func SetupPodWebhookWithManager(mgr ctrl.Manager) error {
 // will never read its dnsConfig again so re-injecting on UPDATE is
 // pointless and would surprise users who deliberately changed it.
 type PodDNSDefaulter struct {
-	client.Client
+	client.Reader
 }
 
 var _ webhook.CustomDefaulter = &PodDNSDefaulter{}
@@ -254,7 +254,7 @@ func mergeDNSConfig(existing *corev1.PodDNSConfig, dnsVIP, podNamespace string) 
 //
 // +kubebuilder:object:generate=false
 type PodSecurityGroupValidator struct {
-	client.Client
+	client.Reader
 }
 
 var _ webhook.CustomValidator = &PodSecurityGroupValidator{}

@@ -350,6 +350,63 @@ static __always_inline __u32 hash_tuple(__be32 saddr, __be32 daddr,
   return h;
 }
 
+#ifndef NSEC_PER_SEC
+#define NSEC_PER_SEC 1000000000ULL
+#endif
+
+// select_backend_index is the single decision point for "given a
+// Service hit, which backend index should this packet go to". It
+// always defaults to the stateless 5-tuple hash; when
+// SVC_FLAG_AFFINITY_CLIENT_IP is set on the Service it consults
+// service_affinity_map for a sticky decision keyed by caller IP.
+//
+// Stale or out-of-range cached entries are silently re-selected:
+// - backend_gen mismatch: backend set was rewritten; index may now
+//   point past the new backend_count or to a different Pod.
+// - backend_index >= backend_count: same as above, defensive bound.
+// - expires_at_ns elapsed: timeout, refresh on next hit.
+//
+// On a hit the entry's expiry is refreshed (sliding window) so a
+// chatty client keeps its sticky binding across the timeout. On a
+// miss we install a fresh entry with the freshly-chosen index. LRU
+// eviction is acceptable: a re-derivation produces a backend index,
+// possibly different, but never references a freed slot thanks to
+// the gen + bound checks.
+static __always_inline __u32
+select_backend_index(struct iphdr *iph, __be16 sport, __be16 dport,
+                     const struct service_key *sk,
+                     const struct service_val *sv, __u64 now) {
+  __u32 idx = hash_tuple(iph->saddr, iph->daddr, sport, dport, iph->protocol) %
+              sv->backend_count;
+
+  if (!(sv->flags & SVC_FLAG_AFFINITY_CLIENT_IP) || sv->affinity_sec == 0)
+    return idx;
+
+  struct service_affinity_key ak = {
+      .cluster_ip = sk->cluster_ip,
+      .port = sk->port,
+      .proto = sk->proto,
+      .client_ip = bpf_ntohl(iph->saddr),
+  };
+  __u64 ttl_ns = (__u64)sv->affinity_sec * NSEC_PER_SEC;
+  struct service_affinity_val *cached =
+      bpf_map_lookup_elem(&service_affinity_map, &ak);
+  if (cached && cached->backend_gen == sv->gen &&
+      cached->backend_index < sv->backend_count &&
+      cached->expires_at_ns > now) {
+    cached->expires_at_ns = now + ttl_ns;
+    return cached->backend_index;
+  }
+
+  struct service_affinity_val fresh = {
+      .backend_index = idx,
+      .backend_gen = sv->gen,
+      .expires_at_ns = now + ttl_ns,
+  };
+  bpf_map_update_elem(&service_affinity_map, &ak, &fresh, BPF_ANY);
+  return idx;
+}
+
 // NAPT_PROBE_LIMIT bounds the linear-probe loop used to claim a
 // previously-unused alloc_port. Higher values lower the probability of
 // a failed allocation under heavy port pressure but cost verifier
@@ -999,8 +1056,8 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
   if (sv->backend_count == 0)
     return TC_ACT_SHOT;
 
-  __u32 idx = hash_tuple(iph->saddr, iph->daddr, sport, dport, iph->protocol) %
-              sv->backend_count;
+  __u64 svc_now = bpf_ktime_get_ns();
+  __u32 idx = select_backend_index(iph, sport, dport, &sk, sv, svc_now);
 
   struct backend_key bk = {
       .cluster_ip = sk.cluster_ip,
@@ -1072,7 +1129,10 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
   __be32 backend_addr_be = bpf_htonl(bv->backend_ip);
   __be16 backend_port_be = bpf_htons(bv->backend_port);
 
-  __u64 now = bpf_ktime_get_ns();
+  // Reuse svc_now from select_backend_index above. Re-reading the clock
+  // here would only cost a helper call and risks ct_val.last_seen_ns
+  // disagreeing with the affinity entry by a few nanoseconds.
+  __u64 now = svc_now;
 
   // Seed state from the SYN flag of the packet that triggers entry
   // creation. Mid-flow installs (no SYN) jump directly to ESTABLISHED to

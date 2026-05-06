@@ -42,7 +42,7 @@ var securitygrouplog = logf.Log.WithName("securitygroup-resource")
 // validating webhook.
 func SetupSecurityGroupWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&juneauv1alpha1.SecurityGroup{}).
-		WithValidator(&SecurityGroupCustomValidator{Client: mgr.GetClient()}).
+		WithValidator(&SecurityGroupCustomValidator{Reader: mgr.GetAPIReader()}).
 		Complete()
 }
 
@@ -60,7 +60,7 @@ func SetupSecurityGroupWebhookWithManager(mgr ctrl.Manager) error {
 //
 // +kubebuilder:object:generate=false
 type SecurityGroupCustomValidator struct {
-	client.Client
+	client.Reader
 }
 
 var _ webhook.CustomValidator = &SecurityGroupCustomValidator{}
@@ -137,12 +137,12 @@ func (v *SecurityGroupCustomValidator) validate(ctx context.Context, sg, old *ju
 
 	for i, rule := range sg.Spec.Ingress {
 		errs = append(errs, validateIngressRule(field.NewPath("spec", "ingress").Index(i), rule)...)
-		errs = append(errs, validatePeerSGsInVpc(ctx, v.Client, field.NewPath("spec", "ingress").Index(i).Child("from"), rule.From, sg.Spec.Vpc, sg.Name)...)
+		errs = append(errs, validatePeerSGsInVpc(ctx, v.Reader, field.NewPath("spec", "ingress").Index(i).Child("from"), rule.From, sg.Spec.Vpc, sg.Name)...)
 	}
 	if sg.Spec.Egress != nil {
 		for i, rule := range *sg.Spec.Egress {
 			errs = append(errs, validateEgressRule(field.NewPath("spec", "egress").Index(i), rule)...)
-			errs = append(errs, validatePeerSGsInVpc(ctx, v.Client, field.NewPath("spec", "egress").Index(i).Child("to"), rule.To, sg.Spec.Vpc, sg.Name)...)
+			errs = append(errs, validatePeerSGsInVpc(ctx, v.Reader, field.NewPath("spec", "egress").Index(i).Child("to"), rule.To, sg.Spec.Vpc, sg.Name)...)
 		}
 	}
 
@@ -226,7 +226,7 @@ func validateProtocolPorts(path *field.Path, proto juneauv1alpha1.SecurityGroupP
 	return errs
 }
 
-func validatePeerSGsInVpc(ctx context.Context, c client.Client, path *field.Path, peers []juneauv1alpha1.SecurityGroupPeer, vpc, selfName string) field.ErrorList {
+func validatePeerSGsInVpc(ctx context.Context, c client.Reader, path *field.Path, peers []juneauv1alpha1.SecurityGroupPeer, vpc, selfName string) field.ErrorList {
 	var errs field.ErrorList
 	for i, peer := range peers {
 		if peer.SecurityGroupRef == nil {

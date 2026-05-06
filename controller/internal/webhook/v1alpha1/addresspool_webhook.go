@@ -43,7 +43,7 @@ var addresspoollog = logf.Log.WithName("addresspool-resource")
 // SetupAddressPoolWebhookWithManager registers the webhook for AddressPool in the manager.
 func SetupAddressPoolWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&juneauloutresmev1alpha1.AddressPool{}).
-		WithValidator(&AddressPoolCustomValidator{Client: mgr.GetClient()}).
+		WithValidator(&AddressPoolCustomValidator{Reader: mgr.GetAPIReader()}).
 		WithDefaulter(&AddressPoolCustomDefaulter{}).
 		Complete()
 }
@@ -79,7 +79,7 @@ func (d *AddressPoolCustomDefaulter) Default(_ context.Context, obj runtime.Obje
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
 // as this struct is used only for temporary operations and does not need to be deeply copied.
 type AddressPoolCustomValidator struct {
-	client.Client
+	client.Reader
 }
 
 var _ webhook.CustomValidator = &AddressPoolCustomValidator{}

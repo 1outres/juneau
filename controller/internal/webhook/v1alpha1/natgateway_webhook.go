@@ -39,7 +39,7 @@ var natgatewaylog = logf.Log.WithName("natgateway-resource")
 // SetupNATGatewayWebhookWithManager registers the webhook for NATGateway in the manager.
 func SetupNATGatewayWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&juneauloutresmev1alpha1.NATGateway{}).
-		WithValidator(&NATGatewayCustomValidator{Client: mgr.GetClient()}).
+		WithValidator(&NATGatewayCustomValidator{Reader: mgr.GetAPIReader()}).
 		WithDefaulter(&NATGatewayCustomDefaulter{}).
 		Complete()
 }
@@ -63,7 +63,7 @@ func (d *NATGatewayCustomDefaulter) Default(ctx context.Context, obj runtime.Obj
 
 // NATGatewayCustomValidator validates NATGateway resources.
 type NATGatewayCustomValidator struct {
-	client.Client
+	client.Reader
 }
 
 var _ webhook.CustomValidator = &NATGatewayCustomValidator{}

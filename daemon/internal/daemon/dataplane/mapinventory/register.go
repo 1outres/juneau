@@ -32,6 +32,7 @@ func RegisterPodEgress(inv *Inventory, p *program.PodEgress) error {
 		registerService,
 		registerServiceACL,
 		registerBackend,
+		registerServiceAffinity,
 		registerCT,
 		registerNAPTSrc,
 		registerVirtualService,
@@ -259,8 +260,28 @@ func registerService(inv *Inventory, p *program.PodEgress) error {
 		Value: Schema{Fields: []Field{
 			FieldU32Named("owner_vpc_id"),
 			FieldU32Named("backend_count"),
-			FieldU32Named("affinity_sec"),
+			FieldU32Named("affinity_sec", "0 unless SVC_FLAG_AFFINITY_CLIENT_IP set"),
 			FieldFlagsNamed("flags", 4, SVCFlagDict),
+			FieldU32Named("gen", "bumped on backend rebind; invalidates cached affinity entries"),
+		}},
+	})
+}
+
+func registerServiceAffinity(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name: "service_affinity_map",
+		Map:  p.Objs.ServiceAffinityMap,
+		Key: Schema{Fields: []Field{
+			FieldIPv4Named("cluster_ip"),
+			FieldPortNamed("port"),
+			FieldEnumNamed("proto", 1, IPProtoEnum),
+			FieldPadOf(1),
+			FieldIPv4Named("client_ip"),
+		}},
+		Value: Schema{Fields: []Field{
+			FieldU32Named("backend_index"),
+			FieldU32Named("backend_gen", "matched against service_val.gen on lookup"),
+			FieldU64Named("expires_at_ns", "CLOCK_MONOTONIC nanoseconds"),
 		}},
 	})
 }

@@ -104,6 +104,14 @@ func (z *ClusterZone) Resolve(ctx context.Context, q Query) (Response, error) {
 		return Response{RCode: RCodeNXDomain, Authoritative: true}, nil
 	}
 
+	// Type=ExternalName: respond with a CNAME pointing at
+	// spec.externalName. We don't inline-resolve the target; the
+	// client's stub resolver re-queries the CNAME target through this
+	// same handler, which falls through to the upstream forwarder.
+	if svc.Spec.Type == corev1.ServiceTypeExternalName {
+		return externalNameResponse(q, svc.Spec.ExternalName, z.defaultTTL)
+	}
+
 	// Headless / external services have no ClusterIP; treat as
 	// NODATA (NoError, no answers) so the client falls back to its
 	// next search domain.
@@ -136,6 +144,56 @@ func (z *ClusterZone) Resolve(ctx context.Context, q Query) (Response, error) {
 		return Response{RCode: RCodeNoError, Authoritative: true}, nil
 	}
 	return res, nil
+}
+
+// externalNameResponse builds the CNAME-only response for a
+// Type=ExternalName Service. The wire encoder (handler.go buildResource)
+// translates Answer.CNAME into a dnsmessage.CNAMEResource. Empty /
+// invalid externalName falls back to NXDOMAIN to avoid leaking that the
+// Service exists but is misconfigured.
+func externalNameResponse(q Query, externalName string, ttl uint32) (Response, error) {
+	target := normaliseFQDN(externalName)
+	if target == "" {
+		return Response{RCode: RCodeNXDomain, Authoritative: true}, nil
+	}
+
+	// CNAME is meaningful only for A / AAAA. The Resolve switch
+	// already filters to those, but mirror it here so the contract is
+	// readable in isolation.
+	if q.Type != TypeA && q.Type != TypeAAAA {
+		return Response{RCode: RCodeNXDomain, Authoritative: true}, nil
+	}
+
+	return Response{
+		RCode:         RCodeNoError,
+		Authoritative: true,
+		Answers: []Answer{{
+			Name:  q.Name,
+			Type:  TypeCNAME,
+			Class: ClassINET,
+			TTL:   ttl,
+			CNAME: target,
+		}},
+	}, nil
+}
+
+// normaliseFQDN trims whitespace and ensures a trailing dot so
+// dnsmessage.NewName accepts the value. Returns "" for empty input or
+// single-label names — Pod search-domain expansion would otherwise
+// resolve them unexpectedly, and ExternalName is documented to take a
+// fully qualified name.
+func normaliseFQDN(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	if !strings.HasSuffix(name, ".") {
+		name += "."
+	}
+	if strings.Count(name, ".") < 2 {
+		return ""
+	}
+	return name
 }
 
 // serviceClusterIPs returns the Service's ClusterIPs in declared
