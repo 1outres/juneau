@@ -40,7 +40,7 @@ var externalnetworklog = logf.Log.WithName("externalnetwork-resource")
 // SetupExternalNetworkWebhookWithManager registers the webhook for ExternalNetwork in the manager.
 func SetupExternalNetworkWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&juneauloutresmev1alpha1.ExternalNetwork{}).
-		WithValidator(&ExternalNetworkCustomValidator{Client: mgr.GetClient()}).
+		WithValidator(&ExternalNetworkCustomValidator{Reader: mgr.GetAPIReader()}).
 		WithDefaulter(&ExternalNetworkCustomDefaulter{}).
 		Complete()
 }
@@ -76,7 +76,7 @@ func (d *ExternalNetworkCustomDefaulter) Default(_ context.Context, obj runtime.
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
 // as this struct is used only for temporary operations and does not need to be deeply copied.
 type ExternalNetworkCustomValidator struct {
-	client.Client
+	client.Reader
 }
 
 var _ webhook.CustomValidator = &ExternalNetworkCustomValidator{}

@@ -70,7 +70,10 @@ func SetupElasticIPAttachmentWebhookWithManager(mgr ctrl.Manager) error {
 	}
 
 	return ctrl.NewWebhookManagedBy(mgr).For(&juneauloutresmev1alpha1.ElasticIPAttachment{}).
-		WithValidator(&ElasticIPAttachmentCustomValidator{Client: mgr.GetClient()}).
+		WithValidator(&ElasticIPAttachmentCustomValidator{
+			Reader:        mgr.GetAPIReader(),
+			IndexedReader: mgr.GetClient(),
+		}).
 		WithDefaulter(&ElasticIPAttachmentCustomDefaulter{}).
 		Complete()
 }
@@ -114,8 +117,15 @@ func (d *ElasticIPAttachmentCustomDefaulter) Default(ctx context.Context, obj ru
 //
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
 // as this struct is used only for temporary operations and does not need to be deeply copied.
+// ElasticIPAttachmentCustomValidator wires an uncached APIReader for
+// freshness-sensitive reference checks (Get on ElasticIP /
+// NetworkInterface) and a cached client for indexed List queries that
+// rely on field indexers registered on the manager's cache. Mixing the
+// two avoids the cache-staleness race at admission time without losing
+// the field-index-backed duplicate-attachment check.
 type ElasticIPAttachmentCustomValidator struct {
-	client.Client
+	Reader        client.Reader
+	IndexedReader client.Reader
 }
 
 var _ webhook.CustomValidator = &ElasticIPAttachmentCustomValidator{}
@@ -163,7 +173,7 @@ func (v *ElasticIPAttachmentCustomValidator) validate(ctx context.Context, obj *
 	elasticIPName := obj.Spec.ElasticIPRef.Name
 	if elasticIPName != "" {
 		var elasticIP juneauloutresmev1alpha1.ElasticIP
-		if err := v.Get(ctx, client.ObjectKey{Name: elasticIPName, Namespace: obj.Namespace}, &elasticIP); err != nil {
+		if err := v.Reader.Get(ctx, client.ObjectKey{Name: elasticIPName, Namespace: obj.Namespace}, &elasticIP); err != nil {
 			if errors.IsNotFound(err) {
 				errs = append(errs, field.Invalid(field.NewPath("spec", "elasticIPRef", "name"), elasticIPName, "referenced ElasticIP does not exist in the same namespace"))
 			} else {
@@ -177,7 +187,7 @@ func (v *ElasticIPAttachmentCustomValidator) validate(ctx context.Context, obj *
 	networkInterfaceName := obj.Spec.TargetRef.NetworkInterfaceName
 	if networkInterfaceName != "" {
 		var networkInterface juneauloutresmev1alpha1.NetworkInterface
-		if err := v.Get(ctx, client.ObjectKey{Name: networkInterfaceName, Namespace: obj.Namespace}, &networkInterface); err != nil {
+		if err := v.Reader.Get(ctx, client.ObjectKey{Name: networkInterfaceName, Namespace: obj.Namespace}, &networkInterface); err != nil {
 			if errors.IsNotFound(err) {
 				errs = append(errs, field.Invalid(field.NewPath("spec", "targetRef", "networkInterfaceName"), networkInterfaceName, "referenced NetworkInterface does not exist in the same namespace"))
 			} else {
@@ -199,7 +209,7 @@ func (v *ElasticIPAttachmentCustomValidator) validate(ctx context.Context, obj *
 
 	if elasticIPName != "" {
 		var byElasticIP juneauloutresmev1alpha1.ElasticIPAttachmentList
-		if err := v.List(ctx, &byElasticIP,
+		if err := v.IndexedReader.List(ctx, &byElasticIP,
 			client.InNamespace(obj.Namespace),
 			client.MatchingFields{"spec.elasticIPRef.name": elasticIPName},
 		); err != nil {
@@ -219,7 +229,7 @@ func (v *ElasticIPAttachmentCustomValidator) validate(ctx context.Context, obj *
 
 	if networkInterfaceName != "" {
 		var byNetworkInterface juneauloutresmev1alpha1.ElasticIPAttachmentList
-		if err := v.List(ctx, &byNetworkInterface,
+		if err := v.IndexedReader.List(ctx, &byNetworkInterface,
 			client.InNamespace(obj.Namespace),
 			client.MatchingFields{"spec.targetRef.networkInterfaceName": networkInterfaceName},
 		); err != nil {

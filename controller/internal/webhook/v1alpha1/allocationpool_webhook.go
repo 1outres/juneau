@@ -41,7 +41,7 @@ var allocationpoollog = logf.Log.WithName("allocationpool-resource")
 // SetupAllocationPoolWebhookWithManager registers the webhook for AllocationPool in the manager.
 func SetupAllocationPoolWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&juneauloutresmev1alpha1.AllocationPool{}).
-		WithValidator(&AllocationPoolCustomValidator{Client: mgr.GetClient()}).
+		WithValidator(&AllocationPoolCustomValidator{Reader: mgr.GetAPIReader()}).
 		WithDefaulter(&AllocationPoolCustomDefaulter{}).
 		Complete()
 }
@@ -85,7 +85,7 @@ func (d *AllocationPoolCustomDefaulter) Default(_ context.Context, obj runtime.O
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
 // as this struct is used only for temporary operations and does not need to be deeply copied.
 type AllocationPoolCustomValidator struct {
-	client.Client
+	client.Reader
 }
 
 var _ webhook.CustomValidator = &AllocationPoolCustomValidator{}

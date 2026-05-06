@@ -40,7 +40,7 @@ var routetablelog = logf.Log.WithName("routetable-resource")
 // SetupRouteTableWebhookWithManager registers the webhook for RouteTable in the manager.
 func SetupRouteTableWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&juneauv1alpha1.RouteTable{}).
-		WithValidator(&RouteTableCustomValidator{Client: mgr.GetClient()}).
+		WithValidator(&RouteTableCustomValidator{Reader: mgr.GetAPIReader()}).
 		WithDefaulter(&RouteTableCustomDefaulter{}).
 		Complete()
 }
@@ -66,7 +66,7 @@ func (d *RouteTableCustomDefaulter) Default(ctx context.Context, obj runtime.Obj
 
 // RouteTableCustomValidator validates RouteTable resources.
 type RouteTableCustomValidator struct {
-	client.Client
+	client.Reader
 }
 
 var _ webhook.CustomValidator = &RouteTableCustomValidator{}

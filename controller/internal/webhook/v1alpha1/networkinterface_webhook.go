@@ -41,7 +41,7 @@ var networkinterfacelog = logf.Log.WithName("networkinterface-resource")
 // SetupNetworkInterfaceWebhookWithManager registers the webhook for NetworkInterface in the manager.
 func SetupNetworkInterfaceWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&juneauv1alpha1.NetworkInterface{}).
-		WithValidator(&NetworkInterfaceCustomValidator{Client: mgr.GetClient()}).
+		WithValidator(&NetworkInterfaceCustomValidator{Reader: mgr.GetAPIReader()}).
 		WithDefaulter(&NetworkInterfaceCustomDefaulter{}).
 		Complete()
 }
@@ -72,7 +72,7 @@ func (d *NetworkInterfaceCustomDefaulter) Default(ctx context.Context, obj runti
 // NetworkInterfaceCustomValidator struct is responsible for validating the NetworkInterface resource
 // when it is created, updated, or deleted.
 type NetworkInterfaceCustomValidator struct {
-	client.Client
+	client.Reader
 }
 
 var _ webhook.CustomValidator = &NetworkInterfaceCustomValidator{}
@@ -88,7 +88,7 @@ func (v *NetworkInterfaceCustomValidator) ValidateCreate(ctx context.Context, ob
 	var errs field.ErrorList
 	specPath := field.NewPath("spec")
 
-	subnet, subnetErrs, err := validateNetworkInterfaceSubnet(ctx, v.Client, networkinterface, specPath.Child("subnet"))
+	subnet, subnetErrs, err := validateNetworkInterfaceSubnet(ctx, v.Reader, networkinterface, specPath.Child("subnet"))
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +97,7 @@ func (v *NetworkInterfaceCustomValidator) ValidateCreate(ctx context.Context, ob
 	addressErrs := validateNetworkInterfaceAddress(networkinterface.Spec.Address, subnet, specPath.Child("address"))
 	errs = append(errs, addressErrs...)
 
-	sgErrs, sgErr := validateNetworkInterfaceSecurityGroups(ctx, v.Client, networkinterface, subnet, specPath.Child("securityGroups"))
+	sgErrs, sgErr := validateNetworkInterfaceSecurityGroups(ctx, v.Reader, networkinterface, subnet, specPath.Child("securityGroups"))
 	if sgErr != nil {
 		return nil, sgErr
 	}
@@ -169,7 +169,7 @@ func (v *NetworkInterfaceCustomValidator) ValidateUpdate(ctx context.Context, ol
 		}
 	}
 
-	sgErrs, sgErr := validateNetworkInterfaceSecurityGroups(ctx, v.Client, networkinterface, subnet, specPath.Child("securityGroups"))
+	sgErrs, sgErr := validateNetworkInterfaceSecurityGroups(ctx, v.Reader, networkinterface, subnet, specPath.Child("securityGroups"))
 	if sgErr != nil {
 		return nil, sgErr
 	}
@@ -195,7 +195,7 @@ func (v *NetworkInterfaceCustomValidator) ValidateDelete(ctx context.Context, ob
 	return nil, nil
 }
 
-func validateNetworkInterfaceSubnet(ctx context.Context, c client.Client, networkinterface *juneauv1alpha1.NetworkInterface, path *field.Path) (*juneauv1alpha1.Subnet, field.ErrorList, error) {
+func validateNetworkInterfaceSubnet(ctx context.Context, c client.Reader, networkinterface *juneauv1alpha1.NetworkInterface, path *field.Path) (*juneauv1alpha1.Subnet, field.ErrorList, error) {
 	if networkinterface.Spec.Subnet == "" {
 		return nil, nil, nil
 	}
@@ -245,7 +245,7 @@ func validateNetworkInterfaceAddress(address string, subnet *juneauv1alpha1.Subn
 // The first return is the list of field errors; the second is a
 // transport-level error (e.g. unrelated apiserver failure) that should
 // abort admission.
-func validateNetworkInterfaceSecurityGroups(ctx context.Context, c client.Client, iface *juneauv1alpha1.NetworkInterface, subnet *juneauv1alpha1.Subnet, path *field.Path) (field.ErrorList, error) {
+func validateNetworkInterfaceSecurityGroups(ctx context.Context, c client.Reader, iface *juneauv1alpha1.NetworkInterface, subnet *juneauv1alpha1.Subnet, path *field.Path) (field.ErrorList, error) {
 	if len(iface.Spec.SecurityGroups) == 0 {
 		return nil, nil
 	}

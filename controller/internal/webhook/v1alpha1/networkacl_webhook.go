@@ -42,7 +42,7 @@ var networkacllog = logf.Log.WithName("networkacl-resource")
 // webhook.
 func SetupNetworkACLWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&juneauv1alpha1.NetworkACL{}).
-		WithValidator(&NetworkACLCustomValidator{Client: mgr.GetClient()}).
+		WithValidator(&NetworkACLCustomValidator{Reader: mgr.GetAPIReader()}).
 		Complete()
 }
 
@@ -61,7 +61,7 @@ func SetupNetworkACLWebhookWithManager(mgr ctrl.Manager) error {
 //
 // +kubebuilder:object:generate=false
 type NetworkACLCustomValidator struct {
-	client.Client
+	client.Reader
 }
 
 var _ webhook.CustomValidator = &NetworkACLCustomValidator{}

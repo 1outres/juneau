@@ -41,7 +41,7 @@ var subnetlog = logf.Log.WithName("subnet-resource")
 // SetupSubnetWebhookWithManager registers the webhook for Subnet in the manager.
 func SetupSubnetWebhookWithManager(mgr ctrl.Manager, serviceCIDR *net.IPNet) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&juneauv1alpha1.Subnet{}).
-		WithValidator(&SubnetCustomValidator{Client: mgr.GetClient(), ServiceCIDR: serviceCIDR}).
+		WithValidator(&SubnetCustomValidator{Reader: mgr.GetAPIReader(), ServiceCIDR: serviceCIDR}).
 		WithDefaulter(&SubnetCustomDefaulter{}).
 		Complete()
 }
@@ -79,7 +79,7 @@ func (d *SubnetCustomDefaulter) Default(ctx context.Context, obj runtime.Object)
 // SubnetCustomValidator struct is responsible for validating the Subnet resource
 // when it is created, updated, or deleted.
 type SubnetCustomValidator struct {
-	client.Client
+	client.Reader
 	ServiceCIDR *net.IPNet
 }
 
@@ -96,28 +96,28 @@ func (v *SubnetCustomValidator) ValidateCreate(ctx context.Context, obj runtime.
 	var errs field.ErrorList
 
 	errPath := field.NewPath("spec")
-	vpcErrs, err := validateSubnetVpcReference(ctx, v.Client, subnet, errPath)
+	vpcErrs, err := validateSubnetVpcReference(ctx, v.Reader, subnet, errPath)
 	if err != nil {
 		return nil, err
 	}
 	errs = append(errs, vpcErrs...)
 	errs = append(errs, validateSubnetCIDR(subnet.Spec.CIDR, errPath.Child("cidr"))...)
-	overlapErrs, err := validateSubnetCIDROverlap(ctx, v.Client, subnet, errPath.Child("cidr"))
+	overlapErrs, err := validateSubnetCIDROverlap(ctx, v.Reader, subnet, errPath.Child("cidr"))
 	if err != nil {
 		return nil, err
 	}
 	errs = append(errs, overlapErrs...)
-	serviceErrs, err := validateSubnetServiceCIDROverlap(ctx, v.Client, subnet, v.ServiceCIDR, errPath.Child("cidr"))
+	serviceErrs, err := validateSubnetServiceCIDROverlap(ctx, v.Reader, subnet, v.ServiceCIDR, errPath.Child("cidr"))
 	if err != nil {
 		return nil, err
 	}
 	errs = append(errs, serviceErrs...)
-	rtErrs, err := validateSubnetRouteTable(ctx, v.Client, subnet, errPath.Child("routeTable"))
+	rtErrs, err := validateSubnetRouteTable(ctx, v.Reader, subnet, errPath.Child("routeTable"))
 	if err != nil {
 		return nil, err
 	}
 	errs = append(errs, rtErrs...)
-	aclErrs, err := validateSubnetNetworkACL(ctx, v.Client, subnet, errPath.Child("networkACL"))
+	aclErrs, err := validateSubnetNetworkACL(ctx, v.Reader, subnet, errPath.Child("networkACL"))
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +155,7 @@ func (v *SubnetCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newO
 		errs = append(errs, field.Invalid(errPath.Child("cidr"), subnet.Spec.CIDR, "spec.cidr is immutable"))
 	}
 
-	rtErrs, err := validateSubnetRouteTable(ctx, v.Client, subnet, errPath.Child("routeTable"))
+	rtErrs, err := validateSubnetRouteTable(ctx, v.Reader, subnet, errPath.Child("routeTable"))
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +167,7 @@ func (v *SubnetCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newO
 	// ACL is being torn down concurrently with an unrelated Subnet
 	// edit.
 	if subnet.Spec.NetworkACL != oldSubnet.Spec.NetworkACL {
-		aclErrs, err := validateSubnetNetworkACL(ctx, v.Client, subnet, errPath.Child("networkACL"))
+		aclErrs, err := validateSubnetNetworkACL(ctx, v.Reader, subnet, errPath.Child("networkACL"))
 		if err != nil {
 			return nil, err
 		}
@@ -200,7 +200,7 @@ func (v *SubnetCustomValidator) ValidateDelete(ctx context.Context, obj runtime.
 	return nil, nil
 }
 
-func validateSubnetVpcReference(ctx context.Context, c client.Client, subnet *juneauv1alpha1.Subnet, path *field.Path) (field.ErrorList, error) {
+func validateSubnetVpcReference(ctx context.Context, c client.Reader, subnet *juneauv1alpha1.Subnet, path *field.Path) (field.ErrorList, error) {
 	var errs field.ErrorList
 
 	var vpc juneauv1alpha1.Vpc
@@ -242,7 +242,7 @@ func validateSubnetCIDR(cidr string, path *field.Path) field.ErrorList {
 	return errs
 }
 
-func validateSubnetCIDROverlap(ctx context.Context, c client.Client, subnet *juneauv1alpha1.Subnet, path *field.Path) (field.ErrorList, error) {
+func validateSubnetCIDROverlap(ctx context.Context, c client.Reader, subnet *juneauv1alpha1.Subnet, path *field.Path) (field.ErrorList, error) {
 	_, subnetCIDR, err := net.ParseCIDR(subnet.Spec.CIDR)
 	if err != nil {
 		return nil, nil
@@ -279,7 +279,7 @@ func cidrsOverlap(a, b *net.IPNet) bool {
 // to a non-existent RouteTable, an RT in a different Vpc, or whose name
 // is "default" (the default Subnet must use the Vpc's main RouteTable so
 // the controller-managed default route stays attached to it).
-func validateSubnetRouteTable(ctx context.Context, c client.Client, subnet *juneauv1alpha1.Subnet, path *field.Path) (field.ErrorList, error) {
+func validateSubnetRouteTable(ctx context.Context, c client.Reader, subnet *juneauv1alpha1.Subnet, path *field.Path) (field.ErrorList, error) {
 	if subnet.Spec.RouteTable == "" {
 		return nil, nil
 	}
@@ -312,7 +312,7 @@ func validateSubnetRouteTable(ctx context.Context, c client.Client, subnet *june
 // the field is unchanged. Re-validating an immutable-ish field on
 // every update tends to deadlock finalizer-driven updates if the
 // referenced object is concurrently torn down.
-func validateSubnetNetworkACL(ctx context.Context, c client.Client, subnet *juneauv1alpha1.Subnet, path *field.Path) (field.ErrorList, error) {
+func validateSubnetNetworkACL(ctx context.Context, c client.Reader, subnet *juneauv1alpha1.Subnet, path *field.Path) (field.ErrorList, error) {
 	if subnet.Spec.NetworkACL == "" {
 		return nil, nil
 	}
@@ -337,7 +337,7 @@ func validateSubnetNetworkACL(ctx context.Context, c client.Client, subnet *june
 // overlaps with the cluster Service CIDR when the owning VPC has Service
 // routing enabled. Without this check, Pod IPs could collide with
 // ClusterIPs and the data plane would not be able to disambiguate.
-func validateSubnetServiceCIDROverlap(ctx context.Context, c client.Client, subnet *juneauv1alpha1.Subnet, serviceCIDR *net.IPNet, path *field.Path) (field.ErrorList, error) {
+func validateSubnetServiceCIDROverlap(ctx context.Context, c client.Reader, subnet *juneauv1alpha1.Subnet, serviceCIDR *net.IPNet, path *field.Path) (field.ErrorList, error) {
 	if serviceCIDR == nil {
 		return nil, nil
 	}

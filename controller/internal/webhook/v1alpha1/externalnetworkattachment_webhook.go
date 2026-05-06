@@ -39,7 +39,7 @@ var externalnetworkattachmentlog = logf.Log.WithName("externalnetworkattachment-
 // SetupExternalNetworkAttachmentWebhookWithManager registers the webhook for ExternalNetworkAttachment in the manager.
 func SetupExternalNetworkAttachmentWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&juneauloutresmev1alpha1.ExternalNetworkAttachment{}).
-		WithValidator(&ExternalNetworkAttachmentCustomValidator{Client: mgr.GetClient()}).
+		WithValidator(&ExternalNetworkAttachmentCustomValidator{Reader: mgr.GetAPIReader()}).
 		WithDefaulter(&ExternalNetworkAttachmentCustomDefaulter{}).
 		Complete()
 }
@@ -63,7 +63,7 @@ func (d *ExternalNetworkAttachmentCustomDefaulter) Default(ctx context.Context, 
 
 // ExternalNetworkAttachmentCustomValidator validates ExternalNetworkAttachment resources.
 type ExternalNetworkAttachmentCustomValidator struct {
-	client.Client
+	client.Reader
 }
 
 var _ webhook.CustomValidator = &ExternalNetworkAttachmentCustomValidator{}
