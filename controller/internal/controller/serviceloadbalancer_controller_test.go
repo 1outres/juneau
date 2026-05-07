@@ -77,10 +77,17 @@ var _ = Describe("ServiceLoadBalancer reconciler (Phase 2)", func() {
 			g.Expect(reconcileServiceLoadBalancer(slb.Name)).To(Succeed())
 			fresh := getServiceLoadBalancer(slb.Name)
 			g.Expect(fresh.Status.VIP).To(Equal("10.140.0.1"))
-			g.Expect(fresh.Status.Phase).To(Equal(juneauv1alpha1.ServiceLoadBalancerPhaseAllocated))
+			// No EndpointSlices in this test → Degraded with
+			// Available=False is the expected steady state until
+			// backends appear. Phase 3 owns this transition.
+			g.Expect(fresh.Status.Phase).To(Equal(juneauv1alpha1.ServiceLoadBalancerPhaseDegraded))
 			allocated := meta.FindStatusCondition(fresh.Status.Conditions, juneauv1alpha1.ServiceLoadBalancerConditionAllocated)
 			g.Expect(allocated).NotTo(BeNil())
 			g.Expect(allocated.Status).To(Equal(metav1.ConditionTrue))
+			available := meta.FindStatusCondition(fresh.Status.Conditions, juneauv1alpha1.ServiceLoadBalancerConditionAvailable)
+			g.Expect(available).NotTo(BeNil())
+			g.Expect(available.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(available.Reason).To(Equal(juneauv1alpha1.ServiceLoadBalancerReasonNoReadyBackends))
 			g.Expect(fresh.Status.AllocationClaimName).NotTo(BeEmpty())
 			g.Expect(fresh.Status.Ports).To(HaveLen(1))
 			g.Expect(fresh.Status.Ports[0].Port).To(Equal(int32(80)))

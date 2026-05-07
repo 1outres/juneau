@@ -21,11 +21,11 @@ import (
 	stderrors "errors"
 	"fmt"
 	"reflect"
-	"sort"
 	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -160,7 +160,12 @@ func (r *ServiceLoadBalancerReconciler) reconcileNormal(ctx context.Context, res
 		return ctrl.Result{}, err
 	}
 
-	desired := buildDesiredStatus(resource, svc)
+	endpointAgg, err := r.collectEndpointAggregate(ctx, svc)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	desired := buildDesiredStatus(resource, svc, endpointAgg)
 
 	poolNames, err := r.resolvePoolRefs(ctx, resource)
 	if err != nil {
@@ -229,7 +234,6 @@ func (r *ServiceLoadBalancerReconciler) reconcileNormal(ctx context.Context, res
 	desired.VIP = address
 	desired.AddressPool = addressPool
 	desired.AllocationClaimName = serviceLoadBalancerClaimName(resource)
-	desired.Phase = juneauv1alpha1.ServiceLoadBalancerPhaseAllocated
 	meta.SetStatusCondition(&desired.Conditions, metav1.Condition{
 		Type:               juneauv1alpha1.ServiceLoadBalancerConditionAllocated,
 		Status:             metav1.ConditionTrue,
@@ -237,18 +241,31 @@ func (r *ServiceLoadBalancerReconciler) reconcileNormal(ctx context.Context, res
 		Message:            fmt.Sprintf("VIP %s allocated from AddressPool %q", address, addressPool),
 		ObservedGeneration: resource.Generation,
 	})
-	// Available is owned by Phase 3 (advertisingNodes calculation).
-	// Until that lands we report Unknown / AwaitingDataplane so
-	// downstream consumers and observability tools see something
-	// stable rather than a missing condition that flips when a later
-	// phase is deployed.
-	meta.SetStatusCondition(&desired.Conditions, metav1.Condition{
-		Type:               juneauv1alpha1.ServiceLoadBalancerConditionAvailable,
-		Status:             metav1.ConditionUnknown,
-		Reason:             juneauv1alpha1.ServiceLoadBalancerReasonAwaitingDataplane,
-		Message:            "advertising-node calculation has not been performed yet",
-		ObservedGeneration: resource.Generation,
-	})
+
+	// Available reflects whether at least one node currently holds a
+	// ready local backend. The condition is not just informational:
+	// the BGP source (Phase 5) reads advertisingNodes to decide what
+	// to advertise, so we make sure the data is consistent with the
+	// condition we publish.
+	if len(desired.AdvertisingNodes) > 0 {
+		desired.Phase = juneauv1alpha1.ServiceLoadBalancerPhaseReady
+		meta.SetStatusCondition(&desired.Conditions, metav1.Condition{
+			Type:               juneauv1alpha1.ServiceLoadBalancerConditionAvailable,
+			Status:             metav1.ConditionTrue,
+			Reason:             juneauv1alpha1.ServiceLoadBalancerReasonReady,
+			Message:            fmt.Sprintf("%d node(s) advertising the VIP", len(desired.AdvertisingNodes)),
+			ObservedGeneration: resource.Generation,
+		})
+	} else {
+		desired.Phase = juneauv1alpha1.ServiceLoadBalancerPhaseDegraded
+		meta.SetStatusCondition(&desired.Conditions, metav1.Condition{
+			Type:               juneauv1alpha1.ServiceLoadBalancerConditionAvailable,
+			Status:             metav1.ConditionFalse,
+			Reason:             juneauv1alpha1.ServiceLoadBalancerReasonNoReadyBackends,
+			Message:            "no node currently has a ready local backend",
+			ObservedGeneration: resource.Generation,
+		})
+	}
 
 	if err := r.syncServiceStatus(ctx, svc, address); err != nil {
 		return ctrl.Result{}, err
@@ -459,50 +476,34 @@ func addressPoolForClaim(claim *juneauv1alpha1.AllocationClaim, pools []poolRef)
 	return pools[0].AddressPool
 }
 
-// buildDesiredStatus copies the fields that depend purely on the
-// parent Service into the next Status so we don't have to keep
-// stale port/serviceRef state around. Conditions are seeded from the
-// existing status and overwritten as the reconcile progresses.
-func buildDesiredStatus(resource *juneauv1alpha1.ServiceLoadBalancer, svc *corev1.Service) juneauv1alpha1.ServiceLoadBalancerStatus {
+// buildDesiredStatus copies the fields that depend on the parent
+// Service and EndpointSlices into the next Status so we don't keep
+// stale port/advertisingNodes state around. Conditions are seeded
+// from the existing status and overwritten as the reconcile
+// progresses.
+func buildDesiredStatus(resource *juneauv1alpha1.ServiceLoadBalancer, svc *corev1.Service, agg endpointSlicesAggregate) juneauv1alpha1.ServiceLoadBalancerStatus {
+	advertising := append([]string(nil), agg.AdvertisingNodes...)
 	desired := juneauv1alpha1.ServiceLoadBalancerStatus{
 		ObservedGeneration:  resource.Generation,
 		Phase:               resource.Status.Phase,
 		VIP:                 resource.Status.VIP,
 		AddressPool:         resource.Status.AddressPool,
-		Ports:               buildPortsFromService(svc),
-		AdvertisingNodes:    append([]string(nil), resource.Status.AdvertisingNodes...),
-		BackendSummary:      resource.Status.BackendSummary,
+		Ports:               portsFromServiceWithEndpoints(svc, agg),
+		AdvertisingNodes:    advertising,
+		BackendSummary:      summariseBackends(agg),
 		AllocationClaimName: resource.Status.AllocationClaimName,
 		Conditions:          append([]metav1.Condition(nil), resource.Status.Conditions...),
 	}
 	return desired
 }
 
-// buildPortsFromService maps Service.spec.ports into the SLB status
-// shape. String targetPorts are deferred to Phase 3 (EndpointSlice
-// resolution); the field is left at 0 in that case so consumers can
-// detect the unresolved state without parsing strings.
-func buildPortsFromService(svc *corev1.Service) []juneauv1alpha1.ServiceLoadBalancerPort {
-	out := make([]juneauv1alpha1.ServiceLoadBalancerPort, 0, len(svc.Spec.Ports))
-	for _, p := range svc.Spec.Ports {
-		var target int32
-		if p.TargetPort.Type == 0 { // intstr.Int
-			target = p.TargetPort.IntVal
-		}
-		out = append(out, juneauv1alpha1.ServiceLoadBalancerPort{
-			Name:       p.Name,
-			Protocol:   p.Protocol,
-			Port:       p.Port,
-			TargetPort: target,
-		})
+// summariseBackends reduces the EndpointSlice aggregate to the
+// per-Service BackendSummary surfaced in status.
+func summariseBackends(agg endpointSlicesAggregate) juneauv1alpha1.ServiceLoadBalancerBackendSummary {
+	return juneauv1alpha1.ServiceLoadBalancerBackendSummary{
+		TotalReady:      agg.TotalReady,
+		LocalReadyNodes: int32(len(agg.AdvertisingNodes)),
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Port != out[j].Port {
-			return out[i].Port < out[j].Port
-		}
-		return string(out[i].Protocol) < string(out[j].Protocol)
-	})
-	return out
 }
 
 // syncServiceStatus mirrors the allocated VIP into the parent
@@ -619,6 +620,25 @@ func (r *ServiceLoadBalancerReconciler) SetupWithManager(mgr ctrl.Manager) error
 				}
 				return []reconcile.Request{{
 					NamespacedName: client.ObjectKey{Namespace: svc.Namespace, Name: ServiceLoadBalancerNameForService(svc.Name)},
+				}}
+			}),
+		).
+		// EndpointSlice → SLB reconcile: the upstream
+		// kubernetes.io/service-name label encodes the parent Service
+		// name, which (by deterministic naming) is also the SLB name.
+		Watches(
+			&discoveryv1.EndpointSlice{},
+			handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
+				slice, ok := obj.(*discoveryv1.EndpointSlice)
+				if !ok {
+					return nil
+				}
+				svcName := slice.Labels[kubernetesServiceLabel]
+				if svcName == "" {
+					return nil
+				}
+				return []reconcile.Request{{
+					NamespacedName: client.ObjectKey{Namespace: slice.Namespace, Name: ServiceLoadBalancerNameForService(svcName)},
 				}}
 			}),
 		).
