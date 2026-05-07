@@ -76,6 +76,14 @@
 #define MAX_NAPT_SRC 4096
 #endif
 
+#ifndef MAX_NODE_UNDERLAY
+// MAX_NODE_UNDERLAY bounds node_underlay, the cluster-wide set of
+// Juneau Node underlay IPs. One entry per Node; clusters are typically
+// O(100) Nodes so 4096 is comfortably oversized while keeping the map
+// small enough to scan when debugging.
+#define MAX_NODE_UNDERLAY 4096
+#endif
+
 #ifndef MAX_VIRTUAL_SERVICE_MAP
 #define MAX_VIRTUAL_SERVICE_MAP 16384
 #endif
@@ -156,6 +164,20 @@
 // flushing affected entries so re-evaluation occurs. See
 // daemon/internal/daemon/dataplane/policy for that bookkeeping.
 #define CT_ACTION_POLICY_PASS 9
+
+// LB_OUT / LB_IN: combined DNAT+SNAT for Service.type=LoadBalancer.
+// External clients arrive at any node via BGP-ECMP'd traffic landing on
+// the underlay; node_ingress matches the destination against
+// service_map and (for entries flagged SVC_FLAG_LOAD_BALANCER) rewrites
+// dst → backend Pod IP and src → this node's underlay IP with an
+// allocated source port (so per-flow reverse keys remain unique).
+// LB_OUT is the forward leg; the reverse leg (LB_IN) fires when the
+// backend's reply, addressed to the receiver node's underlay IP,
+// arrives at node_ingress on the same node and is rewritten back to
+// (VIP, original client). Both legs live in the HOST scope because
+// external clients have no VPC identity.
+#define CT_ACTION_LB_OUT 10
+#define CT_ACTION_LB_IN  11
 
 // BACKEND_SUBNET_ID_UNDERLAY is the sentinel value the user-space
 // service reconciler writes into backend_val.backend_subnet_id when an
@@ -296,6 +318,33 @@ struct {
   __type(value, __u32);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } host_underlay SEC(".maps");
+
+// node_underlay holds every Juneau Node's underlay IPv4 in the
+// cluster, keyed by the IP itself in network byte order. Existence is
+// the verdict (the value byte is unused). Populated by the daemon's
+// node-underlay reconciler from juneau_node NetworkEndpoints, with
+// the local Node's IP also seeded synchronously at start-up so the
+// LB reverse path is reachable before the first informer event.
+//
+// Used by the LB data path:
+//   - pod_egress checks this map when a Pod sends to a destination
+//     outside its VPC's FIB. A hit means "this is a Node IP; route
+//     via the underlay" so the reply leg of an LB flow whose
+//     receiver SNAT'd to a Node IP can leave the backend's VPC and
+//     reach the receiver node's main interface.
+//   - node_ingress consults host_underlay (single-entry, faster) to
+//     match the local Node's IP for the LB_IN reverse path.
+struct node_underlay_key {
+  __u32 ipaddr;     // network byte order
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_NODE_UNDERLAY);
+  __type(key, struct node_underlay_key);
+  __type(value, __u8);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} node_underlay SEC(".maps");
 
 // service_nat_ip holds this node's per-(Node × provider Vpc) SNAT
 // source IPs (values in network byte order) keyed by the provider's

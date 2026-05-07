@@ -1785,6 +1785,59 @@ static __always_inline int handle_napt(struct __sk_buff *skb,
   return bpf_redirect(fib_params.ifindex, 0);
 }
 
+// handle_pod_to_node_underlay forwards a Pod-originated packet whose
+// destination is a Juneau Node's underlay IP via the kernel's main
+// routing table, bypassing the VPC FIB. This is the reverse leg of
+// LB flows where the receiver Node SNAT'd the source to its own
+// underlay IP; the backend Pod's reply targets that Node IP and the
+// VPC FIB has no route for it, so we fall back to the kernel FIB.
+//
+// The path is intentionally narrow — only IPs explicitly enrolled in
+// node_underlay (one per cluster Node, via the daemon's reconciler)
+// take this route. Egress policy (NetworkACL / SecurityGroup) has
+// already run by the time we reach handle_l3; SG/ACL rules can still
+// deny Pod→NodeIP traffic if the operator wants to block it.
+static __always_inline int handle_pod_to_node_underlay(struct __sk_buff *skb,
+                                                       struct iphdr *iph,
+                                                       __u32 vpc_id) {
+  struct bpf_fib_lookup fib_params = {};
+  fib_params.family = AF_INET;
+  fib_params.l4_protocol = iph->protocol;
+  fib_params.ipv4_dst = iph->daddr;
+  fib_params.ifindex = skb->ifindex;
+
+  long rc = bpf_fib_lookup(skb, &fib_params, sizeof(fib_params), 0);
+  if (rc == BPF_FIB_LKUP_RET_NO_NEIGH) {
+    // Let the host stack resolve the next-hop via ARP synchronously
+    // rather than dropping. Subsequent packets on the same flow will
+    // succeed once the neighbor is cached.
+    __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, vpc_id);
+    trace_emit_redirect_l3(skb, __tid, TRACE_REASON_REDIRECT_IFINDEX,
+                           TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                           vpc_id, 0, fib_params.ifindex);
+    return TC_ACT_OK;
+  }
+  if (rc != BPF_FIB_LKUP_RET_SUCCESS) {
+    __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, vpc_id);
+    trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, vpc_id, 0);
+    return TC_ACT_SHOT;
+  }
+
+  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_dest),
+                          fib_params.dmac, ETH_ALEN, 0) < 0)
+    return TC_ACT_SHOT;
+  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_source),
+                          fib_params.smac, ETH_ALEN, 0) < 0)
+    return TC_ACT_SHOT;
+
+  __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, vpc_id);
+  trace_emit_redirect_l3(skb, __tid, TRACE_REASON_REDIRECT_IFINDEX,
+                         TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                         vpc_id, 0, fib_params.ifindex);
+  return bpf_redirect(fib_params.ifindex, 0);
+}
+
 static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
                                      const struct subnet_val *subnet) {
   void *data_end = skb_data_end(skb);
@@ -1793,6 +1846,14 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
     return TC_ACT_SHOT;
 
   __u32 dst_be = iph->daddr; // keep network order for LPM trie
+
+  // Node-IP fast path: when the Pod is replying to a Node's underlay
+  // address (the LB SNAT source for the original request), the VPC
+  // FIB never holds a matching route, so we'd fall through to drop.
+  // Bypass the VPC and route via the kernel's main FIB.
+  struct node_underlay_key nuk = {.ipaddr = dst_be};
+  if (bpf_map_lookup_elem(&node_underlay, &nuk))
+    return handle_pod_to_node_underlay(skb, iph, subnet->vpc_id);
 
   __u32 tid = subnet->table_id;
   void *fib_inner_map = bpf_map_lookup_elem(&fib_map, &tid);

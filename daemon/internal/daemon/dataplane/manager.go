@@ -56,6 +56,7 @@ type Manager struct {
 	subnetRunner       *runner.Runner
 	arpRunner          *runner.Runner
 	fdbRunner          *runner.Runner
+	nodeUnderlayRunner *runner.Runner
 	podIfaceRunner     *runner.Runner
 	podAttacherRunner  *runner.Runner
 	fibRunner          *runner.Runner
@@ -205,6 +206,21 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 		return fmt.Errorf("watch NWEP (fdb): %w", err)
 	}
 	m.fdbRunner.Start(ctx, 1)
+
+	// node_underlay tracks every Juneau Node's underlay IP. Seed with
+	// this Node's own IP synchronously so the LB reverse path is
+	// usable before the controller-side NetworkEndpoint reconciler has
+	// published Status.NodeIP for our juneau_node NWEP.
+	nodeUnderlayReconciler, err := reconciler.NewNodeUnderlay(
+		m.client, m.podEgress, []net.IP{m.juNodeUnderlayIP})
+	if err != nil {
+		return fmt.Errorf("init node-underlay reconciler: %w", err)
+	}
+	m.nodeUnderlayRunner = runner.New(nodeUnderlayReconciler)
+	if err := m.nodeUnderlayRunner.Watch(m.nwepInformer, runner.MetaNamespaceKey); err != nil {
+		return fmt.Errorf("watch NWEP (node-underlay): %w", err)
+	}
+	m.nodeUnderlayRunner.Start(ctx, 1)
 
 	m.podIfaceRunner = runner.New(reconciler.NewPodIface(m.client, m.podEgress, m.nodeName))
 	if err := m.podIfaceRunner.Watch(m.nwepInformer, runner.MetaNamespaceKey); err != nil {
@@ -547,6 +563,7 @@ func (m *Manager) Stop() error {
 		m.subnetRunner,
 		m.arpRunner,
 		m.fdbRunner,
+		m.nodeUnderlayRunner,
 		m.podIfaceRunner,
 		m.podAttacherRunner,
 		m.fibRunner,

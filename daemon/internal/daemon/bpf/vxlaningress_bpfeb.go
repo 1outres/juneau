@@ -167,6 +167,11 @@ type VxlanIngressNatOutside struct {
 	Addr uint32
 }
 
+type VxlanIngressNodeUnderlayKey struct {
+	_      structs.HostLayout
+	Ipaddr uint32
+}
+
 type VxlanIngressServiceAclKey struct {
 	_           structs.HostLayout
 	ClusterIp   uint32
@@ -392,6 +397,7 @@ type VxlanIngressMapSpecs struct {
 	NaptSrc               *ebpf.MapSpec `ebpf:"napt_src"`
 	NatDnatMap            *ebpf.MapSpec `ebpf:"nat_dnat_map"`
 	NatSnatMap            *ebpf.MapSpec `ebpf:"nat_snat_map"`
+	NodeUnderlay          *ebpf.MapSpec `ebpf:"node_underlay"`
 	ServiceAclMap         *ebpf.MapSpec `ebpf:"service_acl_map"`
 	ServiceAffinityMap    *ebpf.MapSpec `ebpf:"service_affinity_map"`
 	ServiceMap            *ebpf.MapSpec `ebpf:"service_map"`
@@ -452,6 +458,7 @@ type VxlanIngressMaps struct {
 	NaptSrc               *ebpf.Map `ebpf:"napt_src"`
 	NatDnatMap            *ebpf.Map `ebpf:"nat_dnat_map"`
 	NatSnatMap            *ebpf.Map `ebpf:"nat_snat_map"`
+	NodeUnderlay          *ebpf.Map `ebpf:"node_underlay"`
 	ServiceAclMap         *ebpf.Map `ebpf:"service_acl_map"`
 	ServiceAffinityMap    *ebpf.Map `ebpf:"service_affinity_map"`
 	ServiceMap            *ebpf.Map `ebpf:"service_map"`
@@ -488,6 +495,7 @@ func (m *VxlanIngressMaps) Close() error {
 		m.NaptSrc,
 		m.NatDnatMap,
 		m.NatSnatMap,
+		m.NodeUnderlay,
 		m.ServiceAclMap,
 		m.ServiceAffinityMap,
 		m.ServiceMap,
