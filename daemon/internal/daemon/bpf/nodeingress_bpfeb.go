@@ -394,6 +394,7 @@ type NodeIngressMapSpecs struct {
 	HostUnderlay          *ebpf.MapSpec `ebpf:"host_underlay"`
 	IfindexHostMac        *ebpf.MapSpec `ebpf:"ifindex_host_mac"`
 	IfindexSubnet         *ebpf.MapSpec `ebpf:"ifindex_subnet"`
+	LbOwnerTable          *ebpf.MapSpec `ebpf:"lb_owner_table"`
 	NaptSrc               *ebpf.MapSpec `ebpf:"napt_src"`
 	NatDnatMap            *ebpf.MapSpec `ebpf:"nat_dnat_map"`
 	NatSnatMap            *ebpf.MapSpec `ebpf:"nat_snat_map"`
@@ -455,6 +456,7 @@ type NodeIngressMaps struct {
 	HostUnderlay          *ebpf.Map `ebpf:"host_underlay"`
 	IfindexHostMac        *ebpf.Map `ebpf:"ifindex_host_mac"`
 	IfindexSubnet         *ebpf.Map `ebpf:"ifindex_subnet"`
+	LbOwnerTable          *ebpf.Map `ebpf:"lb_owner_table"`
 	NaptSrc               *ebpf.Map `ebpf:"napt_src"`
 	NatDnatMap            *ebpf.Map `ebpf:"nat_dnat_map"`
 	NatSnatMap            *ebpf.Map `ebpf:"nat_snat_map"`
@@ -492,6 +494,7 @@ func (m *NodeIngressMaps) Close() error {
 		m.HostUnderlay,
 		m.IfindexHostMac,
 		m.IfindexSubnet,
+		m.LbOwnerTable,
 		m.NaptSrc,
 		m.NatDnatMap,
 		m.NatSnatMap,

@@ -73,32 +73,28 @@ static __always_inline __u32 lb_rotate_left(__u32 x, __u32 r) {
 // lb_resolve_owner returns the underlay IPv4 (network byte order) of
 // the Node responsible for handling the supplied 5-tuple's flow under
 // the cluster's current Maglev slot table, or 0 when no owner has been
-// programmed (table not yet populated, or the slot is empty during a
-// reconciler convergence).
+// programmed.
 //
-// PR-4-β stub: always returns 0. Callers MUST treat 0 as "self / fall
-// through to the local LB forward path", which preserves the original
-// (always-self) behaviour until PR-4-δ replaces this body with a real
-// `lb_owner_table` lookup against the BPF map populated by the
-// LBOwner reconciler.
+// Zero is a meaningful sentinel: it appears when (a) the daemon has
+// not yet finished its first lb-owner reconciliation, or (b) the
+// caller hashed into a slot that the reconciler has not written to
+// (transient state during membership churn). Callers treat zero as
+// "fall through to local handling" — which preserves the legacy
+// always-self behaviour and keeps the data path safe during gaps.
 //
-// Lookup signature, once implemented:
-//   slot = hash_lb_tuple(saddr, daddr, sport, dport, proto) %
-//          MAX_LB_OWNER_TABLE
-//   owner_ip = lb_owner_table[slot]
-//
-// The lookup is intentionally kept identical to the backend-selection
-// hash so a single hash computation per packet covers both the slot
-// pick and (for owner-resident flows) the backend pick.
+// The hash uses the same Murmur-style mixer as backend selection so a
+// single hash_lb_tuple computation per packet covers both the slot
+// pick and (for owner-resident flows) the backend pick at the call
+// site.
 static __always_inline __be32 lb_resolve_owner(__be32 saddr, __be32 daddr,
                                                 __be16 sport, __be16 dport,
                                                 __u8 proto) {
-  (void)saddr;
-  (void)daddr;
-  (void)sport;
-  (void)dport;
-  (void)proto;
-  return 0;
+  __u32 slot = hash_lb_tuple(saddr, daddr, sport, dport, proto) %
+               MAX_LB_OWNER_TABLE;
+  const __u32 *owner = bpf_map_lookup_elem(&lb_owner_table, &slot);
+  if (!owner)
+    return 0;
+  return (__be32)*owner;
 }
 
 // lb_forward implements the forward leg of a Service.type=LoadBalancer

@@ -84,6 +84,26 @@
 #define MAX_NODE_UNDERLAY 4096
 #endif
 
+#ifndef MAX_LB_OWNER_TABLE
+// MAX_LB_OWNER_TABLE bounds lb_owner_table, the Maglev consistent-hash
+// slot table that maps a flow's 5-tuple hash to its owner Node's
+// underlay IP. The value 4093 is prime (Maglev requires this so the
+// (offset, skip) walks generate full-period permutations) and chosen
+// to give comfortable balance for cluster sizes up to ~1000 Nodes:
+//
+//   N=10  → ~409 slots/Node, 1/N disruption ≈ 1% of flows on Node churn.
+//   N=100 → ~40  slots/Node.
+//   N=1000→ ~4   slots/Node, still enough to keep balance within ±1.
+//
+// Memory: 4093 * sizeof(__u32) ≈ 16 KiB, the same order as the other
+// per-Node tables we ship; well below verifier and host-RAM budgets.
+//
+// Keep this value in lockstep with maglev.productionM in
+// daemon/internal/daemon/dataplane/maglev — both sides need the same
+// slot count or the data-plane lookup index will overrun the table.
+#define MAX_LB_OWNER_TABLE 4093
+#endif
+
 #ifndef MAX_VIRTUAL_SERVICE_MAP
 #define MAX_VIRTUAL_SERVICE_MAP 16384
 #endif
@@ -371,6 +391,35 @@ struct {
   __type(value, __u8);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } node_underlay SEC(".maps");
+
+// lb_owner_table is the Maglev consistent-hash slot table keyed by
+// flow-hash slot index, valued by the underlay IPv4 (network byte
+// order) of the Node responsible for that slot's flows. Cluster-wide:
+// every Juneau Node holds an identical copy, populated by the daemon's
+// lb-owner reconciler from current Node membership using the Maglev
+// algorithm.
+//
+// Used by node_ingress's LB forward path (and, post-decap, by
+// vxlan_ingress when VNI_UNDERLAY traffic arrives): the receiving
+// Node hashes the 5-tuple modulo MAX_LB_OWNER_TABLE, looks up the
+// slot, and — if the slot's owner is not this Node — VXLAN-encaps
+// the original frame to the owner with VNI_UNDERLAY. The owner runs
+// the SNAT/DNAT/CT-install path locally so every packet of a flow
+// converges on the same per-flow CT entry regardless of which Node
+// the upstream router ECMP'd it onto.
+//
+// Initial state: all-zero (the BPF runtime zero-fills array maps).
+// Zero is a valid sentinel — 0.0.0.0 is not a routable underlay IP,
+// so callers treat zero as "no owner programmed; fall through to
+// local handling". This makes the data path safe before the
+// reconciler has finished its first pass.
+struct {
+  __uint(type, BPF_MAP_TYPE_ARRAY);
+  __uint(max_entries, MAX_LB_OWNER_TABLE);
+  __type(key, __u32);   // slot index
+  __type(value, __u32); // owner underlay IPv4, network byte order
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} lb_owner_table SEC(".maps");
 
 // service_nat_ip holds this node's per-(Node × provider Vpc) SNAT
 // source IPs (values in network byte order) keyed by the provider's

@@ -136,6 +136,18 @@ func TestSchemaLayoutMatchesGenerated(t *testing.T) {
 			keySize:   4,
 			valueSize: unsafe.Sizeof(bpf.PodEgressAclRule{}),
 		},
+		{
+			// lb_owner_table is a plain __u32 → __u32 array: slot
+			// index → owner Node's underlay IP (NBO). Schema is
+			// trivial but the assertion guards against accidental
+			// type changes (e.g. widening to __u64 if IPv6 ever
+			// arrives — that would need to flow through here).
+			name:      "lb_owner_table",
+			key:       schemaSlotKey(),
+			val:       schemaLBOwnerVal(),
+			keySize:   4,
+			valueSize: 4,
+		},
 	}
 
 	for _, tc := range cases {
@@ -158,6 +170,10 @@ func TestSchemaLayoutMatchesGenerated(t *testing.T) {
 // failure mode is loud and obvious.
 
 func schemaSubnetKey() Schema { return Schema{Fields: []Field{FieldU32Named("subnet_id")}} }
+
+func schemaLBOwnerVal() Schema {
+	return Schema{Fields: []Field{FieldIPv4BENamed("owner_underlay_ip")}}
+}
 func schemaSubnetVal() Schema {
 	return Schema{Fields: []Field{
 		FieldU32Named("table_id"),

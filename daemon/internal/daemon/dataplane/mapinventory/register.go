@@ -24,6 +24,7 @@ func RegisterPodEgress(inv *Inventory, p *program.PodEgress) error {
 		registerFdb,
 		registerVxlanIfindex,
 		registerHostUnderlay,
+		registerLBOwnerTable,
 		registerServiceNATIP,
 		registerFib,
 		registerBGPAddressPools,
@@ -156,6 +157,19 @@ func registerHostUnderlay(inv *Inventory, p *program.PodEgress) error {
 		}},
 		Value: Schema{Fields: []Field{
 			FieldIPv4BENamed("host_ip"),
+		}},
+	})
+}
+
+func registerLBOwnerTable(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name: "lb_owner_table",
+		Map:  p.Objs.LbOwnerTable,
+		Key: Schema{Fields: []Field{
+			FieldU32Named("slot", "Maglev slot index (hash(5-tuple) mod MAX_LB_OWNER_TABLE)"),
+		}},
+		Value: Schema{Fields: []Field{
+			FieldIPv4BENamed("owner_underlay_ip", "0 means no owner programmed yet"),
 		}},
 	})
 }

@@ -57,6 +57,7 @@ type Manager struct {
 	arpRunner          *runner.Runner
 	fdbRunner          *runner.Runner
 	nodeUnderlayRunner *runner.Runner
+	lbOwnerRunner      *runner.Runner
 	podIfaceRunner     *runner.Runner
 	podAttacherRunner  *runner.Runner
 	fibRunner          *runner.Runner
@@ -221,6 +222,19 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 		return fmt.Errorf("watch NWEP (node-underlay): %w", err)
 	}
 	m.nodeUnderlayRunner.Start(ctx, 1)
+
+	// lb_owner_table is a singleton-keyed reconciler: any NWEP event
+	// fires one rebuild against the full Kind=Node membership set,
+	// recomputes the Maglev slot table, and writes only the slots
+	// whose owner changed. Sits alongside node-underlay because both
+	// derive their state from the same NWEP informer.
+	m.lbOwnerRunner = runner.New(reconciler.NewLBOwner(m.client, m.podEgress))
+	lbOwnerKey := runner.ConstantKey(runner.SingletonKey)
+	if err := m.lbOwnerRunner.Watch(m.nwepInformer, lbOwnerKey); err != nil {
+		return fmt.Errorf("watch NWEP (lb-owner): %w", err)
+	}
+	m.lbOwnerRunner.Enqueue(runner.SingletonKey)
+	m.lbOwnerRunner.Start(ctx, 1)
 
 	m.podIfaceRunner = runner.New(reconciler.NewPodIface(m.client, m.podEgress, m.nodeName))
 	if err := m.podIfaceRunner.Watch(m.nwepInformer, runner.MetaNamespaceKey); err != nil {
@@ -564,6 +578,7 @@ func (m *Manager) Stop() error {
 		m.arpRunner,
 		m.fdbRunner,
 		m.nodeUnderlayRunner,
+		m.lbOwnerRunner,
 		m.podIfaceRunner,
 		m.podAttacherRunner,
 		m.fibRunner,
