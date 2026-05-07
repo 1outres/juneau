@@ -9,6 +9,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
@@ -316,6 +317,86 @@ var _ = Describe("RouteTable controller", func() {
 			}).Should(Succeed())
 		})
 
+		It("injects /32 SERVICE routes for LoadBalancer ingress IPs", func() {
+			vpcName := createControllerVpc()
+			enableVpcServiceConsume(vpcName)
+
+			svcName := uniqueTestName("svc-lb")
+			lbIP := uniqueExternalIPv4()
+			svc := buildLBStatusOnlyService(svcName, "default", vpcName, lbIP)
+			Expect(k8sClient.Create(context.Background(), svc)).To(Succeed())
+			// Status is mutated separately; the API server zeroes it on
+			// create. Patch the status to install the ingress IP.
+			Expect(setLBIngress(svc, lbIP)).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				rt := getControllerRouteTable(vpcName)
+				g.Expect(rt.Status.Routes).To(ContainElement(juneauv1alpha1.Route{
+					Dst: lbIP + "/32",
+					Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
+				}))
+			}).Should(Succeed())
+		})
+
+		It("does not inject LB ingress IPs of Services owned by another Vpc", func() {
+			ownerVpc := createControllerVpc()
+			otherVpc := createControllerVpc()
+			enableVpcServiceConsume(ownerVpc)
+			enableVpcServiceConsume(otherVpc)
+
+			ownerIP := uniqueExternalIPv4()
+			otherIP := uniqueExternalIPv4()
+			ownerSvc := buildLBStatusOnlyService(uniqueTestName("svc-lb"), "default", ownerVpc, ownerIP)
+			Expect(k8sClient.Create(context.Background(), ownerSvc)).To(Succeed())
+			Expect(setLBIngress(ownerSvc, ownerIP)).To(Succeed())
+
+			otherSvc := buildLBStatusOnlyService(uniqueTestName("svc-lb"), "default", otherVpc, otherIP)
+			Expect(k8sClient.Create(context.Background(), otherSvc)).To(Succeed())
+			Expect(setLBIngress(otherSvc, otherIP)).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				rt := getControllerRouteTable(ownerVpc)
+				g.Expect(rt.Status.Routes).To(ContainElement(juneauv1alpha1.Route{
+					Dst: ownerIP + "/32",
+					Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
+				}))
+				g.Expect(rt.Status.Routes).NotTo(ContainElement(juneauv1alpha1.Route{
+					Dst: otherIP + "/32",
+					Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
+				}))
+			}).Should(Succeed())
+		})
+
+		It("deduplicates an externalIP equal to a LoadBalancer ingress IP", func() {
+			vpcName := createControllerVpc()
+			enableVpcServiceConsume(vpcName)
+
+			shared := uniqueExternalIPv4()
+			// Build an LB Service that also lists `shared` in
+			// spec.externalIPs (a contrived but legal configuration).
+			svc := buildLBStatusOnlyService(uniqueTestName("svc-lb"), "default", vpcName, shared)
+			svc.Spec.ExternalIPs = []string{shared}
+			Expect(k8sClient.Create(context.Background(), svc)).To(Succeed())
+			Expect(setLBIngress(svc, shared)).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				rt := getControllerRouteTable(vpcName)
+				count := 0
+				for _, route := range rt.Status.Routes {
+					if route.Via.Type != juneauv1alpha1.ViaService {
+						continue
+					}
+					if route.Dst == testServiceCIDR.String() {
+						continue
+					}
+					if route.Dst == shared+"/32" {
+						count++
+					}
+				}
+				g.Expect(count).To(Equal(1))
+			}).Should(Succeed())
+		})
+
 		It("ignores ExternalName Services and IPv6 / duplicate externalIPs", func() {
 			vpcName := createControllerVpc()
 			enableVpcServiceConsume(vpcName)
@@ -368,6 +449,41 @@ func enableVpcServiceConsume(vpcName string) {
 	Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: vpcName}, &vpc)).To(Succeed())
 	vpc.Spec.Service = &juneauv1alpha1.VpcServiceSpec{Consume: true}
 	Expect(k8sClient.Update(context.Background(), &vpc)).To(Succeed())
+}
+
+// buildLBStatusOnlyService creates a Service.type=LoadBalancer whose
+// loadBalancerClass selects the Juneau LB controller. The status is
+// not populated by Create; tests must call setLBIngress separately to
+// install the ingress IP that the RouteTable reconciler should pick up.
+func buildLBStatusOnlyService(name, namespace, vpcName, _ string) *corev1.Service {
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:   namespace,
+			Name:        name,
+			Annotations: map[string]string{serviceVpcAnnotation: vpcName},
+		},
+		Spec: corev1.ServiceSpec{
+			Type:              corev1.ServiceTypeLoadBalancer,
+			LoadBalancerClass: ptr.To(juneauv1alpha1.ServiceLoadBalancerClass),
+			Ports: []corev1.ServicePort{
+				{Port: 80, Protocol: corev1.ProtocolTCP},
+			},
+			Selector: map[string]string{"app": name},
+		},
+	}
+}
+
+// setLBIngress installs ip into svc.status.loadBalancer.ingress via
+// the status sub-resource. The LB controller is responsible for this
+// mutation in production; tests bypass it to exercise the RouteTable
+// reconciler in isolation.
+func setLBIngress(svc *corev1.Service, ip string) error {
+	patched := svc.DeepCopy()
+	patched.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{
+		IP:     ip,
+		IPMode: ptr.To(corev1.LoadBalancerIPModeVIP),
+	}}
+	return k8sClient.Status().Update(context.Background(), patched)
 }
 
 func buildExternalIPService(name, namespace, vpcName string, externalIPs []string) *corev1.Service {

@@ -289,6 +289,26 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /mutate--v1-service
+  failurePolicy: Fail
+  name: mservice-juneau-loutres-me.kb.io
+  rules:
+  - apiGroups:
+    - ""
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - services
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /mutate-juneau-loutres-me-v1alpha1-subnet
   failurePolicy: Fail
   name: msubnet-v1alpha1.kb.io

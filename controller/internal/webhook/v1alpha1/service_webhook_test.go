@@ -8,6 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
@@ -235,6 +236,193 @@ var _ = Describe("Service webhook", func() {
 			_ = webhookK8sClient.Delete(context.Background(), &corev1.Service{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 			})
+		})
+	})
+
+	Context("LoadBalancer class admission", func() {
+		It("rejects loadBalancerClass without external-network annotation", func() {
+			err := webhookK8sClient.Create(context.Background(), &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      webhookUniqueTestName("svc-lb"),
+					Namespace: "default",
+				},
+				Spec: corev1.ServiceSpec{
+					Type:              corev1.ServiceTypeLoadBalancer,
+					LoadBalancerClass: ptr.To(juneauv1alpha1.ServiceLoadBalancerClass),
+					Ports:             []corev1.ServicePort{{Port: 80, TargetPort: intOrString(80)}},
+					Selector:          map[string]string{"app": "x"},
+				},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring(juneauv1alpha1.ServiceAnnotationLBExternalNetwork))
+		})
+
+		It("rejects loadBalancerClass with a non-existent external-network", func() {
+			err := webhookK8sClient.Create(context.Background(), &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      webhookUniqueTestName("svc-lb"),
+					Namespace: "default",
+					Annotations: map[string]string{
+						juneauv1alpha1.ServiceAnnotationLBExternalNetwork: "missing-extnet",
+					},
+				},
+				Spec: corev1.ServiceSpec{
+					Type:              corev1.ServiceTypeLoadBalancer,
+					LoadBalancerClass: ptr.To(juneauv1alpha1.ServiceLoadBalancerClass),
+					Ports:             []corev1.ServicePort{{Port: 80, TargetPort: intOrString(80)}},
+					Selector:          map[string]string{"app": "x"},
+				},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("not found"))
+		})
+
+		It("rejects loadBalancerClass when the external-network is ARP-typed (BGP only in v1)", func() {
+			arpExtNet := createWebhookExternalNetwork(juneauv1alpha1.ExternalNetworkTypeARP)
+			err := webhookK8sClient.Create(context.Background(), &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      webhookUniqueTestName("svc-lb"),
+					Namespace: "default",
+					Annotations: map[string]string{
+						juneauv1alpha1.ServiceAnnotationLBExternalNetwork: arpExtNet,
+					},
+				},
+				Spec: corev1.ServiceSpec{
+					Type:              corev1.ServiceTypeLoadBalancer,
+					LoadBalancerClass: ptr.To(juneauv1alpha1.ServiceLoadBalancerClass),
+					Ports:             []corev1.ServicePort{{Port: 80, TargetPort: intOrString(80)}},
+					Selector:          map[string]string{"app": "x"},
+				},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("must be type=bgp"))
+		})
+
+		It("rejects spec.loadBalancerIP when the Juneau class is selected", func() {
+			extNet := createWebhookExternalNetwork(juneauv1alpha1.ExternalNetworkTypeBGP)
+			err := webhookK8sClient.Create(context.Background(), &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      webhookUniqueTestName("svc-lb"),
+					Namespace: "default",
+					Annotations: map[string]string{
+						juneauv1alpha1.ServiceAnnotationLBExternalNetwork: extNet,
+					},
+				},
+				Spec: corev1.ServiceSpec{
+					Type:              corev1.ServiceTypeLoadBalancer,
+					LoadBalancerClass: ptr.To(juneauv1alpha1.ServiceLoadBalancerClass),
+					LoadBalancerIP:    "10.200.0.1",
+					Ports:             []corev1.ServicePort{{Port: 80, TargetPort: intOrString(80)}},
+					Selector:          map[string]string{"app": "x"},
+				},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring(juneauv1alpha1.ServiceAnnotationLBRequestedIP))
+		})
+
+		It("rejects malformed loadbalancer-ip annotation", func() {
+			extNet := createWebhookExternalNetwork(juneauv1alpha1.ExternalNetworkTypeBGP)
+			err := webhookK8sClient.Create(context.Background(), &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      webhookUniqueTestName("svc-lb"),
+					Namespace: "default",
+					Annotations: map[string]string{
+						juneauv1alpha1.ServiceAnnotationLBExternalNetwork: extNet,
+						juneauv1alpha1.ServiceAnnotationLBRequestedIP:     "not-an-ip",
+					},
+				},
+				Spec: corev1.ServiceSpec{
+					Type:              corev1.ServiceTypeLoadBalancer,
+					LoadBalancerClass: ptr.To(juneauv1alpha1.ServiceLoadBalancerClass),
+					Ports:             []corev1.ServicePort{{Port: 80, TargetPort: intOrString(80)}},
+					Selector:          map[string]string{"app": "x"},
+				},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("must be a valid IPv4"))
+		})
+
+		It("accepts a Juneau-class LoadBalancer with a BGP external-network", func() {
+			extNet := createWebhookExternalNetwork(juneauv1alpha1.ExternalNetworkTypeBGP)
+			name := webhookUniqueTestName("svc-lb")
+			Expect(webhookK8sClient.Create(context.Background(), &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: "default",
+					Annotations: map[string]string{
+						juneauv1alpha1.ServiceAnnotationLBExternalNetwork: extNet,
+					},
+				},
+				Spec: corev1.ServiceSpec{
+					Type:              corev1.ServiceTypeLoadBalancer,
+					LoadBalancerClass: ptr.To(juneauv1alpha1.ServiceLoadBalancerClass),
+					Ports:             []corev1.ServicePort{{Port: 80, TargetPort: intOrString(80)}},
+					Selector:          map[string]string{"app": "x"},
+				},
+			})).To(Succeed())
+			DeferCleanup(func() {
+				_ = webhookK8sClient.Delete(context.Background(), &corev1.Service{
+					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+				})
+			})
+		})
+
+		It("mutates allocateLoadBalancerNodePorts to false for Juneau-class LBs", func() {
+			extNet := createWebhookExternalNetwork(juneauv1alpha1.ExternalNetworkTypeBGP)
+			name := webhookUniqueTestName("svc-lb")
+			Expect(webhookK8sClient.Create(context.Background(), &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: "default",
+					Annotations: map[string]string{
+						juneauv1alpha1.ServiceAnnotationLBExternalNetwork: extNet,
+					},
+				},
+				Spec: corev1.ServiceSpec{
+					Type:                          corev1.ServiceTypeLoadBalancer,
+					LoadBalancerClass:             ptr.To(juneauv1alpha1.ServiceLoadBalancerClass),
+					AllocateLoadBalancerNodePorts: ptr.To(true),
+					Ports:                         []corev1.ServicePort{{Port: 80, TargetPort: intOrString(80)}},
+					Selector:                      map[string]string{"app": "x"},
+				},
+			})).To(Succeed())
+			DeferCleanup(func() {
+				_ = webhookK8sClient.Delete(context.Background(), &corev1.Service{
+					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+				})
+			})
+
+			var svc corev1.Service
+			Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Name: name, Namespace: "default"}, &svc)).To(Succeed())
+			Expect(svc.Spec.AllocateLoadBalancerNodePorts).NotTo(BeNil())
+			Expect(*svc.Spec.AllocateLoadBalancerNodePorts).To(BeFalse())
+		})
+
+		It("does not mutate allocateLoadBalancerNodePorts for foreign-class LBs", func() {
+			name := webhookUniqueTestName("svc-foreign")
+			Expect(webhookK8sClient.Create(context.Background(), &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: "default",
+				},
+				Spec: corev1.ServiceSpec{
+					Type:                          corev1.ServiceTypeLoadBalancer,
+					LoadBalancerClass:             ptr.To("metallb.io/external"),
+					AllocateLoadBalancerNodePorts: ptr.To(true),
+					Ports:                         []corev1.ServicePort{{Port: 80, TargetPort: intOrString(80)}},
+					Selector:                      map[string]string{"app": "x"},
+				},
+			})).To(Succeed())
+			DeferCleanup(func() {
+				_ = webhookK8sClient.Delete(context.Background(), &corev1.Service{
+					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+				})
+			})
+
+			var svc corev1.Service
+			Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Name: name, Namespace: "default"}, &svc)).To(Succeed())
+			Expect(svc.Spec.AllocateLoadBalancerNodePorts).NotTo(BeNil())
+			Expect(*svc.Spec.AllocateLoadBalancerNodePorts).To(BeTrue())
 		})
 	})
 

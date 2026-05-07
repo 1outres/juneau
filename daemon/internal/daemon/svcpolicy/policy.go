@@ -21,6 +21,8 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
 const (
@@ -43,6 +45,21 @@ const (
 	// DefaultVpc is the conventional Vpc name a Service belongs to
 	// when its AnnotationVpc is unset.
 	DefaultVpc = "default"
+)
+
+// LB-related annotations and class string. These are aliases of the
+// canonical strings exported from the v1alpha1 API package so that the
+// daemon-side code can refer to them with the short svcpolicy.* spelling
+// while a single source of truth lives next to the CRD definitions.
+const (
+	// AnnotationLBExternalNetwork — see juneauv1alpha1.ServiceAnnotationLBExternalNetwork.
+	AnnotationLBExternalNetwork = juneauv1alpha1.ServiceAnnotationLBExternalNetwork
+
+	// AnnotationLBRequestedIP — see juneauv1alpha1.ServiceAnnotationLBRequestedIP.
+	AnnotationLBRequestedIP = juneauv1alpha1.ServiceAnnotationLBRequestedIP
+
+	// LoadBalancerClass — see juneauv1alpha1.ServiceLoadBalancerClass.
+	LoadBalancerClass = juneauv1alpha1.ServiceLoadBalancerClass
 )
 
 // OwningVpc returns the name of the Vpc that owns svc. AnnotationVpc
@@ -114,6 +131,46 @@ func IsAllowedConsumer(svc *corev1.Service, callerVpc string) bool {
 		}
 	}
 	return false
+}
+
+// IsJuneauLoadBalancer reports whether svc is a Service.type=LoadBalancer
+// whose spec.loadBalancerClass selects this controller. Services that
+// are LoadBalancer-typed but use a different class (or no class) belong
+// to another controller and are ignored end-to-end.
+func IsJuneauLoadBalancer(svc *corev1.Service) bool {
+	if svc == nil {
+		return false
+	}
+	if svc.Spec.Type != corev1.ServiceTypeLoadBalancer {
+		return false
+	}
+	if svc.Spec.LoadBalancerClass == nil {
+		return false
+	}
+	return *svc.Spec.LoadBalancerClass == LoadBalancerClass
+}
+
+// LBExternalNetwork returns the ExternalNetwork name configured on svc
+// via AnnotationLBExternalNetwork. Returns the empty string when the
+// annotation is absent or whitespace only. Callers must reject the
+// empty case at admission; the helper deliberately does not synthesise
+// a default because there is no sensible cluster-wide one.
+func LBExternalNetwork(svc *corev1.Service) string {
+	if svc == nil {
+		return ""
+	}
+	return strings.TrimSpace(svc.Annotations[AnnotationLBExternalNetwork])
+}
+
+// LBRequestedIP returns the IP pinned by AnnotationLBRequestedIP, or
+// the empty string when not set. The address itself is not validated
+// here; callers are expected to parse and range-check against the
+// chosen ExternalNetwork's pools.
+func LBRequestedIP(svc *corev1.Service) string {
+	if svc == nil {
+		return ""
+	}
+	return strings.TrimSpace(svc.Annotations[AnnotationLBRequestedIP])
 }
 
 // CallerVpc bundles the caller Vpc's identity with the two opt-in

@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -111,10 +112,13 @@ func (v *ServiceCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 	if serviceVpc(newSvc) == serviceVpc(oldSvc) &&
 		newSvc.Annotations[ServiceAnnotationSubnet] == oldSvc.Annotations[ServiceAnnotationSubnet] &&
 		newSvc.Annotations[ServiceAnnotationShared] == oldSvc.Annotations[ServiceAnnotationShared] &&
-		newSvc.Annotations[ServiceAnnotationAllowedConsumerVpcs] == oldSvc.Annotations[ServiceAnnotationAllowedConsumerVpcs] {
+		newSvc.Annotations[ServiceAnnotationAllowedConsumerVpcs] == oldSvc.Annotations[ServiceAnnotationAllowedConsumerVpcs] &&
+		newSvc.Annotations[juneauv1alpha1.ServiceAnnotationLBExternalNetwork] == oldSvc.Annotations[juneauv1alpha1.ServiceAnnotationLBExternalNetwork] &&
+		newSvc.Annotations[juneauv1alpha1.ServiceAnnotationLBRequestedIP] == oldSvc.Annotations[juneauv1alpha1.ServiceAnnotationLBRequestedIP] &&
+		loadBalancerClassEqual(newSvc, oldSvc) {
 		// Annotations relevant to Juneau are unchanged. Skip
 		// re-validation so that pre-existing Services keep working
-		// even if the upstream Vpcs later flip their service config.
+		// even if the upstream Vpcs / ExternalNetworks later mutate.
 		return nil, nil
 	}
 
@@ -172,7 +176,173 @@ func (v *ServiceCustomValidator) validate(ctx context.Context, svc *corev1.Servi
 		errs = append(errs, aclErrs...)
 	}
 
+	if lbErrs, err := v.validateLoadBalancer(ctx, svc); err != nil {
+		return nil, err
+	} else {
+		errs = append(errs, lbErrs...)
+	}
+
 	return errs, nil
+}
+
+// validateLoadBalancer enforces the contract for Services whose
+// spec.loadBalancerClass selects this controller. The function is a
+// no-op for non-LB Services and for foreign-class LB Services. Errors
+// are returned as field.ErrorList so callers can aggregate them with
+// the rest of the Service validation surface; transient lookup errors
+// (envtest API server hiccups) propagate as ordinary errors.
+func (v *ServiceCustomValidator) validateLoadBalancer(ctx context.Context, svc *corev1.Service) (field.ErrorList, error) {
+	if svc.Spec.LoadBalancerClass == nil || *svc.Spec.LoadBalancerClass != juneauv1alpha1.ServiceLoadBalancerClass {
+		return nil, nil
+	}
+	if svc.Spec.Type != corev1.ServiceTypeLoadBalancer {
+		// A non-LoadBalancer type with a Juneau class is logically
+		// nonsensical; surface it before allocation churn starts.
+		return field.ErrorList{field.Invalid(field.NewPath("spec", "loadBalancerClass"), *svc.Spec.LoadBalancerClass,
+			"loadBalancerClass requires spec.type=LoadBalancer")}, nil
+	}
+
+	annPath := field.NewPath("metadata", "annotations")
+	var errs field.ErrorList
+
+	// The legacy spec.loadBalancerIP has been deprecated upstream and
+	// has poorly defined semantics for IP pools. We require operators
+	// to set the IP via the dedicated annotation so the LB selector
+	// (external-network) and the IP pin live side by side.
+	if strings.TrimSpace(svc.Spec.LoadBalancerIP) != "" {
+		errs = append(errs, field.Forbidden(field.NewPath("spec", "loadBalancerIP"),
+			fmt.Sprintf("use the %q annotation; spec.loadBalancerIP is deprecated and ignored",
+				juneauv1alpha1.ServiceAnnotationLBRequestedIP)))
+	}
+
+	externalNetworkName := strings.TrimSpace(svc.Annotations[juneauv1alpha1.ServiceAnnotationLBExternalNetwork])
+	extNetPath := annPath.Key(juneauv1alpha1.ServiceAnnotationLBExternalNetwork)
+	if externalNetworkName == "" {
+		errs = append(errs, field.Required(extNetPath,
+			fmt.Sprintf("loadBalancerClass=%q requires the %q annotation",
+				juneauv1alpha1.ServiceLoadBalancerClass, juneauv1alpha1.ServiceAnnotationLBExternalNetwork)))
+		return errs, nil
+	}
+
+	var externalNetwork juneauv1alpha1.ExternalNetwork
+	if err := v.Get(ctx, client.ObjectKey{Name: externalNetworkName}, &externalNetwork); err != nil {
+		if errors.IsNotFound(err) {
+			errs = append(errs, field.Invalid(extNetPath, externalNetworkName, "ExternalNetwork not found"))
+			return errs, nil
+		}
+		return nil, err
+	}
+
+	if externalNetwork.Spec.Type != juneauv1alpha1.ExternalNetworkTypeBGP {
+		errs = append(errs, field.Invalid(extNetPath, externalNetworkName,
+			fmt.Sprintf("ExternalNetwork %q must be type=bgp (LoadBalancer over ARP is not supported)", externalNetworkName)))
+		return errs, nil
+	}
+
+	requestedIP := strings.TrimSpace(svc.Annotations[juneauv1alpha1.ServiceAnnotationLBRequestedIP])
+	if requestedIP == "" {
+		return errs, nil
+	}
+	reqIPPath := annPath.Key(juneauv1alpha1.ServiceAnnotationLBRequestedIP)
+
+	parsed := net.ParseIP(requestedIP)
+	if parsed == nil || parsed.To4() == nil {
+		errs = append(errs, field.Invalid(reqIPPath, requestedIP, "must be a valid IPv4 address"))
+		return errs, nil
+	}
+
+	// Pool containment: walk the pools backing the chosen
+	// ExternalNetwork and ensure the pinned IP falls inside one of
+	// their CIDRs. This protects users from typos that would otherwise
+	// only surface as an AllocationClaim failure later.
+	contained, lookupErr := v.requestedIPContainedInPools(ctx, &externalNetwork, parsed.To4())
+	if lookupErr != nil {
+		return nil, lookupErr
+	}
+	if !contained {
+		errs = append(errs, field.Invalid(reqIPPath, requestedIP,
+			fmt.Sprintf("address is outside the AddressPools attached to ExternalNetwork %q", externalNetworkName)))
+	}
+	return errs, nil
+}
+
+func (v *ServiceCustomValidator) requestedIPContainedInPools(ctx context.Context, extNet *juneauv1alpha1.ExternalNetwork, ip net.IP) (bool, error) {
+	for _, raw := range extNet.Spec.AddressPools {
+		poolName := strings.TrimSpace(raw)
+		if poolName == "" {
+			continue
+		}
+		var pool juneauv1alpha1.AddressPool
+		if err := v.Get(ctx, client.ObjectKey{Name: poolName}, &pool); err != nil {
+			if errors.IsNotFound(err) {
+				// Skip missing pools; the LB controller will surface
+				// the misconfiguration via a status condition. Webhook
+				// validation should not block on transient state.
+				continue
+			}
+			return false, err
+		}
+		for _, addr := range pool.Spec.Addresses {
+			if cidrContains(strings.TrimSpace(addr), ip) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// cidrContains reports whether s is a CIDR that contains ip. Values
+// that aren't parseable as CIDR or as a single IP/range are treated as
+// non-containing rather than as a hard error so a single malformed
+// pool entry doesn't fail the entire admission check.
+func cidrContains(s string, ip net.IP) bool {
+	if s == "" {
+		return false
+	}
+	if strings.Contains(s, "/") {
+		_, ipnet, err := net.ParseCIDR(s)
+		if err != nil {
+			return false
+		}
+		return ipnet.Contains(ip)
+	}
+	if strings.Contains(s, "-") {
+		parts := strings.SplitN(s, "-", 2)
+		if len(parts) != 2 {
+			return false
+		}
+		lo := net.ParseIP(strings.TrimSpace(parts[0])).To4()
+		hi := net.ParseIP(strings.TrimSpace(parts[1])).To4()
+		ip4 := ip.To4()
+		if lo == nil || hi == nil || ip4 == nil {
+			return false
+		}
+		return ipv4LessOrEqual(lo, ip4) && ipv4LessOrEqual(ip4, hi)
+	}
+	single := net.ParseIP(s)
+	return single != nil && single.Equal(ip)
+}
+
+func ipv4LessOrEqual(a, b net.IP) bool {
+	for i := range a {
+		if a[i] < b[i] {
+			return true
+		}
+		if a[i] > b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func loadBalancerClassEqual(a, b *corev1.Service) bool {
+	if a.Spec.LoadBalancerClass == nil && b.Spec.LoadBalancerClass == nil {
+		return true
+	}
+	if a.Spec.LoadBalancerClass == nil || b.Spec.LoadBalancerClass == nil {
+		return false
+	}
+	return *a.Spec.LoadBalancerClass == *b.Spec.LoadBalancerClass
 }
 
 // validateAllowedConsumers enforces that every Vpc listed in the

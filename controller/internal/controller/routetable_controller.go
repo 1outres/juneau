@@ -492,7 +492,12 @@ func owningVpcOfService(svc *corev1.Service) string {
 }
 
 // collectExternalIPRoutes returns one /32 via.type=service route per
-// IPv4 entry in spec.externalIPs across every Service owned by vpc.
+// IPv4 reachability entry on every Service owned by vpc. Each Service
+// contributes both spec.externalIPs and status.loadBalancer.ingress[].ip
+// (the latter populated by ServiceLoadBalancerReconciler) into the
+// same flat /32 list, with the union deduplicated so the same IP
+// appearing in both sources collapses to a single route.
+//
 // ExternalName Services have no backends and are skipped. Non-IPv4
 // entries are dropped silently here; the daemon-side reconciler emits
 // a per-Service warning for those, so a duplicate log here would just
@@ -505,6 +510,24 @@ func (r *RouteTableReconciler) collectExternalIPRoutes(ctx context.Context, vpc 
 	}
 
 	seen := make(map[string]struct{})
+	addIPv4 := func(routes []juneauloutresmev1alpha1.Route, raw string) []juneauloutresmev1alpha1.Route {
+		ip := net.ParseIP(raw)
+		if ip == nil || ip.To4() == nil {
+			return routes
+		}
+		cidr := ip.To4().String() + "/32"
+		if _, dup := seen[cidr]; dup {
+			return routes
+		}
+		seen[cidr] = struct{}{}
+		return append(routes, juneauloutresmev1alpha1.Route{
+			Dst: cidr,
+			Via: juneauloutresmev1alpha1.RouteVia{
+				Type: juneauloutresmev1alpha1.ViaService,
+			},
+		})
+	}
+
 	var routes []juneauloutresmev1alpha1.Route
 	for i := range svcs.Items {
 		svc := &svcs.Items[i]
@@ -515,21 +538,13 @@ func (r *RouteTableReconciler) collectExternalIPRoutes(ctx context.Context, vpc 
 			continue
 		}
 		for _, raw := range svc.Spec.ExternalIPs {
-			ip := net.ParseIP(raw)
-			if ip == nil || ip.To4() == nil {
+			routes = addIPv4(routes, raw)
+		}
+		for _, ingress := range svc.Status.LoadBalancer.Ingress {
+			if ingress.IP == "" {
 				continue
 			}
-			cidr := ip.To4().String() + "/32"
-			if _, dup := seen[cidr]; dup {
-				continue
-			}
-			seen[cidr] = struct{}{}
-			routes = append(routes, juneauloutresmev1alpha1.Route{
-				Dst: cidr,
-				Via: juneauloutresmev1alpha1.RouteVia{
-					Type: juneauloutresmev1alpha1.ViaService,
-				},
-			})
+			routes = addIPv4(routes, ingress.IP)
 		}
 	}
 	sort.Slice(routes, func(i, j int) bool { return routes[i].Dst < routes[j].Dst })

@@ -9,11 +9,34 @@ rules:
   resources:
   - nodes
   - pods
-  - services
   verbs:
   - get
   - list
   - watch
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - services/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - services/status
+  verbs:
+  - get
+  - patch
+  - update
 - apiGroups:
   - admissionregistration.k8s.io
   resources:

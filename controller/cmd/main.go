@@ -272,6 +272,21 @@ func main() {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Service")
 			os.Exit(1)
 		}
+		// LB-class Services need NodePort allocation suppressed at
+		// admission so kube-apiserver doesn't waste a NodePort the
+		// daemon will never honour. Wired alongside the validating
+		// Service webhook so both run together.
+		if err = webhookjuneauv1alpha1.SetupServiceLoadBalancerMutatingWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "ServiceLoadBalancer")
+			os.Exit(1)
+		}
+	}
+	if err = (&controller.ServiceLoadBalancerReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ServiceLoadBalancer")
+		os.Exit(1)
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {

@@ -118,6 +118,69 @@ func TestIsAllowedConsumer(t *testing.T) {
 	}
 }
 
+func strPtr(s string) *string { return &s }
+
+func TestIsJuneauLoadBalancer(t *testing.T) {
+	tests := []struct {
+		name string
+		svc  *corev1.Service
+		want bool
+	}{
+		{"nil", nil, false},
+		{"non-LB type", &corev1.Service{Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeClusterIP, LoadBalancerClass: strPtr(LoadBalancerClass)}}, false},
+		{"LB without class", &corev1.Service{Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer}}, false},
+		{"LB with foreign class", &corev1.Service{Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer, LoadBalancerClass: strPtr("metallb.io/external")}}, false},
+		{"LB with juneau class", &corev1.Service{Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer, LoadBalancerClass: strPtr(LoadBalancerClass)}}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsJuneauLoadBalancer(tc.svc); got != tc.want {
+				t.Errorf("IsJuneauLoadBalancer = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLBExternalNetwork(t *testing.T) {
+	tests := []struct {
+		name string
+		ann  map[string]string
+		want string
+	}{
+		{"absent", nil, ""},
+		{"empty", map[string]string{AnnotationLBExternalNetwork: ""}, ""},
+		{"with value", map[string]string{AnnotationLBExternalNetwork: "ext-net"}, "ext-net"},
+		{"trims whitespace", map[string]string{AnnotationLBExternalNetwork: "  ext-net  "}, "ext-net"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := LBExternalNetwork(makeSvc("ns", "svc", tc.ann)); got != tc.want {
+				t.Errorf("LBExternalNetwork = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLBRequestedIP(t *testing.T) {
+	tests := []struct {
+		name string
+		ann  map[string]string
+		want string
+	}{
+		{"absent", nil, ""},
+		{"empty", map[string]string{AnnotationLBRequestedIP: ""}, ""},
+		{"with value", map[string]string{AnnotationLBRequestedIP: "10.0.0.5"}, "10.0.0.5"},
+		{"trims whitespace", map[string]string{AnnotationLBRequestedIP: "  10.0.0.5\t"}, "10.0.0.5"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := LBRequestedIP(makeSvc("ns", "svc", tc.ann)); got != tc.want {
+				t.Errorf("LBRequestedIP = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestResolvableFrom(t *testing.T) {
 	type tcase struct {
 		name   string

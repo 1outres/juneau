@@ -245,69 +245,22 @@ func (r *ElasticIPReconciler) reconcileNormal(ctx context.Context, resource *jun
 
 // resolvePoolRefs returns the AllocationPool names that back the AddressPools
 // attached to the referenced ExternalNetwork. Only BGP-mode AddressPools are
-// included, matching the prior behaviour.
+// included. Errors from the shared resolver are translated into the
+// ElasticIP-flavoured reason vocabulary so the existing status surface
+// remains stable.
 func (r *ElasticIPReconciler) resolvePoolRefs(ctx context.Context, resource *juneauv1alpha1.ElasticIP) ([]string, error) {
-	if strings.TrimSpace(resource.Spec.ExternalNetwork) == "" {
-		return nil, &elasticIPReconcileError{
-			reason:  elasticIPReasonMissingDependency,
-			message: "spec.externalNetwork is empty",
-		}
-	}
-
-	var externalNetwork juneauv1alpha1.ExternalNetwork
-	if err := r.Get(ctx, client.ObjectKey{Name: resource.Spec.ExternalNetwork}, &externalNetwork); err != nil {
-		if errors.IsNotFound(err) {
+	pools, err := ResolveExternalNetworkBGPPools(ctx, r.Client, resource.Spec.ExternalNetwork)
+	if err != nil {
+		var resolveErr *ExternalNetworkResolveError
+		if stderrors.As(err, &resolveErr) {
 			return nil, &elasticIPReconcileError{
-				reason:  elasticIPReasonMissingDependency,
-				message: fmt.Sprintf("ExternalNetwork %q not found", resource.Spec.ExternalNetwork),
+				reason:  resolveErr.Reason,
+				message: resolveErr.Message,
 			}
 		}
 		return nil, err
 	}
-
-	if len(externalNetwork.Spec.AddressPools) == 0 {
-		return nil, &elasticIPReconcileError{
-			reason:  elasticIPReasonMissingDependency,
-			message: fmt.Sprintf("ExternalNetwork %q has no AddressPools", externalNetwork.Name),
-		}
-	}
-
-	poolNames := make([]string, 0, len(externalNetwork.Spec.AddressPools))
-	for _, raw := range externalNetwork.Spec.AddressPools {
-		poolName := strings.TrimSpace(raw)
-		if poolName == "" {
-			continue
-		}
-
-		var addressPool juneauv1alpha1.AddressPool
-		if err := r.Get(ctx, client.ObjectKey{Name: poolName}, &addressPool); err != nil {
-			if errors.IsNotFound(err) {
-				return nil, &elasticIPReconcileError{
-					reason:  elasticIPReasonMissingDependency,
-					message: fmt.Sprintf("AddressPool %q not found", poolName),
-				}
-			}
-			return nil, err
-		}
-
-		if addressPool.Spec.AdvertiseMode != juneauv1alpha1.AddressPoolAdvertiseModeBGP {
-			return nil, &elasticIPReconcileError{
-				reason:  elasticIPReasonInvalidAddressPool,
-				message: fmt.Sprintf("AddressPool %q advertiseMode must be bgp", addressPool.Name),
-			}
-		}
-
-		poolNames = append(poolNames, AddressPoolAllocationPoolName(addressPool.Name))
-	}
-
-	if len(poolNames) == 0 {
-		return nil, &elasticIPReconcileError{
-			reason:  elasticIPReasonMissingDependency,
-			message: fmt.Sprintf("ExternalNetwork %q resolves to no usable AddressPools", externalNetwork.Name),
-		}
-	}
-
-	return poolNames, nil
+	return pools, nil
 }
 
 // ensureClaim creates or updates the AllocationClaim that backs this
