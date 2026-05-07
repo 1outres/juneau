@@ -45,6 +45,9 @@ Examples:
 
   # Dump a HASH_OF_MAPS inner table.
   kubectl juneau bpf dump fib_map --inner-key table_id=5
+
+  # Verify the LB owner-redirection slot table is consistent across nodes.
+  kubectl juneau bpf dump lb_owner_table --all-nodes
 `,
 		Args: cobra.NoArgs,
 	}

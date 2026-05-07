@@ -40,6 +40,7 @@ nav:
   - Home: index.md
   - User Guide:
     - BGPを使ってExternalNetworkを構築する: guides/external-network-bgp.md
+    - BGPでLoadBalancer Serviceを公開する: guides/service-loadbalancer-bgp.md
     - VPCでServiceを利用する: guides/custom-vpc-service.md
     - Vpcで共有Serviceを利用する: guides/shared-service.md
     - NATGatewayでVPC外への通信を成立させる: guides/nat-gateway.md
@@ -66,4 +67,5 @@ nav:
   - API Reference: api-reference/v1alpha1.md
   - Developer Guide:
     - 仮想サービスを実装する: developer/virtual-service-plane.md
+    - LoadBalancer の Owner Redirection を理解する: developer/lb-owner-redirection.md
     - kubectl-juneau に新コマンドを実装する: developer/kubectl-plugin-command.md
