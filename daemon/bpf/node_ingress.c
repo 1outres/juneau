@@ -523,6 +523,19 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
   // ElasticIP 1:1 NAT (nat_dnat_map) if no NAPT entry exists.
   if (iph->protocol == IPPROTO_TCP || iph->protocol == IPPROTO_UDP) {
     __be16 sport, dport;
+    // Both NAPT-reverse and LB entry require valid L4 ports; fold the
+    // service_map lookup into the same nat_read_l4_ports == 0 block as
+    // the ct_map lookup so sport/dport are guaranteed scalar at the
+    // LB site. Originally the LB lookup lived outside this block and
+    // referenced sport/dport even when nat_read_l4_ports had failed.
+    // LLVM kept sport in r8 across an earlier host_underlay
+    // bpf_map_lookup_elem (whose return — a map_value pointer — also
+    // landed in r8), and on the verifier path that skipped both
+    // nat_read_l4_ports and the underlay block entirely r8 reached
+    // hash_lb_tuple's `sport << 16` still typed as map_value, which
+    // the verifier rejects with "R8 pointer arithmetic with <<=
+    // operator prohibited". Bound the LB site to a basic block where
+    // sport/dport are definitely scalars to keep r8 unambiguous.
     if (nat_read_l4_ports(iph, data_end, &sport, &dport) == 0) {
       struct ct_key ck = {
           .scope = CT_SCOPE_HOST,
@@ -535,43 +548,43 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
       struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &ck);
       if (cv && cv->action == CT_ACTION_NAPT_IN)
         return napt_in_subprog(skb, trace_id);
-    }
 
-    // Service.type=LoadBalancer entry point: the VIP lives inside an
-    // advertised AddressPool prefix so we got past bgp_address_pools.
-    // Look it up in service_map; only entries flagged LOAD_BALANCER
-    // accept external traffic — ClusterIP / externalIPs entries
-    // sharing the same map must not.
-    struct service_key sk = {
-        .cluster_ip = bpf_ntohl(iph->daddr),
-        .port = bpf_ntohs(dport),
-        .proto = iph->protocol,
-    };
-    const struct service_val *sv = bpf_map_lookup_elem(&service_map, &sk);
-    if (sv && (sv->flags & SVC_FLAG_LOAD_BALANCER)) {
-      // Maglev owner check. The slot table maps (5-tuple hash) →
-      // owner Node's underlay IP. If the owner is not us, encap the
-      // intact frame to the owner with VNI_UNDERLAY and bpf_redirect
-      // onto the host's VXLAN device. The owner runs the
-      // SNAT/DNAT/CT-install path locally so every packet of a flow
-      // converges on the same per-flow CT entry — even when the
-      // upstream router ECMP'd subsequent packets onto different
-      // Nodes.
-      //
-      // owner == 0 covers the "table not yet programmed" gap and
-      // any transient slot that the reconciler has not written.
-      // owner == self_underlay_ip means we are the owner; both
-      // cases fall through to the local lb_forward path.
-      __be32 owner = lb_resolve_owner(iph->saddr, iph->daddr,
-                                       sport, dport, iph->protocol);
-      if (owner != 0 && underlay_ip != NULL && owner != *underlay_ip) {
-        trace_emit_redirect_l3(skb, trace_id,
-                               TRACE_REASON_LB_REDIRECT_TO_OWNER,
-                               TRACE_HOOK_NODE_INGRESS, TRACE_SCOPE_HOST,
-                               0, VNI_UNDERLAY, bpf_ntohl(owner));
-        return forward_underlay_to_peer(skb, owner, VNI_UNDERLAY, trace_id);
+      // Service.type=LoadBalancer entry point: the VIP lives inside an
+      // advertised AddressPool prefix so we got past bgp_address_pools.
+      // Look it up in service_map; only entries flagged LOAD_BALANCER
+      // accept external traffic — ClusterIP / externalIPs entries
+      // sharing the same map must not.
+      struct service_key sk = {
+          .cluster_ip = bpf_ntohl(iph->daddr),
+          .port = bpf_ntohs(dport),
+          .proto = iph->protocol,
+      };
+      const struct service_val *sv = bpf_map_lookup_elem(&service_map, &sk);
+      if (sv && (sv->flags & SVC_FLAG_LOAD_BALANCER)) {
+        // Maglev owner check. The slot table maps (5-tuple hash) →
+        // owner Node's underlay IP. If the owner is not us, encap the
+        // intact frame to the owner with VNI_UNDERLAY and bpf_redirect
+        // onto the host's VXLAN device. The owner runs the
+        // SNAT/DNAT/CT-install path locally so every packet of a flow
+        // converges on the same per-flow CT entry — even when the
+        // upstream router ECMP'd subsequent packets onto different
+        // Nodes.
+        //
+        // owner == 0 covers the "table not yet programmed" gap and
+        // any transient slot that the reconciler has not written.
+        // owner == self_underlay_ip means we are the owner; both
+        // cases fall through to the local lb_forward path.
+        __be32 owner = lb_resolve_owner(iph->saddr, iph->daddr,
+                                         sport, dport, iph->protocol);
+        if (owner != 0 && underlay_ip != NULL && owner != *underlay_ip) {
+          trace_emit_redirect_l3(skb, trace_id,
+                                 TRACE_REASON_LB_REDIRECT_TO_OWNER,
+                                 TRACE_HOOK_NODE_INGRESS, TRACE_SCOPE_HOST,
+                                 0, VNI_UNDERLAY, bpf_ntohl(owner));
+          return forward_underlay_to_peer(skb, owner, VNI_UNDERLAY, trace_id);
+        }
+        return lb_forward(skb, trace_id);
       }
-      return lb_forward(skb, trace_id);
     }
   }
 
