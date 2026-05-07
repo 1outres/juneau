@@ -35,7 +35,9 @@ func patchDefaultSubnetDNS() juneauv1alpha1.Subnet {
 	subnet.Status.Gateway = "10.16.0.1"
 	subnet.Status.GatewayMAC = "02:42:0a:10:00:01"
 	if subnet.Status.VNI == 0 {
-		subnet.Status.VNI = 1
+		// Pick any allocator-eligible VNI (>= 2) — VNI=1 is reserved
+		// for VNI_UNDERLAY and never assigned to a real Subnet.
+		subnet.Status.VNI = 2
 	}
 	meta.SetStatusCondition(&subnet.Status.Conditions, metav1.Condition{
 		Type:               juneauv1alpha1.SubnetStatusReady,

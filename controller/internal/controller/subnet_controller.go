@@ -131,9 +131,13 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	desired := resource.Status.DeepCopy()
 
-	if resource.Name == "default" {
-		desired.VNI = 1
-	} else if desired.VNI == 0 {
+	// Every Subnet — including the bootstrap "default" — claims its
+	// VNI from the cluster-wide subnet-vni AllocationPool. The pool's
+	// Min is set above SubnetVNIUnderlay so the data plane's reserved
+	// VNI (currently 1, see VNI_UNDERLAY in maps.h / SubnetVNIUnderlay
+	// in subnet_types.go) is guaranteed never to collide with a user-
+	// facing Subnet.
+	if desired.VNI == 0 {
 		claim, err := r.ensureNumberClaim(ctx, &resource, allocationPoolSubnetVNI, schema.GroupVersionKind{Group: juneauv1alpha1.GroupVersion.Group, Version: juneauv1alpha1.GroupVersion.Version, Kind: "Subnet"}, "status.vni")
 		if err != nil {
 			if updateErr := r.updateStatus(ctx, &resource, *desired, metav1.ConditionFalse, subnetReasonReconcileFailed, fmt.Sprintf("failed to ensure VNI allocation claim: %v", err)); updateErr != nil {

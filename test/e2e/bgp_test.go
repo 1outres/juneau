@@ -16,9 +16,10 @@ const (
 	bgpExternalNetworkName   = "e2e-external"
 	bgpEIPNamespacePrefixDef = "e2e-bgp-eip"
 	bgpClientPodName         = "nginx"
-	// node_ingress drops DNAT traffic targeting the default subnet
-	// (VNI == 1), and EIP egress needs an InternetGateway route on the
-	// Pod's VPC RouteTable, so S3 provisions a dedicated VPC+Subnet.
+	// EIP egress needs an InternetGateway route on the Pod's VPC
+	// RouteTable, and the bootstrap "default" Vpc does not advertise
+	// one (it is a Service provider, not an internet egress Vpc), so
+	// S3 provisions a dedicated VPC+Subnet with its own RouteTable.
 	bgpVpcName    = "e2e-bgp-vpc"
 	bgpSubnetName = "e2e-bgp-subnet"
 	bgpSubnetCIDR = "10.200.0.0/24"
@@ -106,7 +107,7 @@ var _ = Describe("BGP e2e", Ordered, Serial, func() {
 			By("creating ExternalNetwork referencing the BGP pool")
 			Expect(applyExternalNetwork(bgpExternalNetworkName, []string{bgpAddressPoolName})).To(Succeed())
 
-			By("creating a custom VPC+Subnet for EIP traffic (default subnet VNI==1 is dropped by node_ingress DNAT)")
+			By("creating a custom VPC+Subnet for EIP traffic (default Vpc has no InternetGateway route)")
 			Expect(applyManifest(fmt.Sprintf(`apiVersion: juneau.loutres.me/v1alpha1
 kind: Vpc
 metadata:

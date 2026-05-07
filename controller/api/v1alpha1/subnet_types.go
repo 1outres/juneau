@@ -124,6 +124,15 @@ type Subnet struct {
 
 const (
 	SubnetStatusReady string = "Ready"
+
+	// SubnetVNIUnderlay is the VNI value reserved for VXLAN packets
+	// that carry "underlay-equivalent" payloads — packets whose inner
+	// header is processed without any VPC scope (e.g. cross-Node LB
+	// owner redirection). The subnet-vni AllocationPool's Min is set
+	// to SubnetVNIUnderlay+1 so user-facing Subnets never collide
+	// with this value. Mirrors the BPF-side VNI_UNDERLAY define;
+	// keep the two in lockstep.
+	SubnetVNIUnderlay uint32 = 1
 )
 
 // +kubebuilder:object:root=true

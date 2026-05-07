@@ -182,9 +182,35 @@
 // BACKEND_SUBNET_ID_UNDERLAY is the sentinel value the user-space
 // service reconciler writes into backend_val.backend_subnet_id when an
 // endpoint lives on the underlay (host-network endpoints, e.g.
-// kube-apiserver). Pod-backed entries carry a real Subnet VNI >= 1, so
-// 0 is unambiguous.
+// kube-apiserver). Pod-backed entries carry a real Subnet VNI >= 2 (1
+// is reserved for VNI_UNDERLAY), so 0 is unambiguous.
 #define BACKEND_SUBNET_ID_UNDERLAY 0
+
+// VNI_UNDERLAY is reserved for VXLAN packets that carry "underlay-
+// equivalent" payloads — packets whose inner header is meant to be
+// processed without any VPC scope. Producers set the tunnel VNI to
+// this value when injecting cross-Node control / fast-path traffic
+// onto the existing VXLAN device instead of a separate transport.
+//
+// Today the only producer is LB owner redirection (node_ingress
+// forwards a flow to its Maglev-elected owner Node by encapsulating
+// the original underlay frame with this VNI; the receiver's
+// vxlan_ingress recognises VNI_UNDERLAY, skips Subnet/FDB lookups,
+// and hands the inner packet to the LB forward path as if it had
+// arrived on the main interface).
+//
+// Future cross-Node control-plane traffic (debug RPCs, agent fan-
+// out) can reuse VNI_UNDERLAY by branching on inner-packet content
+// in vxlan_ingress; reserving the VNI now avoids needing a fresh
+// reservation per feature.
+//
+// Allocation: the controller's subnet-vni AllocationPool starts at
+// Min=2 so user-facing Subnets never collide with this value. The
+// 0 / 1 / >=2 ladder mirrors BACKEND_SUBNET_ID_UNDERLAY=0 (host-
+// network backend marker) and keeps the semantic ladder clean:
+// 0 = host-network sentinel, 1 = VXLAN underlay tunnel,
+// >=2 = real Subnet VNIs.
+#define VNI_UNDERLAY 1
 
 // backend_val.kind values. control-plane (Service reconciler) decides
 // the kind by comparing endpoint.nodeName to the daemon's nodeName so
