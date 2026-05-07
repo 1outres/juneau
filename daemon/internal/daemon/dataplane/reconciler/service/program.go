@@ -26,6 +26,12 @@ const (
 	svcFlagHasACL           uint32 = 1 << 1
 	svcFlagAffinityClientIP uint32 = 1 << 2
 	svcFlagInternalLocal    uint32 = 1 << 3
+	// svcFlagLoadBalancer marks a service_map entry as reachable from
+	// outside the cluster via the node's underlay path. node_ingress
+	// gates the LB DNAT fast path on this bit so that ClusterIP
+	// entries (which share the same map) do not accidentally accept
+	// external traffic that happened to ECMP onto this node.
+	svcFlagLoadBalancer uint32 = 1 << 4
 )
 
 // programService writes the per-Service maps for the post-filter
@@ -112,27 +118,42 @@ func (r *Reconciler) programService(
 
 // vipsForService returns every VIP this Service should be reachable
 // at on the data plane: the primary ClusterIP plus any IPv4
-// spec.externalIPs entry. Non-IPv4 entries (IPv6, malformed) are
+// spec.externalIPs entry plus any IPv4 status.loadBalancer.ingress
+// entry (populated by ServiceLoadBalancerReconciler for Juneau-class
+// LB Services). Non-IPv4 entries (IPv6, hostname-only, malformed) are
 // dropped with a warning so the rest of the Service still programmes
-// correctly. Duplicates (e.g. an externalIP equal to the ClusterIP)
-// are skipped — service_map updates are last-write-wins, but emitting
-// the same key twice would also bloat the snapshot.
+// correctly. Duplicates across the three sources are skipped —
+// service_map updates are last-write-wins, but emitting the same key
+// twice would also bloat the snapshot and the affinity gen check.
 func vipsForService(svc *corev1.Service, primaryHost uint32) []uint32 {
 	vips := []uint32{primaryHost}
 	seen := map[uint32]struct{}{primaryHost: {}}
-	for _, raw := range svc.Spec.ExternalIPs {
+	addIPv4 := func(raw, source string) {
 		ip := net.ParseIP(raw).To4()
 		if ip == nil {
-			zap.S().Warnf("service: %s/%s skipping non-IPv4 externalIP %q",
-				svc.Namespace, svc.Name, raw)
-			continue
+			zap.S().Warnf("service: %s/%s skipping non-IPv4 %s %q",
+				svc.Namespace, svc.Name, source, raw)
+			return
 		}
 		host := binary.BigEndian.Uint32(ip)
 		if _, dup := seen[host]; dup {
-			continue
+			return
 		}
 		seen[host] = struct{}{}
 		vips = append(vips, host)
+	}
+	for _, raw := range svc.Spec.ExternalIPs {
+		addIPv4(raw, "externalIP")
+	}
+	for _, ingress := range svc.Status.LoadBalancer.Ingress {
+		// Hostname-only ingress entries are silently skipped (no
+		// warning) because some upstream LB controllers populate them
+		// for DNS-fronted LBs and they are not a misconfiguration —
+		// just not addressable by the BPF data plane.
+		if ingress.IP == "" {
+			continue
+		}
+		addIPv4(ingress.IP, "loadBalancer.ingress")
 	}
 	return vips
 }
@@ -205,7 +226,32 @@ func serviceFlags(svc *corev1.Service, policy svcpolicy.BackendSelectionPolicy, 
 	if policy.InternalLocal {
 		flags |= svcFlagInternalLocal
 	}
+	if isLoadBalancerActive(svc) {
+		flags |= svcFlagLoadBalancer
+	}
 	return flags
+}
+
+// isLoadBalancerActive reports whether svc is a Service.type=LoadBalancer
+// whose ingress has an actual IP allocated. The flag must be gated on
+// ingress presence rather than on type alone — otherwise a freshly
+// created LB Service whose IP is still being claimed would advertise
+// itself to node_ingress as ready and silently drop external traffic.
+//
+// We deliberately do not gate on loadBalancerClass here: any LB Service
+// with an ingress IP that ended up in our service_map is, by
+// construction, owned by Juneau (the controller pipeline never
+// populates ingress for foreign-class Services).
+func isLoadBalancerActive(svc *corev1.Service) bool {
+	if svc == nil || svc.Spec.Type != corev1.ServiceTypeLoadBalancer {
+		return false
+	}
+	for _, ingress := range svc.Status.LoadBalancer.Ingress {
+		if ingress.IP != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // affinitySecondsClamp converts policy.Timeout into the seconds value

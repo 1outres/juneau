@@ -426,6 +426,16 @@ struct service_key {
 // programmed state against the spec.
 #define SVC_FLAG_INTERNAL_LOCAL (1U << 3)
 
+// SVC_FLAG_LOAD_BALANCER marks a service_map entry as reachable from
+// outside the cluster via the underlay path. node_ingress gates the
+// Service-DNAT fast path on this bit so that ClusterIP entries
+// (which share the same map but accept only Pod-sourced traffic)
+// never accidentally serve external requests that happened to ECMP
+// onto this node. Set by the reconciler when a Service is
+// type=LoadBalancer AND status.loadBalancer.ingress carries an IP;
+// flipping false→true invalidates affinity bindings via the gen bump.
+#define SVC_FLAG_LOAD_BALANCER (1U << 4)
+
 struct service_val {
   __u32 owner_vpc_id;   // Vpc that owns the Service; checked against caller_vpc_id
   __u32 backend_count;
