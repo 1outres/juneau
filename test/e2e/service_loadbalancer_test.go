@@ -209,6 +209,70 @@ spec:
 		}, lbServiceConvergence, 5*time.Second).Should(Succeed())
 	})
 
+	It("L4: sustains many TCP connections across ECMP-scattered packets (Maglev owner redirection)", func() {
+		// L4 hash policy on the BGP router (set in bgp_router_test.go
+		// via fib_multipath_hash_policy=1) means each curl's ephemeral
+		// source port re-hashes to a potentially different next-hop
+		// Node. Without Maglev owner redirection the SYN landing on
+		// Node A and the ACK landing on Node B would mint two
+		// independent SNAT port allocations and the backend would see
+		// half-open TCP that resets.
+		//
+		// This spec runs a tight burst of curls and asserts every
+		// single one returned a backend body — even one RST mid-burst
+		// is a regression in the owner-redirection layer.
+		namespace := lbNamespacePrefix + "-" + sanitizeName("l4")
+		svcName := "nginx"
+		serverA := "lb-l4-a"
+		serverB := "lb-l4-b"
+
+		createNamespace(namespace)
+		DeferCleanup(func() {
+			runBestEffort(repoRoot, "kubectl", "delete", "service", "-n", namespace, svcName, "--ignore-not-found=true")
+			runBestEffort(repoRoot, "kubectl", "delete", "namespace", namespace, "--ignore-not-found=true", "--timeout=60s")
+		})
+
+		Expect(applyManifest(podManifest(namespace, serverA, workerNodes[0], lbSubnetName, true))).To(Succeed())
+		Expect(applyManifest(podManifest(namespace, serverB, workerNodes[1], lbSubnetName, true))).To(Succeed())
+		waitPodsReady(namespace, serverA, serverB)
+		labelPodApp(namespace, serverA, "lb-l4")
+		labelPodApp(namespace, serverB, "lb-l4")
+		stampBackend(namespace, serverA, "BACKEND-L4A")
+		stampBackend(namespace, serverB, "BACKEND-L4B")
+
+		Expect(applyManifest(loadBalancerServiceManifest(namespace, svcName, "lb-l4", lbVpcName, lbExternalNetwork, ""))).To(Succeed())
+		waitServiceTwoEndpoints(namespace, svcName)
+
+		ip := waitLoadBalancerIngressIP(namespace, svcName)
+
+		By("warming the LB path with a single curl so the daemon's reconcilers have converged")
+		Eventually(func(g Gomega) {
+			out, err := bgpRouter.Exec("curl", "-sS", "--max-time", "3", fmt.Sprintf("http://%s/", ip))
+			g.Expect(err).NotTo(HaveOccurred(), "warm-up curl output: %s", out)
+			g.Expect(out).To(Or(ContainSubstring("BACKEND-L4A"), ContainSubstring("BACKEND-L4B")))
+		}, lbServiceConvergence, 3*time.Second).Should(Succeed())
+
+		By(fmt.Sprintf("running 100 sequential curls against http://%s/ with --fail (any RST fails)", ip))
+		// Use --fail so curl returns non-zero on any HTTP error or
+		// transport failure. The shell script tracks failures and
+		// reports both the count and the last error code so the
+		// regression mode is obvious.
+		const burstCount = 100
+		out, err := bgpRouter.Exec("sh", "-c", fmt.Sprintf(
+			`failures=0
+last_rc=0
+for i in $(seq 1 %d); do
+  if ! curl --fail -sS --max-time 3 http://%s/ > /dev/null 2>&1; then
+    failures=$((failures+1))
+    last_rc=$?
+  fi
+done
+echo "failures=$failures last_rc=$last_rc"`, burstCount, ip))
+		Expect(err).NotTo(HaveOccurred(), "burst output: %s", out)
+		Expect(strings.TrimSpace(out)).To(Equal("failures=0 last_rc=0"),
+			"every one of %d curls under L4 ECMP must succeed; failures imply Maglev owner redirection regression", burstCount)
+	})
+
 	It("L3: honours the loadbalancer-ip annotation", func() {
 		namespace := lbNamespacePrefix + "-" + sanitizeName("l3")
 		svcName := "nginx"
