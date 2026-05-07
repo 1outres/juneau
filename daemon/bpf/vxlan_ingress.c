@@ -5,6 +5,8 @@
 #include <bpf/bpf_helpers.h>
 #include <stdbool.h>
 #include "ct.h"
+#include "forward.h"
+#include "lb.h"
 #include "maps.h"
 #include "nat.h"
 #include "trace.h"
@@ -161,6 +163,37 @@ static __always_inline int tc_vxlan_ingress(struct __sk_buff *skb) {
     return TC_ACT_SHOT;
 
   __u32 subnet_id = tkey.tunnel_id & 0xFFFFFF;
+
+  // VNI_UNDERLAY identifies cross-Node "underlay-equivalent" packets
+  // — currently used for LB owner redirection: a non-owner Node
+  // encapsulated an external LB request to us (the Maglev-elected
+  // owner) so we can run the SNAT/DNAT/CT-install path locally.
+  // The inner frame is what the upstream router originally
+  // delivered to that other Node; treat it as if it had landed on
+  // our own main interface and hand it straight to lb_forward.
+  //
+  // Owner re-resolution is intentionally NOT done here: doing so
+  // would risk a redirect loop if two Nodes' membership snapshots
+  // disagreed during a reconciler convergence. Instead we trust
+  // the originating Node's pick and install CT locally; if the
+  // pick was wrong the worst case is a single per-flow CT
+  // mismatch that TCP recovers from via SYN retransmit.
+  if (subnet_id == VNI_UNDERLAY) {
+    // Hook-entry trace event under HOST scope (no VPC dimension
+    // for underlay-equivalent traffic). We emit before the
+    // forward call so the timeline shows the cross-Node hop
+    // explicitly even when lb_forward later fails.
+    __u32 __underlay_trace_id = 0;
+    {
+      struct trace_hook_ctx __ctx = {
+          .reason = TRACE_REASON_LB_OWNER_RECEIVED_VIA_UNDERLAY,
+          .hook = TRACE_HOOK_VXLAN_INGRESS,
+          .scope = TRACE_SCOPE_HOST,
+      };
+      __underlay_trace_id = trace_classify_and_emit_enter(skb, &__ctx);
+    }
+    return lb_forward(skb, __underlay_trace_id);
+  }
 
   struct subnet_key skey = {.subnet_id = subnet_id};
   const struct subnet_val *subnet = bpf_map_lookup_elem(&subnet_map, &skey);

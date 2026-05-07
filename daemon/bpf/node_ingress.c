@@ -548,8 +548,31 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
         .proto = iph->protocol,
     };
     const struct service_val *sv = bpf_map_lookup_elem(&service_map, &sk);
-    if (sv && (sv->flags & SVC_FLAG_LOAD_BALANCER))
+    if (sv && (sv->flags & SVC_FLAG_LOAD_BALANCER)) {
+      // Maglev owner check. The slot table maps (5-tuple hash) →
+      // owner Node's underlay IP. If the owner is not us, encap the
+      // intact frame to the owner with VNI_UNDERLAY and bpf_redirect
+      // onto the host's VXLAN device. The owner runs the
+      // SNAT/DNAT/CT-install path locally so every packet of a flow
+      // converges on the same per-flow CT entry — even when the
+      // upstream router ECMP'd subsequent packets onto different
+      // Nodes.
+      //
+      // owner == 0 covers the "table not yet programmed" gap and
+      // any transient slot that the reconciler has not written.
+      // owner == self_underlay_ip means we are the owner; both
+      // cases fall through to the local lb_forward path.
+      __be32 owner = lb_resolve_owner(iph->saddr, iph->daddr,
+                                       sport, dport, iph->protocol);
+      if (owner != 0 && underlay_ip != NULL && owner != *underlay_ip) {
+        trace_emit_redirect_l3(skb, trace_id,
+                               TRACE_REASON_LB_REDIRECT_TO_OWNER,
+                               TRACE_HOOK_NODE_INGRESS, TRACE_SCOPE_HOST,
+                               0, VNI_UNDERLAY, bpf_ntohl(owner));
+        return forward_underlay_to_peer(skb, owner, VNI_UNDERLAY, trace_id);
+      }
       return lb_forward(skb, trace_id);
+    }
   }
 
   struct nat_outside nk = {

@@ -70,6 +70,15 @@
 #define TRACE_REASON_SNAT_APPLIED             403
 #define TRACE_REASON_NAPT_ALLOCATED           404
 #define TRACE_REASON_REVERSE_NAT_APPLIED      405
+// LB owner-redirection: when a non-owner Node receives an LB packet
+// it encapsulates with VNI_UNDERLAY and forwards to the Maglev-elected
+// owner Node (REDIRECT_TO_OWNER); when the owner receives such a
+// packet via vxlan_ingress and resumes the LB forward leg, it emits
+// OWNER_RECEIVED_VIA_UNDERLAY. Together they let kubectl juneau trace
+// reconstruct the cross-Node hop without inferring it from raw
+// VXLAN headers.
+#define TRACE_REASON_LB_REDIRECT_TO_OWNER          406
+#define TRACE_REASON_LB_OWNER_RECEIVED_VIA_UNDERLAY 407
 
 #define TRACE_REASON_REDIRECT_IFINDEX 500
 #define TRACE_REASON_REDIRECT_VXLAN   501
