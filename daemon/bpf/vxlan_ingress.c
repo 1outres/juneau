@@ -253,6 +253,15 @@ static __always_inline int tc_vxlan_ingress(struct __sk_buff *skb) {
                           subnet->vpc_id, subnet_id, 0);
       return shared_rc;
     }
+    // Passthrough: the subprog call above invalidates packet pointers
+    // for the verifier (it conservatively assumes any subprog may have
+    // shifted skb->data). Re-derive eth before the fdb path below
+    // dereferences eth->h_dest.
+    data = (void *)(long)skb->data;
+    data_end = (void *)(long)skb->data_end;
+    eth = data;
+    if ((void *)(eth + 1) > data_end)
+      return TC_ACT_SHOT;
   }
 
   // Service reverse SNAT lives in pod_ingress, attached to the
