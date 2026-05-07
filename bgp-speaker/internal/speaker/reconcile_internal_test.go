@@ -98,10 +98,11 @@ func TestBuildReconcileResult_PeerNamesAndAdvertisementsAndWarnings(t *testing.T
 		t.Fatalf("Advertisements: want 2, got %d: %+v", got, res.Advertisements)
 	}
 	// Sorted by AddressPool; each Prefixes list sorted CIDRs from spec.addresses.
+	// Phase 5 adds SourceKind="BGPAdvertisement" attribution to each entry.
 	if diff := cmp.Diff(
 		[]nodestate.Advertisement{
-			{AddressPool: "pool-a", Prefixes: []string{"10.1.0.0/24"}},
-			{AddressPool: "pool-b", Prefixes: []string{"10.2.0.0/24", "10.3.0.0/24"}},
+			{AddressPool: "pool-a", SourceKind: "BGPAdvertisement", Prefixes: []string{"10.1.0.0/24"}},
+			{AddressPool: "pool-b", SourceKind: "BGPAdvertisement", Prefixes: []string{"10.2.0.0/24", "10.3.0.0/24"}},
 		},
 		res.Advertisements,
 	); diff != "" {

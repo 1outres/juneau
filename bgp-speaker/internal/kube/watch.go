@@ -34,6 +34,16 @@ func (i *Invalidator) RegisterHandlers(ctx context.Context, c cache.Cache) error
 		&juneauv1alpha1.AddressPool{},
 		&juneauv1alpha1.BGPAdvertisement{},
 		&juneauv1alpha1.BGPPeer{},
+		// ServiceLoadBalancer drives the Phase 5
+		// ServiceLoadBalancerSource: VIPs are advertised only when
+		// status.advertisingNodes contains this node, so the speaker
+		// must wake up on every SLB status transition.
+		&juneauv1alpha1.ServiceLoadBalancer{},
+		// ExternalNetwork is consulted by ServiceLoadBalancerSource
+		// to decide whether a VIP can be advertised over BGP. We
+		// invalidate on changes so a flip from arp → bgp is picked up
+		// without waiting for the next periodic resync.
+		&juneauv1alpha1.ExternalNetwork{},
 	}
 
 	for _, obj := range objects {

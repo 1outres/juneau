@@ -63,19 +63,41 @@ spec:
                 items:
                   properties:
                     addressPool:
+                      description: |-
+                        AddressPool, when set, names the AddressPool the prefix list is
+                        drawn from. Empty for non-pool sources (ServiceLoadBalancer).
                       type: string
                     lastSyncedAt:
                       format: date-time
                       type: string
                     prefixes:
                       description: |-
-                        Prefixes is the set of CIDRs that bgp-speaker intends to advertise from
-                        this AddressPool. Derived from AddressPool.spec.addresses at reconcile
-                        time, not observed on the wire (BIRD BMP does not expose adj-RIB-out).
+                        Prefixes is the set of CIDRs that bgp-speaker intends to advertise
+                        for this advertisement. Derived from the source resource at
+                        reconcile time, not observed on the wire (BIRD BMP does not
+                        expose adj-RIB-out).
                       items:
                         type: string
                       type: array
                       x-kubernetes-list-type: set
+                    sourceKind:
+                      description: |-
+                        SourceKind identifies the upstream Kubernetes resource family
+                        (e.g. BGPAdvertisement, ServiceLoadBalancer). Optional for
+                        pre-existing AddressPool entries so older controllers reading
+                        this status keep working; new entries always set it.
+                      type: string
+                    sourceName:
+                      description: |-
+                        SourceName is the name of the source resource. Empty when an
+                        advertisement is shared across multiple resources of the same
+                        kind (e.g. multiple BGPAdvertisements pinning the same pool).
+                      type: string
+                    sourceNamespace:
+                      description: |-
+                        SourceNamespace is the namespace of the source resource. Empty
+                        for cluster-scoped sources.
+                      type: string
                   type: object
                 type: array
               bgpSessions:

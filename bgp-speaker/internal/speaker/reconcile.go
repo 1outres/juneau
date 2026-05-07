@@ -88,6 +88,7 @@ func NewReconcilerWithSources(
 func defaultPrefixSources() []prefixsource.Source {
 	return []prefixsource.Source{
 		prefixsource.AddressPoolAdvertisementSource{},
+		prefixsource.ServiceLoadBalancerSource{},
 	}
 }
 
@@ -328,28 +329,60 @@ func buildReconcileResult(
 }
 
 // advertisementsIntentFromSources projects per-source advertisements
-// into the shape consumed by BGPNodeState.advertisements. Sources
-// that do not name an AddressPool (e.g. ServiceLoadBalancerSource in
-// Phase 5) are not yet visible in BGPNodeState; that representation
-// is generalised in Phase 5 alongside the new source. Until then we
-// pass them through as-is keyed on AddressPool="" so behaviour for
-// existing sources is byte-identical to the pre-refactor code.
+// into the shape consumed by BGPNodeState.advertisements.
+//
+// AddressPool-shaped advertisements still bucket by pool so multiple
+// BGPAdvertisements that target the same pool collapse onto a single
+// entry — preserving the pre-refactor BGPNodeState representation.
+// Non-pool sources (ServiceLoadBalancer) bucket by (sourceKind,
+// sourceNamespace, sourceName) so each source resource maps to one
+// status entry.
 func advertisementsIntentFromSources(advs []prefixsource.SourceAdvertisement) []nodestate.Advertisement {
-	type bucket struct {
-		pool     string
-		prefixes map[string]struct{}
+	type bucketKey struct {
+		Pool      string
+		Kind      string
+		Namespace string
+		Name      string
 	}
-	buckets := map[string]*bucket{}
+	type bucket struct {
+		key      bucketKey
+		prefixes map[string]struct{}
+		// kind / name preserved when the bucket is uniquely owned by
+		// one source. AddressPool-keyed buckets reset SourceKind/Name
+		// to empty when more than one source contributes (matching
+		// the prior behaviour where the legacy entry has no source
+		// attribution at all).
+		kind      string
+		namespace string
+		name      string
+	}
+	buckets := map[bucketKey]*bucket{}
 	for _, ad := range advs {
-		// Only AddressPool-shaped advertisements feed the legacy
-		// BGPNodeState representation. Phase 5 widens this.
-		if ad.AddressPool == "" {
-			continue
+		var key bucketKey
+		if ad.AddressPool != "" {
+			key = bucketKey{Pool: ad.AddressPool}
+		} else {
+			key = bucketKey{Kind: ad.SourceKind, Namespace: ad.SourceNamespace, Name: ad.SourceName}
 		}
-		b, ok := buckets[ad.AddressPool]
+		b, ok := buckets[key]
 		if !ok {
-			b = &bucket{pool: ad.AddressPool, prefixes: map[string]struct{}{}}
-			buckets[ad.AddressPool] = b
+			b = &bucket{
+				key:       key,
+				prefixes:  map[string]struct{}{},
+				kind:      ad.SourceKind,
+				namespace: ad.SourceNamespace,
+				name:      ad.SourceName,
+			}
+			buckets[key] = b
+		} else if ad.AddressPool != "" {
+			// Pool-keyed bucket with multiple contributors: drop the
+			// per-source fields so consumers see "shared between
+			// multiple BGPAdvertisements" rather than a misleading
+			// single name.
+			if b.name != ad.SourceName || b.namespace != ad.SourceNamespace {
+				b.name = ""
+				b.namespace = ""
+			}
 		}
 		for _, p := range ad.Prefixes {
 			if p == nil {
@@ -367,11 +400,25 @@ func advertisementsIntentFromSources(advs []prefixsource.SourceAdvertisement) []
 		}
 		sort.Strings(prefixes)
 		out = append(out, nodestate.Advertisement{
-			AddressPool: b.pool,
-			Prefixes:    prefixes,
+			AddressPool:     b.key.Pool,
+			SourceKind:      b.kind,
+			SourceNamespace: b.namespace,
+			SourceName:      b.name,
+			Prefixes:        prefixes,
 		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].AddressPool < out[j].AddressPool })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].AddressPool != out[j].AddressPool {
+			return out[i].AddressPool < out[j].AddressPool
+		}
+		if out[i].SourceKind != out[j].SourceKind {
+			return out[i].SourceKind < out[j].SourceKind
+		}
+		if out[i].SourceNamespace != out[j].SourceNamespace {
+			return out[i].SourceNamespace < out[j].SourceNamespace
+		}
+		return out[i].SourceName < out[j].SourceName
+	})
 	return out
 }
 
