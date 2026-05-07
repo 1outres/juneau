@@ -25,26 +25,44 @@
 // reverse the rewrite, re-resolve L2 in the caller's Subnet, and
 // redirect to the caller Pod's veth.
 //
-// Returns 1 when the packet was rewritten and dispatched (the caller
-// should return *out_rc), 0 on no matching entry (fall through to fdb-
-// driven forwarding), -1 on rewrite failure.
-static __always_inline int apply_shared_service_reverse(
-    struct __sk_buff *skb, const struct subnet_val *tunnel_subnet,
-    int *out_rc) {
+// Compiled as a noinline BPF-to-BPF subprogram for the same reason as
+// lb_forward: the `entry → lb_forward` chain in tc_vxlan_ingress was
+// already at 528 byte combined stack, and inlining this function — with
+// its trace_nat_event / ct_key / arp_table_key / fdb_key locals — into
+// the entry was the single biggest contributor to that 272-byte entry
+// frame. Splitting it into its own frame drops the entry past the
+// kernel's 512-byte ceiling without further restructuring. The two
+// branches are mutually exclusive (this fires only when subnet_id !=
+// VNI_UNDERLAY) so the two subprogs never share a chain.
+//
+// Return contract (single int — keeps args within BPF's 5-register limit):
+//   APPLY_SHARED_SVC_PASSTHROUGH (0) — no matching CT entry; caller
+//       continues with the fdb-driven forwarding path.
+//   > 0  — matched and rewritten; value is the TC verdict
+//          (bpf_redirect's TC_ACT_REDIRECT) the caller must return
+//          verbatim.
+//   APPLY_SHARED_SVC_DROP (-1) — matched but downstream lookup or
+//       rewrite failed; caller must emit a drop trace and return
+//       TC_ACT_SHOT.
+#define APPLY_SHARED_SVC_PASSTHROUGH 0
+#define APPLY_SHARED_SVC_DROP        (-1)
+
+static __juneau_bpf_subprog int
+apply_shared_service_reverse(struct __sk_buff *skb, __u32 tunnel_vpc_id) {
   struct iphdr *iph = nat_load_iph(skb);
   if (!iph)
-    return 0;
+    return APPLY_SHARED_SVC_PASSTHROUGH;
   void *data_end = nat_skb_data_end(skb);
 
   if (iph->protocol != IPPROTO_TCP && iph->protocol != IPPROTO_UDP)
-    return 0;
+    return APPLY_SHARED_SVC_PASSTHROUGH;
 
   __be16 sport, dport;
   if (nat_read_l4_ports(iph, data_end, &sport, &dport) < 0)
-    return 0;
+    return APPLY_SHARED_SVC_PASSTHROUGH;
 
   struct ct_key ck = {
-      .scope = tunnel_subnet->vpc_id,
+      .scope = tunnel_vpc_id,
       .saddr = iph->saddr,
       .daddr = iph->daddr,
       .sport = sport,
@@ -53,14 +71,14 @@ static __always_inline int apply_shared_service_reverse(
   };
   struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &ck);
   if (!cv || cv->action != CT_ACTION_SVC_SHARED_IN)
-    return 0;
+    return APPLY_SHARED_SVC_PASSTHROUGH;
 
   // Resolve the caller-side Subnet to find the caller Pod's MAC and the
   // gw_mac to stamp on the reply.
   struct subnet_key sk = {.subnet_id = cv->next_subnet_id};
   const struct subnet_val *caller_subnet = bpf_map_lookup_elem(&subnet_map, &sk);
   if (!caller_subnet)
-    return -1;
+    return APPLY_SHARED_SVC_DROP;
 
   struct arp_table_key ak = {
       .subnet_id = cv->next_subnet_id,
@@ -68,7 +86,7 @@ static __always_inline int apply_shared_service_reverse(
   };
   const struct arp_table_val *av = bpf_map_lookup_elem(&arp_table, &ak);
   if (!av)
-    return -1;
+    return APPLY_SHARED_SVC_DROP;
 
   __u8 dst_mac[ETH_ALEN];
   __u8 src_mac[ETH_ALEN];
@@ -97,12 +115,12 @@ static __always_inline int apply_shared_service_reverse(
   __be16 __nat_after_dport  = cv->new_dport;
 
   if (nat_apply_napt_in_rewrite(skb, cv) < 0)
-    return -1;
+    return APPLY_SHARED_SVC_DROP;
 
   // Trace: shared-Service NAPT_IN reverse rewrite.
   {
     struct trace_nat_event __ne = {
-        .vpc_id = tunnel_subnet->vpc_id,
+        .vpc_id = tunnel_vpc_id,
         .subnet_id = caller_subnet_id,
         .hook = TRACE_HOOK_VXLAN_INGRESS,
         .reason = TRACE_REASON_REVERSE_NAT_APPLIED,
@@ -135,7 +153,7 @@ static __always_inline int apply_shared_service_reverse(
   data_end = (void *)(long)skb->data_end;
   struct ethhdr *eth = data;
   if ((void *)(eth + 1) > data_end)
-    return -1;
+    return APPLY_SHARED_SVC_DROP;
   __builtin_memcpy(eth->h_dest, dst_mac, ETH_ALEN);
   __builtin_memcpy(eth->h_source, src_mac, ETH_ALEN);
 
@@ -144,10 +162,9 @@ static __always_inline int apply_shared_service_reverse(
   __builtin_memcpy(fk.mac, dst_mac, ETH_ALEN);
   const struct fdb_val *fv = bpf_map_lookup_elem(&fdb, &fk);
   if (!fv || fv->ifindex == 0)
-    return -1;
+    return APPLY_SHARED_SVC_DROP;
 
-  *out_rc = bpf_redirect(fv->ifindex, 0);
-  return 1;
+  return bpf_redirect(fv->ifindex, 0);
 }
 
 static __always_inline int tc_vxlan_ingress(struct __sk_buff *skb) {
@@ -222,16 +239,15 @@ static __always_inline int tc_vxlan_ingress(struct __sk_buff *skb) {
   // skipping the regular fdb path that would just hand the packet off to a
   // non-existent local iface for the SNAT IP.
   if (eth->h_proto == bpf_htons(ETH_P_IP)) {
-    int shared_rc = TC_ACT_OK;
-    int shared_hit = apply_shared_service_reverse(skb, subnet, &shared_rc);
-    if (shared_hit < 0) {
+    int shared_rc = apply_shared_service_reverse(skb, subnet->vpc_id);
+    if (shared_rc == APPLY_SHARED_SVC_DROP) {
       trace_emit_drop_l3(skb, __trace_id, TRACE_REASON_DROP_SHOT,
                       TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC,
                       subnet->vpc_id, subnet_id);
       return TC_ACT_SHOT;
     }
-    if (shared_hit == 1) {
-      // shared_rc holds the redirect verdict.
+    if (shared_rc != APPLY_SHARED_SVC_PASSTHROUGH) {
+      // Positive verdict — bpf_redirect's TC_ACT_REDIRECT.
       trace_emit_redirect_l3(skb, __trace_id, TRACE_REASON_REDIRECT_IFINDEX,
                           TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC,
                           subnet->vpc_id, subnet_id, 0);
