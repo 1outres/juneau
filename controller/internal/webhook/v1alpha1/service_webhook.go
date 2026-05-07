@@ -111,7 +111,8 @@ func (v *ServiceCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 	if serviceVpc(newSvc) == serviceVpc(oldSvc) &&
 		newSvc.Annotations[ServiceAnnotationSubnet] == oldSvc.Annotations[ServiceAnnotationSubnet] &&
 		newSvc.Annotations[ServiceAnnotationShared] == oldSvc.Annotations[ServiceAnnotationShared] &&
-		newSvc.Annotations[ServiceAnnotationAllowedConsumerVpcs] == oldSvc.Annotations[ServiceAnnotationAllowedConsumerVpcs] {
+		newSvc.Annotations[ServiceAnnotationAllowedConsumerVpcs] == oldSvc.Annotations[ServiceAnnotationAllowedConsumerVpcs] &&
+		!loadBalancerAnnotationsChanged(oldSvc, newSvc) {
 		// Annotations relevant to Juneau are unchanged. Skip
 		// re-validation so that pre-existing Services keep working
 		// even if the upstream Vpcs later flip their service config.
@@ -170,6 +171,12 @@ func (v *ServiceCustomValidator) validate(ctx context.Context, svc *corev1.Servi
 		return nil, err
 	} else {
 		errs = append(errs, aclErrs...)
+	}
+
+	if lbErrs, err := v.validateLoadBalancer(ctx, svc); err != nil {
+		return nil, err
+	} else {
+		errs = append(errs, lbErrs...)
 	}
 
 	return errs, nil
