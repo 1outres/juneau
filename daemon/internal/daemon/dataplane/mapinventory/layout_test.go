@@ -136,6 +136,20 @@ func TestSchemaLayoutMatchesGenerated(t *testing.T) {
 			keySize:   4,
 			valueSize: unsafe.Sizeof(bpf.PodEgressAclRule{}),
 		},
+		{
+			name:      "lb_service_map",
+			key:       schemaLBServiceKey(),
+			val:       schemaLBServiceVal(),
+			keySize:   unsafe.Sizeof(bpf.PodEgressLbServiceKey{}),
+			valueSize: unsafe.Sizeof(bpf.PodEgressLbServiceVal{}),
+		},
+		{
+			name:      "lb_backend_map",
+			key:       schemaLBBackendKey(),
+			val:       schemaLBBackendVal(),
+			keySize:   unsafe.Sizeof(bpf.PodEgressLbBackendKey{}),
+			valueSize: unsafe.Sizeof(bpf.PodEgressLbBackendVal{}),
+		},
 	}
 
 	for _, tc := range cases {
@@ -410,5 +424,42 @@ func schemaACLRuleInner() Schema {
 		FieldU16Named("priority"),
 		FieldPadOf(2),
 		FieldIPv4BENamed("peer_v4"),
+	}}
+}
+
+func schemaLBServiceKey() Schema {
+	return Schema{Fields: []Field{
+		FieldIPv4BENamed("vip"),
+		FieldPortNamed("port"),
+		FieldEnumNamed("proto", 1, IPProtoEnum),
+		FieldPadOf(1),
+	}}
+}
+
+func schemaLBServiceVal() Schema {
+	return Schema{Fields: []Field{
+		FieldU32Named("backend_count"),
+		FieldU32Named("gen"),
+		FieldU32Named("flags"),
+		FieldPadOf(4),
+	}}
+}
+
+func schemaLBBackendKey() Schema {
+	return Schema{Fields: []Field{
+		FieldIPv4BENamed("vip"),
+		FieldPortNamed("port"),
+		FieldEnumNamed("proto", 1, IPProtoEnum),
+		FieldPadOf(1),
+		FieldU32Named("index"),
+	}}
+}
+
+func schemaLBBackendVal() Schema {
+	return Schema{Fields: []Field{
+		FieldIPv4BENamed("backend_ip"),
+		FieldPortNamed("backend_port"),
+		FieldPadOf(2),
+		FieldU32Named("backend_subnet_id"),
 	}}
 }

@@ -5,6 +5,7 @@
 #include <bpf/bpf_helpers.h>
 #include <stdbool.h>
 #include "ct.h"
+#include "lb.h"
 #include "maps.h"
 #include "nat.h"
 #include "trace.h"
@@ -347,6 +348,189 @@ static __always_inline int handle_napt_in(struct __sk_buff *skb,
   return forward_l2(skb, eth, cv->next_subnet_id, trace_id);
 }
 
+// handle_lb_dnat_apply rewrites the packet according to a CT entry whose
+// action == CT_ACTION_LB_DNAT (forward leg of an external → VIP flow).
+// The CT entry was either installed on the SYN by handle_lb_ingress or
+// found on a subsequent packet via the ct_map lookup. After rewriting,
+// the packet is dispatched via forward_l2 to the backend's Subnet so
+// the local Pod's veth receives it.
+static __always_inline int handle_lb_dnat_apply(struct __sk_buff *skb,
+                                                struct ethhdr *eth,
+                                                struct iphdr *iph,
+                                                struct ct_val *cv,
+                                                struct ct_key *ck,
+                                                __u32 trace_id) {
+  void *data_end = nat_skb_data_end(skb);
+
+  struct subnet_key sk = {.subnet_id = cv->next_subnet_id};
+  const struct subnet_val *subnet = bpf_map_lookup_elem(&subnet_map, &sk);
+  if (!subnet) {
+    trace_emit_map_miss_l3(skb, trace_id, TRACE_REASON_MISS_SUBNET,
+                           TRACE_HOOK_NODE_INGRESS, TRACE_SCOPE_HOST, 0,
+                           cv->next_subnet_id, cv->next_subnet_id);
+    trace_emit_drop_l3(skb, trace_id, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_NODE_INGRESS, TRACE_SCOPE_HOST, 0,
+                       cv->next_subnet_id);
+    return TC_ACT_SHOT;
+  }
+
+  struct arp_table_key ak = {
+      .subnet_id = cv->next_subnet_id,
+      .ipaddr = bpf_ntohl(cv->new_daddr),
+  };
+  const struct arp_table_val *av = bpf_map_lookup_elem(&arp_table, &ak);
+  if (!av) {
+    trace_emit_map_miss_l3(skb, trace_id, TRACE_REASON_MISS_ARP,
+                           TRACE_HOOK_NODE_INGRESS, TRACE_SCOPE_HOST, 0,
+                           cv->next_subnet_id, bpf_ntohl(cv->new_daddr));
+    trace_emit_drop_l3(skb, trace_id, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_NODE_INGRESS, TRACE_SCOPE_HOST, 0,
+                       cv->next_subnet_id);
+    return TC_ACT_SHOT;
+  }
+
+  __u8 dst_mac[ETH_ALEN];
+  __u8 src_mac[ETH_ALEN];
+  __builtin_memcpy(dst_mac, av->mac, ETH_ALEN);
+  __builtin_memcpy(src_mac, subnet->gw_mac, ETH_ALEN);
+
+  __u8 tcp_flags = 0;
+  bool have_tcp_flags = false;
+  if (iph->protocol == IPPROTO_TCP) {
+    if (ct_read_tcp_flags(iph, data_end, &tcp_flags) == 0)
+      have_tcp_flags = true;
+  }
+
+  cv->last_seen_ns = bpf_ktime_get_ns();
+
+  __be32 before_saddr = iph->saddr;
+  __be32 before_daddr = iph->daddr;
+  __be16 before_sport = ck->sport;
+  __be16 before_dport = ck->dport;
+  __u8   nat_proto    = iph->protocol;
+  __be32 after_daddr  = cv->new_daddr;
+  __be16 after_dport  = cv->new_dport;
+
+  // LB_DNAT only rewrites destination (saddr/sport are preserved so
+  // the backend Pod sees the original external client tuple).
+  if (nat_rewrite_ipv4_addr(skb, /*is_source=*/false, after_daddr) < 0)
+    return TC_ACT_SHOT;
+  if (nat_rewrite_l4_port(skb, /*is_source=*/false, after_dport) < 0)
+    return TC_ACT_SHOT;
+
+  if (trace_id != 0) {
+    struct trace_nat_event __ne = {
+        .vpc_id = subnet->vpc_id,
+        .subnet_id = cv->next_subnet_id,
+        .hook = TRACE_HOOK_NODE_INGRESS,
+        .reason = TRACE_REASON_DNAT_APPLIED,
+        .scope = TRACE_SCOPE_HOST,
+        .proto = nat_proto,
+        .before_saddr = before_saddr,
+        .before_daddr = before_daddr,
+        .before_sport = before_sport,
+        .before_dport = before_dport,
+        .after_saddr = before_saddr,
+        .after_daddr = after_daddr,
+        .after_sport = before_sport,
+        .after_dport = after_dport,
+    };
+    trace_observe_nat(skb, &__ne);
+  }
+
+  if (have_tcp_flags) {
+    struct ct_val *cv2 = bpf_map_lookup_elem(&ct_map, ck);
+    if (cv2)
+      ct_observe_tcp(ck, cv2, tcp_flags);
+  }
+
+  void *data = (void *)(long)skb->data;
+  data_end = (void *)(long)skb->data_end;
+  eth = data;
+  if ((void *)(eth + 1) > data_end)
+    return TC_ACT_SHOT;
+
+  __builtin_memcpy(eth->h_dest, dst_mac, ETH_ALEN);
+  __builtin_memcpy(eth->h_source, src_mac, ETH_ALEN);
+
+  return forward_l2(skb, eth, cv->next_subnet_id, trace_id);
+}
+
+// handle_lb_ingress is the first-packet path for LoadBalancer flows.
+// On a cache miss in ct_map and a hit in lb_service_map, the function
+// selects a local backend, installs both legs of the CT pair, and
+// rewrites the packet with the chosen backend's address and port.
+//
+// Returns TC_ACT_OK / TC_ACT_SHOT, or 0 to signal "not an LB flow,
+// fall through to the existing node_ingress logic."
+static __always_inline int handle_lb_ingress(struct __sk_buff *skb,
+                                             struct ethhdr *eth,
+                                             struct iphdr *iph, __be16 sport,
+                                             __be16 dport, __u32 trace_id) {
+  struct lb_service_val *sv =
+      lb_lookup_service(iph->daddr, bpf_ntohs(dport), iph->protocol);
+  if (!sv)
+    return 0;
+  if (sv->backend_count == 0) {
+    trace_emit_drop_l3(skb, trace_id, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_NODE_INGRESS, TRACE_SCOPE_HOST, 0, 0);
+    return TC_ACT_SHOT;
+  }
+
+  __u32 idx = lb_select_backend(iph->saddr, iph->daddr, sport, dport,
+                                iph->protocol, sv->backend_count);
+  struct lb_backend_val *bv =
+      lb_lookup_backend(iph->daddr, bpf_ntohs(dport), iph->protocol, idx);
+  if (!bv) {
+    // Race against a reconcile that shrunk backend_count: drop and let
+    // the client retry on the next packet.
+    trace_emit_drop_l3(skb, trace_id, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_NODE_INGRESS, TRACE_SCOPE_HOST, 0, 0);
+    return TC_ACT_SHOT;
+  }
+
+  // The reverse-direction CT entry must be scoped to the backend Pod's
+  // owning Vpc so the Pod's pod_egress hook (scope=vpc_id) finds it.
+  __u32 backend_vpc_id = 0;
+  {
+    struct subnet_key sk = {.subnet_id = bv->backend_subnet_id};
+    const struct subnet_val *subnet = bpf_map_lookup_elem(&subnet_map, &sk);
+    if (subnet)
+      backend_vpc_id = subnet->vpc_id;
+  }
+
+  __be32 client_addr = iph->saddr;
+  __be32 vip = iph->daddr;
+  __be16 client_port = sport;
+  __be16 svc_port = dport;
+  __u8 proto = iph->protocol;
+
+  lb_install_ct(client_addr, vip, client_port, svc_port,
+                bv->backend_ip, bv->backend_port, proto,
+                bv->backend_subnet_id, backend_vpc_id);
+
+  // Replay the same path as the cached-hit case so a single helper
+  // performs the rewrite + forward_l2. Build the matching CT key and
+  // value snapshot in stack memory; the helper does not mutate them.
+  struct ct_key ck = {
+      .scope = CT_SCOPE_HOST,
+      .saddr = client_addr,
+      .daddr = vip,
+      .sport = client_port,
+      .dport = svc_port,
+      .proto = proto,
+  };
+  struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &ck);
+  if (!cv) {
+    // Should not happen — we just installed it. Emit a drop with the
+    // miss reason so it shows up in trace events if it ever does.
+    trace_emit_drop_l3(skb, trace_id, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_NODE_INGRESS, TRACE_SCOPE_HOST, 0, 0);
+    return TC_ACT_SHOT;
+  }
+  return handle_lb_dnat_apply(skb, eth, iph, cv, &ck, trace_id);
+}
+
 static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
                                      __u32 trace_id) {
   void *data_end = (void *)(long)skb->data_end;
@@ -354,6 +538,31 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
   struct iphdr *iph = (void *)(eth + 1);
   if ((void *)(iph + 1) > data_end)
     return TC_ACT_SHOT;
+
+  // LoadBalancer DNAT runs first: an external packet hitting a VIP
+  // matches lb_service_map and is short-circuited into a local
+  // backend Pod. Cached flows go through the ct_map LB_DNAT path; the
+  // first packet of a new flow installs the CT pair and continues.
+  if (iph->protocol == IPPROTO_TCP || iph->protocol == IPPROTO_UDP) {
+    __be16 sport, dport;
+    if (nat_read_l4_ports(iph, data_end, &sport, &dport) == 0) {
+      struct ct_key lb_ck = {
+          .scope = CT_SCOPE_HOST,
+          .saddr = iph->saddr,
+          .daddr = iph->daddr,
+          .sport = sport,
+          .dport = dport,
+          .proto = iph->protocol,
+      };
+      struct ct_val *lb_cv = bpf_map_lookup_elem(&ct_map, &lb_ck);
+      if (lb_cv && lb_cv->action == CT_ACTION_LB_DNAT)
+        return handle_lb_dnat_apply(skb, eth, iph, lb_cv, &lb_ck, trace_id);
+
+      int lb_rc = handle_lb_ingress(skb, eth, iph, sport, dport, trace_id);
+      if (lb_rc != 0)
+        return lb_rc;
+    }
+  }
 
   // Packets destined to this node's underlay IP may be the response
   // leg of a host-network Service NAPT flow (CT_ACTION_SVC_NAPT_IN).

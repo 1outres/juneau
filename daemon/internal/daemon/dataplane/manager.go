@@ -381,11 +381,14 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	}
 
 	if m.serviceLoadBalancerInformer != nil {
-		// Phase 6 ships an in-memory Programmer; Phase 7 will swap
-		// in the BPF-backed implementation. The reconciler and its
-		// fan-outs do not depend on which Programmer is in use.
+		// Phase 7 wires the BPF-backed Programmer in production. The
+		// in-memory Programmer remains useful for tests; callers that
+		// want it can pre-populate m.serviceLBProgrammer before Start.
 		if m.serviceLBProgrammer == nil {
-			m.serviceLBProgrammer = servicelbreconciler.NewInMemoryProgrammer()
+			m.serviceLBProgrammer = servicelbreconciler.NewBPFProgrammer(
+				m.podEgress.Objs.LbServiceMap,
+				m.podEgress.Objs.LbBackendMap,
+			)
 		}
 		lb := servicelbreconciler.NewReconciler(m.client, m.serviceLBProgrammer, m.nodeName)
 		m.serviceLBRunner = runner.New(lb)

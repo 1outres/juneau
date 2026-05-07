@@ -5,6 +5,7 @@
 #include <bpf/bpf_helpers.h>
 #include <stdbool.h>
 #include "ct.h"
+#include "lb.h"
 #include "maps.h"
 #include "nat.h"
 #include "sg.h"
@@ -1581,6 +1582,91 @@ static __always_inline int apply_conntrack_dnat(struct __sk_buff *skb,
   return 1;
 }
 
+// apply_conntrack_lb_rev_nat is the reply leg of an external →
+// LoadBalancer-VIP flow. The CT entry was installed at node_ingress
+// (forward LB_DNAT pair); this side scopes ct_map by the backend
+// Pod's owning Vpc and matches the (PodIP → external client) tuple.
+//
+// On hit, we rewrite saddr from PodIP to the original VIP and sport
+// from the target port to the Service port. The destination tuple is
+// preserved so the host stack / underlay routes the reply back to
+// the external client unchanged.
+//
+// Returns 1 on rewrite applied, 0 on no rewrite, -1 on failure.
+static __always_inline int apply_conntrack_lb_rev_nat(struct __sk_buff *skb,
+                                                      __u32 vpc_id) {
+  struct iphdr *iph = load_iph(skb);
+  if (!iph)
+    return -1;
+  void *data_end = skb_data_end(skb);
+
+  if (iph->protocol != IPPROTO_TCP && iph->protocol != IPPROTO_UDP)
+    return 0;
+
+  __be16 sport, dport;
+  if (read_l4_ports(iph, data_end, &sport, &dport) < 0)
+    return 0;
+
+  struct ct_key ck = {
+      .scope = vpc_id,
+      .saddr = iph->saddr,
+      .daddr = iph->daddr,
+      .sport = sport,
+      .dport = dport,
+      .proto = iph->protocol,
+  };
+  struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &ck);
+  if (!cv || cv->action != CT_ACTION_LB_REV_NAT)
+    return 0;
+
+  cv->last_seen_ns = bpf_ktime_get_ns();
+  __be32 new_saddr = cv->new_saddr;
+  __be16 new_sport = cv->new_sport;
+
+  __be32 before_saddr = iph->saddr;
+  __be32 before_daddr = iph->daddr;
+  __u8 before_proto = iph->protocol;
+
+  __u8 tcp_flags = 0;
+  bool have_tcp_flags = false;
+  if (iph->protocol == IPPROTO_TCP) {
+    if (ct_read_tcp_flags(iph, data_end, &tcp_flags) == 0)
+      have_tcp_flags = true;
+  }
+
+  if (rewrite_ipv4_addr(skb, /*is_source=*/true, new_saddr) < 0)
+    return -1;
+  if (rewrite_l4_port(skb, /*is_source=*/true, new_sport) < 0)
+    return -1;
+
+  if (have_tcp_flags)
+    ct_observe_tcp(&ck, cv, tcp_flags);
+
+  // Trace: reverse LB rewrite. Mirrors the DNAT trace shape so a
+  // kubectl-juneau timeline can pair both sides of the flow.
+  {
+    struct trace_nat_event __ne = {
+        .vpc_id = vpc_id,
+        .subnet_id = 0,
+        .hook = TRACE_HOOK_POD_EGRESS,
+        .reason = TRACE_REASON_REVERSE_NAT_APPLIED,
+        .scope = TRACE_SCOPE_VPC,
+        .proto = before_proto,
+        .before_saddr = before_saddr,
+        .before_daddr = before_daddr,
+        .before_sport = sport,
+        .before_dport = dport,
+        .after_saddr = new_saddr,
+        .after_daddr = before_daddr,
+        .after_sport = new_sport,
+        .after_dport = dport,
+    };
+    trace_observe_nat(skb, &__ne);
+  }
+
+  return 1;
+}
+
 // handle_napt is the forward NAPT path: it rewrites src IP/port to the
 // node's host_napt_ip and an allocated source port, installs both
 // forward (NAPT_OUT) and reverse (NAPT_IN) ct_map entries, and then
@@ -2069,6 +2155,22 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
     }
     if (shared_hit == 1)
       return shared_rc;
+
+    // LoadBalancer reverse NAT (Phase 7): the backend Pod is sending
+    // a reply to the original external client. Rewriting saddr from
+    // PodIP to VIP here ensures the client sees the VIP as the
+    // response source. We do not short-circuit the rest of the egress
+    // path on hit — the rewritten packet must still go through the
+    // policy + FIB stage so it routes out via the host underlay.
+    int lb_rc = apply_conntrack_lb_rev_nat(skb, subnet->vpc_id);
+    if (lb_rc < 0) {
+      trace_emit_drop_l3(skb, __trace_id, TRACE_REASON_DROP_SHOT,
+                         TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                         subnet->vpc_id, val->subnet_id);
+      return TC_ACT_SHOT;
+    }
+    // lb_rc == 1: rewrite applied, fall through to the normal egress
+    // path so the host network stack routes the packet out.
 
     // Unified policy stage: NetworkACL → SecurityGroup → CT install.
     // Runs BEFORE apply_conntrack_dnat so each layer evaluates the
