@@ -52,4 +52,14 @@ type View interface {
 
 	ElasticIPAttachmentsForNIC(ctx context.Context, nicName string) ([]juneauv1alpha1.ElasticIPAttachment, error)
 	ElasticIP(ctx context.Context, name string) (*juneauv1alpha1.ElasticIP, error)
+
+	// ServiceLoadBalancer returns the SLB resource that fronts a
+	// Juneau-managed LoadBalancer Service. The SLB name is the same
+	// as the Service name in the same namespace; this method exists
+	// so resolvers don't have to re-derive that.
+	ServiceLoadBalancer(ctx context.Context, ns, name string) (*juneauv1alpha1.ServiceLoadBalancer, error)
+
+	// ExternalNetwork returns a cluster-scoped ExternalNetwork
+	// resource, used to surface its type (bgp/arp) and pool list.
+	ExternalNetwork(ctx context.Context, name string) (*juneauv1alpha1.ExternalNetwork, error)
 }

@@ -99,6 +99,22 @@ func (v *kubeView) EndpointSlicesForService(ctx context.Context, ns, name string
 	return list.Items, nil
 }
 
+func (v *kubeView) ServiceLoadBalancer(ctx context.Context, ns, name string) (*juneauv1alpha1.ServiceLoadBalancer, error) {
+	var slb juneauv1alpha1.ServiceLoadBalancer
+	if err := v.cl.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &slb); err != nil {
+		return nil, ignoreNotFound(err)
+	}
+	return &slb, nil
+}
+
+func (v *kubeView) ExternalNetwork(ctx context.Context, name string) (*juneauv1alpha1.ExternalNetwork, error) {
+	var en juneauv1alpha1.ExternalNetwork
+	if err := v.cl.Get(ctx, client.ObjectKey{Name: name}, &en); err != nil {
+		return nil, ignoreNotFound(err)
+	}
+	return &en, nil
+}
+
 // ---- Single-object (memoised) --------------------------------------
 
 func (v *kubeView) Vpc(ctx context.Context, name string) (*juneauv1alpha1.Vpc, error) {

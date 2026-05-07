@@ -70,6 +70,12 @@ func (s *stubView) NetworkInterfacesBySubnet(_ context.Context, _ string) ([]jun
 func (s *stubView) ElasticIPAttachmentsForNIC(_ context.Context, _ string) ([]juneauv1alpha1.ElasticIPAttachment, error) {
 	return nil, nil
 }
+func (s *stubView) ServiceLoadBalancer(_ context.Context, _, _ string) (*juneauv1alpha1.ServiceLoadBalancer, error) {
+	return nil, nil
+}
+func (s *stubView) ExternalNetwork(_ context.Context, _ string) (*juneauv1alpha1.ExternalNetwork, error) {
+	return nil, nil
+}
 func (s *stubView) ElasticIP(_ context.Context, _ string) (*juneauv1alpha1.ElasticIP, error) {
 	return nil, nil
 }

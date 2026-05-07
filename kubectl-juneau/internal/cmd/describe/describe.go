@@ -34,5 +34,6 @@ augments the output with data-plane facts pulled from juneaud.`,
 	cmd.AddCommand(newSubnetCommand(f))
 	cmd.AddCommand(newServiceCommand(f))
 	cmd.AddCommand(newNetworkInterfaceCommand(f))
+	cmd.AddCommand(newLoadBalancerCommand(f))
 	return cmd
 }
