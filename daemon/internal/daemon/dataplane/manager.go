@@ -20,6 +20,7 @@ import (
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/program"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/reconciler"
 	servicereconciler "github.com/1outres/juneau/daemon/internal/daemon/dataplane/reconciler/service"
+	servicelbreconciler "github.com/1outres/juneau/daemon/internal/daemon/dataplane/reconciler/serviceloadbalancer"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/trace"
 	"github.com/1outres/juneau/daemon/internal/daemon/runner"
 )
@@ -68,6 +69,10 @@ type Manager struct {
 	sgMembershipRunner *runner.Runner
 	aclRunner          *runner.Runner
 	traceRunner        *runner.Runner
+
+	serviceLoadBalancerInformer cache.Informer
+	serviceLBProgrammer         servicelbreconciler.Programmer
+	serviceLBRunner             *runner.Runner
 
 	traceSessionInformer cache.Informer
 	traceStore           *trace.Store
@@ -375,6 +380,39 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 		m.serviceRunner.Start(ctx, 1)
 	}
 
+	if m.serviceLoadBalancerInformer != nil {
+		// Phase 6 ships an in-memory Programmer; Phase 7 will swap
+		// in the BPF-backed implementation. The reconciler and its
+		// fan-outs do not depend on which Programmer is in use.
+		if m.serviceLBProgrammer == nil {
+			m.serviceLBProgrammer = servicelbreconciler.NewInMemoryProgrammer()
+		}
+		lb := servicelbreconciler.NewReconciler(m.client, m.serviceLBProgrammer, m.nodeName)
+		m.serviceLBRunner = runner.New(lb)
+		if err := m.serviceLBRunner.Watch(m.serviceLoadBalancerInformer, runner.MetaNamespaceKey); err != nil {
+			return fmt.Errorf("watch ServiceLoadBalancer: %w", err)
+		}
+		if m.serviceInformer != nil {
+			if err := m.serviceLBRunner.WatchFanOut(m.serviceInformer, lb.FanOutServiceToSLB); err != nil {
+				return fmt.Errorf("watch Service (LB fan-out): %w", err)
+			}
+		}
+		if m.endpointSliceInformer != nil {
+			if err := m.serviceLBRunner.WatchFanOut(m.endpointSliceInformer, lb.FanOutEndpointSliceToSLB); err != nil {
+				return fmt.Errorf("watch EndpointSlice (LB fan-out): %w", err)
+			}
+		}
+		if m.networkInterfaceInformer != nil {
+			// Pod NetworkInterface allocation transitions a backend
+			// from "non-Juneau, drop" to "Juneau, advertise"; we
+			// must re-evaluate every known SLB on those events.
+			if err := m.serviceLBRunner.WatchFanOut(m.networkInterfaceInformer, lb.FanOutNetworkInterfaceToSLBs); err != nil {
+				return fmt.Errorf("watch NetworkInterface (LB fan-out): %w", err)
+			}
+		}
+		m.serviceLBRunner.Start(ctx, 1)
+	}
+
 	m.startConntrackGC(ctx)
 	m.startAffinityGC(ctx)
 
@@ -553,6 +591,7 @@ func (m *Manager) Stop() error {
 		m.natRunner,
 		m.bgpPoolRunner,
 		m.serviceRunner,
+		m.serviceLBRunner,
 		m.naptRunner,
 		m.serviceNATRunner,
 		m.sgRunner,
@@ -623,6 +662,7 @@ func NewManager(
 	networkInterfaceInformer cache.Informer,
 	securityGroupInformer cache.Informer,
 	networkACLInformer cache.Informer,
+	serviceLoadBalancerInformer cache.Informer,
 	traceSessionInformer cache.Informer,
 	nodeName string,
 	vxlanIfindex int,
@@ -649,6 +689,7 @@ func NewManager(
 		networkInterfaceInformer:          networkInterfaceInformer,
 		securityGroupInformer:             securityGroupInformer,
 		networkACLInformer:                networkACLInformer,
+		serviceLoadBalancerInformer:       serviceLoadBalancerInformer,
 		traceSessionInformer:              traceSessionInformer,
 		nodeName:                          nodeName,
 		vxlanIfindex:                      vxlanIfindex,
@@ -658,4 +699,11 @@ func NewManager(
 		hostMac:                           defaultGatewayMac,
 		juNodeUnderlayIP:                  juNodeUnderlayIP,
 	}
+}
+
+// ServiceLoadBalancerProgrammer exposes the in-use Programmer for
+// debug/observability surfaces (e.g. kubectl-juneau topology).
+// Returns nil before Start has run.
+func (m *Manager) ServiceLoadBalancerProgrammer() servicelbreconciler.Programmer {
+	return m.serviceLBProgrammer
 }
