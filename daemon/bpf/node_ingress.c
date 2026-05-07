@@ -247,12 +247,48 @@ static __always_inline int handle_dnat(struct __sk_buff *skb, struct ethhdr *eth
 // also rewrites saddr/sport so the Pod sees the original ClusterIP as
 // the response source. The cv->new_saddr / cv->new_sport fields are
 // 0 for NAPT_IN to make the rewrite a no-op there.
-static __always_inline int handle_napt_in(struct __sk_buff *skb,
-                                          struct ethhdr *eth, struct iphdr *iph,
-                                          struct ct_val *cv,
-                                          struct ct_key *ck,
-                                          __u32 trace_id) {
-  void *data_end = nat_skb_data_end(skb);
+// napt_in_subprog handles the reverse leg of both SVC_NAPT_IN (Service
+// host-network backend reply) and NAPT_IN (NATGateway reply) flows.
+// The two paths share identical body; the caller in handle_l3 only
+// differs in WHICH map lookups guard the dispatch (host_underlay vs
+// bgp_address_pools). The subprogram re-derives eth / iph / ct_key
+// from skb to keep its arg count within BPF's 5-register ceiling.
+//
+// Compiled as a noinline subprogram so its 100+ bytes of stack
+// (subnet_key, arp_table_key, dst_mac, src_mac, trace_nat_event,
+// locals) live in their own frame instead of bloating tc_node_ingress.
+// Without this, the inlined contribution pushed the combined call
+// chain that runs through lb_forward_subprog past the kernel's
+// 512-byte ceiling.
+static __juneau_bpf_subprog int
+napt_in_subprog(struct __sk_buff *skb, __u32 trace_id) {
+  void *data = (void *)(long)skb->data;
+  void *data_end = (void *)(long)skb->data_end;
+  struct ethhdr *eth = data;
+  if ((void *)(eth + 1) > data_end)
+    return TC_ACT_SHOT;
+  struct iphdr *iph = (void *)(eth + 1);
+  if ((void *)(iph + 1) > data_end)
+    return TC_ACT_SHOT;
+  if (iph->protocol != IPPROTO_TCP && iph->protocol != IPPROTO_UDP)
+    return TC_ACT_SHOT;
+
+  __be16 sport, dport;
+  if (nat_read_l4_ports(iph, data_end, &sport, &dport) < 0)
+    return TC_ACT_SHOT;
+
+  struct ct_key ck = {
+      .scope = CT_SCOPE_HOST,
+      .saddr = iph->saddr,
+      .daddr = iph->daddr,
+      .sport = sport,
+      .dport = dport,
+      .proto = iph->protocol,
+  };
+  struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &ck);
+  if (!cv ||
+      (cv->action != CT_ACTION_SVC_NAPT_IN && cv->action != CT_ACTION_NAPT_IN))
+    return TC_ACT_SHOT;
 
   struct subnet_key sk = {.subnet_id = cv->next_subnet_id};
   const struct subnet_val *subnet = bpf_map_lookup_elem(&subnet_map, &sk);
@@ -298,8 +334,8 @@ static __always_inline int handle_napt_in(struct __sk_buff *skb,
   // Capture before/after tuple for the trace event.
   __be32 before_saddr = iph->saddr;
   __be32 before_daddr = iph->daddr;
-  __be16 before_sport = ck->sport;
-  __be16 before_dport = ck->dport;
+  __be16 before_sport = ck.sport;
+  __be16 before_dport = ck.dport;
   __u8   nat_proto    = iph->protocol;
   __be32 after_saddr  = cv->new_saddr ? cv->new_saddr : before_saddr;
   __be32 after_daddr  = cv->new_daddr;
@@ -331,13 +367,13 @@ static __always_inline int handle_napt_in(struct __sk_buff *skb,
   }
 
   if (have_tcp_flags) {
-    struct ct_val *cv2 = bpf_map_lookup_elem(&ct_map, ck);
+    struct ct_val *cv2 = bpf_map_lookup_elem(&ct_map, &ck);
     if (cv2)
-      ct_observe_tcp(ck, cv2, tcp_flags);
+      ct_observe_tcp(&ck, cv2, tcp_flags);
   }
 
   // Re-derive packet pointers and rewrite L2.
-  void *data = (void *)(long)skb->data;
+  data = (void *)(long)skb->data;
   data_end = (void *)(long)skb->data_end;
   eth = data;
   if ((void *)(eth + 1) > data_end)
@@ -349,7 +385,7 @@ static __always_inline int handle_napt_in(struct __sk_buff *skb,
   return forward_l2(skb, eth, cv->next_subnet_id, trace_id);
 }
 
-// handle_lb_napt_in is the reverse leg of a Service.type=LoadBalancer
+// lb_napt_in_subprog is the reverse leg of a Service.type=LoadBalancer
 // flow: a backend Pod's reply has been routed (via the underlay) back
 // to this node's underlay IP and matched the LB_IN ct_map entry the
 // forward leg installed. We rewrite saddr (→ VIP), daddr (→ original
@@ -357,16 +393,50 @@ static __always_inline int handle_napt_in(struct __sk_buff *skb,
 // port), then hand the packet to the kernel's main FIB so it leaves
 // via the upstream router. fdb-style forwarding is not applicable
 // here because the destination is outside the cluster fabric.
-static __always_inline int handle_lb_napt_in(struct __sk_buff *skb,
-                                              struct ethhdr *eth,
-                                              struct iphdr *iph,
-                                              struct ct_val *cv,
-                                              struct ct_key *ck,
-                                              __u32 trace_id) {
+//
+// Compiled as a noinline BPF-to-BPF subprogram (see __juneau_bpf_subprog
+// in trace.h). Inlining all of LB forward + reverse paths into
+// tc_node_ingress overflowed the verifier's branch-merge precision and
+// caused "invalid size of register spill" once the function exceeded
+// ~4k instructions. Subprograms get their own stack frame and verifier
+// state, so the ctx() spill confusion goes away. Args are kept within
+// the BPF 5-register limit (R1-R5) by re-deriving eth / iph / ct_key
+// from skb instead of taking them from the caller — callers in
+// handle_l3 already validated all of these on the parent program's
+// stack but the work is cheap and keeps the subprogram boundary clean.
+static __juneau_bpf_subprog int
+lb_napt_in_subprog(struct __sk_buff *skb, __u32 trace_id) {
+  void *data = (void *)(long)skb->data;
+  void *data_end = (void *)(long)skb->data_end;
+  struct ethhdr *eth = data;
+  if ((void *)(eth + 1) > data_end)
+    return TC_ACT_SHOT;
+  struct iphdr *iph = (void *)(eth + 1);
+  if ((void *)(iph + 1) > data_end)
+    return TC_ACT_SHOT;
+  if (iph->protocol != IPPROTO_TCP && iph->protocol != IPPROTO_UDP)
+    return TC_ACT_SHOT;
+
+  __be16 sport, dport;
+  if (nat_read_l4_ports(iph, data_end, &sport, &dport) < 0)
+    return TC_ACT_SHOT;
+
+  struct ct_key ck = {
+      .scope = CT_SCOPE_HOST,
+      .saddr = iph->saddr,
+      .daddr = iph->daddr,
+      .sport = sport,
+      .dport = dport,
+      .proto = iph->protocol,
+  };
+  struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &ck);
+  if (!cv || cv->action != CT_ACTION_LB_IN)
+    return TC_ACT_SHOT;
+
   __be32 before_saddr = iph->saddr;
   __be32 before_daddr = iph->daddr;
-  __be16 before_sport = ck->sport;
-  __be16 before_dport = ck->dport;
+  __be16 before_sport = ck.sport;
+  __be16 before_dport = ck.dport;
   __u8 nat_proto = iph->protocol;
   __be32 after_saddr = cv->new_saddr;
   __be32 after_daddr = cv->new_daddr;
@@ -406,9 +476,9 @@ static __always_inline int handle_lb_napt_in(struct __sk_buff *skb,
   }
 
   if (have_tcp_flags) {
-    struct ct_val *cv2 = bpf_map_lookup_elem(&ct_map, ck);
+    struct ct_val *cv2 = bpf_map_lookup_elem(&ct_map, &ck);
     if (cv2)
-      ct_observe_tcp(ck, cv2, tcp_flags);
+      ct_observe_tcp(&ck, cv2, tcp_flags);
   }
 
   // Re-derive packet pointers; the rewrites above mutated skb in place
@@ -480,16 +550,16 @@ static __always_inline __u32 lb_rotate_left(__u32 x, __u32 r) {
   return (x << r) | (x >> (32 - r));
 }
 
-// handle_lb_forward implements the forward leg of a Service.type=LoadBalancer
+// lb_forward_subprog implements the forward leg of a Service.type=LoadBalancer
 // flow. The packet has already been classified as a known LB VIP (hit
-// in service_map with SVC_FLAG_LOAD_BALANCER set) and the L4 ports
-// have been read by the caller. We pick a backend by hashing the
-// 5-tuple, allocate a previously-unused source port via NAPT-style
-// linear probing of the reverse CT key, install paired forward
-// (LB_OUT) and reverse (LB_IN) ct_map entries in the HOST scope, then
-// rewrite both the destination (→ backend Pod) and the source (→ this
-// node's underlay IP at the alloc_port) before forwarding via fdb to
-// the backend's Subnet (local Pod or VXLAN-tunnelled remote Pod).
+// in service_map with SVC_FLAG_LOAD_BALANCER set) by the caller. We
+// pick a backend by hashing the 5-tuple, allocate a previously-unused
+// source port via NAPT-style linear probing of the reverse CT key,
+// install paired forward (LB_OUT) and reverse (LB_IN) ct_map entries
+// in the HOST scope, then rewrite both the destination (→ backend Pod)
+// and the source (→ this node's underlay IP at the alloc_port) before
+// forwarding via fdb to the backend's Subnet (local Pod or
+// VXLAN-tunnelled remote Pod).
 //
 // The reverse leg's reply addresses NodeA_underlay; on Node A's
 // node_ingress the LB_IN match in the existing host_underlay branch
@@ -500,13 +570,38 @@ static __always_inline __u32 lb_rotate_left(__u32 x, __u32 r) {
 // HOST_LOCAL / HOST_REMOTE backends are out of scope for LB v1; only
 // Pod-backed Services are accepted (host-network LB delivery would
 // need a different SNAT path and is not yet wired).
-static __always_inline int handle_lb_forward(struct __sk_buff *skb,
-                                              struct ethhdr *eth,
-                                              struct iphdr *iph,
-                                              const struct service_key *sk,
-                                              const struct service_val *sv,
-                                              __be16 sport, __be16 dport,
-                                              __u32 trace_id) {
+//
+// Compiled as a noinline BPF-to-BPF subprogram for the same reason as
+// lb_napt_in_subprog above. Args are limited to skb + trace_id; eth /
+// iph / service_key / service_val / sport / dport are re-derived
+// inside, which is cheap (a few packet header reads + one map lookup)
+// and keeps the call site within BPF's 5-register limit.
+static __juneau_bpf_subprog int
+lb_forward_subprog(struct __sk_buff *skb, __u32 trace_id) {
+  void *data = (void *)(long)skb->data;
+  void *data_end = (void *)(long)skb->data_end;
+  struct ethhdr *eth = data;
+  if ((void *)(eth + 1) > data_end)
+    return TC_ACT_SHOT;
+  struct iphdr *iph = (void *)(eth + 1);
+  if ((void *)(iph + 1) > data_end)
+    return TC_ACT_SHOT;
+  if (iph->protocol != IPPROTO_TCP && iph->protocol != IPPROTO_UDP)
+    return TC_ACT_SHOT;
+
+  __be16 sport, dport;
+  if (nat_read_l4_ports(iph, data_end, &sport, &dport) < 0)
+    return TC_ACT_SHOT;
+
+  struct service_key sk = {
+      .cluster_ip = bpf_ntohl(iph->daddr),
+      .port = bpf_ntohs(dport),
+      .proto = iph->protocol,
+  };
+  const struct service_val *sv = bpf_map_lookup_elem(&service_map, &sk);
+  if (!sv || !(sv->flags & SVC_FLAG_LOAD_BALANCER))
+    return TC_ACT_SHOT;
+
   if (sv->backend_count == 0)
     return TC_ACT_SHOT;
 
@@ -529,9 +624,9 @@ static __always_inline int handle_lb_forward(struct __sk_buff *skb,
               sv->backend_count;
 
   struct backend_key bk = {
-      .cluster_ip = sk->cluster_ip,
-      .port = sk->port,
-      .proto = sk->proto,
+      .cluster_ip = sk.cluster_ip,
+      .port = sk.port,
+      .proto = sk.proto,
       .index = idx,
   };
   const struct backend_val *bv = bpf_map_lookup_elem(&backend_map, &bk);
@@ -597,7 +692,12 @@ static __always_inline int handle_lb_forward(struct __sk_buff *skb,
                                 iph->protocol);
     bool installed = false;
 
-#pragma unroll
+    // Intentionally NOT unrolled: ct_key/ct_val are block-locals on the
+    // subprogram's stack and unrolling forces the compiler to allocate
+    // a fresh slot per iteration, which over LB_PORT_PROBE_LIMIT
+    // iterations pushes the combined call-chain stack past the kernel's
+    // 512-byte ceiling. The kernel's bounded-loop support (5.3+)
+    // verifies the compact form fine.
     for (int i = 0; i < LB_PORT_PROBE_LIMIT; i++) {
       __u32 candidate_host = 1024 + ((seed + i) % (65536 - 1024));
       __be16 candidate = bpf_htons((__u16)candidate_host);
@@ -694,8 +794,8 @@ static __always_inline int handle_lb_forward(struct __sk_buff *skb,
 
   // Re-derive packet pointers; the helpers above mutate skb in place
   // and our cached eth/iph pointers are no longer valid.
-  void *data = (void *)(long)skb->data;
-  void *data_end = (void *)(long)skb->data_end;
+  data = (void *)(long)skb->data;
+  data_end = (void *)(long)skb->data_end;
   eth = data;
   if ((void *)(eth + 1) > data_end)
     return TC_ACT_SHOT;
@@ -761,9 +861,9 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
         };
         struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &ck);
         if (cv && cv->action == CT_ACTION_SVC_NAPT_IN)
-          return handle_napt_in(skb, eth, iph, cv, &ck, trace_id);
+          return napt_in_subprog(skb, trace_id);
         if (cv && cv->action == CT_ACTION_LB_IN)
-          return handle_lb_napt_in(skb, eth, iph, cv, &ck, trace_id);
+          return lb_napt_in_subprog(skb, trace_id);
       }
     }
     // Fall through to bgp_address_pools below.
@@ -793,7 +893,7 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
       };
       struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &ck);
       if (cv && cv->action == CT_ACTION_NAPT_IN)
-        return handle_napt_in(skb, eth, iph, cv, &ck, trace_id);
+        return napt_in_subprog(skb, trace_id);
     }
 
     // Service.type=LoadBalancer entry point: the VIP lives inside an
@@ -808,8 +908,7 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
     };
     const struct service_val *sv = bpf_map_lookup_elem(&service_map, &sk);
     if (sv && (sv->flags & SVC_FLAG_LOAD_BALANCER))
-      return handle_lb_forward(skb, eth, iph, &sk, sv, sport, dport,
-                                trace_id);
+      return lb_forward_subprog(skb, trace_id);
   }
 
   struct nat_outside nk = {
