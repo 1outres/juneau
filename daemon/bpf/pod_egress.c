@@ -38,6 +38,20 @@ struct arp_payload {
   __be32 tpa;
 } __attribute__((packed));
 
+// Per-CPU scratch slot for transient trace_nat_event allocations
+// inside __juneau_bpf_subprog helpers. Subprograms have an
+// independent stack frame and the chain `tc_pod_egress → subprog`
+// must stay under the 512-byte combined-stack ceiling; hosting the
+// 36-byte trace_nat_event off-stack keeps that headroom intact. One
+// entry is enough because each invocation runs to completion before
+// the same CPU can reenter the program (BPF tasks do not preempt).
+struct {
+  __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+  __uint(max_entries, 1);
+  __type(key, __u32);
+  __type(value, struct trace_nat_event);
+} pod_egress_nat_scratch SEC(".maps");
+
 
 static __always_inline int update_l4_csum(struct __sk_buff *skb,
                                           struct iphdr *iph, void *data_end,
@@ -1593,8 +1607,10 @@ static __always_inline int apply_conntrack_dnat(struct __sk_buff *skb,
 // the external client unchanged.
 //
 // Returns 1 on rewrite applied, 0 on no rewrite, -1 on failure.
-static __always_inline int apply_conntrack_lb_rev_nat(struct __sk_buff *skb,
-                                                      __u32 vpc_id) {
+// noinline subprogram — see apply_conntrack_svc_napt_in for the
+// verifier-complexity rationale.
+static __juneau_bpf_subprog int apply_conntrack_lb_rev_nat(struct __sk_buff *skb,
+                                                           __u32 vpc_id) {
   struct iphdr *iph = load_iph(skb);
   if (!iph)
     return -1;
@@ -1623,9 +1639,32 @@ static __always_inline int apply_conntrack_lb_rev_nat(struct __sk_buff *skb,
   __be32 new_saddr = cv->new_saddr;
   __be16 new_sport = cv->new_sport;
 
-  __be32 before_saddr = iph->saddr;
-  __be32 before_daddr = iph->daddr;
-  __u8 before_proto = iph->protocol;
+  // Populate the trace event in per-CPU scratch BEFORE rewrite so
+  // we can read the BEFORE tuple straight from `ck` instead of
+  // snapshotting iph fields into extra stack locals. The actual
+  // trace_observe_nat() emit happens at the call site in handle_l2
+  // — invoking it from inside this subprogram would build a
+  // 3-frame chain (tc_pod_egress → lb_rev_nat → trace_observe_nat)
+  // that exceeds the 512-byte combined-stack ceiling.
+  __u32 zero = 0;
+  struct trace_nat_event *ne =
+      bpf_map_lookup_elem(&pod_egress_nat_scratch, &zero);
+  if (ne) {
+    ne->vpc_id = vpc_id;
+    ne->subnet_id = 0;
+    ne->hook = TRACE_HOOK_POD_EGRESS;
+    ne->reason = TRACE_REASON_REVERSE_NAT_APPLIED;
+    ne->scope = TRACE_SCOPE_VPC;
+    ne->proto = ck.proto;
+    ne->before_saddr = ck.saddr;
+    ne->before_daddr = ck.daddr;
+    ne->before_sport = sport;
+    ne->before_dport = dport;
+    ne->after_saddr = new_saddr;
+    ne->after_daddr = ck.daddr;
+    ne->after_sport = new_sport;
+    ne->after_dport = dport;
+  }
 
   __u8 tcp_flags = 0;
   bool have_tcp_flags = false;
@@ -1641,28 +1680,6 @@ static __always_inline int apply_conntrack_lb_rev_nat(struct __sk_buff *skb,
 
   if (have_tcp_flags)
     ct_observe_tcp(&ck, cv, tcp_flags);
-
-  // Trace: reverse LB rewrite. Mirrors the DNAT trace shape so a
-  // kubectl-juneau timeline can pair both sides of the flow.
-  {
-    struct trace_nat_event __ne = {
-        .vpc_id = vpc_id,
-        .subnet_id = 0,
-        .hook = TRACE_HOOK_POD_EGRESS,
-        .reason = TRACE_REASON_REVERSE_NAT_APPLIED,
-        .scope = TRACE_SCOPE_VPC,
-        .proto = before_proto,
-        .before_saddr = before_saddr,
-        .before_daddr = before_daddr,
-        .before_sport = sport,
-        .before_dport = dport,
-        .after_saddr = new_saddr,
-        .after_daddr = before_daddr,
-        .after_sport = new_sport,
-        .after_dport = dport,
-    };
-    trace_observe_nat(skb, &__ne);
-  }
 
   return 1;
 }
@@ -2168,6 +2185,18 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
                          TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
                          subnet->vpc_id, val->subnet_id);
       return TC_ACT_SHOT;
+    }
+    if (lb_rc == 1) {
+      // Emit the reverse-NAT trace event populated by lb_rev_nat into
+      // pod_egress_nat_scratch. We invoke trace_observe_nat from this
+      // call site (inlined into tc_pod_egress) so the chain stays
+      // 2 frames — calling it from inside lb_rev_nat would be a
+      // 3-frame chain that overflows the verifier's 512-byte budget.
+      __u32 lb_zero = 0;
+      struct trace_nat_event *lb_ne =
+          bpf_map_lookup_elem(&pod_egress_nat_scratch, &lb_zero);
+      if (lb_ne)
+        trace_observe_nat(skb, lb_ne);
     }
     // lb_rc == 1: rewrite applied, fall through to the normal egress
     // path so the host network stack routes the packet out.

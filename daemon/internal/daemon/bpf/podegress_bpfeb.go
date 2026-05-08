@@ -302,6 +302,25 @@ type PodEgressTraceConfigVal struct {
 	Pad          [2]uint8
 }
 
+type PodEgressTraceNatEvent struct {
+	_           structs.HostLayout
+	VpcId       uint32
+	SubnetId    uint32
+	Reason      uint16
+	Hook        uint8
+	Scope       uint8
+	Proto       uint8
+	Pad         [3]uint8
+	BeforeSaddr uint32
+	BeforeDaddr uint32
+	BeforeSport uint16
+	BeforeDport uint16
+	AfterSaddr  uint32
+	AfterDaddr  uint32
+	AfterSport  uint16
+	AfterDport  uint16
+}
+
 type PodEgressTraceTupleKey struct {
 	_     structs.HostLayout
 	Scope uint8
@@ -427,6 +446,7 @@ type PodEgressMapSpecs struct {
 	NaptSrc               *ebpf.MapSpec `ebpf:"napt_src"`
 	NatDnatMap            *ebpf.MapSpec `ebpf:"nat_dnat_map"`
 	NatSnatMap            *ebpf.MapSpec `ebpf:"nat_snat_map"`
+	PodEgressNatScratch   *ebpf.MapSpec `ebpf:"pod_egress_nat_scratch"`
 	ServiceAclMap         *ebpf.MapSpec `ebpf:"service_acl_map"`
 	ServiceAffinityMap    *ebpf.MapSpec `ebpf:"service_affinity_map"`
 	ServiceMap            *ebpf.MapSpec `ebpf:"service_map"`
@@ -491,6 +511,7 @@ type PodEgressMaps struct {
 	NaptSrc               *ebpf.Map `ebpf:"napt_src"`
 	NatDnatMap            *ebpf.Map `ebpf:"nat_dnat_map"`
 	NatSnatMap            *ebpf.Map `ebpf:"nat_snat_map"`
+	PodEgressNatScratch   *ebpf.Map `ebpf:"pod_egress_nat_scratch"`
 	ServiceAclMap         *ebpf.Map `ebpf:"service_acl_map"`
 	ServiceAffinityMap    *ebpf.Map `ebpf:"service_affinity_map"`
 	ServiceMap            *ebpf.Map `ebpf:"service_map"`
@@ -529,6 +550,7 @@ func (m *PodEgressMaps) Close() error {
 		m.NaptSrc,
 		m.NatDnatMap,
 		m.NatSnatMap,
+		m.PodEgressNatScratch,
 		m.ServiceAclMap,
 		m.ServiceAffinityMap,
 		m.ServiceMap,
