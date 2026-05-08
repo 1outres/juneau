@@ -91,6 +91,7 @@ type ServiceLoadBalancerReconciler struct {
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=allocationclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=services/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get;list;watch
 
 // Reconcile drives one ServiceLoadBalancer towards its desired
 // state. Errors are returned only for transient conditions (API

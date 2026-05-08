@@ -146,7 +146,10 @@ spec:
 
 		// externalTrafficPolicy unset → defaults to Cluster, which the
 		// webhook rejects for Juneau-managed LoadBalancer Services.
-		err := applyManifest(fmt.Sprintf(`apiVersion: v1
+		// applyManifestCapturingStderr is used so the webhook denial
+		// reason (carried on kubectl's stderr) is asserted against —
+		// the wrapped exec error alone only carries the exit status.
+		stderr, err := applyManifestCapturingStderr(fmt.Sprintf(`apiVersion: v1
 kind: Service
 metadata:
   namespace: %s
@@ -163,6 +166,6 @@ spec:
       targetPort: 80
 `, namespace, lbExternalNetworkName))
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("externalTrafficPolicy=Local"))
+		Expect(stderr).To(ContainSubstring("externalTrafficPolicy=Local"))
 	})
 })
