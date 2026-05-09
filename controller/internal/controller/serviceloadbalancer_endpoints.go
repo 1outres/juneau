@@ -115,7 +115,7 @@ func (r *ServiceLoadBalancerReconciler) collectEndpointAggregate(ctx context.Con
 			ready := condBoolDefault(ep.Conditions.Ready, true)
 			serving := condBoolDefault(ep.Conditions.Serving, ready)
 			terminating := condBoolDefault(ep.Conditions.Terminating, false)
-			if !(ready && serving && !terminating) {
+			if !ready || !serving || terminating {
 				continue
 			}
 
