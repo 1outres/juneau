@@ -561,6 +561,17 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
       int lb_rc = handle_lb_ingress(skb, eth, iph, sport, dport, trace_id);
       if (lb_rc != 0)
         return lb_rc;
+      // handle_lb_ingress may have invoked trace_* noinline subprograms
+      // on its drop branches; BPF-to-BPF calls scrub all PTR_TO_PACKET
+      // registers in the caller's state, so the verifier downgrades
+      // iph/eth to scalars on the fall-through path even though the
+      // particular branch we took did not actually mutate skb data.
+      // Re-derive iph from skb->data so the underlay-IP / NAPT_IN /
+      // ElasticIP DNAT lookups below can dereference it again.
+      data_end = (void *)(long)skb->data_end;
+      iph = (struct iphdr *)((void *)(long)skb->data + sizeof(struct ethhdr));
+      if ((void *)(iph + 1) > data_end)
+        return TC_ACT_SHOT;
     }
   }
 
