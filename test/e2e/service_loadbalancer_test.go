@@ -19,16 +19,18 @@ import (
 // existing bgp_router_test machinery and exercise the controller
 // surface here.
 var _ = Describe("Juneau Service LoadBalancer", func() {
-	const (
-		lbAddressPoolName     = "e2e-lb-pool"
-		lbAddressPoolCIDR     = "203.0.113.0/29"
-		lbExternalNetworkName = "e2e-lb-extnet"
-	)
+	const lbAddressPoolCIDR = "203.0.113.0/29"
 
 	It("allocates a VIP, advertises it from nodes with local backends, and clears it on backend loss", func() {
 		base := sanitizeName("svc-lb")
 		namespace := "e2e-" + base
 		svcName := "web"
+		// Pool/ExternalNetwork are cluster-scoped, so derive per-spec
+		// names from the unique base — otherwise the parallel --procs=4
+		// runner has the two specs' DeferCleanup blocks delete each
+		// other's fixtures mid-test.
+		lbAddressPoolName := "e2e-lb-pool-" + base
+		lbExternalNetworkName := "e2e-lb-extnet-" + base
 
 		DeferCleanup(func() {
 			runBestEffort(repoRoot, "kubectl", "delete", "namespace", namespace, "--ignore-not-found=true", "--timeout=60s")
@@ -132,6 +134,8 @@ spec:
 	It("rejects LoadBalancer Services that do not set externalTrafficPolicy=Local", func() {
 		base := sanitizeName("svc-lb-bad-itp")
 		namespace := "e2e-" + base
+		lbAddressPoolName := "e2e-lb-pool-" + base
+		lbExternalNetworkName := "e2e-lb-extnet-" + base
 
 		DeferCleanup(func() {
 			runBestEffort(repoRoot, "kubectl", "delete", "namespace", namespace, "--ignore-not-found=true", "--timeout=60s")
