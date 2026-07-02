@@ -127,10 +127,15 @@ sg_eval_one_sg(const struct sg_eval_one_sg_args *a,
   if (max_rules > MAX_RULES_PER_SG)
     max_rules = MAX_RULES_PER_SG;
 
-  for (__u32 i = 0; i < MAX_RULES_PER_SG; i++) {
+  // 64-bit counter for the same reason as acl_evaluate: a 32-bit
+  // spill across the helper call degrades to STACK_MISC on kernels
+  // without precise sub-8-byte spill tracking, and the verifier then
+  // rejects the loop as "infinite loop detected".
+  for (__u64 i = 0; i < MAX_RULES_PER_SG; i++) {
     if (i >= max_rules)
       break;
-    struct sg_rule *r = bpf_map_lookup_elem(inner, &i);
+    __u32 idx = i;
+    struct sg_rule *r = bpf_map_lookup_elem(inner, &idx);
     if (!r)
       break;
     if (r->direction != a->direction)
