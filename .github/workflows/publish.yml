@@ -116,6 +116,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ steps.meta.outputs.tag }}" \
+          tag="${{ steps.meta.outputs.tag }}"
+          gh release view "$tag" >/dev/null 2>&1 \
+            || gh release create "$tag" --generate-notes --title "$tag"
+          gh release upload "$tag" \
             "$RUNNER_TEMP/install.yaml" \
             --clobber
