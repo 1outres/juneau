@@ -38,6 +38,7 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Getting Started: getting-started.md
   - User Guide:
     - BGPを使ってExternalNetworkを構築する: guides/external-network-bgp.md
     - VPCでServiceを利用する: guides/custom-vpc-service.md
