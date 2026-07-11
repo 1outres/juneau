@@ -146,6 +146,39 @@ type PodEgressIfindexSubnetVal struct {
 	SubnetId uint32
 }
 
+type PodEgressLbBackendKey struct {
+	_     structs.HostLayout
+	Vip   uint32
+	Port  uint16
+	Proto uint8
+	Pad   uint8
+	Index uint32
+}
+
+type PodEgressLbBackendVal struct {
+	_               structs.HostLayout
+	BackendIp       uint32
+	BackendPort     uint16
+	Pad             [2]uint8
+	BackendSubnetId uint32
+}
+
+type PodEgressLbServiceKey struct {
+	_     structs.HostLayout
+	Vip   uint32
+	Port  uint16
+	Proto uint8
+	Pad   uint8
+}
+
+type PodEgressLbServiceVal struct {
+	_            structs.HostLayout
+	BackendCount uint32
+	Gen          uint32
+	Flags        uint32
+	Pad          uint32
+}
+
 type PodEgressNaptSrcKey struct {
 	_            structs.HostLayout
 	NatGatewayId uint32
@@ -269,6 +302,25 @@ type PodEgressTraceConfigVal struct {
 	Pad          [2]uint8
 }
 
+type PodEgressTraceNatEvent struct {
+	_           structs.HostLayout
+	VpcId       uint32
+	SubnetId    uint32
+	Reason      uint16
+	Hook        uint8
+	Scope       uint8
+	Proto       uint8
+	Pad         [3]uint8
+	BeforeSaddr uint32
+	BeforeDaddr uint32
+	BeforeSport uint16
+	BeforeDport uint16
+	AfterSaddr  uint32
+	AfterDaddr  uint32
+	AfterSport  uint16
+	AfterDport  uint16
+}
+
 type PodEgressTraceTupleKey struct {
 	_     structs.HostLayout
 	Scope uint8
@@ -389,9 +441,12 @@ type PodEgressMapSpecs struct {
 	HostUnderlay          *ebpf.MapSpec `ebpf:"host_underlay"`
 	IfindexHostMac        *ebpf.MapSpec `ebpf:"ifindex_host_mac"`
 	IfindexSubnet         *ebpf.MapSpec `ebpf:"ifindex_subnet"`
+	LbBackendMap          *ebpf.MapSpec `ebpf:"lb_backend_map"`
+	LbServiceMap          *ebpf.MapSpec `ebpf:"lb_service_map"`
 	NaptSrc               *ebpf.MapSpec `ebpf:"napt_src"`
 	NatDnatMap            *ebpf.MapSpec `ebpf:"nat_dnat_map"`
 	NatSnatMap            *ebpf.MapSpec `ebpf:"nat_snat_map"`
+	PodEgressNatScratch   *ebpf.MapSpec `ebpf:"pod_egress_nat_scratch"`
 	ServiceAclMap         *ebpf.MapSpec `ebpf:"service_acl_map"`
 	ServiceAffinityMap    *ebpf.MapSpec `ebpf:"service_affinity_map"`
 	ServiceMap            *ebpf.MapSpec `ebpf:"service_map"`
@@ -451,9 +506,12 @@ type PodEgressMaps struct {
 	HostUnderlay          *ebpf.Map `ebpf:"host_underlay"`
 	IfindexHostMac        *ebpf.Map `ebpf:"ifindex_host_mac"`
 	IfindexSubnet         *ebpf.Map `ebpf:"ifindex_subnet"`
+	LbBackendMap          *ebpf.Map `ebpf:"lb_backend_map"`
+	LbServiceMap          *ebpf.Map `ebpf:"lb_service_map"`
 	NaptSrc               *ebpf.Map `ebpf:"napt_src"`
 	NatDnatMap            *ebpf.Map `ebpf:"nat_dnat_map"`
 	NatSnatMap            *ebpf.Map `ebpf:"nat_snat_map"`
+	PodEgressNatScratch   *ebpf.Map `ebpf:"pod_egress_nat_scratch"`
 	ServiceAclMap         *ebpf.Map `ebpf:"service_acl_map"`
 	ServiceAffinityMap    *ebpf.Map `ebpf:"service_affinity_map"`
 	ServiceMap            *ebpf.Map `ebpf:"service_map"`
@@ -487,9 +545,12 @@ func (m *PodEgressMaps) Close() error {
 		m.HostUnderlay,
 		m.IfindexHostMac,
 		m.IfindexSubnet,
+		m.LbBackendMap,
+		m.LbServiceMap,
 		m.NaptSrc,
 		m.NatDnatMap,
 		m.NatSnatMap,
+		m.PodEgressNatScratch,
 		m.ServiceAclMap,
 		m.ServiceAffinityMap,
 		m.ServiceMap,

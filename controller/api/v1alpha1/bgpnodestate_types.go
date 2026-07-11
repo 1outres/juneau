@@ -47,10 +47,32 @@ type BGPNodeStateSession struct {
 }
 
 type BGPNodeStateAdvertisement struct {
+	// AddressPool, when set, names the AddressPool the prefix list is
+	// drawn from. Empty for non-pool sources (ServiceLoadBalancer).
 	AddressPool string `json:"addressPool,omitempty"`
-	// Prefixes is the set of CIDRs that bgp-speaker intends to advertise from
-	// this AddressPool. Derived from AddressPool.spec.addresses at reconcile
-	// time, not observed on the wire (BIRD BMP does not expose adj-RIB-out).
+
+	// SourceKind identifies the upstream Kubernetes resource family
+	// (e.g. BGPAdvertisement, ServiceLoadBalancer). Optional for
+	// pre-existing AddressPool entries so older controllers reading
+	// this status keep working; new entries always set it.
+	// +optional
+	SourceKind string `json:"sourceKind,omitempty"`
+
+	// SourceNamespace is the namespace of the source resource. Empty
+	// for cluster-scoped sources.
+	// +optional
+	SourceNamespace string `json:"sourceNamespace,omitempty"`
+
+	// SourceName is the name of the source resource. Empty when an
+	// advertisement is shared across multiple resources of the same
+	// kind (e.g. multiple BGPAdvertisements pinning the same pool).
+	// +optional
+	SourceName string `json:"sourceName,omitempty"`
+
+	// Prefixes is the set of CIDRs that bgp-speaker intends to advertise
+	// for this advertisement. Derived from the source resource at
+	// reconcile time, not observed on the wire (BIRD BMP does not
+	// expose adj-RIB-out).
 	// +listType=set
 	Prefixes     []string     `json:"prefixes,omitempty"`
 	LastSyncedAt *metav1.Time `json:"lastSyncedAt,omitempty"`

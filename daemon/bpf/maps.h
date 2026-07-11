@@ -84,6 +84,20 @@
 #define MAX_VIRTUAL_SERVICE_FLOW_MAP 131072
 #endif
 
+#ifndef MAX_LB_SERVICE_MAP
+// MAX_LB_SERVICE_MAP bounds lb_service_map. One entry per (VIP × port ×
+// proto). Sized for ~16k Service ports across all LoadBalancer Services
+// on the cluster — same order of magnitude as MAX_SERVICE_MAP.
+#define MAX_LB_SERVICE_MAP 16384
+#endif
+
+#ifndef MAX_LB_BACKEND_MAP
+// MAX_LB_BACKEND_MAP bounds lb_backend_map. Keyed by (VIP × port × proto
+// × index); 64k slots covers up to several thousand backends per VIP at
+// reasonable fan-out, plus headroom for cluster-wide LB density.
+#define MAX_LB_BACKEND_MAP 65536
+#endif
+
 #ifndef MAX_SECURITY_GROUPS
 #define MAX_SECURITY_GROUPS 16384
 #endif
@@ -156,6 +170,15 @@
 // flushing affected entries so re-evaluation occurs. See
 // daemon/internal/daemon/dataplane/policy for that bookkeeping.
 #define CT_ACTION_POLICY_PASS 9
+// LB_DNAT / LB_REV_NAT: external → VIP source-preserving LoadBalancer
+// path. LB_DNAT is the forward direction installed at node_ingress
+// (caller → VIP, scope=CT_SCOPE_HOST): rewrites daddr/dport to the
+// chosen local backend Pod. LB_REV_NAT is the reverse direction
+// installed at the same time (backend → caller, scope=backend's
+// vpc_id): rewrites saddr/sport from PodIP:targetPort back to
+// VIP:servicePort so the caller sees a reply from the original VIP.
+#define CT_ACTION_LB_DNAT 10
+#define CT_ACTION_LB_REV_NAT 11
 
 // BACKEND_SUBNET_ID_UNDERLAY is the sentinel value the user-space
 // service reconciler writes into backend_val.backend_subnet_id when an
@@ -662,6 +685,70 @@ struct {
   __type(value, struct virtual_service_flow_val);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } virtual_service_flow_map SEC(".maps");
+
+// ---- Service LoadBalancer (type=LoadBalancer) data-plane tables -----
+//
+// lb_service_map and lb_backend_map are the LoadBalancer twins of
+// service_map / backend_map. They are kept separate from the ClusterIP
+// pair because the ingress flow is fundamentally different: ClusterIP
+// traffic enters from a Pod (pod_egress) and is dispatched per VPC,
+// while LoadBalancer traffic enters from the underlay (node_ingress)
+// in the host scope and the daemon must additionally install a
+// reverse-NAT CT entry so the backend's reply restores the VIP.
+//
+// Both maps are scoped per-Node: the daemon writes only entries for
+// VIPs whose ServiceLoadBalancer.status.advertisingNodes contains
+// this node and whose backends are ready local Pods. iTP=Local
+// filtering happens at user-space (Phase 6 reconciler) so the BPF
+// fast path never has to evaluate it.
+struct lb_service_key {
+  __u32 vip;        // network byte order, matches iph->daddr
+  __u16 port;       // host order (Service port)
+  __u8  proto;      // IPPROTO_TCP / IPPROTO_UDP
+  __u8  _pad;
+};
+
+// LB_SVC_FLAG_* mirror the SVC_FLAG_* convention but cover the
+// LoadBalancer feature subset (Phase 1: TCP/UDP, externalTrafficPolicy
+// =Local, IPv4 only). The flags slot exists so future toggles
+// (DSR, source range filtering, …) can be added without ABI churn.
+struct lb_service_val {
+  __u32 backend_count;  // 0 → VIP known but no local backend (drop)
+  __u32 gen;            // bumped on backend-set change to invalidate caches
+  __u32 flags;          // bitmask, currently unused
+  __u32 _pad;
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_LB_SERVICE_MAP);
+  __type(key, struct lb_service_key);
+  __type(value, struct lb_service_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} lb_service_map SEC(".maps");
+
+struct lb_backend_key {
+  __u32 vip;
+  __u16 port;
+  __u8  proto;
+  __u8  _pad;
+  __u32 index;          // 0..lb_service_val.backend_count - 1
+};
+
+struct lb_backend_val {
+  __u32 backend_ip;          // network byte order; backend Pod IPv4
+  __u16 backend_port;        // network byte order; target port on the Pod
+  __u8  _pad[2];
+  __u32 backend_subnet_id;   // VNI for forward_l2 dispatch
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_LB_BACKEND_MAP);
+  __type(key, struct lb_backend_key);
+  __type(value, struct lb_backend_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} lb_backend_map SEC(".maps");
 
 // ---- SecurityGroup data-plane tables --------------------------------
 //

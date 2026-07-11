@@ -15,6 +15,14 @@ rules:
   - list
   - watch
 - apiGroups:
+  - ""
+  resources:
+  - services/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - admissionregistration.k8s.io
   resources:
   - mutatingwebhookconfigurations
@@ -25,6 +33,14 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - discovery.k8s.io
+  resources:
+  - endpointslices
+  verbs:
+  - get
+  - list
   - watch
 - apiGroups:
   - juneau.loutres.me
@@ -45,6 +61,7 @@ rules:
   - networkinterfaces
   - routetables
   - securitygroups
+  - serviceloadbalancers
   - servicenatattachments
   - subnets
   - vpcs
@@ -75,6 +92,7 @@ rules:
   - networkinterfaces/finalizers
   - routetables/finalizers
   - securitygroups/finalizers
+  - serviceloadbalancers/finalizers
   - servicenatattachments/finalizers
   - subnets/finalizers
   - vpcs/finalizers
@@ -99,6 +117,7 @@ rules:
   - networkinterfaces/status
   - routetables/status
   - securitygroups/status
+  - serviceloadbalancers/status
   - servicenatattachments/status
   - subnets/status
   - vpcs/status

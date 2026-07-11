@@ -146,6 +146,39 @@ type VxlanIngressIfindexSubnetVal struct {
 	SubnetId uint32
 }
 
+type VxlanIngressLbBackendKey struct {
+	_     structs.HostLayout
+	Vip   uint32
+	Port  uint16
+	Proto uint8
+	Pad   uint8
+	Index uint32
+}
+
+type VxlanIngressLbBackendVal struct {
+	_               structs.HostLayout
+	BackendIp       uint32
+	BackendPort     uint16
+	Pad             [2]uint8
+	BackendSubnetId uint32
+}
+
+type VxlanIngressLbServiceKey struct {
+	_     structs.HostLayout
+	Vip   uint32
+	Port  uint16
+	Proto uint8
+	Pad   uint8
+}
+
+type VxlanIngressLbServiceVal struct {
+	_            structs.HostLayout
+	BackendCount uint32
+	Gen          uint32
+	Flags        uint32
+	Pad          uint32
+}
+
 type VxlanIngressNaptSrcKey struct {
 	_            structs.HostLayout
 	NatGatewayId uint32
@@ -389,6 +422,8 @@ type VxlanIngressMapSpecs struct {
 	HostUnderlay          *ebpf.MapSpec `ebpf:"host_underlay"`
 	IfindexHostMac        *ebpf.MapSpec `ebpf:"ifindex_host_mac"`
 	IfindexSubnet         *ebpf.MapSpec `ebpf:"ifindex_subnet"`
+	LbBackendMap          *ebpf.MapSpec `ebpf:"lb_backend_map"`
+	LbServiceMap          *ebpf.MapSpec `ebpf:"lb_service_map"`
 	NaptSrc               *ebpf.MapSpec `ebpf:"napt_src"`
 	NatDnatMap            *ebpf.MapSpec `ebpf:"nat_dnat_map"`
 	NatSnatMap            *ebpf.MapSpec `ebpf:"nat_snat_map"`
@@ -449,6 +484,8 @@ type VxlanIngressMaps struct {
 	HostUnderlay          *ebpf.Map `ebpf:"host_underlay"`
 	IfindexHostMac        *ebpf.Map `ebpf:"ifindex_host_mac"`
 	IfindexSubnet         *ebpf.Map `ebpf:"ifindex_subnet"`
+	LbBackendMap          *ebpf.Map `ebpf:"lb_backend_map"`
+	LbServiceMap          *ebpf.Map `ebpf:"lb_service_map"`
 	NaptSrc               *ebpf.Map `ebpf:"napt_src"`
 	NatDnatMap            *ebpf.Map `ebpf:"nat_dnat_map"`
 	NatSnatMap            *ebpf.Map `ebpf:"nat_snat_map"`
@@ -485,6 +522,8 @@ func (m *VxlanIngressMaps) Close() error {
 		m.HostUnderlay,
 		m.IfindexHostMac,
 		m.IfindexSubnet,
+		m.LbBackendMap,
+		m.LbServiceMap,
 		m.NaptSrc,
 		m.NatDnatMap,
 		m.NatSnatMap,
