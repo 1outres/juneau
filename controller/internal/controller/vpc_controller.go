@@ -115,7 +115,7 @@ func (r *VpcReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	op, err := ctrl.CreateOrUpdate(ctx, r.Client, routeTable, func() error {
 		routeTable.Spec.Vpc = resource.Name
-		return nil
+		return controllerutil.SetControllerReference(&resource, routeTable, r.Scheme)
 	})
 	if err != nil {
 		if updateErr := r.updateStatus(ctx, &resource, resource.Status.MainRouteTable, vpcID, metav1.ConditionFalse, vpcReasonReconcileFailed, "failed to reconcile main route table"); updateErr != nil {

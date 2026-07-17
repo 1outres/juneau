@@ -201,5 +201,28 @@ func (v *VpcCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Obj
 		return nil, fmt.Errorf("the default Vpc cannot be deleted")
 	}
 
+	// Block deletion while any Subnet still belongs to this Vpc. Subnets
+	// are not GC'd with the Vpc, and the main RouteTable's delete guard
+	// refuses to release the table while a Subnet references it, so
+	// enforcing "delete Subnets first" keeps the Vpc's own cascade from
+	// stalling on that RouteTable.
+	var subnetList juneauv1alpha1.SubnetList
+	if err := v.List(ctx, &subnetList); err != nil {
+		return nil, fmt.Errorf("list Subnets: %w", err)
+	}
+	var refs []string
+	for _, subnet := range subnetList.Items {
+		if subnet.Spec.Vpc == vpc.Name {
+			refs = append(refs, subnet.Name)
+		}
+	}
+	if len(refs) > 0 {
+		return nil, errors.NewForbidden(
+			schema.GroupResource{Group: juneauv1alpha1.GroupVersion.Group, Resource: "vpcs"},
+			vpc.Name,
+			fmt.Errorf("Subnet(s) %v still belong to this Vpc; delete them first", refs),
+		)
+	}
+
 	return nil, nil
 }

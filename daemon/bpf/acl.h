@@ -88,10 +88,17 @@ static __juneau_bpf_subprog int acl_evaluate(__u32 acl_id, __u8 direction,
   if (scan_count > MAX_RULES_PER_ACL)
     scan_count = MAX_RULES_PER_ACL;
 
-  for (__u32 i = 0; i < MAX_RULES_PER_ACL; i++) {
+  // The counter is deliberately 64-bit: clang spills it across the
+  // per-iteration helper call, and a 32-bit spill of a 64-bit-computed
+  // increment degrades to STACK_MISC on kernels that cannot track
+  // sub-8-byte spills precisely. The verifier then sees an identical
+  // state on every back edge and rejects the program with
+  // "infinite loop detected". An 8-byte slot keeps the bounds exact.
+  for (__u64 i = 0; i < MAX_RULES_PER_ACL; i++) {
     if (i >= scan_count)
       break;
-    struct acl_rule *r = bpf_map_lookup_elem(inner, &i);
+    __u32 idx = i;
+    struct acl_rule *r = bpf_map_lookup_elem(inner, &idx);
     if (!r)
       break;
     if (r->direction != direction)

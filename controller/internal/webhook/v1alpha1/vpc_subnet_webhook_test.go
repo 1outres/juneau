@@ -32,6 +32,33 @@ var _ = Describe("Vpc/Subnet webhooks", func() {
 		Expect(err.Error()).To(ContainSubstring("default Subnet cannot be deleted"))
 	})
 
+	It("rejects deleting a Vpc that still has Subnets", func() {
+		vpcName := createWebhookVpc()
+		subnetName := webhookUniqueTestName("subnet")
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Subnet{
+			ObjectMeta: metav1.ObjectMeta{Name: subnetName},
+			Spec: juneauv1alpha1.SubnetSpec{
+				Vpc:  vpcName,
+				CIDR: webhookUniqueSubnetCIDR(),
+			},
+		})).To(Succeed())
+
+		err := webhookK8sClient.Delete(context.Background(), &juneauv1alpha1.Vpc{
+			ObjectMeta: metav1.ObjectMeta{Name: vpcName},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("Subnet"))
+		Expect(err.Error()).To(ContainSubstring(subnetName))
+
+		// Once the Subnet is gone the Vpc becomes deletable again.
+		Expect(webhookK8sClient.Delete(context.Background(), &juneauv1alpha1.Subnet{
+			ObjectMeta: metav1.ObjectMeta{Name: subnetName},
+		})).To(Succeed())
+		Expect(webhookK8sClient.Delete(context.Background(), &juneauv1alpha1.Vpc{
+			ObjectMeta: metav1.ObjectMeta{Name: vpcName},
+		})).To(Succeed())
+	})
+
 	It("rejects creating a non-default Subnet in the default VPC", func() {
 		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Subnet{
 			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("subnet")},
@@ -329,6 +356,48 @@ var _ = Describe("RouteTable webhook", func() {
 		err := webhookK8sClient.Delete(context.Background(), &rt)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("main RouteTable"))
+	})
+
+	It("allows deleting the main RouteTable once the owning Vpc is being deleted", func() {
+		name := webhookUniqueTestName("vpc")
+		// A finalizer keeps the Vpc in etcd with a deletionTimestamp set
+		// after Delete, mirroring a foreground cascade where the Vpc
+		// lingers until its owned RouteTable is garbage-collected.
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Vpc{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       name,
+				Finalizers: []string{"test.juneau.loutres.me/finalizer"},
+			},
+		})).To(Succeed())
+
+		// VpcReconciler names the main RouteTable after the Vpc; mint it
+		// directly since controllers do not run in this suite.
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec:       juneauv1alpha1.RouteTableSpec{Vpc: name},
+		})).To(Succeed())
+
+		Expect(webhookK8sClient.Delete(context.Background(), &juneauv1alpha1.Vpc{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+		})).To(Succeed())
+		Eventually(func(g Gomega) {
+			var current juneauv1alpha1.Vpc
+			g.Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Name: name}, &current)).To(Succeed())
+			g.Expect(current.DeletionTimestamp).NotTo(BeNil())
+		}).Should(Succeed())
+
+		var rt juneauv1alpha1.RouteTable
+		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Name: name}, &rt)).To(Succeed())
+		Expect(webhookK8sClient.Delete(context.Background(), &rt)).To(Succeed())
+
+		// Release the finalizer so the Vpc is actually removed and does
+		// not leak into later specs.
+		Eventually(func(g Gomega) {
+			var current juneauv1alpha1.Vpc
+			g.Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Name: name}, &current)).To(Succeed())
+			current.Finalizers = nil
+			g.Expect(webhookK8sClient.Update(context.Background(), &current)).To(Succeed())
+		}).Should(Succeed())
 	})
 
 	It("allows deleting a RouteTable that no Subnet references", func() {

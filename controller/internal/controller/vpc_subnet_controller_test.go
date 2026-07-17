@@ -43,6 +43,38 @@ var _ = Describe("Vpc/Subnet controllers", func() {
 		}).Should(Succeed())
 	})
 
+	It("sets the Vpc as the controller owner of the main RouteTable so GC cascades on delete", func() {
+		name := uniqueTestName("vpc")
+		Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.Vpc{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+		})).To(Succeed())
+
+		var vpc juneauv1alpha1.Vpc
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: name}, &vpc)).To(Succeed())
+			g.Expect(vpc.Status.MainRouteTable).To(Equal(name))
+			ready := meta.FindStatusCondition(vpc.Status.Conditions, juneauv1alpha1.VpcStatusReady)
+			g.Expect(ready).NotTo(BeNil())
+			g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+		}).Should(Succeed())
+
+		var rt juneauv1alpha1.RouteTable
+		Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: name}, &rt)).To(Succeed())
+
+		owners := rt.GetOwnerReferences()
+		var controllerRef *metav1.OwnerReference
+		for i := range owners {
+			if owners[i].Controller != nil && *owners[i].Controller {
+				controllerRef = &owners[i]
+				break
+			}
+		}
+		Expect(controllerRef).NotTo(BeNil(), "RouteTable must have a controller ownerReference so it is garbage-collected when the Vpc is deleted (bug 03)")
+		Expect(controllerRef.Kind).To(Equal("Vpc"))
+		Expect(controllerRef.Name).To(Equal(name))
+		Expect(controllerRef.UID).To(Equal(vpc.UID))
+	})
+
 	It("auto-creates the default Subnet in the default VPC", func() {
 		Eventually(func(g Gomega) {
 			var subnet juneauv1alpha1.Subnet
