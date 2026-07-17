@@ -39,6 +39,42 @@
 // place that references it. Mirrors _sg_rule_btf_anchor in sg.h.
 const struct acl_rule _acl_rule_btf_anchor;
 
+// ACL scan sentinels — kept distinct from ACL_VERDICT_* (0/1/2) so the
+// scan loop can tell "no match, keep scanning" (CONTINUE) and "slot
+// empty, stop" (STOP) apart from a real ALLOW/DENY verdict.
+#define ACL_SCAN_CONTINUE (-1)
+#define ACL_SCAN_STOP     (-2)
+
+// acl_scan_rule evaluates the rule at `idx` and returns ACL_VERDICT_ALLOW
+// / _DENY on a match, ACL_SCAN_CONTINUE when the rule does not apply, or
+// ACL_SCAN_STOP when the slot is empty.
+//
+// `idx` is taken BY VALUE. That is the crux of the loop's verifiability:
+// the caller must never hand bpf_map_lookup_elem the address of its
+// induction variable (&i). Address-taking `i` pins it in memory, so the
+// verifier reloads it across the per-iteration map lookup and loses the
+// "i strictly increases" invariant — at which point a large enough
+// tc_pod_egress trips the verifier's "infinite loop detected" check.
+// Passing idx by value keeps `i` in a register (precise across the call)
+// and lets clang fully unroll the scan.
+static __always_inline int acl_scan_rule(void *inner, __u32 idx,
+                                         __u8 direction, __u8 proto,
+                                         __u16 dport, __be32 peer_ip) {
+  struct acl_rule *r = bpf_map_lookup_elem(inner, &idx);
+  if (!r)
+    return ACL_SCAN_STOP;
+  if (r->direction != direction)
+    return ACL_SCAN_CONTINUE;
+  if (!policy_proto_matches(r->proto, proto))
+    return ACL_SCAN_CONTINUE;
+  if (!policy_port_matches(r->port_lo, r->port_hi, dport))
+    return ACL_SCAN_CONTINUE;
+  if (!policy_cidr_matches(r->peer_v4, r->prefixlen, peer_ip))
+    return ACL_SCAN_CONTINUE;
+  return (r->verdict == ACL_VERDICT_ALLOW) ? ACL_VERDICT_ALLOW
+                                           : ACL_VERDICT_DENY;
+}
+
 // acl_evaluate scans the inner array for a single ACL against parsed
 // packet metadata, returning one of:
 //
@@ -88,25 +124,24 @@ static __juneau_bpf_subprog int acl_evaluate(__u32 acl_id, __u8 direction,
   if (scan_count > MAX_RULES_PER_ACL)
     scan_count = MAX_RULES_PER_ACL;
 
+  // acl_scan_rule takes the index by value, so `i` is never
+  // address-taken and stays register-resident (precise) across the
+  // per-iteration map lookup. That preserves the "i strictly increases"
+  // invariant the verifier needs to prove termination — which is what
+  // regressed to "infinite loop detected" once tc_pod_egress grew. The
+  // loop is intentionally left rolled: unrolling inlines the scan body
+  // MAX_RULES_PER_ACL times and blows the 512-byte combined stack.
   for (__u32 i = 0; i < MAX_RULES_PER_ACL; i++) {
     if (i >= scan_count)
       break;
-    struct acl_rule *r = bpf_map_lookup_elem(inner, &i);
-    if (!r)
-      break;
-    if (r->direction != direction)
-      continue;
-    if (!policy_proto_matches(r->proto, proto))
-      continue;
-    if (!policy_port_matches(r->port_lo, r->port_hi, dport))
-      continue;
-    if (!policy_cidr_matches(r->peer_v4, r->prefixlen, peer_ip))
-      continue;
     // First match wins because daemon-side ExpandNetworkACL sorted
     // by (direction, priority asc).
-    if (r->verdict == ACL_VERDICT_ALLOW)
-      return ACL_VERDICT_ALLOW;
-    return ACL_VERDICT_DENY;
+    int v = acl_scan_rule(inner, i, direction, proto, dport, peer_ip);
+    if (v == ACL_SCAN_STOP)
+      break;
+    if (v == ACL_SCAN_CONTINUE)
+      continue;
+    return v; // ACL_VERDICT_ALLOW or ACL_VERDICT_DENY
   }
 
   // No rule matched. Direction is in rule-list mode (has_rules

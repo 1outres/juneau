@@ -115,6 +115,49 @@ struct sg_eval_one_sg_args {
 // program (not per call site × per outer SG iteration), keeping the
 // 1M-insn budget intact once trace.h instrumentation expands the
 // surrounding host program.
+// SG scan sentinels, mirroring acl_scan_rule's contract:
+//   SG_SCAN_ALLOW    (1) : a rule matched with verdict=allow
+//   SG_SCAN_CONTINUE (0) : rule did not apply; keep scanning
+//   SG_SCAN_STOP    (-1) : slot empty; end of rules
+#define SG_SCAN_ALLOW     1
+#define SG_SCAN_CONTINUE  0
+#define SG_SCAN_STOP     (-1)
+
+// sg_scan_rule evaluates the rule at `idx`. `idx` is taken BY VALUE for
+// the same reason as acl_scan_rule: handing bpf_map_lookup_elem the
+// address of the caller's induction variable pins it in memory, the
+// verifier loses the "i strictly increases" invariant across the
+// per-iteration lookup, and a large enough tc_pod_egress then trips the
+// "infinite loop detected" check. By-value keeps `i` register-resident
+// and lets the scan fully unroll.
+static __always_inline int
+sg_scan_rule(void *inner, __u32 idx, const struct sg_eval_one_sg_args *a,
+             const struct sg_membership_val *peer_sgs) {
+  struct sg_rule *r = bpf_map_lookup_elem(inner, &idx);
+  if (!r)
+    return SG_SCAN_STOP;
+  if (r->direction != a->direction)
+    return SG_SCAN_CONTINUE;
+  if (!policy_proto_matches(r->proto, a->proto))
+    return SG_SCAN_CONTINUE;
+  if (!policy_port_matches(r->port_lo, r->port_hi, a->dport))
+    return SG_SCAN_CONTINUE;
+
+  if (r->peer_kind == SG_PEER_KIND_CIDR) {
+    if (!policy_cidr_matches(r->peer_v4, r->peer_prefixlen, a->peer_ip))
+      return SG_SCAN_CONTINUE;
+  } else if (r->peer_kind == SG_PEER_KIND_SG) {
+    // peer_v4 holds peer_sg_id in host byte order (no IP semantics).
+    __u32 peer_sg_id = r->peer_v4;
+    if (!sg_peer_sg_set_contains(peer_sgs, peer_sg_id))
+      return SG_SCAN_CONTINUE;
+  } else {
+    return SG_SCAN_CONTINUE;
+  }
+
+  return (r->verdict == SG_VERDICT_ALLOW) ? SG_SCAN_ALLOW : SG_SCAN_CONTINUE;
+}
+
 static __juneau_bpf_subprog int
 sg_eval_one_sg(const struct sg_eval_one_sg_args *a,
                const struct sg_membership_val *peer_sgs) {
@@ -127,33 +170,20 @@ sg_eval_one_sg(const struct sg_eval_one_sg_args *a,
   if (max_rules > MAX_RULES_PER_SG)
     max_rules = MAX_RULES_PER_SG;
 
+  // sg_scan_rule takes the index by value so `i` is never address-taken
+  // and stays register-resident (precise) across the per-iteration map
+  // lookup — see sg_scan_rule for why that avoids "infinite loop
+  // detected". Left rolled on purpose: unrolling inlines the scan body
+  // MAX_RULES_PER_SG times and pushes the combined call stack past 512B.
   for (__u32 i = 0; i < MAX_RULES_PER_SG; i++) {
     if (i >= max_rules)
       break;
-    struct sg_rule *r = bpf_map_lookup_elem(inner, &i);
-    if (!r)
+    int v = sg_scan_rule(inner, i, a, peer_sgs);
+    if (v == SG_SCAN_STOP)
       break;
-    if (r->direction != a->direction)
-      continue;
-    if (!policy_proto_matches(r->proto, a->proto))
-      continue;
-    if (!policy_port_matches(r->port_lo, r->port_hi, a->dport))
-      continue;
-
-    if (r->peer_kind == SG_PEER_KIND_CIDR) {
-      if (!policy_cidr_matches(r->peer_v4, r->peer_prefixlen, a->peer_ip))
-        continue;
-    } else if (r->peer_kind == SG_PEER_KIND_SG) {
-      // peer_v4 holds peer_sg_id in host byte order (no IP semantics).
-      __u32 peer_sg_id = r->peer_v4;
-      if (!sg_peer_sg_set_contains(peer_sgs, peer_sg_id))
-        continue;
-    } else {
-      continue;
-    }
-
-    if (r->verdict == SG_VERDICT_ALLOW)
+    if (v == SG_SCAN_ALLOW)
       return 1;
+    // SG_SCAN_CONTINUE → next rule
   }
   return 0;
 }
