@@ -19,7 +19,19 @@ type Inputs struct {
 }
 
 type Advertisement struct {
-	AddressPool  string
+	// AddressPool, when set, points at the AddressPool the prefix
+	// list comes from. Non-pool sources (ServiceLoadBalancer) leave
+	// it empty.
+	AddressPool string
+	// SourceKind / SourceNamespace / SourceName describe the
+	// upstream Kubernetes resource the advertisement was projected
+	// from. SourceKind is always set on new entries; the others are
+	// optional depending on the resource scope.
+	SourceKind      string
+	SourceNamespace string
+	SourceName      string
+	// Prefixes is the deduplicated, lexicographically-sorted list
+	// of CIDRs the source intends to advertise.
 	Prefixes     []string
 	LastSyncedAt time.Time
 }
@@ -177,8 +189,11 @@ func buildAdvertisements(ads []Advertisement) []juneauv1alpha1.BGPNodeStateAdver
 		prefixes := append([]string(nil), a.Prefixes...)
 		sort.Strings(prefixes)
 		entry := juneauv1alpha1.BGPNodeStateAdvertisement{
-			AddressPool: a.AddressPool,
-			Prefixes:    prefixes,
+			AddressPool:     a.AddressPool,
+			SourceKind:      a.SourceKind,
+			SourceNamespace: a.SourceNamespace,
+			SourceName:      a.SourceName,
+			Prefixes:        prefixes,
 		}
 		if !a.LastSyncedAt.IsZero() {
 			t := metav1.NewTime(a.LastSyncedAt)
@@ -186,6 +201,20 @@ func buildAdvertisements(ads []Advertisement) []juneauv1alpha1.BGPNodeStateAdver
 		}
 		out = append(out, entry)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].AddressPool < out[j].AddressPool })
+	// Stable order: by SourceKind, then AddressPool, then namespace,
+	// then name. Pool-only entries (legacy) keep their relative
+	// order; namespaced source entries are interleaved deterministically.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].SourceKind != out[j].SourceKind {
+			return out[i].SourceKind < out[j].SourceKind
+		}
+		if out[i].AddressPool != out[j].AddressPool {
+			return out[i].AddressPool < out[j].AddressPool
+		}
+		if out[i].SourceNamespace != out[j].SourceNamespace {
+			return out[i].SourceNamespace < out[j].SourceNamespace
+		}
+		return out[i].SourceName < out[j].SourceName
+	})
 	return out
 }

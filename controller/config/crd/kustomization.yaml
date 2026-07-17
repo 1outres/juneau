@@ -20,6 +20,7 @@ resources:
 - bases/juneau.loutres.me_natgateways.yaml
 - bases/juneau.loutres.me_externalnetworkattachments.yaml
 - bases/juneau.loutres.me_servicenatattachments.yaml
+- bases/juneau.loutres.me_serviceloadbalancers.yaml
 - bases/juneau.loutres.me_securitygroups.yaml
 - bases/juneau.loutres.me_networkacls.yaml
 - bases/juneau.loutres.me_tracesessions.yaml

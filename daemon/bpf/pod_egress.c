@@ -5,6 +5,7 @@
 #include <bpf/bpf_helpers.h>
 #include <stdbool.h>
 #include "ct.h"
+#include "lb.h"
 #include "maps.h"
 #include "nat.h"
 #include "sg.h"
@@ -36,6 +37,20 @@ struct arp_payload {
   __u8 tha[ETH_ALEN];
   __be32 tpa;
 } __attribute__((packed));
+
+// Per-CPU scratch slot for transient trace_nat_event allocations
+// inside __juneau_bpf_subprog helpers. Subprograms have an
+// independent stack frame and the chain `tc_pod_egress → subprog`
+// must stay under the 512-byte combined-stack ceiling; hosting the
+// 36-byte trace_nat_event off-stack keeps that headroom intact. One
+// entry is enough because each invocation runs to completion before
+// the same CPU can reenter the program (BPF tasks do not preempt).
+struct {
+  __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+  __uint(max_entries, 1);
+  __type(key, __u32);
+  __type(value, struct trace_nat_event);
+} pod_egress_nat_scratch SEC(".maps");
 
 
 static __always_inline int update_l4_csum(struct __sk_buff *skb,
@@ -1581,6 +1596,94 @@ static __always_inline int apply_conntrack_dnat(struct __sk_buff *skb,
   return 1;
 }
 
+// apply_conntrack_lb_rev_nat is the reply leg of an external →
+// LoadBalancer-VIP flow. The CT entry was installed at node_ingress
+// (forward LB_DNAT pair); this side scopes ct_map by the backend
+// Pod's owning Vpc and matches the (PodIP → external client) tuple.
+//
+// On hit, we rewrite saddr from PodIP to the original VIP and sport
+// from the target port to the Service port. The destination tuple is
+// preserved so the host stack / underlay routes the reply back to
+// the external client unchanged.
+//
+// Returns 1 on rewrite applied, 0 on no rewrite, -1 on failure.
+// noinline subprogram — see apply_conntrack_svc_napt_in for the
+// verifier-complexity rationale.
+static __juneau_bpf_subprog int apply_conntrack_lb_rev_nat(struct __sk_buff *skb,
+                                                           __u32 vpc_id) {
+  struct iphdr *iph = load_iph(skb);
+  if (!iph)
+    return -1;
+  void *data_end = skb_data_end(skb);
+
+  if (iph->protocol != IPPROTO_TCP && iph->protocol != IPPROTO_UDP)
+    return 0;
+
+  __be16 sport, dport;
+  if (read_l4_ports(iph, data_end, &sport, &dport) < 0)
+    return 0;
+
+  struct ct_key ck = {
+      .scope = vpc_id,
+      .saddr = iph->saddr,
+      .daddr = iph->daddr,
+      .sport = sport,
+      .dport = dport,
+      .proto = iph->protocol,
+  };
+  struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &ck);
+  if (!cv || cv->action != CT_ACTION_LB_REV_NAT)
+    return 0;
+
+  cv->last_seen_ns = bpf_ktime_get_ns();
+  __be32 new_saddr = cv->new_saddr;
+  __be16 new_sport = cv->new_sport;
+
+  // Populate the trace event in per-CPU scratch BEFORE rewrite so
+  // we can read the BEFORE tuple straight from `ck` instead of
+  // snapshotting iph fields into extra stack locals. The actual
+  // trace_observe_nat() emit happens at the call site in handle_l2
+  // — invoking it from inside this subprogram would build a
+  // 3-frame chain (tc_pod_egress → lb_rev_nat → trace_observe_nat)
+  // that exceeds the 512-byte combined-stack ceiling.
+  __u32 zero = 0;
+  struct trace_nat_event *ne =
+      bpf_map_lookup_elem(&pod_egress_nat_scratch, &zero);
+  if (ne) {
+    ne->vpc_id = vpc_id;
+    ne->subnet_id = 0;
+    ne->hook = TRACE_HOOK_POD_EGRESS;
+    ne->reason = TRACE_REASON_REVERSE_NAT_APPLIED;
+    ne->scope = TRACE_SCOPE_VPC;
+    ne->proto = ck.proto;
+    ne->before_saddr = ck.saddr;
+    ne->before_daddr = ck.daddr;
+    ne->before_sport = sport;
+    ne->before_dport = dport;
+    ne->after_saddr = new_saddr;
+    ne->after_daddr = ck.daddr;
+    ne->after_sport = new_sport;
+    ne->after_dport = dport;
+  }
+
+  __u8 tcp_flags = 0;
+  bool have_tcp_flags = false;
+  if (iph->protocol == IPPROTO_TCP) {
+    if (ct_read_tcp_flags(iph, data_end, &tcp_flags) == 0)
+      have_tcp_flags = true;
+  }
+
+  if (rewrite_ipv4_addr(skb, /*is_source=*/true, new_saddr) < 0)
+    return -1;
+  if (rewrite_l4_port(skb, /*is_source=*/true, new_sport) < 0)
+    return -1;
+
+  if (have_tcp_flags)
+    ct_observe_tcp(&ck, cv, tcp_flags);
+
+  return 1;
+}
+
 // handle_napt is the forward NAPT path: it rewrites src IP/port to the
 // node's host_napt_ip and an allocated source port, installs both
 // forward (NAPT_OUT) and reverse (NAPT_IN) ct_map entries, and then
@@ -2069,6 +2172,34 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
     }
     if (shared_hit == 1)
       return shared_rc;
+
+    // LoadBalancer reverse NAT (Phase 7): the backend Pod is sending
+    // a reply to the original external client. Rewriting saddr from
+    // PodIP to VIP here ensures the client sees the VIP as the
+    // response source. We do not short-circuit the rest of the egress
+    // path on hit — the rewritten packet must still go through the
+    // policy + FIB stage so it routes out via the host underlay.
+    int lb_rc = apply_conntrack_lb_rev_nat(skb, subnet->vpc_id);
+    if (lb_rc < 0) {
+      trace_emit_drop_l3(skb, __trace_id, TRACE_REASON_DROP_SHOT,
+                         TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                         subnet->vpc_id, val->subnet_id);
+      return TC_ACT_SHOT;
+    }
+    if (lb_rc == 1) {
+      // Emit the reverse-NAT trace event populated by lb_rev_nat into
+      // pod_egress_nat_scratch. We invoke trace_observe_nat from this
+      // call site (inlined into tc_pod_egress) so the chain stays
+      // 2 frames — calling it from inside lb_rev_nat would be a
+      // 3-frame chain that overflows the verifier's 512-byte budget.
+      __u32 lb_zero = 0;
+      struct trace_nat_event *lb_ne =
+          bpf_map_lookup_elem(&pod_egress_nat_scratch, &lb_zero);
+      if (lb_ne)
+        trace_observe_nat(skb, lb_ne);
+    }
+    // lb_rc == 1: rewrite applied, fall through to the normal egress
+    // path so the host network stack routes the packet out.
 
     // Unified policy stage: NetworkACL → SecurityGroup → CT install.
     // Runs BEFORE apply_conntrack_dnat so each layer evaluates the

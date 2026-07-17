@@ -147,6 +147,16 @@ var _ = BeforeSuite(func() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr)).To(Succeed())
+	// The ServiceLoadBalancer Sync reconciler is exercised through
+	// the manager so that Service updates propagate to SLB state in
+	// tests without requiring each spec to call Reconcile manually.
+	// The SLB reconciler itself is invoked directly from its own
+	// _test.go so tests can drive the AllocationClaim status
+	// deterministically without racing against the sync reconciler.
+	Expect((&ServiceLoadBalancerSyncReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr)).To(Succeed())
 	// NetworkInterfaceReconciler and ElasticIPReconciler are exercised
 	// directly in their own _test.go files rather than through the
 	// manager, so that other controllers' tests (notably the

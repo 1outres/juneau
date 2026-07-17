@@ -42,6 +42,8 @@ func RegisterPodEgress(inv *Inventory, p *program.PodEgress) error {
 		registerSGRule,
 		registerACLMeta,
 		registerACLRule,
+		registerLBService,
+		registerLBBackend,
 	} {
 		if err := fn(inv, p); err != nil {
 			return err
@@ -528,6 +530,45 @@ func registerACLRule(inv *Inventory, p *program.PodEgress) error {
 			FieldU16Named("priority"),
 			FieldPadOf(2),
 			FieldIPv4BENamed("peer_v4"),
+		}},
+	})
+}
+
+func registerLBService(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name: "lb_service_map",
+		Map:  p.Objs.LbServiceMap,
+		Key: Schema{Fields: []Field{
+			FieldIPv4BENamed("vip"),
+			FieldPortNamed("port"),
+			FieldEnumNamed("proto", 1, IPProtoEnum),
+			FieldPadOf(1),
+		}},
+		Value: Schema{Fields: []Field{
+			FieldU32Named("backend_count"),
+			FieldU32Named("gen", "bumped on backend-set change"),
+			FieldU32Named("flags", "reserved (0 today)"),
+			FieldPadOf(4),
+		}},
+	})
+}
+
+func registerLBBackend(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name: "lb_backend_map",
+		Map:  p.Objs.LbBackendMap,
+		Key: Schema{Fields: []Field{
+			FieldIPv4BENamed("vip"),
+			FieldPortNamed("port"),
+			FieldEnumNamed("proto", 1, IPProtoEnum),
+			FieldPadOf(1),
+			FieldU32Named("index"),
+		}},
+		Value: Schema{Fields: []Field{
+			FieldIPv4BENamed("backend_ip"),
+			FieldPortNamed("backend_port"),
+			FieldPadOf(2),
+			FieldU32Named("backend_subnet_id"),
 		}},
 	})
 }

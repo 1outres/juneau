@@ -12,7 +12,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
@@ -90,3 +90,35 @@ jobs:
           tags: ghcr.io/1outres/juneau/bgp-speaker:${{ steps.meta.outputs.tag }}
           cache-from: type=gha,scope=bgp-speaker-image
           cache-to: type=gha,mode=max,scope=bgp-speaker-image
+
+      - name: Install kustomize
+        uses: imranismail/setup-kustomize@v2
+        with:
+          kustomize-version: "5.6.0"
+
+      - name: Build install manifest
+        run: |
+          tag="${{ steps.meta.outputs.tag }}"
+
+          cd install
+          kustomize edit set image \
+            example.com/controller=ghcr.io/1outres/juneau/controller:"$tag"
+          kustomize edit set image \
+            example.com/webhookcertjob=ghcr.io/1outres/juneau/webhookcertjob:"$tag"
+          kustomize edit set image \
+            daemon=ghcr.io/1outres/juneau/daemon:"$tag"
+          kustomize edit set image \
+            bgp-speaker=ghcr.io/1outres/juneau/bgp-speaker:"$tag"
+          kustomize build . > "$RUNNER_TEMP/install.yaml"
+
+      - name: Attach manifest to release
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ steps.meta.outputs.tag }}"
+          gh release view "$tag" >/dev/null 2>&1 \
+            || gh release create "$tag" --generate-notes --title "$tag"
+          gh release upload "$tag" \
+            "$RUNNER_TEMP/install.yaml" \
+            --clobber
