@@ -128,15 +128,22 @@ func (v *RouteTableCustomValidator) ValidateDelete(ctx context.Context, obj runt
 	// Block deleting the Vpc's main RouteTable: the VpcReconciler would
 	// recreate it on the next reconcile anyway, but the gap leaves
 	// Subnets without a route table to resolve and triggers spurious
-	// daemon errors. Allow deletion only after the Vpc itself is gone.
+	// daemon errors. Once the owning Vpc is itself being deleted we must
+	// let the garbage collector cascade-delete this RouteTable (the Vpc
+	// owns it): a foreground cascade leaves the Vpc in etcd with a
+	// deletionTimestamp until its owned RouteTable is gone, so rejecting
+	// the delete here would deadlock the Vpc's own deletion.
 	var vpc juneauv1alpha1.Vpc
-	if err := v.Get(ctx, client.ObjectKey{Name: routeTable.Name}, &vpc); err == nil {
-		return nil, errors.NewForbidden(
-			schema.GroupResource{Group: juneauv1alpha1.GroupVersion.Group, Resource: "routetables"},
-			routeTable.Name,
-			fmt.Errorf("RouteTable %q is the main RouteTable of Vpc %q; delete the Vpc first", routeTable.Name, vpc.Name),
-		)
-	} else if !errors.IsNotFound(err) {
+	switch err := v.Get(ctx, client.ObjectKey{Name: routeTable.Name}, &vpc); {
+	case err == nil:
+		if vpc.DeletionTimestamp.IsZero() {
+			return nil, errors.NewForbidden(
+				schema.GroupResource{Group: juneauv1alpha1.GroupVersion.Group, Resource: "routetables"},
+				routeTable.Name,
+				fmt.Errorf("RouteTable %q is the main RouteTable of Vpc %q; delete the Vpc first", routeTable.Name, vpc.Name),
+			)
+		}
+	case !errors.IsNotFound(err):
 		return nil, fmt.Errorf("look up Vpc %q: %w", routeTable.Name, err)
 	}
 
