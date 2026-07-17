@@ -95,6 +95,25 @@ const (
 	ScopeVPC  Scope = 1
 )
 
+// Direction mirrors TRACE_DIR_* in trace.h: the authoritative leg a
+// tuple (and every event resolved through it) belongs to.
+type Direction uint8
+
+const (
+	DirUnspecified Direction = 0
+	DirRequest     Direction = 1
+	DirReply       Direction = 2
+)
+
+// TupleVal is the userspace mirror of struct trace_tuple_val. Layout
+// matches the BPF side byte-for-byte (8 bytes): trace_id, direction,
+// and 3 bytes of explicit padding so the kernel value size agrees.
+type TupleVal struct {
+	TraceID   uint32
+	Direction uint8
+	Pad       [3]uint8
+}
+
 // CaptureFlag mirrors TRACE_CAP_* in trace.h.
 type CaptureFlag uint32
 
@@ -164,9 +183,10 @@ type Event struct {
 	// node only; cross-node ordering uses receive time.
 	At time.Duration
 
-	Protocol uint8
-	Verdict  Verdict
-	Scope    Scope
+	Protocol  uint8
+	Verdict   Verdict
+	Scope     Scope
+	Direction Direction
 
 	SrcIP   net.IP
 	DstIP   net.IP
@@ -219,7 +239,7 @@ func DecodeEvent(b []byte) (Event, error) {
 	ev.Protocol = u8()
 	ev.Verdict = Verdict(u8())
 	ev.Scope = Scope(u8())
-	off++ // _pad0
+	ev.Direction = Direction(u8())
 
 	src2 := be32()
 	dst2 := be32()

@@ -2,6 +2,7 @@ package trace
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"sort"
 	"testing"
@@ -182,5 +183,93 @@ func TestMatchingServicePortNameICMPSkipped(t *testing.T) {
 	}}
 	if _, ok := matchingServicePortName(svc, 80, "icmp"); ok {
 		t.Fatalf("ICMP probes against Services should not pre-seed backends")
+	}
+}
+
+func TestAppendReverseTuplesMirrorsEachForward(t *testing.T) {
+	fwd := []juneauv1alpha1.TraceTuple{
+		{Scope: juneauv1alpha1.TraceTupleScopeVPC, VPCID: 7, SrcIP: "10.0.1.5", DstIP: "10.96.0.10", DstPort: 443, Protocol: juneauv1alpha1.TraceProtocolTCP},
+		{Scope: juneauv1alpha1.TraceTupleScopeVPC, VPCID: 7, SrcIP: "10.0.1.5", DstIP: "10.0.2.10", DstPort: 8443, Protocol: juneauv1alpha1.TraceProtocolTCP},
+	}
+	got := appendReverseTuples(fwd)
+	if len(got) != 4 {
+		t.Fatalf("expected 2 forward + 2 reverse = 4 tuples, got %d: %+v", len(got), got)
+	}
+	if got[0] != fwd[0] || got[1] != fwd[1] {
+		t.Fatalf("forward tuples must be preserved in order, got %+v", got[:2])
+	}
+	rev := got[2]
+	if rev.SrcIP != "10.96.0.10" || rev.DstIP != "10.0.1.5" {
+		t.Errorf("reverse[0] src/dst not swapped: %+v", rev)
+	}
+	if rev.SrcPort != 0 || rev.DstPort != 0 {
+		t.Errorf("reverse[0] ports must be wildcarded to 0: %+v", rev)
+	}
+	if rev.Scope != juneauv1alpha1.TraceTupleScopeVPC || rev.VPCID != 7 || rev.Protocol != juneauv1alpha1.TraceProtocolTCP {
+		t.Errorf("reverse[0] must carry scope/vpc/proto: %+v", rev)
+	}
+	if rev.Direction != juneauv1alpha1.TraceTupleDirectionReply {
+		t.Errorf("reverse[0] must be tagged Reply: %+v", rev)
+	}
+}
+
+func TestAppendReverseTuplesSkipsSymmetricDuplicate(t *testing.T) {
+	// A symmetric wildcard tuple (src==dst, ports 0) is its own reverse
+	// and must not be duplicated.
+	fwd := []juneauv1alpha1.TraceTuple{
+		{Scope: juneauv1alpha1.TraceTupleScopeHost, SrcIP: "10.0.0.1", DstIP: "10.0.0.1", Protocol: juneauv1alpha1.TraceProtocolICMP},
+	}
+	got := appendReverseTuples(fwd)
+	if len(got) != 1 {
+		t.Fatalf("symmetric tuple must not add a reverse mirror, got %d: %+v", len(got), got)
+	}
+}
+
+func TestAppendReverseTuplesRespectsMaxCap(t *testing.T) {
+	fwd := make([]juneauv1alpha1.TraceTuple, maxInitialTuples)
+	for i := range fwd {
+		fwd[i] = juneauv1alpha1.TraceTuple{
+			Scope:    juneauv1alpha1.TraceTupleScopeHost,
+			SrcIP:    "10.0.1.5",
+			DstIP:    fmt.Sprintf("10.0.2.%d", i+1),
+			DstPort:  443,
+			Protocol: juneauv1alpha1.TraceProtocolTCP,
+		}
+	}
+	got := appendReverseTuples(fwd)
+	if len(got) != maxInitialTuples {
+		t.Fatalf("must stay within the admission cap of %d, got %d", maxInitialTuples, len(got))
+	}
+}
+
+func TestResolveSessionAppendsReverseTuplesForIPTrace(t *testing.T) {
+	o := &Options{
+		SourceIP: "10.0.1.5",
+		DestIP:   "10.0.2.8",
+		Port:     443,
+		Protocol: "tcp",
+		traceID:  0x1234,
+	}
+	// IP -> IP resolution touches no Kubernetes objects, so a nil client
+	// is sufficient.
+	r, err := o.resolveSession(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("resolveSession: %v", err)
+	}
+	if len(r.initialTuples) != 2 {
+		t.Fatalf("expected forward + reverse = 2 tuples, got %d: %+v", len(r.initialTuples), r.initialTuples)
+	}
+	fwd, rev := r.initialTuples[0], r.initialTuples[1]
+	if fwd.SrcIP != "10.0.1.5" || fwd.DstIP != "10.0.2.8" || fwd.DstPort != 443 {
+		t.Fatalf("forward tuple wrong: %+v", fwd)
+	}
+	if fwd.Direction != juneauv1alpha1.TraceTupleDirectionRequest {
+		t.Errorf("forward tuple must be tagged Request: %+v", fwd)
+	}
+	if rev.SrcIP != "10.0.2.8" || rev.DstIP != "10.0.1.5" || rev.DstPort != 0 {
+		t.Fatalf("reverse tuple wrong: %+v", rev)
+	}
+	if rev.Direction != juneauv1alpha1.TraceTupleDirectionReply {
+		t.Errorf("reverse tuple must be tagged Reply: %+v", rev)
 	}
 }

@@ -52,6 +52,19 @@ struct {
   __type(value, struct trace_nat_event);
 } pod_egress_nat_scratch SEC(".maps");
 
+// Per-CPU scratch for the Service lookup/backend trace_emit_args. A
+// 56-byte struct on tc_pod_egress's stack pushed the deepest call
+// chains (tc_pod_egress → classify / policy subprograms) past the
+// 512-byte combined-stack ceiling on kernel 6.12. Staging it in a
+// per-CPU slot keeps it out of the host program's frame. Mirrors
+// pod_egress_nat_scratch.
+struct {
+  __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+  __uint(max_entries, 1);
+  __type(key, __u32);
+  __type(value, struct trace_emit_args);
+} pod_egress_emit_scratch SEC(".maps");
+
 
 static __always_inline int update_l4_csum(struct __sk_buff *skb,
                                           struct iphdr *iph, void *data_end,
@@ -1098,34 +1111,34 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
   {
     __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, subnet->vpc_id);
     if (__tid != 0) {
-      __be32 saddr = iph->saddr;
-      __be32 daddr = iph->daddr;
-      struct trace_emit_args a = {0};
-      a.trace_id = __tid;
-      a.reason = TRACE_REASON_SERVICE_LOOKUP_HIT;
-      a.hook = TRACE_HOOK_POD_EGRESS;
-      a.ifindex = skb->ifindex;
-      a.vpc_id = subnet->vpc_id;
-      a.scope = TRACE_SCOPE_VPC;
-      a.proto = iph->protocol;
-      a.verdict = TRACE_VERDICT_OK;
-      a.saddr = saddr;
-      a.daddr = daddr;
-      a.sport = sport;
-      a.dport = dport;
-      a.aux1 = sv->owner_vpc_id;
-      a.aux2 = sv->backend_count;
-      trace_emit_full(&a);
+      __u32 __ez = 0;
+      struct trace_emit_args *a =
+          bpf_map_lookup_elem(&pod_egress_emit_scratch, &__ez);
+      if (a) {
+        __builtin_memset(a, 0, sizeof(*a));
+        a->trace_id = __tid;
+        a->reason = TRACE_REASON_SERVICE_LOOKUP_HIT;
+        a->hook = TRACE_HOOK_POD_EGRESS;
+        a->ifindex = skb->ifindex;
+        a->vpc_id = subnet->vpc_id;
+        a->scope = TRACE_SCOPE_VPC;
+        a->proto = iph->protocol;
+        a->verdict = TRACE_VERDICT_OK;
+        a->direction = TRACE_DIR_REQUEST;
+        a->saddr = iph->saddr;
+        a->daddr = iph->daddr;
+        a->sport = sport;
+        a->dport = dport;
+        a->aux1 = sv->owner_vpc_id;
+        a->aux2 = sv->backend_count;
+        trace_emit_full(a);
 
-      // Reuse `a` for the second emit. trace_emit_args is a 56-byte
-      // struct on the host program's stack and clang has been
-      // observed not to share slots between these back-to-back
-      // declarations under -O2; collapsing them into one
-      // explicit reuse trims tc_pod_egress's stack frame.
-      a.reason = TRACE_REASON_SERVICE_BACKEND_SELECTED;
-      a.aux1 = idx;
-      a.aux2 = bv->backend_subnet_id;
-      trace_emit_full(&a);
+        // Reuse the scratch slot for the second emit.
+        a->reason = TRACE_REASON_SERVICE_BACKEND_SELECTED;
+        a->aux1 = idx;
+        a->aux2 = bv->backend_subnet_id;
+        trace_emit_full(a);
+      }
     }
   }
 

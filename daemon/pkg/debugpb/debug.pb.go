@@ -91,6 +91,55 @@ func (InjectProbeStrategy) EnumDescriptor() ([]byte, []int) {
 	return file_pkg_debugpb_debug_proto_rawDescGZIP(), []int{0}
 }
 
+type TraceDirection int32
+
+const (
+	TraceDirection_TRACE_DIRECTION_UNSPECIFIED TraceDirection = 0
+	TraceDirection_TRACE_DIRECTION_REQUEST     TraceDirection = 1
+	TraceDirection_TRACE_DIRECTION_REPLY       TraceDirection = 2
+)
+
+// Enum value maps for TraceDirection.
+var (
+	TraceDirection_name = map[int32]string{
+		0: "TRACE_DIRECTION_UNSPECIFIED",
+		1: "TRACE_DIRECTION_REQUEST",
+		2: "TRACE_DIRECTION_REPLY",
+	}
+	TraceDirection_value = map[string]int32{
+		"TRACE_DIRECTION_UNSPECIFIED": 0,
+		"TRACE_DIRECTION_REQUEST":     1,
+		"TRACE_DIRECTION_REPLY":       2,
+	}
+)
+
+func (x TraceDirection) Enum() *TraceDirection {
+	p := new(TraceDirection)
+	*p = x
+	return p
+}
+
+func (x TraceDirection) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (TraceDirection) Descriptor() protoreflect.EnumDescriptor {
+	return file_pkg_debugpb_debug_proto_enumTypes[1].Descriptor()
+}
+
+func (TraceDirection) Type() protoreflect.EnumType {
+	return &file_pkg_debugpb_debug_proto_enumTypes[1]
+}
+
+func (x TraceDirection) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use TraceDirection.Descriptor instead.
+func (TraceDirection) EnumDescriptor() ([]byte, []int) {
+	return file_pkg_debugpb_debug_proto_rawDescGZIP(), []int{1}
+}
+
 type TupleScope int32
 
 const (
@@ -124,11 +173,11 @@ func (x TupleScope) String() string {
 }
 
 func (TupleScope) Descriptor() protoreflect.EnumDescriptor {
-	return file_pkg_debugpb_debug_proto_enumTypes[1].Descriptor()
+	return file_pkg_debugpb_debug_proto_enumTypes[2].Descriptor()
 }
 
 func (TupleScope) Type() protoreflect.EnumType {
-	return &file_pkg_debugpb_debug_proto_enumTypes[1]
+	return &file_pkg_debugpb_debug_proto_enumTypes[2]
 }
 
 func (x TupleScope) Number() protoreflect.EnumNumber {
@@ -137,7 +186,7 @@ func (x TupleScope) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use TupleScope.Descriptor instead.
 func (TupleScope) EnumDescriptor() ([]byte, []int) {
-	return file_pkg_debugpb_debug_proto_rawDescGZIP(), []int{1}
+	return file_pkg_debugpb_debug_proto_rawDescGZIP(), []int{2}
 }
 
 type TraceProtocol int32
@@ -176,11 +225,11 @@ func (x TraceProtocol) String() string {
 }
 
 func (TraceProtocol) Descriptor() protoreflect.EnumDescriptor {
-	return file_pkg_debugpb_debug_proto_enumTypes[2].Descriptor()
+	return file_pkg_debugpb_debug_proto_enumTypes[3].Descriptor()
 }
 
 func (TraceProtocol) Type() protoreflect.EnumType {
-	return &file_pkg_debugpb_debug_proto_enumTypes[2]
+	return &file_pkg_debugpb_debug_proto_enumTypes[3]
 }
 
 func (x TraceProtocol) Number() protoreflect.EnumNumber {
@@ -189,7 +238,7 @@ func (x TraceProtocol) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use TraceProtocol.Descriptor instead.
 func (TraceProtocol) EnumDescriptor() ([]byte, []int) {
-	return file_pkg_debugpb_debug_proto_rawDescGZIP(), []int{2}
+	return file_pkg_debugpb_debug_proto_rawDescGZIP(), []int{3}
 }
 
 type TraceHook int32
@@ -231,11 +280,11 @@ func (x TraceHook) String() string {
 }
 
 func (TraceHook) Descriptor() protoreflect.EnumDescriptor {
-	return file_pkg_debugpb_debug_proto_enumTypes[3].Descriptor()
+	return file_pkg_debugpb_debug_proto_enumTypes[4].Descriptor()
 }
 
 func (TraceHook) Type() protoreflect.EnumType {
-	return &file_pkg_debugpb_debug_proto_enumTypes[3]
+	return &file_pkg_debugpb_debug_proto_enumTypes[4]
 }
 
 func (x TraceHook) Number() protoreflect.EnumNumber {
@@ -244,7 +293,7 @@ func (x TraceHook) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use TraceHook.Descriptor instead.
 func (TraceHook) EnumDescriptor() ([]byte, []int) {
-	return file_pkg_debugpb_debug_proto_rawDescGZIP(), []int{3}
+	return file_pkg_debugpb_debug_proto_rawDescGZIP(), []int{4}
 }
 
 type TraceVerdict int32
@@ -283,11 +332,11 @@ func (x TraceVerdict) String() string {
 }
 
 func (TraceVerdict) Descriptor() protoreflect.EnumDescriptor {
-	return file_pkg_debugpb_debug_proto_enumTypes[4].Descriptor()
+	return file_pkg_debugpb_debug_proto_enumTypes[5].Descriptor()
 }
 
 func (TraceVerdict) Type() protoreflect.EnumType {
-	return &file_pkg_debugpb_debug_proto_enumTypes[4]
+	return &file_pkg_debugpb_debug_proto_enumTypes[5]
 }
 
 func (x TraceVerdict) Number() protoreflect.EnumNumber {
@@ -296,7 +345,7 @@ func (x TraceVerdict) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use TraceVerdict.Descriptor instead.
 func (TraceVerdict) EnumDescriptor() ([]byte, []int) {
-	return file_pkg_debugpb_debug_proto_rawDescGZIP(), []int{4}
+	return file_pkg_debugpb_debug_proto_rawDescGZIP(), []int{5}
 }
 
 type TraceEventReason int32
@@ -407,11 +456,11 @@ func (x TraceEventReason) String() string {
 }
 
 func (TraceEventReason) Descriptor() protoreflect.EnumDescriptor {
-	return file_pkg_debugpb_debug_proto_enumTypes[5].Descriptor()
+	return file_pkg_debugpb_debug_proto_enumTypes[6].Descriptor()
 }
 
 func (TraceEventReason) Type() protoreflect.EnumType {
-	return &file_pkg_debugpb_debug_proto_enumTypes[5]
+	return &file_pkg_debugpb_debug_proto_enumTypes[6]
 }
 
 func (x TraceEventReason) Number() protoreflect.EnumNumber {
@@ -420,7 +469,7 @@ func (x TraceEventReason) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use TraceEventReason.Descriptor instead.
 func (TraceEventReason) EnumDescriptor() ([]byte, []int) {
-	return file_pkg_debugpb_debug_proto_rawDescGZIP(), []int{5}
+	return file_pkg_debugpb_debug_proto_rawDescGZIP(), []int{6}
 }
 
 type WatchTraceRequest struct {
@@ -780,14 +829,19 @@ func (x *LearnTupleRequest) GetTuple() *TraceTuple {
 // CRD: a 5-tuple plus VPC scope. Numbers carry over to the BPF map
 // keys verbatim.
 type TraceTuple struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Scope         TupleScope             `protobuf:"varint,1,opt,name=scope,proto3,enum=debug.v1.TupleScope" json:"scope,omitempty"`
-	VpcId         uint32                 `protobuf:"varint,2,opt,name=vpc_id,json=vpcId,proto3" json:"vpc_id,omitempty"`
-	SrcIp         []byte                 `protobuf:"bytes,3,opt,name=src_ip,json=srcIp,proto3" json:"src_ip,omitempty"` // IPv4 in network byte order (4 bytes)
-	DstIp         []byte                 `protobuf:"bytes,4,opt,name=dst_ip,json=dstIp,proto3" json:"dst_ip,omitempty"`
-	SrcPort       uint32                 `protobuf:"varint,5,opt,name=src_port,json=srcPort,proto3" json:"src_port,omitempty"` // host byte order
-	DstPort       uint32                 `protobuf:"varint,6,opt,name=dst_port,json=dstPort,proto3" json:"dst_port,omitempty"`
-	Protocol      TraceProtocol          `protobuf:"varint,7,opt,name=protocol,proto3,enum=debug.v1.TraceProtocol" json:"protocol,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Scope    TupleScope             `protobuf:"varint,1,opt,name=scope,proto3,enum=debug.v1.TupleScope" json:"scope,omitempty"`
+	VpcId    uint32                 `protobuf:"varint,2,opt,name=vpc_id,json=vpcId,proto3" json:"vpc_id,omitempty"`
+	SrcIp    []byte                 `protobuf:"bytes,3,opt,name=src_ip,json=srcIp,proto3" json:"src_ip,omitempty"` // IPv4 in network byte order (4 bytes)
+	DstIp    []byte                 `protobuf:"bytes,4,opt,name=dst_ip,json=dstIp,proto3" json:"dst_ip,omitempty"`
+	SrcPort  uint32                 `protobuf:"varint,5,opt,name=src_port,json=srcPort,proto3" json:"src_port,omitempty"` // host byte order
+	DstPort  uint32                 `protobuf:"varint,6,opt,name=dst_port,json=dstPort,proto3" json:"dst_port,omitempty"`
+	Protocol TraceProtocol          `protobuf:"varint,7,opt,name=protocol,proto3,enum=debug.v1.TraceProtocol" json:"protocol,omitempty"`
+	// direction is the leg this tuple belongs to. Programmed into
+	// trace_tuple_map's value so events carry an authoritative
+	// request/reply tag. Unspecified is treated as Request by daemons
+	// (the common forward-continuation case for LearnTuple).
+	Direction     TraceDirection `protobuf:"varint,8,opt,name=direction,proto3,enum=debug.v1.TraceDirection" json:"direction,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -871,6 +925,13 @@ func (x *TraceTuple) GetProtocol() TraceProtocol {
 	return TraceProtocol_TRACE_PROTOCOL_UNSPECIFIED
 }
 
+func (x *TraceTuple) GetDirection() TraceDirection {
+	if x != nil {
+		return x.Direction
+	}
+	return TraceDirection_TRACE_DIRECTION_UNSPECIFIED
+}
+
 // TraceEvent is the wire encoding of one ringbuf record after the
 // daemon's decoder has translated raw fields. Stable across releases
 // — append, never renumber. Numbers must match daemon/bpf/trace.h
@@ -890,21 +951,25 @@ type TraceEvent struct {
 	MonotonicNs uint64 `protobuf:"varint,8,opt,name=monotonic_ns,json=monotonicNs,proto3" json:"monotonic_ns,omitempty"`
 	// received_ns is the wallclock the daemon decoded the event,
 	// expressed in unix nanoseconds.
-	ReceivedNs    uint64        `protobuf:"varint,9,opt,name=received_ns,json=receivedNs,proto3" json:"received_ns,omitempty"`
-	Protocol      TraceProtocol `protobuf:"varint,10,opt,name=protocol,proto3,enum=debug.v1.TraceProtocol" json:"protocol,omitempty"`
-	Verdict       TraceVerdict  `protobuf:"varint,11,opt,name=verdict,proto3,enum=debug.v1.TraceVerdict" json:"verdict,omitempty"`
-	Scope         TupleScope    `protobuf:"varint,12,opt,name=scope,proto3,enum=debug.v1.TupleScope" json:"scope,omitempty"`
-	SrcIp         []byte        `protobuf:"bytes,13,opt,name=src_ip,json=srcIp,proto3" json:"src_ip,omitempty"`
-	DstIp         []byte        `protobuf:"bytes,14,opt,name=dst_ip,json=dstIp,proto3" json:"dst_ip,omitempty"`
-	SrcPort       uint32        `protobuf:"varint,15,opt,name=src_port,json=srcPort,proto3" json:"src_port,omitempty"`
-	DstPort       uint32        `protobuf:"varint,16,opt,name=dst_port,json=dstPort,proto3" json:"dst_port,omitempty"`
-	HasAuxTuple   bool          `protobuf:"varint,17,opt,name=has_aux_tuple,json=hasAuxTuple,proto3" json:"has_aux_tuple,omitempty"`
-	AuxSrcIp      []byte        `protobuf:"bytes,18,opt,name=aux_src_ip,json=auxSrcIp,proto3" json:"aux_src_ip,omitempty"`
-	AuxDstIp      []byte        `protobuf:"bytes,19,opt,name=aux_dst_ip,json=auxDstIp,proto3" json:"aux_dst_ip,omitempty"`
-	AuxSrcPort    uint32        `protobuf:"varint,20,opt,name=aux_src_port,json=auxSrcPort,proto3" json:"aux_src_port,omitempty"`
-	AuxDstPort    uint32        `protobuf:"varint,21,opt,name=aux_dst_port,json=auxDstPort,proto3" json:"aux_dst_port,omitempty"`
-	Aux1          uint32        `protobuf:"varint,22,opt,name=aux1,proto3" json:"aux1,omitempty"`
-	Aux2          uint32        `protobuf:"varint,23,opt,name=aux2,proto3" json:"aux2,omitempty"`
+	ReceivedNs  uint64        `protobuf:"varint,9,opt,name=received_ns,json=receivedNs,proto3" json:"received_ns,omitempty"`
+	Protocol    TraceProtocol `protobuf:"varint,10,opt,name=protocol,proto3,enum=debug.v1.TraceProtocol" json:"protocol,omitempty"`
+	Verdict     TraceVerdict  `protobuf:"varint,11,opt,name=verdict,proto3,enum=debug.v1.TraceVerdict" json:"verdict,omitempty"`
+	Scope       TupleScope    `protobuf:"varint,12,opt,name=scope,proto3,enum=debug.v1.TupleScope" json:"scope,omitempty"`
+	SrcIp       []byte        `protobuf:"bytes,13,opt,name=src_ip,json=srcIp,proto3" json:"src_ip,omitempty"`
+	DstIp       []byte        `protobuf:"bytes,14,opt,name=dst_ip,json=dstIp,proto3" json:"dst_ip,omitempty"`
+	SrcPort     uint32        `protobuf:"varint,15,opt,name=src_port,json=srcPort,proto3" json:"src_port,omitempty"`
+	DstPort     uint32        `protobuf:"varint,16,opt,name=dst_port,json=dstPort,proto3" json:"dst_port,omitempty"`
+	HasAuxTuple bool          `protobuf:"varint,17,opt,name=has_aux_tuple,json=hasAuxTuple,proto3" json:"has_aux_tuple,omitempty"`
+	AuxSrcIp    []byte        `protobuf:"bytes,18,opt,name=aux_src_ip,json=auxSrcIp,proto3" json:"aux_src_ip,omitempty"`
+	AuxDstIp    []byte        `protobuf:"bytes,19,opt,name=aux_dst_ip,json=auxDstIp,proto3" json:"aux_dst_ip,omitempty"`
+	AuxSrcPort  uint32        `protobuf:"varint,20,opt,name=aux_src_port,json=auxSrcPort,proto3" json:"aux_src_port,omitempty"`
+	AuxDstPort  uint32        `protobuf:"varint,21,opt,name=aux_dst_port,json=auxDstPort,proto3" json:"aux_dst_port,omitempty"`
+	Aux1        uint32        `protobuf:"varint,22,opt,name=aux1,proto3" json:"aux1,omitempty"`
+	Aux2        uint32        `protobuf:"varint,23,opt,name=aux2,proto3" json:"aux2,omitempty"`
+	// direction is the authoritative request/reply tag carried on the
+	// matched trace_tuple_map entry. kubectl renders it directly instead
+	// of inferring the leg from address orientation.
+	Direction     TraceDirection `protobuf:"varint,24,opt,name=direction,proto3,enum=debug.v1.TraceDirection" json:"direction,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1098,6 +1163,13 @@ func (x *TraceEvent) GetAux2() uint32 {
 		return x.Aux2
 	}
 	return 0
+}
+
+func (x *TraceEvent) GetDirection() TraceDirection {
+	if x != nil {
+		return x.Direction
+	}
+	return TraceDirection_TRACE_DIRECTION_UNSPECIFIED
 }
 
 // BPFMapField is one named element of a key or value tuple. Exactly one
@@ -1657,7 +1729,7 @@ const file_pkg_debugpb_debug_proto_rawDesc = "" +
 	"\tpacket_id\x18\x01 \x01(\x04R\bpacketId\"Z\n" +
 	"\x11LearnTupleRequest\x12\x19\n" +
 	"\btrace_id\x18\x01 \x01(\rR\atraceId\x12*\n" +
-	"\x05tuple\x18\x02 \x01(\v2\x14.debug.v1.TraceTupleR\x05tuple\"\xe8\x01\n" +
+	"\x05tuple\x18\x02 \x01(\v2\x14.debug.v1.TraceTupleR\x05tuple\"\xa0\x02\n" +
 	"\n" +
 	"TraceTuple\x12*\n" +
 	"\x05scope\x18\x01 \x01(\x0e2\x14.debug.v1.TupleScopeR\x05scope\x12\x15\n" +
@@ -1666,7 +1738,8 @@ const file_pkg_debugpb_debug_proto_rawDesc = "" +
 	"\x06dst_ip\x18\x04 \x01(\fR\x05dstIp\x12\x19\n" +
 	"\bsrc_port\x18\x05 \x01(\rR\asrcPort\x12\x19\n" +
 	"\bdst_port\x18\x06 \x01(\rR\adstPort\x123\n" +
-	"\bprotocol\x18\a \x01(\x0e2\x17.debug.v1.TraceProtocolR\bprotocol\"\xf6\x05\n" +
+	"\bprotocol\x18\a \x01(\x0e2\x17.debug.v1.TraceProtocolR\bprotocol\x126\n" +
+	"\tdirection\x18\b \x01(\x0e2\x18.debug.v1.TraceDirectionR\tdirection\"\xae\x06\n" +
 	"\n" +
 	"TraceEvent\x12\x19\n" +
 	"\btrace_id\x18\x01 \x01(\rR\atraceId\x122\n" +
@@ -1697,7 +1770,8 @@ const file_pkg_debugpb_debug_proto_rawDesc = "" +
 	"\faux_dst_port\x18\x15 \x01(\rR\n" +
 	"auxDstPort\x12\x12\n" +
 	"\x04aux1\x18\x16 \x01(\rR\x04aux1\x12\x12\n" +
-	"\x04aux2\x18\x17 \x01(\rR\x04aux2\"\xaa\x01\n" +
+	"\x04aux2\x18\x17 \x01(\rR\x04aux2\x126\n" +
+	"\tdirection\x18\x18 \x01(\x0e2\x18.debug.v1.TraceDirectionR\tdirection\"\xaa\x01\n" +
 	"\vBPFMapField\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x03u64\x18\n" +
@@ -1739,7 +1813,11 @@ const file_pkg_debugpb_debug_proto_rawDesc = "" +
 	"!INJECT_PROBE_STRATEGY_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1eINJECT_PROBE_STRATEGY_POD_EXEC\x10\x01\x12&\n" +
 	"\"INJECT_PROBE_STRATEGY_DAEMON_NETNS\x10\x02\x12%\n" +
-	"!INJECT_PROBE_STRATEGY_DAEMON_HOST\x10\x03*T\n" +
+	"!INJECT_PROBE_STRATEGY_DAEMON_HOST\x10\x03*i\n" +
+	"\x0eTraceDirection\x12\x1f\n" +
+	"\x1bTRACE_DIRECTION_UNSPECIFIED\x10\x00\x12\x1b\n" +
+	"\x17TRACE_DIRECTION_REQUEST\x10\x01\x12\x19\n" +
+	"\x15TRACE_DIRECTION_REPLY\x10\x02*T\n" +
 	"\n" +
 	"TupleScope\x12\x1b\n" +
 	"\x17TUPLE_SCOPE_UNSPECIFIED\x10\x00\x12\x14\n" +
@@ -1813,71 +1891,74 @@ func file_pkg_debugpb_debug_proto_rawDescGZIP() []byte {
 	return file_pkg_debugpb_debug_proto_rawDescData
 }
 
-var file_pkg_debugpb_debug_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
+var file_pkg_debugpb_debug_proto_enumTypes = make([]protoimpl.EnumInfo, 7)
 var file_pkg_debugpb_debug_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_pkg_debugpb_debug_proto_goTypes = []any{
 	(InjectProbeStrategy)(0),        // 0: debug.v1.InjectProbeStrategy
-	(TupleScope)(0),                 // 1: debug.v1.TupleScope
-	(TraceProtocol)(0),              // 2: debug.v1.TraceProtocol
-	(TraceHook)(0),                  // 3: debug.v1.TraceHook
-	(TraceVerdict)(0),               // 4: debug.v1.TraceVerdict
-	(TraceEventReason)(0),           // 5: debug.v1.TraceEventReason
-	(*WatchTraceRequest)(nil),       // 6: debug.v1.WatchTraceRequest
-	(*GetTraceSnapshotRequest)(nil), // 7: debug.v1.GetTraceSnapshotRequest
-	(*TraceSnapshot)(nil),           // 8: debug.v1.TraceSnapshot
-	(*InjectProbeRequest)(nil),      // 9: debug.v1.InjectProbeRequest
-	(*InjectProbeResponse)(nil),     // 10: debug.v1.InjectProbeResponse
-	(*LearnTupleRequest)(nil),       // 11: debug.v1.LearnTupleRequest
-	(*TraceTuple)(nil),              // 12: debug.v1.TraceTuple
-	(*TraceEvent)(nil),              // 13: debug.v1.TraceEvent
-	(*BPFMapField)(nil),             // 14: debug.v1.BPFMapField
-	(*BPFMapFieldSchema)(nil),       // 15: debug.v1.BPFMapFieldSchema
-	(*BPFMapSchema)(nil),            // 16: debug.v1.BPFMapSchema
-	(*ListBPFMapsRequest)(nil),      // 17: debug.v1.ListBPFMapsRequest
-	(*ListBPFMapsResponse)(nil),     // 18: debug.v1.ListBPFMapsResponse
-	(*DumpBPFMapRequest)(nil),       // 19: debug.v1.DumpBPFMapRequest
-	(*BPFMapEntry)(nil),             // 20: debug.v1.BPFMapEntry
-	(*emptypb.Empty)(nil),           // 21: google.protobuf.Empty
+	(TraceDirection)(0),             // 1: debug.v1.TraceDirection
+	(TupleScope)(0),                 // 2: debug.v1.TupleScope
+	(TraceProtocol)(0),              // 3: debug.v1.TraceProtocol
+	(TraceHook)(0),                  // 4: debug.v1.TraceHook
+	(TraceVerdict)(0),               // 5: debug.v1.TraceVerdict
+	(TraceEventReason)(0),           // 6: debug.v1.TraceEventReason
+	(*WatchTraceRequest)(nil),       // 7: debug.v1.WatchTraceRequest
+	(*GetTraceSnapshotRequest)(nil), // 8: debug.v1.GetTraceSnapshotRequest
+	(*TraceSnapshot)(nil),           // 9: debug.v1.TraceSnapshot
+	(*InjectProbeRequest)(nil),      // 10: debug.v1.InjectProbeRequest
+	(*InjectProbeResponse)(nil),     // 11: debug.v1.InjectProbeResponse
+	(*LearnTupleRequest)(nil),       // 12: debug.v1.LearnTupleRequest
+	(*TraceTuple)(nil),              // 13: debug.v1.TraceTuple
+	(*TraceEvent)(nil),              // 14: debug.v1.TraceEvent
+	(*BPFMapField)(nil),             // 15: debug.v1.BPFMapField
+	(*BPFMapFieldSchema)(nil),       // 16: debug.v1.BPFMapFieldSchema
+	(*BPFMapSchema)(nil),            // 17: debug.v1.BPFMapSchema
+	(*ListBPFMapsRequest)(nil),      // 18: debug.v1.ListBPFMapsRequest
+	(*ListBPFMapsResponse)(nil),     // 19: debug.v1.ListBPFMapsResponse
+	(*DumpBPFMapRequest)(nil),       // 20: debug.v1.DumpBPFMapRequest
+	(*BPFMapEntry)(nil),             // 21: debug.v1.BPFMapEntry
+	(*emptypb.Empty)(nil),           // 22: google.protobuf.Empty
 }
 var file_pkg_debugpb_debug_proto_depIdxs = []int32{
-	12, // 0: debug.v1.TraceSnapshot.tuples:type_name -> debug.v1.TraceTuple
-	13, // 1: debug.v1.TraceSnapshot.recent_events:type_name -> debug.v1.TraceEvent
+	13, // 0: debug.v1.TraceSnapshot.tuples:type_name -> debug.v1.TraceTuple
+	14, // 1: debug.v1.TraceSnapshot.recent_events:type_name -> debug.v1.TraceEvent
 	0,  // 2: debug.v1.InjectProbeRequest.strategy:type_name -> debug.v1.InjectProbeStrategy
-	12, // 3: debug.v1.InjectProbeRequest.tuple:type_name -> debug.v1.TraceTuple
-	12, // 4: debug.v1.LearnTupleRequest.tuple:type_name -> debug.v1.TraceTuple
-	1,  // 5: debug.v1.TraceTuple.scope:type_name -> debug.v1.TupleScope
-	2,  // 6: debug.v1.TraceTuple.protocol:type_name -> debug.v1.TraceProtocol
-	5,  // 7: debug.v1.TraceEvent.reason:type_name -> debug.v1.TraceEventReason
-	3,  // 8: debug.v1.TraceEvent.hook:type_name -> debug.v1.TraceHook
-	2,  // 9: debug.v1.TraceEvent.protocol:type_name -> debug.v1.TraceProtocol
-	4,  // 10: debug.v1.TraceEvent.verdict:type_name -> debug.v1.TraceVerdict
-	1,  // 11: debug.v1.TraceEvent.scope:type_name -> debug.v1.TupleScope
-	15, // 12: debug.v1.BPFMapSchema.key_schema:type_name -> debug.v1.BPFMapFieldSchema
-	15, // 13: debug.v1.BPFMapSchema.value_schema:type_name -> debug.v1.BPFMapFieldSchema
-	15, // 14: debug.v1.BPFMapSchema.inner_key_schema:type_name -> debug.v1.BPFMapFieldSchema
-	15, // 15: debug.v1.BPFMapSchema.inner_value_schema:type_name -> debug.v1.BPFMapFieldSchema
-	16, // 16: debug.v1.ListBPFMapsResponse.maps:type_name -> debug.v1.BPFMapSchema
-	14, // 17: debug.v1.DumpBPFMapRequest.key_filter:type_name -> debug.v1.BPFMapField
-	14, // 18: debug.v1.DumpBPFMapRequest.inner_key:type_name -> debug.v1.BPFMapField
-	14, // 19: debug.v1.BPFMapEntry.key:type_name -> debug.v1.BPFMapField
-	14, // 20: debug.v1.BPFMapEntry.value:type_name -> debug.v1.BPFMapField
-	6,  // 21: debug.v1.Debug.WatchTrace:input_type -> debug.v1.WatchTraceRequest
-	7,  // 22: debug.v1.Debug.GetTraceSnapshot:input_type -> debug.v1.GetTraceSnapshotRequest
-	9,  // 23: debug.v1.Debug.InjectProbe:input_type -> debug.v1.InjectProbeRequest
-	11, // 24: debug.v1.Debug.LearnTuple:input_type -> debug.v1.LearnTupleRequest
-	17, // 25: debug.v1.Debug.ListBPFMaps:input_type -> debug.v1.ListBPFMapsRequest
-	19, // 26: debug.v1.Debug.DumpBPFMap:input_type -> debug.v1.DumpBPFMapRequest
-	13, // 27: debug.v1.Debug.WatchTrace:output_type -> debug.v1.TraceEvent
-	8,  // 28: debug.v1.Debug.GetTraceSnapshot:output_type -> debug.v1.TraceSnapshot
-	10, // 29: debug.v1.Debug.InjectProbe:output_type -> debug.v1.InjectProbeResponse
-	21, // 30: debug.v1.Debug.LearnTuple:output_type -> google.protobuf.Empty
-	18, // 31: debug.v1.Debug.ListBPFMaps:output_type -> debug.v1.ListBPFMapsResponse
-	20, // 32: debug.v1.Debug.DumpBPFMap:output_type -> debug.v1.BPFMapEntry
-	27, // [27:33] is the sub-list for method output_type
-	21, // [21:27] is the sub-list for method input_type
-	21, // [21:21] is the sub-list for extension type_name
-	21, // [21:21] is the sub-list for extension extendee
-	0,  // [0:21] is the sub-list for field type_name
+	13, // 3: debug.v1.InjectProbeRequest.tuple:type_name -> debug.v1.TraceTuple
+	13, // 4: debug.v1.LearnTupleRequest.tuple:type_name -> debug.v1.TraceTuple
+	2,  // 5: debug.v1.TraceTuple.scope:type_name -> debug.v1.TupleScope
+	3,  // 6: debug.v1.TraceTuple.protocol:type_name -> debug.v1.TraceProtocol
+	1,  // 7: debug.v1.TraceTuple.direction:type_name -> debug.v1.TraceDirection
+	6,  // 8: debug.v1.TraceEvent.reason:type_name -> debug.v1.TraceEventReason
+	4,  // 9: debug.v1.TraceEvent.hook:type_name -> debug.v1.TraceHook
+	3,  // 10: debug.v1.TraceEvent.protocol:type_name -> debug.v1.TraceProtocol
+	5,  // 11: debug.v1.TraceEvent.verdict:type_name -> debug.v1.TraceVerdict
+	2,  // 12: debug.v1.TraceEvent.scope:type_name -> debug.v1.TupleScope
+	1,  // 13: debug.v1.TraceEvent.direction:type_name -> debug.v1.TraceDirection
+	16, // 14: debug.v1.BPFMapSchema.key_schema:type_name -> debug.v1.BPFMapFieldSchema
+	16, // 15: debug.v1.BPFMapSchema.value_schema:type_name -> debug.v1.BPFMapFieldSchema
+	16, // 16: debug.v1.BPFMapSchema.inner_key_schema:type_name -> debug.v1.BPFMapFieldSchema
+	16, // 17: debug.v1.BPFMapSchema.inner_value_schema:type_name -> debug.v1.BPFMapFieldSchema
+	17, // 18: debug.v1.ListBPFMapsResponse.maps:type_name -> debug.v1.BPFMapSchema
+	15, // 19: debug.v1.DumpBPFMapRequest.key_filter:type_name -> debug.v1.BPFMapField
+	15, // 20: debug.v1.DumpBPFMapRequest.inner_key:type_name -> debug.v1.BPFMapField
+	15, // 21: debug.v1.BPFMapEntry.key:type_name -> debug.v1.BPFMapField
+	15, // 22: debug.v1.BPFMapEntry.value:type_name -> debug.v1.BPFMapField
+	7,  // 23: debug.v1.Debug.WatchTrace:input_type -> debug.v1.WatchTraceRequest
+	8,  // 24: debug.v1.Debug.GetTraceSnapshot:input_type -> debug.v1.GetTraceSnapshotRequest
+	10, // 25: debug.v1.Debug.InjectProbe:input_type -> debug.v1.InjectProbeRequest
+	12, // 26: debug.v1.Debug.LearnTuple:input_type -> debug.v1.LearnTupleRequest
+	18, // 27: debug.v1.Debug.ListBPFMaps:input_type -> debug.v1.ListBPFMapsRequest
+	20, // 28: debug.v1.Debug.DumpBPFMap:input_type -> debug.v1.DumpBPFMapRequest
+	14, // 29: debug.v1.Debug.WatchTrace:output_type -> debug.v1.TraceEvent
+	9,  // 30: debug.v1.Debug.GetTraceSnapshot:output_type -> debug.v1.TraceSnapshot
+	11, // 31: debug.v1.Debug.InjectProbe:output_type -> debug.v1.InjectProbeResponse
+	22, // 32: debug.v1.Debug.LearnTuple:output_type -> google.protobuf.Empty
+	19, // 33: debug.v1.Debug.ListBPFMaps:output_type -> debug.v1.ListBPFMapsResponse
+	21, // 34: debug.v1.Debug.DumpBPFMap:output_type -> debug.v1.BPFMapEntry
+	29, // [29:35] is the sub-list for method output_type
+	23, // [23:29] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_pkg_debugpb_debug_proto_init() }
@@ -1897,7 +1978,7 @@ func file_pkg_debugpb_debug_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_debugpb_debug_proto_rawDesc), len(file_pkg_debugpb_debug_proto_rawDesc)),
-			NumEnums:      6,
+			NumEnums:      7,
 			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,

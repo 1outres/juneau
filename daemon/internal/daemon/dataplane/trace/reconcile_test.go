@@ -71,11 +71,14 @@ func TestBuildSessionSpec(t *testing.T) {
 		t.Fatalf("tuples: %d", len(spec.Tuples))
 	}
 	tk := spec.Tuples[0]
-	if tk.Scope != ScopeVPC || tk.VPCID != 7 || tk.Protocol != 6 || tk.DstPort != 443 {
+	if tk.Key.Scope != ScopeVPC || tk.Key.VPCID != 7 || tk.Key.Protocol != 6 || tk.Key.DstPort != 443 {
 		t.Fatalf("tuple: %+v", tk)
 	}
-	if tk.SrcIP != [4]byte{10, 0, 1, 1} {
-		t.Fatalf("src: %v", tk.SrcIP)
+	if tk.Key.SrcIP != [4]byte{10, 0, 1, 1} {
+		t.Fatalf("src: %v", tk.Key.SrcIP)
+	}
+	if tk.Direction != DirRequest {
+		t.Fatalf("direction: %d (want Request default)", tk.Direction)
 	}
 }
 

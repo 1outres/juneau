@@ -315,8 +315,10 @@ type VxlanIngressTraceTupleKey struct {
 }
 
 type VxlanIngressTraceTupleVal struct {
-	_       structs.HostLayout
-	TraceId uint32
+	_         structs.HostLayout
+	TraceId   uint32
+	Direction uint8
+	Pad       [3]uint8
 }
 
 type VxlanIngressVirtualServiceFlowKey struct {

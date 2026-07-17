@@ -42,6 +42,30 @@ func TestRenderEvent(t *testing.T) {
 	}
 }
 
+func TestRenderEventDirectionMarker(t *testing.T) {
+	ev := &debugpb.TraceEvent{
+		Reason: debugpb.TraceEventReason_TRACE_EVENT_REASON_ENTER_POD_EGRESS,
+		Hook:   debugpb.TraceHook_TRACE_HOOK_POD_EGRESS,
+		SrcIp:  []byte{10, 0, 1, 5},
+		DstIp:  []byte{10, 0, 2, 8},
+	}
+	ev.Direction = debugpb.TraceDirection_TRACE_DIRECTION_REQUEST
+	req := renderEvent(ev)
+	if !strings.Contains(req, "[->]") || strings.Contains(req, "[<-]") {
+		t.Fatalf("request leg should carry [->] marker only: %q", req)
+	}
+	ev.Direction = debugpb.TraceDirection_TRACE_DIRECTION_REPLY
+	rep := renderEvent(ev)
+	if !strings.Contains(rep, "[<-]") || strings.Contains(rep, "[->]") {
+		t.Fatalf("reply leg should carry [<-] marker only: %q", rep)
+	}
+	ev.Direction = debugpb.TraceDirection_TRACE_DIRECTION_UNSPECIFIED
+	unk := renderEvent(ev)
+	if strings.Contains(unk, "[->]") || strings.Contains(unk, "[<-]") {
+		t.Fatalf("unspecified leg should carry no direction marker: %q", unk)
+	}
+}
+
 func TestRenderEventDropSuffix(t *testing.T) {
 	ev := &debugpb.TraceEvent{
 		Reason:  debugpb.TraceEventReason_TRACE_EVENT_REASON_POLICY_ACL_DROP,

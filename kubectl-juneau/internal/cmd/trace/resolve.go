@@ -34,9 +34,17 @@ type resolved struct {
 	nodes []string
 
 	// initialTuples are the 5-tuples kubectl precomputes; daemons
-	// install these into trace_tuple_map at session-start.
+	// install these into trace_tuple_map at session-start. Each Request
+	// tuple is followed by its Reply mirror so reply packets resolve the
+	// same trace_id from session start, even for flows whose request leg
+	// is never observed during the session (see appendReverseTuples).
 	initialTuples []juneauv1alpha1.TraceTuple
 }
+
+// maxInitialTuples mirrors the controller webhook's MaxInitialTuples
+// admission cap so kubectl never emits a TraceSession the API server
+// would reject after reverse mirrors double the tuple count.
+const maxInitialTuples = 64
 
 // endpoint is the resolved description of one side of a session.
 type endpoint struct {
@@ -124,7 +132,64 @@ func (o *Options) resolveSession(ctx context.Context, cl client.Client) (*resolv
 		out.nodes = dedupeNonEmpty(append(out.nodes, extraNodes...)...)
 	}
 
+	// Append the Reply mirror of every Request tuple so the dataplane
+	// resolves the same trace_id for reply packets from session start —
+	// even for flows whose request leg is never observed during the
+	// session (the dataplane's own auto-learn only fires once it matches
+	// a request). Direction is programmed authoritatively, so rendering
+	// never has to infer the leg.
+	out.initialTuples = appendReverseTuples(out.initialTuples)
+
 	return out, nil
+}
+
+// appendReverseTuples returns the Request tuples followed by their
+// Reply mirrors: source/destination swapped and both ports wildcarded
+// to 0. The daemon's dport=0 second-chance lookup then matches reply
+// packets whose ephemeral destination port kubectl cannot predict at
+// session start.
+//
+// A mirror that duplicates an existing tuple (e.g. a symmetric
+// wildcard tuple that is its own reverse) is skipped, and the total is
+// capped at maxInitialTuples so the resulting TraceSession stays within
+// the admission limit. Request tuples are always preserved; only
+// surplus mirrors are dropped.
+func appendReverseTuples(forward []juneauv1alpha1.TraceTuple) []juneauv1alpha1.TraceTuple {
+	// Dedup on the BPF key fields only — direction lives in the map
+	// value, so two tuples sharing a key occupy one slot. keyOf clears
+	// Direction so a symmetric wildcard tuple (its own reverse) is
+	// recognised as already present and does not get a conflicting Reply
+	// mirror written over its Request slot.
+	keyOf := func(t juneauv1alpha1.TraceTuple) juneauv1alpha1.TraceTuple {
+		t.Direction = ""
+		return t
+	}
+	seen := make(map[juneauv1alpha1.TraceTuple]struct{}, len(forward)*2)
+	for _, t := range forward {
+		seen[keyOf(t)] = struct{}{}
+	}
+	out := forward
+	for _, t := range forward {
+		if len(out) >= maxInitialTuples {
+			break
+		}
+		rev := juneauv1alpha1.TraceTuple{
+			Scope:     t.Scope,
+			VPCID:     t.VPCID,
+			SrcIP:     t.DstIP,
+			DstIP:     t.SrcIP,
+			SrcPort:   0,
+			DstPort:   0,
+			Protocol:  t.Protocol,
+			Direction: juneauv1alpha1.TraceTupleDirectionReply,
+		}
+		if _, dup := seen[keyOf(rev)]; dup {
+			continue
+		}
+		seen[keyOf(rev)] = struct{}{}
+		out = append(out, rev)
+	}
+	return out
 }
 
 // serviceBackendTuples enumerates the destination Service's
@@ -193,12 +258,13 @@ func (o *Options) serviceBackendTuples(ctx context.Context, cl client.Client, r 
 					continue
 				}
 				tuples = append(tuples, juneauv1alpha1.TraceTuple{
-					Scope:    scope,
-					VPCID:    vpcID,
-					SrcIP:    r.source.ip.String(),
-					DstIP:    ip.String(),
-					DstPort:  targetPort,
-					Protocol: proto,
+					Scope:     scope,
+					VPCID:     vpcID,
+					SrcIP:     r.source.ip.String(),
+					DstIP:     ip.String(),
+					DstPort:   targetPort,
+					Protocol:  proto,
+					Direction: juneauv1alpha1.TraceTupleDirectionRequest,
 				})
 				if ep.NodeName != nil && *ep.NodeName != "" {
 					nodes = append(nodes, *ep.NodeName)
@@ -303,12 +369,13 @@ func (o *Options) buildPrimaryTuple(r *resolved) (juneauv1alpha1.TraceTuple, err
 		scope = juneauv1alpha1.TraceTupleScopeHost
 	}
 	return juneauv1alpha1.TraceTuple{
-		Scope:    scope,
-		VPCID:    vpcID,
-		SrcIP:    r.source.ip.String(),
-		DstIP:    r.destination.ip.String(),
-		DstPort:  o.Port,
-		Protocol: o.crdProtocol(),
+		Scope:     scope,
+		VPCID:     vpcID,
+		SrcIP:     r.source.ip.String(),
+		DstIP:     r.destination.ip.String(),
+		DstPort:   o.Port,
+		Protocol:  o.crdProtocol(),
+		Direction: juneauv1alpha1.TraceTupleDirectionRequest,
 	}, nil
 }
 

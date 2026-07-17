@@ -103,6 +103,18 @@
 #define TRACE_VERDICT_DROP     1
 #define TRACE_VERDICT_REDIRECT 2
 
+// Leg direction. Programmed into trace_tuple_val by userspace (Request
+// for kubectl-computed forward tuples, Reply for the mirrors it
+// precomputes) and by the dataplane (opposite leg, for tuples it
+// auto-learns the instant it matches). Stamped onto every event whose
+// tuple carries it so userspace renders the request/reply leg from an
+// authoritative signal instead of inferring it from address
+// orientation. NAT never flips the leg — a rewritten packet stays on
+// the same leg it entered on.
+#define TRACE_DIR_UNSPECIFIED 0
+#define TRACE_DIR_REQUEST     1
+#define TRACE_DIR_REPLY       2
+
 // Tuple keyspace.
 #define TRACE_SCOPE_HOST 0
 #define TRACE_SCOPE_VPC  1
@@ -158,6 +170,8 @@ struct trace_tuple_key {
 
 struct trace_tuple_val {
   __u32 trace_id;
+  __u8  direction;  // TRACE_DIR_*
+  __u8  _pad[3];
 };
 
 struct {
@@ -192,7 +206,7 @@ struct juneau_trace_event {
   __u8  proto;
   __u8  verdict;
   __u8  scope;
-  __u8  _pad0;
+  __u8  direction;  // TRACE_DIR_* (authoritative request/reply leg)
   // Optional second tuple. When unused the four addr/port fields are
   // zero; the userspace decoder treats an all-zero second tuple as
   // absent.
@@ -257,16 +271,54 @@ static __always_inline int trace_is_active(void) {
   return *count != 0;
 }
 
-// trace_lookup_tuple resolves a tuple to the session that claims it,
-// or 0 if none. Callers should fast-path on trace_is_active() first.
+// trace_resolve_tuple resolves a tuple to the session that claims it
+// and, when `dir` is non-NULL, reports the leg the tuple is tagged
+// with. Returns 0 (and leaves *dir = UNSPECIFIED) when no session
+// claims the tuple. Callers should fast-path on trace_is_active().
 static __always_inline __u32
-trace_lookup_tuple(const struct trace_tuple_key *key) {
+trace_resolve_tuple(const struct trace_tuple_key *key, __u8 *dir) {
+  if (dir)
+    *dir = TRACE_DIR_UNSPECIFIED;
   if (!trace_is_active())
     return 0;
   const struct trace_tuple_val *v = bpf_map_lookup_elem(&trace_tuple_map, key);
   if (!v)
     return 0;
+  if (dir)
+    *dir = v->direction;
   return v->trace_id;
+}
+
+// trace_lookup_tuple resolves a tuple to the session that claims it,
+// or 0 if none. Callers should fast-path on trace_is_active() first.
+static __always_inline __u32
+trace_lookup_tuple(const struct trace_tuple_key *key) {
+  return trace_resolve_tuple(key, 0);
+}
+
+// trace_resolve_tuple_packed returns the match as (direction<<32 |
+// trace_id), or 0 when no session claims the tuple. Folding the leg
+// into the return value avoids a `__u8 *dir` out-param — and the stack
+// slot it forces — at the hot classify / observe-NAT call sites, which
+// run under tc_pod_egress's already-deep frame where the 512-byte
+// combined call stack leaves almost no headroom.
+static __always_inline __u64
+trace_resolve_tuple_packed(const struct trace_tuple_key *key) {
+  if (!trace_is_active())
+    return 0;
+  const struct trace_tuple_val *v = bpf_map_lookup_elem(&trace_tuple_map, key);
+  if (!v)
+    return 0;
+  return ((__u64)v->direction << 32) | v->trace_id;
+}
+
+// trace_flip_dir returns the opposite leg; UNSPECIFIED maps to itself.
+static __always_inline __u8 trace_flip_dir(__u8 dir) {
+  if (dir == TRACE_DIR_REQUEST)
+    return TRACE_DIR_REPLY;
+  if (dir == TRACE_DIR_REPLY)
+    return TRACE_DIR_REQUEST;
+  return TRACE_DIR_UNSPECIFIED;
 }
 
 // trace_get_config returns the per-session config or NULL when the
@@ -336,7 +388,8 @@ struct trace_emit_args {
   __u8  scope;
   __u8  proto;
   __u8  verdict;
-  __u8  _pad0[2];
+  __u8  direction;  // TRACE_DIR_*
+  __u8  _pad0;
   __u32 ifindex;
   __u32 vpc_id;
   __u32 subnet_id;
@@ -382,6 +435,7 @@ trace_emit_full(const struct trace_emit_args *a) {
   ev->proto = a->proto;
   ev->verdict = a->verdict;
   ev->scope = a->scope;
+  ev->direction = a->direction;
   ev->saddr2 = a->saddr2;
   ev->daddr2 = a->daddr2;
   ev->sport2 = a->sport2;
@@ -393,25 +447,44 @@ trace_emit_full(const struct trace_emit_args *a) {
 
 // trace_emit_enter records a hook entry event. Used by every TC
 // program at the top of the entry function once the tuple is known.
+//
+// Writes straight into the ringbuf-reserved event instead of staging
+// through a stack-allocated `struct trace_emit_args`. Because this is
+// inlined into trace_classify_and_emit_enter, a 56-byte staging struct
+// would land in that subprogram's frame — and with tc_pod_egress
+// already ~400 bytes deep, the classify frame on top blew the 512-byte
+// combined call-stack budget. The direct write keeps classify's frame
+// small (same technique as trace_observe_nat / trace_emit_l3).
 static __always_inline void
 trace_emit_enter(__u32 trace_id, __u32 reason, __u32 hook, __u32 ifindex,
                  __u32 vpc_id, __u32 subnet_id, __u8 scope, __u8 proto,
-                 __be32 saddr, __be32 daddr, __be16 sport, __be16 dport) {
-  struct trace_emit_args a = {0};
-  a.trace_id = trace_id;
-  a.reason = reason;
-  a.hook = hook;
-  a.ifindex = ifindex;
-  a.vpc_id = vpc_id;
-  a.subnet_id = subnet_id;
-  a.scope = scope;
-  a.proto = proto;
-  a.verdict = TRACE_VERDICT_OK;
-  a.saddr = saddr;
-  a.daddr = daddr;
-  a.sport = sport;
-  a.dport = dport;
-  trace_emit_full(&a);
+                 __be32 saddr, __be32 daddr, __be16 sport, __be16 dport,
+                 __u8 direction) {
+  if (trace_id == 0)
+    return;
+  struct juneau_trace_event *ev =
+      bpf_ringbuf_reserve(&trace_events, sizeof(*ev), 0);
+  if (!ev)
+    return;
+  // Zero the reserved slot so unfilled tail fields (saddr2..aux2) never
+  // leak ringbuf/stack bytes to userspace; then fill the enter fields.
+  __builtin_memset(ev, 0, sizeof(*ev));
+  ev->trace_id = trace_id;
+  ev->reason = reason;
+  ev->hook = hook;
+  ev->ifindex = ifindex;
+  ev->vpc_id = vpc_id;
+  ev->subnet_id = subnet_id;
+  ev->ts_ns = bpf_ktime_get_ns();
+  ev->saddr = saddr;
+  ev->daddr = daddr;
+  ev->sport = sport;
+  ev->dport = dport;
+  ev->proto = proto;
+  ev->verdict = TRACE_VERDICT_OK;
+  ev->scope = scope;
+  ev->direction = direction;
+  bpf_ringbuf_submit(ev, 0);
 }
 
 // trace_emit_drop tags a terminal SHOT verdict with the reason code
@@ -546,15 +619,28 @@ trace_emit_policy(__u32 trace_id, __u32 reason, __u32 hook, __u32 ifindex,
   trace_emit_full(&a);
 }
 
-// trace_learn_tuple installs a translated tuple into the local tuple
-// map so a subsequent hook (or the destination node, after the
-// daemon mirrors learned tuples) can resolve the same trace_id.
+// trace_tuple_put writes a (trace_id, direction) value under `key`
+// with the given map-update flags. The single low-level tuple writer;
+// every learn helper funnels through it so the value layout lives in
+// one place.
 static __always_inline void
-trace_learn_tuple(__u32 trace_id, const struct trace_tuple_key *key) {
+trace_tuple_put(__u32 trace_id, const struct trace_tuple_key *key,
+                __u8 direction, __u64 flags) {
   if (trace_id == 0)
     return;
-  struct trace_tuple_val v = {.trace_id = trace_id};
-  bpf_map_update_elem(&trace_tuple_map, key, &v, BPF_ANY);
+  struct trace_tuple_val v = {.trace_id = trace_id, .direction = direction};
+  bpf_map_update_elem(&trace_tuple_map, key, &v, flags);
+}
+
+// trace_learn_tuple installs a same-leg forward (Request) continuation
+// tuple, overwrite-allowed. Used by NAT decision points that discover
+// a post-translation forward tuple (e.g. node_ingress DNAT). The
+// Request tag is correct for every current caller because they all sit
+// on the forward path; reverse-leg learning goes through
+// trace_learn_reverse / trace_tuple_put with an explicit direction.
+static __always_inline void
+trace_learn_tuple(__u32 trace_id, const struct trace_tuple_key *key) {
+  trace_tuple_put(trace_id, key, TRACE_DIR_REQUEST, BPF_ANY);
 }
 
 // trace_make_key zero-inits the key (so _pad is deterministic) and
@@ -572,6 +658,53 @@ trace_make_key(__u8 scope, __u32 vpc_id, __u8 proto, __be32 saddr,
   k.sport = sport;
   k.dport = dport;
   return k;
+}
+
+// trace_learn_reverse installs the opposite-leg mirror of a matched
+// tuple: source/destination swapped and both ports wildcarded to 0
+// (the reply's ephemeral destination port is unknowable up front, so
+// the dport=0 second-chance lookup catches it). BPF_NOEXIST so it
+// never clobbers an explicitly-programmed tuple — a kubectl-installed
+// Reply mirror, or the Request tuple in the rare A<->A case. This is
+// how the dataplane captures the reply leg of dynamically discovered /
+// post-NAT flows the instant it matches the request, with no userspace
+// round-trip and no race against the reply.
+//
+// saddr/daddr are the matched (pre-swap) tuple's addresses; matched_dir
+// is that tuple's leg, and the mirror is tagged with the opposite leg.
+//
+// Marked noinline (a BPF-to-BPF subprogram): trace_observe_nat alone is
+// called from 13 sites in pod_egress, so inlining the reverse-learn body
+// into it multiplied the verifier's state exploration and pushed
+// tc_pod_egress past the 1M-insn complexity ceiling. As one subprogram
+// the reverse-learn code is analyzed independently of every NAT call
+// site. Args are packed into scalars (same technique as trace_emit_l3)
+// to stay within BPF's 5-register subprogram-arg limit without a
+// caller-side stack struct.
+//
+//   ra (u64): trace_id<<32 | vpc_id
+//   rb (u64): saddr<<32    | daddr    (matched, pre-swap addresses)
+//   rc (u32): proto<<16    | scope<<8 | matched_dir
+#define TRACE_REV_PACK_A(trace_id, vpc_id)                                     \
+  (((__u64)(trace_id) << 32) | (__u32)(vpc_id))
+#define TRACE_REV_PACK_B(saddr, daddr)                                         \
+  (((__u64)(__u32)(saddr) << 32) | (__u32)(daddr))
+#define TRACE_REV_PACK_C(proto, scope, dir)                                    \
+  (((__u32)(__u8)(proto) << 16) | ((__u32)(__u8)(scope) << 8) | (__u8)(dir))
+static __juneau_bpf_subprog void
+trace_learn_reverse_l3(__u64 ra, __u64 rb, __u32 rc) {
+  __u32 trace_id = (__u32)(ra >> 32);
+  if (trace_id == 0)
+    return;
+  __u32 vpc_id = (__u32)ra;
+  __be32 saddr = (__be32)(__u32)(rb >> 32);
+  __be32 daddr = (__be32)(__u32)rb;
+  __u8 proto = (__u8)(rc >> 16);
+  __u8 scope = (__u8)(rc >> 8);
+  __u8 matched_dir = (__u8)rc;
+  struct trace_tuple_key rk =
+      trace_make_key(scope, vpc_id, proto, daddr, saddr, 0, 0);
+  trace_tuple_put(trace_id, &rk, trace_flip_dir(matched_dir), BPF_NOEXIST);
 }
 
 // ---- Hook-entry classification --------------------------------------
@@ -675,16 +808,22 @@ static __juneau_bpf_subprog void
 trace_observe_nat(struct __sk_buff *skb, const struct trace_nat_event *e) {
   if (!trace_is_active() || !e)
     return;
-  struct trace_tuple_key bk = trace_make_key(e->scope, e->vpc_id, e->proto,
-                                             e->before_saddr, e->before_daddr,
-                                             0, e->before_dport);
-  __u32 id = trace_lookup_tuple(&bk);
-  if (id == 0 && e->before_dport != 0) {
-    bk.dport = 0;
-    id = trace_lookup_tuple(&bk);
+  // One reused key slot for the before- and after-tuples keeps this
+  // subprogram's frame small; on the tc_pod_egress → lb_rev_nat →
+  // trace_observe_nat chain every byte counts against the 512-byte
+  // combined-stack ceiling.
+  struct trace_tuple_key k = trace_make_key(e->scope, e->vpc_id, e->proto,
+                                            e->before_saddr, e->before_daddr,
+                                            0, e->before_dport);
+  __u64 r = trace_resolve_tuple_packed(&k);
+  if (r == 0 && e->before_dport != 0) {
+    k.dport = 0;
+    r = trace_resolve_tuple_packed(&k);
   }
+  __u32 id = (__u32)r;
   if (id == 0)
     return;
+  __u8 dir = (__u8)(r >> 32);
 
   // Write directly into the ringbuf-reserved event rather than
   // staging through a stack-allocated `struct trace_emit_args` —
@@ -694,7 +833,7 @@ trace_observe_nat(struct __sk_buff *skb, const struct trace_nat_event *e) {
       bpf_ringbuf_reserve(&trace_events, sizeof(*ev), 0);
   if (!ev)
     return;
-  ev->_pad0 = 0;
+  ev->direction = dir;
   ev->aux1 = 0;
   ev->aux2 = 0;
   ev->trace_id = id;
@@ -718,12 +857,21 @@ trace_observe_nat(struct __sk_buff *skb, const struct trace_nat_event *e) {
   bpf_ringbuf_submit(ev, 0);
 
   // Install the post-NAT tuple locally so any further hook on this
-  // same node (e.g. pod_ingress on the response leg) resolves the
-  // same trace_id. Cross-node propagation is userspace's job.
-  struct trace_tuple_key ak = trace_make_key(e->scope, e->vpc_id, e->proto,
-                                             e->after_saddr, e->after_daddr,
-                                             0, e->after_dport);
-  trace_learn_tuple(id, &ak);
+  // same node resolves the same trace_id. It stays on the same leg as
+  // the matched before-tuple — NAT rewrites addresses, not direction —
+  // so a reverse-SNAT reply's after-tuple is tagged Reply, not
+  // Request. Cross-node propagation of this forward tuple is
+  // userspace's job.
+  k = trace_make_key(e->scope, e->vpc_id, e->proto, e->after_saddr,
+                     e->after_daddr, 0, e->after_dport);
+  trace_tuple_put(id, &k, dir, BPF_ANY);
+
+  // Learn the opposite-leg mirror of the after-tuple too, so the reply
+  // to this rewritten flow resolves locally the instant it appears —
+  // no second NAT observation or userspace round-trip required.
+  trace_learn_reverse_l3(TRACE_REV_PACK_A(id, e->vpc_id),
+                         TRACE_REV_PACK_B(e->after_saddr, e->after_daddr),
+                         TRACE_REV_PACK_C(e->proto, e->scope, dir));
 }
 
 // trace_classify_and_emit_enter classifies the packet, emits an
@@ -757,17 +905,30 @@ trace_classify_and_emit_enter(struct __sk_buff *skb,
   struct trace_tuple_key k = trace_make_key(ctx->scope, ctx->vpc_id,
                                             iph->protocol, iph->saddr,
                                             iph->daddr, 0, dport);
-  __u32 id = trace_lookup_tuple(&k);
-  if (id == 0 && dport != 0) {
+  __u64 r = trace_resolve_tuple_packed(&k);
+  if (r == 0 && dport != 0) {
     k.dport = 0;
-    id = trace_lookup_tuple(&k);
+    r = trace_resolve_tuple_packed(&k);
   }
+  __u32 id = (__u32)r;
   if (id == 0)
     return 0;
+  __u8 dir = (__u8)(r >> 32);
 
   trace_emit_enter(id, ctx->reason, ctx->hook, skb->ifindex, ctx->vpc_id,
                    ctx->subnet_id, ctx->scope, iph->protocol, iph->saddr,
-                   iph->daddr, sport, dport);
+                   iph->daddr, sport, dport, dir);
+
+  // The moment we see a request packet, learn its reply mirror locally
+  // so the return leg resolves the same trace_id when it arrives — with
+  // no userspace round-trip and no race, since the reply necessarily
+  // follows the request through this same node. Only Request tuples
+  // seed a mirror; a matched Reply's mirror is the Request, already
+  // present.
+  if (dir == TRACE_DIR_REQUEST)
+    trace_learn_reverse_l3(TRACE_REV_PACK_A(id, ctx->vpc_id),
+                           TRACE_REV_PACK_B(iph->saddr, iph->daddr),
+                           TRACE_REV_PACK_C(iph->protocol, ctx->scope, dir));
   return id;
 }
 
@@ -841,9 +1002,9 @@ trace_emit_l3(struct __sk_buff *skb, __u64 pkt_a, __u64 pkt_b, __u32 pkt_c,
       bpf_ringbuf_reserve(&trace_events, sizeof(*ev), 0);
   if (!ev)
     return;
-  // Initialize the second-tuple block + pad early so we never leak
-  // ringbuf garbage if any field below is conditionally skipped.
-  ev->_pad0 = 0;
+  // Initialize the second-tuple block + direction early so we never
+  // leak ringbuf garbage if any field below is conditionally skipped.
+  ev->direction = TRACE_DIR_UNSPECIFIED;
   ev->saddr2 = 0;
   ev->daddr2 = 0;
   ev->sport2 = 0;
@@ -865,6 +1026,23 @@ trace_emit_l3(struct __sk_buff *skb, __u64 pkt_a, __u64 pkt_b, __u32 pkt_c,
   ev->verdict = TRACE_L3_UNPACK_VERDICT(pkt_c);
   ev->scope = TRACE_L3_UNPACK_SCOPE(pkt_c);
   ev->aux1 = aux1;
+  // Re-resolve the matched tuple to stamp the authoritative leg. Cheap
+  // (a hash lookup gated by trace_is_active) and confined to this
+  // noinline subprogram, so each terminal/decision call site still
+  // costs a single CALL. The packet may be a reply, so mirror the
+  // classify path's dport=0 second chance.
+  {
+    __u8 dir = TRACE_DIR_UNSPECIFIED;
+    struct trace_tuple_key dk = trace_make_key(
+        TRACE_L3_UNPACK_SCOPE(pkt_c), TRACE_L3_UNPACK_VPC_ID(pkt_b),
+        iph->protocol, iph->saddr, iph->daddr, 0, ev->dport);
+    __u32 rid = trace_resolve_tuple(&dk, &dir);
+    if (rid == 0 && ev->dport != 0) {
+      dk.dport = 0;
+      rid = trace_resolve_tuple(&dk, &dir);
+    }
+    ev->direction = dir;
+  }
   bpf_ringbuf_submit(ev, 0);
 }
 

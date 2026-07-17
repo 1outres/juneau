@@ -213,6 +213,7 @@ static __always_inline int handle_dnat(struct __sk_buff *skb, struct ethhdr *eth
     a.scope = TRACE_SCOPE_HOST;
     a.proto = proto;
     a.verdict = TRACE_VERDICT_OK;
+    a.direction = TRACE_DIR_REQUEST;
     a.saddr = saddr;
     a.daddr = old_addr;
     a.sport = sport;
