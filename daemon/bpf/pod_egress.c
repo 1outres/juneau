@@ -1905,16 +1905,36 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
   // drop at the fib_map miss and the kernel's conntrack would never
   // see the response to un-DNAT it back into the caller's ClusterIP.
   //
-  // We cannot use TC_ACT_OK here: kube-proxy installs a
-  // KUBE-FORWARD ctstate INVALID drop in the filter FORWARD chain,
-  // and this Node's conntrack has no forward-leg entry for the flow
-  // (juneau's data plane handled the SYN cross-Node), so netfilter
-  // marks the reply INVALID and drops it before it can reach eno1.
-  // bpf_fib_lookup + bpf_redirect resolves the underlay egress
-  // interface and neighbor and short-circuits the packet directly to
-  // that device's egress, bypassing both FORWARD and POSTROUTING.
-  // The remote Node's conntrack then un-DNATs the reply as usual.
+  // Two sub-cases with different handling:
+  //
+  //  1. dst == THIS Node's own underlay IP (caller was a host-network
+  //     process on the same Node, e.g. kube-apiserver → ClusterIP →
+  //     locally-scheduled Pod). The reply is delivered locally via
+  //     the INPUT chain, which does not traverse FORWARD, so
+  //     KUBE-FORWARD's ctstate INVALID drop is not a concern. Hand
+  //     the packet back to the kernel with TC_ACT_OK; kernel conntrack
+  //     un-DNATs it into the caller's socket. bpf_fib_lookup cannot
+  //     help here — it returns BPF_FIB_LKUP_RET_NOT_FWDED for RTN_LOCAL
+  //     destinations because "forwarding to self" is not a thing.
+  //
+  //  2. dst == a REMOTE Node's underlay IP (caller was on Node A,
+  //     backend Pod is on Node B, juneau's own data plane cross-Node'd
+  //     the SYN so this Node's conntrack has no forward-leg entry).
+  //     Netfilter marks the reply INVALID in FORWARD and the KUBE-
+  //     FORWARD rule drops it before it can reach eno1. Resolve the
+  //     underlay egress interface / neighbor via bpf_fib_lookup and
+  //     bpf_redirect past FORWARD + POSTROUTING; the remote Node's
+  //     conntrack un-DNATs the reply as usual.
   if (bpf_map_lookup_elem(&node_underlays, &dst_be)) {
+    __u32 uk = 0;
+    const __u32 *self_underlay = bpf_map_lookup_elem(&host_underlay, &uk);
+    if (self_underlay && *self_underlay != 0 && *self_underlay == dst_be) {
+      __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, subnet->vpc_id);
+      trace_emit_pass_kernel_l3(skb, __tid, TRACE_HOOK_POD_EGRESS,
+                                TRACE_SCOPE_VPC, subnet->vpc_id, 0);
+      return TC_ACT_OK;
+    }
+
     struct bpf_fib_lookup fib_params = {};
     fib_params.family   = AF_INET;
     fib_params.l4_protocol = iph->protocol;
