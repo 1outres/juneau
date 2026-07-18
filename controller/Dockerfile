@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Build the manager binary
-FROM docker.io/golang:1.24 AS builder
+FROM --platform=$BUILDPLATFORM docker.io/golang:1.24 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
@@ -17,7 +17,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # Copy the go source
 COPY cmd/main.go cmd/main.go
 COPY api/ api/
-COPY config/ config/
+COPY config/webhook/ config/webhook/
 COPY internal/ internal/
 
 # Build. BuildKit cache mounts persist /go/pkg/mod and the Go build cache

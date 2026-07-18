@@ -12,29 +12,15 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
   packages: write
 
 jobs:
-  publish:
+  prepare:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Resolve publish tag
         id: meta
         run: |
@@ -47,49 +33,76 @@ jobs:
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Publish controller image
-        uses: docker/build-push-action@v6
-        with:
-          context: controller
-          file: controller/Dockerfile
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ghcr.io/1outres/juneau/controller:${{ steps.meta.outputs.tag }}
-          cache-from: type=gha,scope=controller-image
-          cache-to: type=gha,mode=max,scope=controller-image
+  publish:
+    needs: prepare
+    name: Publish ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: controller
+            context: controller
+            dockerfile: controller/Dockerfile
+            cache_scope: controller-image
+            qemu: false
+          - image: webhookcertjob
+            context: controller
+            dockerfile: controller/Dockerfile.webhookcertjob
+            cache_scope: webhookcertjob-image
+            qemu: false
+          - image: daemon
+            context: .
+            dockerfile: daemon/Dockerfile
+            cache_scope: daemon-image
+            qemu: true
+          - image: bgp-speaker
+            context: .
+            dockerfile: bgp-speaker/Dockerfile
+            cache_scope: bgp-speaker-image
+            qemu: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Publish webhook cert job image
-        uses: docker/build-push-action@v6
-        with:
-          context: controller
-          file: controller/Dockerfile.webhookcertjob
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ghcr.io/1outres/juneau/webhookcertjob:${{ steps.meta.outputs.tag }}
-          cache-from: type=gha,scope=webhookcertjob-image
-          cache-to: type=gha,mode=max,scope=webhookcertjob-image
+      - name: Setup QEMU
+        if: matrix.qemu
+        uses: docker/setup-qemu-action@v3
 
-      - name: Publish daemon image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: daemon/Dockerfile
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ghcr.io/1outres/juneau/daemon:${{ steps.meta.outputs.tag }}
-          cache-from: type=gha,scope=daemon-image
-          cache-to: type=gha,mode=max,scope=daemon-image
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Publish BGP speaker image
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish image
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: bgp-speaker/Dockerfile
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: ghcr.io/1outres/juneau/bgp-speaker:${{ steps.meta.outputs.tag }}
-          cache-from: type=gha,scope=bgp-speaker-image
-          cache-to: type=gha,mode=max,scope=bgp-speaker-image
+          tags: ghcr.io/1outres/juneau/${{ matrix.image }}:${{ needs.prepare.outputs.tag }}
+          cache-from: |
+            type=registry,ref=ghcr.io/1outres/juneau/${{ matrix.image }}:buildcache
+            type=gha,scope=${{ matrix.cache_scope }}
+          cache-to: type=registry,ref=ghcr.io/1outres/juneau/${{ matrix.image }}:buildcache,mode=max
+
+  release:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs:
+      - prepare
+      - publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Install kustomize
         uses: imranismail/setup-kustomize@v2
@@ -98,7 +111,7 @@ jobs:
 
       - name: Build install manifest
         run: |
-          tag="${{ steps.meta.outputs.tag }}"
+          tag="${{ needs.prepare.outputs.tag }}"
 
           cd install
           kustomize edit set image \
@@ -112,11 +125,10 @@ jobs:
           kustomize build . > "$RUNNER_TEMP/install.yaml"
 
       - name: Attach manifest to release
-        if: github.event_name == 'push' && github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="${{ steps.meta.outputs.tag }}"
+          tag="${{ needs.prepare.outputs.tag }}"
           gh release view "$tag" >/dev/null 2>&1 \
             || gh release create "$tag" --generate-notes --title "$tag"
           gh release upload "$tag" \
