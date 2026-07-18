@@ -34,6 +34,8 @@ spec:
             - name: host-var-run
               mountPath: /var/run
               mountPropagation: HostToContainer
+            - name: host-run-sysctld
+              mountPath: /run/sysctl.d
             - name: host-sys
               mountPath: /sys
               readOnly: true
@@ -64,6 +66,10 @@ spec:
         - name: host-var-run
           hostPath:
             path: /var/run
+            type: DirectoryOrCreate
+        - name: host-run-sysctld
+          hostPath:
+            path: /run/sysctl.d
             type: DirectoryOrCreate
         - name: host-sys
           hostPath:

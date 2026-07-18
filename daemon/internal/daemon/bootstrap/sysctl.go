@@ -8,7 +8,27 @@ import (
 	"go.uber.org/zap"
 )
 
+const juneauSysctlDropInDir = "/run/sysctl.d"
+
+// juneauSysctlDropInPath: "60-" sorts after /lib/sysctl.d/50-default.conf
+// so systemd-sysctl's last-write-wins pass keeps our rp_filter=0.
+const juneauSysctlDropInPath = juneauSysctlDropInDir + "/60-juneau.conf"
+
+// juneauSysctlDropInBody undoes 50-default.conf's
+// net.ipv4.conf.*.rp_filter=2 for juneau CNI veths. Without it the
+// systemd-sysctl run udev triggers on every net-device add races with
+// PodAttacher's per-iface write, dropping handle_service_host_local
+// packets as martian source.
+const juneauSysctlDropInBody = `# Managed by juneau-cni-daemon.
+net.ipv4.conf.eth0+*.rp_filter = 0
+net.ipv4.conf.eth0+*.accept_local = 1
+`
+
 func ConfigureSysctl() error {
+	if err := InstallSysctlDropIn(); err != nil {
+		return err
+	}
+
 	// Match the rename of cni_host → juneau_node_h (Phase 4b-4).
 	if err := writeSysctl("/proc/sys/net/ipv4/conf/"+JuneauNodeHostIfaceName+"/send_redirects", "0"); err != nil {
 		return fmt.Errorf("failed to set send_redirects on %s: %w", JuneauNodeHostIfaceName, err)
@@ -38,6 +58,17 @@ func ConfigureSysctl() error {
 		zap.S().Warn("IP forwarding is disabled.")
 	}
 
+	return nil
+}
+
+// InstallSysctlDropIn writes juneauSysctlDropInPath. Idempotent.
+func InstallSysctlDropIn() error {
+	if err := os.MkdirAll(juneauSysctlDropInDir, 0755); err != nil {
+		return fmt.Errorf("ensure %s: %w", juneauSysctlDropInDir, err)
+	}
+	if err := os.WriteFile(juneauSysctlDropInPath, []byte(juneauSysctlDropInBody), 0644); err != nil {
+		return fmt.Errorf("write %s: %w", juneauSysctlDropInPath, err)
+	}
 	return nil
 }
 
