@@ -1929,6 +1929,14 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
     __u32 uk = 0;
     const __u32 *self_underlay = bpf_map_lookup_elem(&host_underlay, &uk);
     if (self_underlay && *self_underlay != 0 && *self_underlay == dst_be) {
+      // The Pod sent the reply to its default-gateway MAC (subnet
+      // gw_mac); eth_type_trans on the host-side veth therefore tagged
+      // skb->pkt_type=PACKET_OTHERHOST at reception. With dst now the
+      // local NodeIP the kernel's ip_rcv_core would drop with
+      // reason=OTHERHOST unless we reset pkt_type — same fix-up
+      // handle_service_host_local applies for its forward leg.
+      if (bpf_skb_change_type(skb, PACKET_HOST) < 0)
+        return TC_ACT_SHOT;
       __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, subnet->vpc_id);
       trace_emit_pass_kernel_l3(skb, __tid, TRACE_HOOK_POD_EGRESS,
                                 TRACE_SCOPE_VPC, subnet->vpc_id, 0);
