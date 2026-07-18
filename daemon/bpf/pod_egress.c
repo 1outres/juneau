@@ -1904,14 +1904,51 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
   // fib_map cannot resolve them; without this branch the reply would
   // drop at the fib_map miss and the kernel's conntrack would never
   // see the response to un-DNAT it back into the caller's ClusterIP.
-  // Hand these back to the kernel network stack, whose conntrack owns
-  // externally-DNAT'd flows. juneau's own Service path is unaffected:
-  // it terminates in handle_service via FIB_ROUTE_TYPE_SERVICE below.
+  //
+  // We cannot use TC_ACT_OK here: kube-proxy installs a
+  // KUBE-FORWARD ctstate INVALID drop in the filter FORWARD chain,
+  // and this Node's conntrack has no forward-leg entry for the flow
+  // (juneau's data plane handled the SYN cross-Node), so netfilter
+  // marks the reply INVALID and drops it before it can reach eno1.
+  // bpf_fib_lookup + bpf_redirect resolves the underlay egress
+  // interface and neighbor and short-circuits the packet directly to
+  // that device's egress, bypassing both FORWARD and POSTROUTING.
+  // The remote Node's conntrack then un-DNATs the reply as usual.
   if (bpf_map_lookup_elem(&node_underlays, &dst_be)) {
+    struct bpf_fib_lookup fib_params = {};
+    fib_params.family   = AF_INET;
+    fib_params.l4_protocol = iph->protocol;
+    fib_params.ipv4_dst = iph->daddr;
+    fib_params.ifindex  = skb->ifindex;
+
+    long rc = bpf_fib_lookup(skb, &fib_params, sizeof(fib_params), 0);
+    if (rc == BPF_FIB_LKUP_RET_NO_NEIGH) {
+      // Neighbor not resolved yet: hand back to the kernel so it can
+      // trigger an ARP. Subsequent packets will hit the SUCCESS path
+      // and be redirected. This is the same fall-through pattern
+      // handle_snat uses for its underlay path.
+      return TC_ACT_OK;
+    }
+    if (rc != BPF_FIB_LKUP_RET_SUCCESS) {
+      __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, subnet->vpc_id);
+      trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_SHOT,
+                         TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                         subnet->vpc_id, 0);
+      return TC_ACT_SHOT;
+    }
+
+    if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_dest),
+                            fib_params.dmac, ETH_ALEN, 0) < 0)
+      return TC_ACT_SHOT;
+    if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_source),
+                            fib_params.smac, ETH_ALEN, 0) < 0)
+      return TC_ACT_SHOT;
+
     __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, subnet->vpc_id);
-    trace_emit_pass_kernel_l3(skb, __tid, TRACE_HOOK_POD_EGRESS,
-                              TRACE_SCOPE_VPC, subnet->vpc_id, 0);
-    return TC_ACT_OK;
+    trace_emit_redirect_l3(skb, __tid, TRACE_REASON_REDIRECT_IFINDEX,
+                           TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                           subnet->vpc_id, 0, fib_params.ifindex);
+    return bpf_redirect(fib_params.ifindex, 0);
   }
 
   __u32 tid = subnet->table_id;
