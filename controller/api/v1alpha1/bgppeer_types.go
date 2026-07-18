@@ -25,12 +25,12 @@ type BGPPeerSpec struct {
 	// +required
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=4294967294
-	MyASN uint32 `json:"myASN"`
+	MyASN int64 `json:"myASN"`
 
 	// +required
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=4294967294
-	PeerASN uint32 `json:"peerASN"`
+	PeerASN int64 `json:"peerASN"`
 
 	// +required
 	// +kubebuilder:validation:MinLength=1

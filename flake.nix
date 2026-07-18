@@ -57,7 +57,7 @@
         in {
           default = pkgs.mkShell {
             packages = with pkgs; [
-              go_1_24
+              go_1_25
               python3
               python3Packages.pip
               python3Packages.mkdocs

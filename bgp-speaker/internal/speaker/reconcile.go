@@ -299,9 +299,9 @@ func buildReconcileResult(
 		}
 
 		peer := &bgptypes.Peer{
-			LocalASN:  p.Spec.MyASN,
+			LocalASN:  uint32(p.Spec.MyASN),
 			RemoteIP:  remoteIP,
-			RemoteASN: p.Spec.PeerASN,
+			RemoteASN: uint32(p.Spec.PeerASN),
 			Prefixes:  append([]*net.IPNet(nil), aggregated.MergedPrefixes...),
 		}
 		desiredPeers = append(desiredPeers, peer)
