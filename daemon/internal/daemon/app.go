@@ -246,6 +246,11 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("get TraceSession informer: %w", err)
 			}
 
+			nodeInformer, err := cache.GetInformer(ctx, &corev1.Node{})
+			if err != nil {
+				return fmt.Errorf("get Node informer: %w", err)
+			}
+
 			cl, err := client.New(kubecfg, client.Options{
 				Scheme: scheme,
 				Cache: &client.CacheOptions{
@@ -436,7 +441,7 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("lookup node ingress iface %q: %w", nodeIngressIfaceName, err)
 			}
 
-			bpfManager := dataplane.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, vpcInformer, serviceInformer, endpointSliceInformer, externalNetworkAttachmentInformer, natGatewayInformer, serviceNATAttachmentInformer, networkInterfaceInformer, securityGroupInformer, networkACLInformer, serviceLoadBalancerInformer, traceSessionInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, bpfPinPath, hostIfaceInfo.MAC, nodeUnderlayIP)
+			bpfManager := dataplane.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, vpcInformer, serviceInformer, endpointSliceInformer, externalNetworkAttachmentInformer, natGatewayInformer, serviceNATAttachmentInformer, networkInterfaceInformer, securityGroupInformer, networkACLInformer, serviceLoadBalancerInformer, traceSessionInformer, nodeInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, bpfPinPath, hostIfaceInfo.MAC, nodeUnderlayIP)
 			if err := bpfManager.Start(ctx); err != nil {
 				return fmt.Errorf("initialize BPF manager: %w", err)
 			}

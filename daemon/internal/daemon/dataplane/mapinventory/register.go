@@ -24,6 +24,7 @@ func RegisterPodEgress(inv *Inventory, p *program.PodEgress) error {
 		registerFdb,
 		registerVxlanIfindex,
 		registerHostUnderlay,
+		registerNodeUnderlays,
 		registerServiceNATIP,
 		registerFib,
 		registerBGPAddressPools,
@@ -158,6 +159,19 @@ func registerHostUnderlay(inv *Inventory, p *program.PodEgress) error {
 		}},
 		Value: Schema{Fields: []Field{
 			FieldIPv4BENamed("host_ip"),
+		}},
+	})
+}
+
+func registerNodeUnderlays(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name: "node_underlays",
+		Map:  p.Objs.NodeUnderlays,
+		Key: Schema{Fields: []Field{
+			FieldIPv4BENamed("node_ip"),
+		}},
+		Value: Schema{Fields: []Field{
+			FieldU8Named("present"),
 		}},
 	})
 }

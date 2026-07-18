@@ -37,6 +37,14 @@
 #define MAX_NAT_MAP 131072
 #endif
 
+#ifndef MAX_NODE_UNDERLAYS
+// MAX_NODE_UNDERLAYS bounds node_underlays, the cluster-wide set of
+// Node InternalIPs. One entry per cluster Node. 1024 comfortably
+// covers cluster sizes juneau is likely to run on; over-provisioning
+// costs O(entries) memory and no lookup time (BPF_MAP_TYPE_HASH).
+#define MAX_NODE_UNDERLAYS 1024
+#endif
+
 #ifndef MAX_SERVICE_MAP
 #define MAX_SERVICE_MAP 16384
 #endif
@@ -319,6 +327,24 @@ struct {
   __type(value, __u32);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } host_underlay SEC(".maps");
+
+// node_underlays enumerates every cluster Node's underlay InternalIP
+// (values in network byte order). pod_egress consults this on the
+// egress path to detect a flow whose forward leg was DNAT'd by the
+// external in-kernel kube-proxy iptables rather than by juneau's own
+// handle_service: juneau's fib_map cannot resolve node underlay IPs
+// (they are outside every Subnet CIDR), so without this map the
+// response would drop at the fib_map miss. On hit, pod_egress hands
+// the packet back to the kernel stack (TC_ACT_OK) so kernel conntrack
+// can un-DNAT the reply into the original ClusterIP. Populated by
+// the daemon from every corev1.Node object cluster-wide.
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_NODE_UNDERLAYS);
+  __type(key, __be32);
+  __type(value, __u8);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} node_underlays SEC(".maps");
 
 // service_nat_ip holds this node's per-(Node × provider Vpc) SNAT
 // source IPs (values in network byte order) keyed by the provider's

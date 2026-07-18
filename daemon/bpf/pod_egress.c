@@ -1897,6 +1897,23 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
 
   __u32 dst_be = iph->daddr; // keep network order for LPM trie
 
+  // Reply leg of a Service flow whose forward DNAT was performed by
+  // an external in-kernel kube-proxy iptables ruleset (rather than by
+  // handle_service below) surfaces here as (src=Pod, dst=Node
+  // underlay IP). Node underlay IPs live outside every Subnet CIDR so
+  // fib_map cannot resolve them; without this branch the reply would
+  // drop at the fib_map miss and the kernel's conntrack would never
+  // see the response to un-DNAT it back into the caller's ClusterIP.
+  // Hand these back to the kernel network stack, whose conntrack owns
+  // externally-DNAT'd flows. juneau's own Service path is unaffected:
+  // it terminates in handle_service via FIB_ROUTE_TYPE_SERVICE below.
+  if (bpf_map_lookup_elem(&node_underlays, &dst_be)) {
+    __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, subnet->vpc_id);
+    trace_emit_pass_kernel_l3(skb, __tid, TRACE_HOOK_POD_EGRESS,
+                              TRACE_SCOPE_VPC, subnet->vpc_id, 0);
+    return TC_ACT_OK;
+  }
+
   __u32 tid = subnet->table_id;
   void *fib_inner_map = bpf_map_lookup_elem(&fib_map, &tid);
   if (!fib_inner_map) {
