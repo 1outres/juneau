@@ -188,6 +188,56 @@ func (s *Store) LearnTuple(traceID uint32, key TupleKey, dir Direction) error {
 	return nil
 }
 
+// LearnReverseFromEvent installs the opposite-leg (reply) mirror of a
+// tuple this node observed, replacing the in-kernel reverse-learn that
+// was removed to fit the BPF combined-stack budget. It is a no-op for
+// events that seed no mirror, so the ringbuf reader can call it
+// unconditionally on every decoded event.
+func (s *Store) LearnReverseFromEvent(ev Event) error {
+	key, dir, ok := reverseMirrorFromEvent(ev)
+	if !ok {
+		return nil
+	}
+	return s.learnReverseMirror(ev.TraceID, key, dir)
+}
+
+// learnReverseMirror writes a reply-mirror tuple with NOEXIST semantics
+// so it never clobbers a kubectl-seeded Reply mirror or an existing
+// Request tuple — the BPF reverse-learn used BPF_NOEXIST for exactly the
+// same reason.
+//
+// The mirror is deliberately not recorded in sessionState.tuples. Like
+// the dataplane's former direct map writes, it is reaped by Delete's
+// whole-map ownership scan (deleteTuplesOwnedBy), and keeping it out of
+// the Apply diff set stops a status-patch reconcile from sweeping it
+// between a request and its reply.
+func (s *Store) learnReverseMirror(traceID uint32, key TupleKey, dir Direction) error {
+	if traceID == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.sessions[traceID]; !ok {
+		// Session torn down between event emission and decode; nothing to
+		// attach the mirror to.
+		return nil
+	}
+	keyBytes, err := key.MarshalBinary()
+	if err != nil {
+		return fmt.Errorf("trace.Store: marshal reverse tuple: %w", err)
+	}
+	val := TupleVal{TraceID: traceID, Direction: uint8(dir)}
+	if err := s.tuples.Update(keyBytes, val, ebpf.UpdateNoExist); err != nil {
+		if errors.Is(err, ebpf.ErrKeyExist) {
+			// A kubectl-seeded mirror or another session already owns this
+			// key; leave it authoritative.
+			return nil
+		}
+		return fmt.Errorf("trace.Store: write reverse tuple: %w", err)
+	}
+	return nil
+}
+
 // GC sweeps expired sessions out of BPF state. Called on a timer so
 // that a vanished kubectl (whose CRD finalizer never ran) eventually
 // stops consuming dataplane resources.

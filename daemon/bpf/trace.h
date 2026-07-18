@@ -103,14 +103,15 @@
 #define TRACE_VERDICT_DROP     1
 #define TRACE_VERDICT_REDIRECT 2
 
-// Leg direction. Programmed into trace_tuple_val by userspace (Request
-// for kubectl-computed forward tuples, Reply for the mirrors it
-// precomputes) and by the dataplane (opposite leg, for tuples it
-// auto-learns the instant it matches). Stamped onto every event whose
-// tuple carries it so userspace renders the request/reply leg from an
-// authoritative signal instead of inferring it from address
-// orientation. NAT never flips the leg — a rewritten packet stays on
-// the same leg it entered on.
+// Leg direction. Programmed into trace_tuple_val entirely by userspace:
+// kubectl seeds Request forward tuples plus the Reply mirrors it
+// precomputes, and the daemon's ringbuf reader learns the opposite-leg
+// mirror of any tuple its node observes (see LearnReverseFromEvent) —
+// the dataplane itself never writes the map. The dataplane only reads
+// this byte back to stamp every event whose tuple carries it, so
+// userspace renders the request/reply leg from an authoritative signal
+// instead of inferring it from address orientation. NAT never flips the
+// leg — a rewritten packet stays on the same leg it entered on.
 #define TRACE_DIR_UNSPECIFIED 0
 #define TRACE_DIR_REQUEST     1
 #define TRACE_DIR_REPLY       2
@@ -310,15 +311,6 @@ trace_resolve_tuple_packed(const struct trace_tuple_key *key) {
   if (!v)
     return 0;
   return ((__u64)v->direction << 32) | v->trace_id;
-}
-
-// trace_flip_dir returns the opposite leg; UNSPECIFIED maps to itself.
-static __always_inline __u8 trace_flip_dir(__u8 dir) {
-  if (dir == TRACE_DIR_REQUEST)
-    return TRACE_DIR_REPLY;
-  if (dir == TRACE_DIR_REPLY)
-    return TRACE_DIR_REQUEST;
-  return TRACE_DIR_UNSPECIFIED;
 }
 
 // trace_get_config returns the per-session config or NULL when the
@@ -636,8 +628,8 @@ trace_tuple_put(__u32 trace_id, const struct trace_tuple_key *key,
 // tuple, overwrite-allowed. Used by NAT decision points that discover
 // a post-translation forward tuple (e.g. node_ingress DNAT). The
 // Request tag is correct for every current caller because they all sit
-// on the forward path; reverse-leg learning goes through
-// trace_learn_reverse / trace_tuple_put with an explicit direction.
+// on the forward path; the opposite-leg (Reply) mirror is installed by
+// the daemon's ringbuf reader, not the datapath.
 static __always_inline void
 trace_learn_tuple(__u32 trace_id, const struct trace_tuple_key *key) {
   trace_tuple_put(trace_id, key, TRACE_DIR_REQUEST, BPF_ANY);
@@ -660,52 +652,16 @@ trace_make_key(__u8 scope, __u32 vpc_id, __u8 proto, __be32 saddr,
   return k;
 }
 
-// trace_learn_reverse installs the opposite-leg mirror of a matched
-// tuple: source/destination swapped and both ports wildcarded to 0
-// (the reply's ephemeral destination port is unknowable up front, so
-// the dport=0 second-chance lookup catches it). BPF_NOEXIST so it
-// never clobbers an explicitly-programmed tuple — a kubectl-installed
-// Reply mirror, or the Request tuple in the rare A<->A case. This is
-// how the dataplane captures the reply leg of dynamically discovered /
-// post-NAT flows the instant it matches the request, with no userspace
-// round-trip and no race against the reply.
-//
-// saddr/daddr are the matched (pre-swap) tuple's addresses; matched_dir
-// is that tuple's leg, and the mirror is tagged with the opposite leg.
-//
-// Marked noinline (a BPF-to-BPF subprogram): trace_observe_nat alone is
-// called from 13 sites in pod_egress, so inlining the reverse-learn body
-// into it multiplied the verifier's state exploration and pushed
-// tc_pod_egress past the 1M-insn complexity ceiling. As one subprogram
-// the reverse-learn code is analyzed independently of every NAT call
-// site. Args are packed into scalars (same technique as trace_emit_l3)
-// to stay within BPF's 5-register subprogram-arg limit without a
-// caller-side stack struct.
-//
-//   ra (u64): trace_id<<32 | vpc_id
-//   rb (u64): saddr<<32    | daddr    (matched, pre-swap addresses)
-//   rc (u32): proto<<16    | scope<<8 | matched_dir
-#define TRACE_REV_PACK_A(trace_id, vpc_id)                                     \
-  (((__u64)(trace_id) << 32) | (__u32)(vpc_id))
-#define TRACE_REV_PACK_B(saddr, daddr)                                         \
-  (((__u64)(__u32)(saddr) << 32) | (__u32)(daddr))
-#define TRACE_REV_PACK_C(proto, scope, dir)                                    \
-  (((__u32)(__u8)(proto) << 16) | ((__u32)(__u8)(scope) << 8) | (__u8)(dir))
-static __juneau_bpf_subprog void
-trace_learn_reverse_l3(__u64 ra, __u64 rb, __u32 rc) {
-  __u32 trace_id = (__u32)(ra >> 32);
-  if (trace_id == 0)
-    return;
-  __u32 vpc_id = (__u32)ra;
-  __be32 saddr = (__be32)(__u32)(rb >> 32);
-  __be32 daddr = (__be32)(__u32)rb;
-  __u8 proto = (__u8)(rc >> 16);
-  __u8 scope = (__u8)(rc >> 8);
-  __u8 matched_dir = (__u8)rc;
-  struct trace_tuple_key rk =
-      trace_make_key(scope, vpc_id, proto, daddr, saddr, 0, 0);
-  trace_tuple_put(trace_id, &rk, trace_flip_dir(matched_dir), BPF_NOEXIST);
-}
+// The opposite-leg (reply) mirror of a matched tuple is no longer
+// learned in the dataplane. It is installed by the daemon's ringbuf
+// reader (trace.Store.LearnReverseFromEvent) the moment it decodes an
+// enter/NAT event for a tuple its node observed. Moving the mirror learn
+// off the datapath removed a BPF-to-BPF subprogram from tc_pod_egress's
+// deepest call chains, which was overflowing the kernel's 512-byte
+// combined-stack ceiling once the trace path was layered on top of the
+// LoadBalancer/conntrack dataplane. The reply's ephemeral source port is
+// still wildcarded and the mirror keeps dport=0 so the classify path's
+// dport=0 second-chance lookup catches it.
 
 // ---- Hook-entry classification --------------------------------------
 //
@@ -862,16 +818,15 @@ trace_observe_nat(struct __sk_buff *skb, const struct trace_nat_event *e) {
   // so a reverse-SNAT reply's after-tuple is tagged Reply, not
   // Request. Cross-node propagation of this forward tuple is
   // userspace's job.
+  //
+  // The opposite-leg mirror of this after-tuple is learned by the
+  // daemon's ringbuf reader from the NAT event emitted above (the aux
+  // tuple carries the after addresses), not here — keeping this
+  // subprogram off the reverse-learn subprogram it used to call is what
+  // brings tc_pod_egress back under the 512-byte combined-stack ceiling.
   k = trace_make_key(e->scope, e->vpc_id, e->proto, e->after_saddr,
                      e->after_daddr, 0, e->after_dport);
   trace_tuple_put(id, &k, dir, BPF_ANY);
-
-  // Learn the opposite-leg mirror of the after-tuple too, so the reply
-  // to this rewritten flow resolves locally the instant it appears —
-  // no second NAT observation or userspace round-trip required.
-  trace_learn_reverse_l3(TRACE_REV_PACK_A(id, e->vpc_id),
-                         TRACE_REV_PACK_B(e->after_saddr, e->after_daddr),
-                         TRACE_REV_PACK_C(e->proto, e->scope, dir));
 }
 
 // trace_classify_and_emit_enter classifies the packet, emits an
@@ -919,16 +874,13 @@ trace_classify_and_emit_enter(struct __sk_buff *skb,
                    ctx->subnet_id, ctx->scope, iph->protocol, iph->saddr,
                    iph->daddr, sport, dport, dir);
 
-  // The moment we see a request packet, learn its reply mirror locally
-  // so the return leg resolves the same trace_id when it arrives — with
-  // no userspace round-trip and no race, since the reply necessarily
-  // follows the request through this same node. Only Request tuples
-  // seed a mirror; a matched Reply's mirror is the Request, already
-  // present.
-  if (dir == TRACE_DIR_REQUEST)
-    trace_learn_reverse_l3(TRACE_REV_PACK_A(id, ctx->vpc_id),
-                           TRACE_REV_PACK_B(iph->saddr, iph->daddr),
-                           TRACE_REV_PACK_C(iph->protocol, ctx->scope, dir));
+  // The reply mirror of a matched request tuple is learned by the
+  // daemon's ringbuf reader from the enter event emitted above, not on
+  // the datapath — this keeps the classify subprogram off the
+  // reverse-learn subprogram and within the 512-byte combined-stack
+  // budget. kubectl also pre-seeds the reply mirror of every initial
+  // tuple, so the return leg of a session's primary flow resolves from
+  // session start regardless of reader latency.
   return id;
 }
 

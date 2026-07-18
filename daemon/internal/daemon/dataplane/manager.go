@@ -438,7 +438,7 @@ func (m *Manager) startTrace(ctx context.Context) error {
 	)
 	m.traceBus = trace.NewBus()
 
-	rd, err := trace.NewReader(m.podEgress.Objs.TraceEvents, m.traceBus)
+	rd, err := trace.NewReader(m.podEgress.Objs.TraceEvents, m.traceBus, m.traceStore)
 	if err != nil {
 		return fmt.Errorf("create trace ringbuf reader: %w", err)
 	}
