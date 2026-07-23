@@ -211,7 +211,7 @@ DNS の TCP 実装 (`dns/tcp_handler.go`) が参考になります。長さプ�
 注意点。
 
 - ServiceID の衝突。`virtservice/types.go` で ServiceIDDNS = 1 が定義済み。新サービスは新しい uint32 を割り当て、定数として export してください。BPF map の値として記録されるため、後から番号を変更すると map のライブマイグレーションが必要になります。
-- gVisor の stack は Node 内で共有し、NIC は VPC ごとに分けます。TCP endpoint は `Bind` より前に対象の VPC NIC へ device-bind し、`VPC NIC + protocol address (VIP) + port` 単位で登録します。`tcpip.FullAddress.NIC` の指定だけではポート予約が NIC に分離されないため、同一 CIDR を使う VPC 間で `VIP:port` が衝突します。同じ VIP を UDP と TCP で使うこと、および別 VPC で同じ `VIP:port` を使うことは許容されます。
+- DNS resolver と仮想サービス管理は Node 内で共有しますが、TCP の gVisor stack は VPC ごとに分けます。gVisor の単一 stack では device-bind した listener の `VIP:port` は分離できても、別 NIC に同じ 4-tuple の接続が存在すると transport demux が正しい listener へフォールバックしません。各 VPC を独立した stack + NIC + route に分け、endpoint も対象 NIC へ device-bind することで、同一 CIDR・同一 `VIP:port`・同一 4-tuple を持つ VPC を同時に扱います。
 
 ## 設計上の不変条件
 
