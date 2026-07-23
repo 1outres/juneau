@@ -41,6 +41,7 @@ var currentCase *caseContext
 var testFixtureImages = []string{
 	"nginx:1.27",
 	"curlimages/curl:8.12.1",
+	"nicolaka/netshoot:v0.16",
 }
 
 const (

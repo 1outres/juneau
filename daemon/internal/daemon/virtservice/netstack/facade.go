@@ -41,6 +41,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
+	"gvisor.dev/gvisor/pkg/waiter"
 
 	"github.com/1outres/juneau/daemon/internal/daemon/virtservice/packetplane"
 )
@@ -235,11 +236,45 @@ func (f *Facade) ListenTCP(vpcID uint32, vip netip.Addr, port uint16) (net.Liste
 		Addr: tcpip.AddrFromSlice(addr4[:]),
 		Port: port,
 	}
-	l, err := gonet.ListenTCP(f.stack, full, ipv4.ProtocolNumber)
+	l, err := listenTCPOnNIC(f.stack, full, ipv4.ProtocolNumber)
 	if err != nil {
-		return nil, fmt.Errorf("netstack: gonet.ListenTCP: %w", err)
+		return nil, fmt.Errorf("netstack: listen TCP on NIC %d: %w", n.nicID, err)
 	}
 	return l, nil
+}
+
+// listenTCPOnNIC is the device-bound counterpart of gonet.ListenTCP.
+// FullAddress.NIC only selects the NIC used to validate the local address;
+// gVisor's port reservation remains device-agnostic unless SO_BINDTODEVICE is
+// set on the endpoint before Bind. Juneau VPCs may use overlapping VIPs, so
+// every listener must reserve its address and port within its VPC NIC.
+func listenTCPOnNIC(s *stack.Stack, addr tcpip.FullAddress, network tcpip.NetworkProtocolNumber) (net.Listener, error) {
+	var wq waiter.Queue
+	ep, err := s.NewEndpoint(tcp.ProtocolNumber, network, &wq)
+	if err != nil {
+		return nil, fmt.Errorf("create endpoint: %s", err)
+	}
+
+	closeEndpoint := true
+	defer func() {
+		if closeEndpoint {
+			ep.Close()
+		}
+	}()
+
+	if err := ep.SocketOptions().SetBindToDevice(int32(addr.NIC)); err != nil {
+		return nil, fmt.Errorf("bind endpoint to NIC %d: %s", addr.NIC, err)
+	}
+	if err := ep.Bind(addr); err != nil {
+		return nil, fmt.Errorf("bind %s:%d: %s", addr.Addr, addr.Port, err)
+	}
+	const listenBacklog = 4096
+	if err := ep.Listen(listenBacklog); err != nil {
+		return nil, fmt.Errorf("listen %s:%d: %s", addr.Addr, addr.Port, err)
+	}
+
+	closeEndpoint = false
+	return gonet.NewTCPListener(s, &wq, ep), nil
 }
 
 // Inject delivers an IPv4 packet (no Ethernet header) into vpcID's
