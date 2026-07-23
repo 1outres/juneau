@@ -191,7 +191,79 @@ spec:
 		Entry("Pod on worker[1]", 1),
 	)
 
-	It("S4: reflects peer disconnect and recovery in BGPNodeState", func() {
+	It("S4: serves a LoadBalancer VIP to an external BGP client without losing the VIP on reply", func() {
+		node := workerNodes[0]
+		namespace := "e2e-bgp-loadbalancer"
+		const (
+			podName = "lb-backend"
+			svcName = "lb-service"
+		)
+
+		createNamespace(namespace)
+		DeferCleanup(func() {
+			runBestEffort(repoRoot, "kubectl", "delete", "namespace", namespace, "--ignore-not-found=true", "--timeout=60s")
+		})
+
+		By("creating a local backend on one worker")
+		Expect(applyManifest(podManifest(namespace, podName, node, defaultSubnetName, true))).To(Succeed())
+		waitPodsReady(namespace, podName)
+		assertPodPlacement(namespace, podName, node)
+
+		By("creating a Juneau-managed LoadBalancer Service")
+		Expect(applyManifest(fmt.Sprintf(`apiVersion: v1
+kind: Service
+metadata:
+  namespace: %s
+  name: %s
+  annotations:
+    juneau.loutres.me/load-balancer-external-network: %s
+spec:
+  type: LoadBalancer
+  loadBalancerClass: juneau.loutres.me/load-balancer
+  externalTrafficPolicy: Local
+  selector:
+    app: %s
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 80
+`, namespace, svcName, bgpExternalNetworkName, podName))).To(Succeed())
+
+		var vip string
+		By("waiting for the VIP and its owner-only /32 route")
+		Eventually(func(g Gomega) {
+			out, err := kubectlJSONPath(repoRoot, `{.status.loadBalancer.ingress[0].ip}`,
+				"-n", namespace, "get", "service", svcName)
+			g.Expect(err).NotTo(HaveOccurred())
+			vip = strings.TrimSpace(out)
+			g.Expect(vip).NotTo(BeEmpty())
+		}).Should(Succeed())
+
+		Eventually(func(g Gomega) {
+			out, err := bgpRouter.Exec("birdc", "show", "route", vip+"/32", "all")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(ContainSubstring(bgpRouter.workerIPs[node]),
+				"VIP /32 should be advertised only by its local-backend owner: %s", out)
+		}).Should(Succeed())
+
+		By("curling the VIP from the external router")
+		Eventually(func(g Gomega) {
+			out, err := bgpRouter.Exec("curl", "-sS", "--max-time", "3", fmt.Sprintf("http://%s/", vip))
+			g.Expect(err).NotTo(HaveOccurred(), "curl output: %s", out)
+			g.Expect(out).To(ContainSubstring("Welcome to nginx"), "curl body: %s", out)
+		}, 90*time.Second, 3*time.Second).Should(Succeed())
+
+		By("verifying that the backend observed the original external client IP")
+		Eventually(func(g Gomega) {
+			out, err := kubectlOutput(repoRoot, "logs", "-n", namespace, podName)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(ContainSubstring(bgpRouter.ip),
+				"backend log should contain the external router IP")
+		}).Should(Succeed())
+	})
+
+	It("S5: reflects peer disconnect and recovery in BGPNodeState", func() {
 		By("stopping the opposing router container")
 		Expect(bgpRouter.Stop()).To(Succeed())
 		for _, node := range workerNodes {

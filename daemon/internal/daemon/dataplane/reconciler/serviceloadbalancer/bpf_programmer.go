@@ -17,15 +17,14 @@ limitations under the License.
 package serviceloadbalancer
 
 import (
-	"encoding/binary"
 	"fmt"
-	"net"
 	"sync"
 
 	"github.com/cilium/ebpf"
 	corev1 "k8s.io/api/core/v1"
 
 	bpf "github.com/1outres/juneau/daemon/internal/daemon/bpf"
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/convert"
 )
 
 // BPFProgrammer writes lb_service_map and lb_backend_map directly,
@@ -116,7 +115,10 @@ func (p *BPFProgrammer) writeLocked(desired LBService) (bpfSnapshot, error) {
 	if desired.VIP == nil {
 		return out, fmt.Errorf("LBService %s: nil VIP", desired.Key)
 	}
-	vipBE := ipv4ToBE(desired.VIP)
+	vipBE, err := convert.IPv4ToBPFNetworkOrder(desired.VIP)
+	if err != nil {
+		return out, fmt.Errorf("LBService %s: invalid VIP: %w", desired.Key, err)
+	}
 
 	// Map ports → backends keyed by (servicePort, protocol). Doing it
 	// once up-front lets us write per-port entries without re-scanning
@@ -157,6 +159,10 @@ func (p *BPFProgrammer) writeLocked(desired LBService) (bpfSnapshot, error) {
 		out.serviceKeys = append(out.serviceKeys, svcKey)
 
 		for idx, backend := range b.backends {
+			backendIPBE, err := convert.IPv4ToBPFNetworkOrder(backend.PodIP)
+			if err != nil {
+				return out, fmt.Errorf("LBService %s: invalid backend IP at index %d: %w", desired.Key, idx, err)
+			}
 			bkey := bpf.NodeIngressLbBackendKey{
 				Vip:   vipBE,
 				Port:  b.port.Port,
@@ -164,7 +170,7 @@ func (p *BPFProgrammer) writeLocked(desired LBService) (bpfSnapshot, error) {
 				Index: uint32(idx),
 			}
 			bval := bpf.NodeIngressLbBackendVal{
-				BackendIp:       ipv4ToBE(backend.PodIP),
+				BackendIp:       backendIPBE,
 				BackendPort:     uint16BE(backend.TargetPort),
 				BackendSubnetId: backend.SubnetID,
 			}
@@ -207,14 +213,6 @@ func (p *BPFProgrammer) deleteSnapshotLocked(prev bpfSnapshot) {
 type lbBucketKey struct {
 	port  uint16
 	proto corev1.Protocol
-}
-
-func ipv4ToBE(ip net.IP) uint32 {
-	v4 := ip.To4()
-	if v4 == nil {
-		return 0
-	}
-	return binary.BigEndian.Uint32(v4)
 }
 
 // uint16BE returns the network-byte-order representation of p so the

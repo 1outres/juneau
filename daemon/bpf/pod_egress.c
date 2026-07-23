@@ -1684,6 +1684,39 @@ static __juneau_bpf_subprog int apply_conntrack_lb_rev_nat(struct __sk_buff *skb
   return 1;
 }
 
+// route_lb_reply_underlay sends a reverse-NATed LoadBalancer reply directly
+// through the host FIB. The flow entered through a Service VIP and has already
+// passed the backend Pod's ingress policy; treating its reply as a new VPC
+// egress flow would incorrectly apply the VPC default route (and potentially a
+// NATGateway) a second time.
+static __juneau_bpf_subprog int
+route_lb_reply_underlay(struct __sk_buff *skb) {
+  struct iphdr *iph = load_iph(skb);
+  if (!iph)
+    return TC_ACT_SHOT;
+
+  struct bpf_fib_lookup fib_params = {};
+  fib_params.family = AF_INET;
+  fib_params.l4_protocol = iph->protocol;
+  fib_params.ipv4_dst = iph->daddr;
+  fib_params.ifindex = skb->ifindex;
+
+  long rc = bpf_fib_lookup(skb, &fib_params, sizeof(fib_params), 0);
+  if (rc == BPF_FIB_LKUP_RET_NO_NEIGH)
+    return TC_ACT_OK;
+  if (rc != BPF_FIB_LKUP_RET_SUCCESS)
+    return TC_ACT_SHOT;
+
+  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_dest),
+                          fib_params.dmac, ETH_ALEN, 0) < 0)
+    return TC_ACT_SHOT;
+  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_source),
+                          fib_params.smac, ETH_ALEN, 0) < 0)
+    return TC_ACT_SHOT;
+
+  return bpf_redirect(fib_params.ifindex, 0);
+}
+
 // handle_napt is the forward NAPT path: it rewrites src IP/port to the
 // node's host_napt_ip and an allocated source port, installs both
 // forward (NAPT_OUT) and reverse (NAPT_IN) ct_map entries, and then
@@ -2258,9 +2291,7 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
     // LoadBalancer reverse NAT (Phase 7): the backend Pod is sending
     // a reply to the original external client. Rewriting saddr from
     // PodIP to VIP here ensures the client sees the VIP as the
-    // response source. We do not short-circuit the rest of the egress
-    // path on hit — the rewritten packet must still go through the
-    // policy + FIB stage so it routes out via the host underlay.
+    // response source.
     int lb_rc = apply_conntrack_lb_rev_nat(skb, subnet->vpc_id);
     if (lb_rc < 0) {
       trace_emit_drop_l3(skb, __trace_id, TRACE_REASON_DROP_SHOT,
@@ -2279,9 +2310,12 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
           bpf_map_lookup_elem(&pod_egress_nat_scratch, &lb_zero);
       if (lb_ne)
         trace_observe_nat(skb, lb_ne);
+
+      // This is the reply leg of an externally-originated LB flow, not a
+      // new VPC egress flow. Send it directly through the host FIB so a
+      // VPC default route cannot apply NATGateway NAPT to the VIP.
+      return route_lb_reply_underlay(skb);
     }
-    // lb_rc == 1: rewrite applied, fall through to the normal egress
-    // path so the host network stack routes the packet out.
 
     // Unified policy stage: NetworkACL → SecurityGroup → CT install.
     // Runs BEFORE apply_conntrack_dnat so each layer evaluates the
