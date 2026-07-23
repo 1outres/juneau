@@ -53,9 +53,9 @@ func ensureBGPRouter(nodes []string) (*bgpRouterInstance, error) {
 	// only when connecting to networks with user configured subnets". The
 	// entrypoint waits for /etc/bird.conf so we can render the config after
 	// the container has an IP assigned.
-	// L4 multipath hash policy ensures successive curls hash to different
-	// next-hops even when the src/dst IP pair is fixed, so the test reaches
-	// the node that actually hosts the target Pod within Eventually retries.
+	// Keep L4 multipath hashing enabled to model production ECMP behavior.
+	// The ElasticIP test installs a temporary /32 route when it needs to
+	// exercise one specific (non-owner) next-hop deterministically.
 	// httpd needs -f -v: -f keeps it in the foreground so the access
 	// log stays attached to the shell's stderr (and thus to `docker
 	// logs`); without -f the daemonized child detaches and the log
