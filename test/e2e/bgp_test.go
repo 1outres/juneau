@@ -87,10 +87,12 @@ var _ = Describe("BGP e2e", Ordered, Serial, func() {
 		waitBirdRouteOnRouter(bgpRouter, bgpExternalCIDR, len(workerNodes))
 	})
 
-	// S3 exercises the full external egress path end-to-end:
-	//   peer (BGP-learned ECMP) → worker eth0 → node_ingress DNAT → Pod →
+	// S3 exercises the full external egress path end-to-end. A host route on
+	// the peer pins ingress to a worker that does not host the Pod, proving
+	// every ECMP next-hop can DNAT and forward the packet through the overlay:
+	//   peer → non-owner worker eth0 → node_ingress DNAT → VXLAN → Pod →
 	//   pod_egress SNAT (bpf_fib_lookup resolves the real next-hop MAC) →
-	//   back out worker eth0 → peer.
+	//   back out owner worker eth0 → peer.
 	// kind places the peer and workers on the same docker bridge. With
 	// bridge-nf-call-iptables=1 the host's netfilter pipeline inspects every
 	// bridged frame; distributions that ship iptables strict RPF (e.g. NixOS
@@ -180,7 +182,21 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 			Expect(strings.TrimSpace(podIP)).To(HavePrefix("10.200.0."), "Pod IP should be in %s", bgpSubnetCIDR)
 
-			By(fmt.Sprintf("curling http://%s/ from the opposing router", eipAddress))
+			nonOwnerNode := workerNodes[(workerIndex+1)%len(workerNodes)]
+			nonOwnerIP := bgpRouter.workerIPs[nonOwnerNode]
+			eipPrefix := eipAddress + "/32"
+			By(fmt.Sprintf("pinning %s ingress to non-owner node %s (%s)", eipPrefix, nonOwnerNode, nonOwnerIP))
+			_, err = bgpRouter.Exec("ip", "route", "replace", eipPrefix, "via", nonOwnerIP)
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() {
+				_, _ = bgpRouter.Exec("ip", "route", "del", eipPrefix)
+			})
+
+			route, err := bgpRouter.Exec("ip", "route", "show", eipPrefix)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(route).To(ContainSubstring("via " + nonOwnerIP))
+
+			By(fmt.Sprintf("curling http://%s/ through non-owner node %s", eipAddress, nonOwnerNode))
 			Eventually(func(g Gomega) {
 				out, err := bgpRouter.Exec("curl", "-sS", "--max-time", "3", fmt.Sprintf("http://%s/", eipAddress))
 				g.Expect(err).NotTo(HaveOccurred(), "curl output: %s", out)
