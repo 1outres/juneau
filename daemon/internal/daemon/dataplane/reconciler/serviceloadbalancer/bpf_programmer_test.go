@@ -9,6 +9,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	bpf "github.com/1outres/juneau/daemon/internal/daemon/bpf"
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/convert"
 )
 
 // newLBMaps allocates in-process HASH maps shaped like the real
@@ -42,7 +43,19 @@ func newLBMaps(t *testing.T) (svc, backend *ebpf.Map) {
 }
 
 func vipBE(ip string) uint32 {
-	return ipv4ToBE(net.ParseIP(ip))
+	v, err := convert.IPv4ToBPFNetworkOrder(net.ParseIP(ip))
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+func TestIPv4MapEncodingMatchesPacketMemory(t *testing.T) {
+	got := vipBE("203.0.113.10")
+	const want uint32 = 0x0a7100cb
+	if got != want {
+		t.Fatalf("VIP BPF encoding: want %#08x, got %#08x", want, got)
+	}
 }
 
 func TestBPFProgrammer_WritesAndPrunes(t *testing.T) {
