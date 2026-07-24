@@ -19,25 +19,36 @@ import (
 )
 
 // Nat keeps podEgress.NatDnatMap and NatSnatMap in sync with
-// ElasticIPAttachment objects attached to pods on this node.
+// ElasticIPAttachment objects. DNAT is programmed on every node so a packet
+// arriving over an aggregate, ECMP-learned BGP route can be forwarded through
+// the overlay to the target Pod. SNAT remains local to the target Pod's node,
+// where reply traffic enters the data plane.
 type Nat struct {
-	client    client.Client
-	podEgress *program.PodEgress
-	nodeName  string
+	client   client.Client
+	dnatMap  natMap
+	snatMap  natMap
+	nodeName string
 
 	mu        sync.Mutex
 	snapshots map[string]natSnapshot
 }
 
 type natSnapshot struct {
-	outside bpf.PodEgressNatOutside
-	inside  bpf.PodEgressNatInside
+	outside     bpf.PodEgressNatOutside
+	inside      bpf.PodEgressNatInside
+	programSNAT bool
+}
+
+type natMap interface {
+	Update(key, value any, flags ebpf.MapUpdateFlags) error
+	Delete(key any) error
 }
 
 func NewNat(cl client.Client, podEgress *program.PodEgress, nodeName string) *Nat {
 	return &Nat{
 		client:    cl,
-		podEgress: podEgress,
+		dnatMap:   podEgress.Objs.NatDnatMap,
+		snatMap:   podEgress.Objs.NatSnatMap,
 		nodeName:  nodeName,
 		snapshots: make(map[string]natSnapshot),
 	}
@@ -71,7 +82,7 @@ func (r *Nat) shouldProgram(eipa *juneauv1alpha1.ElasticIPAttachment) bool {
 		eipa.Status.Phase == juneauv1alpha1.ElasticIPAttachmentPhaseAttached &&
 		eipa.Status.ElasticIP != "" &&
 		eipa.Status.PodIP != "" &&
-		eipa.Status.NodeName == r.nodeName
+		eipa.Status.NodeName != ""
 }
 
 func (r *Nat) upsert(ctx context.Context, key string, eipa *juneauv1alpha1.ElasticIPAttachment) error {
@@ -79,23 +90,34 @@ func (r *Nat) upsert(ctx context.Context, key string, eipa *juneauv1alpha1.Elast
 	if err != nil {
 		return err
 	}
-	desired := natSnapshot{outside: outside, inside: inside}
+	desired := natSnapshot{
+		outside:     outside,
+		inside:      inside,
+		programSNAT: eipa.Status.NodeName == r.nodeName,
+	}
 
 	r.mu.Lock()
 	old, hadOld := r.snapshots[key]
 	r.mu.Unlock()
 
-	if hadOld && old != desired {
-		if err := r.deleteEntries(old); err != nil {
+	if hadOld && old.outside != desired.outside {
+		if err := r.deleteDNAT(old.outside); err != nil {
+			return err
+		}
+	}
+	if hadOld && old.programSNAT && (!desired.programSNAT || old.inside != desired.inside) {
+		if err := r.deleteSNAT(old.inside); err != nil {
 			return err
 		}
 	}
 
-	if err := r.podEgress.Objs.NatDnatMap.Update(&desired.outside, &desired.inside, ebpf.UpdateAny); err != nil {
+	if err := r.dnatMap.Update(&desired.outside, &desired.inside, ebpf.UpdateAny); err != nil {
 		return fmt.Errorf("update nat_dnat_map: %w", err)
 	}
-	if err := r.podEgress.Objs.NatSnatMap.Update(&desired.inside, &desired.outside, ebpf.UpdateAny); err != nil {
-		return fmt.Errorf("update nat_snat_map: %w", err)
+	if desired.programSNAT {
+		if err := r.snatMap.Update(&desired.inside, &desired.outside, ebpf.UpdateAny); err != nil {
+			return fmt.Errorf("update nat_snat_map: %w", err)
+		}
 	}
 
 	r.mu.Lock()
@@ -118,10 +140,26 @@ func (r *Nat) delete(key string) error {
 }
 
 func (r *Nat) deleteEntries(snap natSnapshot) error {
-	if err := r.podEgress.Objs.NatDnatMap.Delete(&snap.outside); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+	if err := r.deleteDNAT(snap.outside); err != nil {
+		return err
+	}
+	if snap.programSNAT {
+		if err := r.deleteSNAT(snap.inside); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Nat) deleteDNAT(outside bpf.PodEgressNatOutside) error {
+	if err := r.dnatMap.Delete(&outside); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 		return fmt.Errorf("delete nat_dnat_map: %w", err)
 	}
-	if err := r.podEgress.Objs.NatSnatMap.Delete(&snap.inside); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+	return nil
+}
+
+func (r *Nat) deleteSNAT(inside bpf.PodEgressNatInside) error {
+	if err := r.snatMap.Delete(&inside); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 		return fmt.Errorf("delete nat_snat_map: %w", err)
 	}
 	return nil
