@@ -87,10 +87,12 @@ var _ = Describe("BGP e2e", Ordered, Serial, func() {
 		waitBirdRouteOnRouter(bgpRouter, bgpExternalCIDR, len(workerNodes))
 	})
 
-	// S3 exercises the full external egress path end-to-end:
-	//   peer (BGP-learned ECMP) → worker eth0 → node_ingress DNAT → Pod →
+	// S3 exercises the full external egress path end-to-end. A host route on
+	// the peer pins ingress to a worker that does not host the Pod, proving
+	// every ECMP next-hop can DNAT and forward the packet through the overlay:
+	//   peer → non-owner worker eth0 → node_ingress DNAT → VXLAN → Pod →
 	//   pod_egress SNAT (bpf_fib_lookup resolves the real next-hop MAC) →
-	//   back out worker eth0 → peer.
+	//   back out owner worker eth0 → peer.
 	// kind places the peer and workers on the same docker bridge. With
 	// bridge-nf-call-iptables=1 the host's netfilter pipeline inspects every
 	// bridged frame; distributions that ship iptables strict RPF (e.g. NixOS
@@ -180,7 +182,21 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 			Expect(strings.TrimSpace(podIP)).To(HavePrefix("10.200.0."), "Pod IP should be in %s", bgpSubnetCIDR)
 
-			By(fmt.Sprintf("curling http://%s/ from the opposing router", eipAddress))
+			nonOwnerNode := workerNodes[(workerIndex+1)%len(workerNodes)]
+			nonOwnerIP := bgpRouter.workerIPs[nonOwnerNode]
+			eipPrefix := eipAddress + "/32"
+			By(fmt.Sprintf("pinning %s ingress to non-owner node %s (%s)", eipPrefix, nonOwnerNode, nonOwnerIP))
+			_, err = bgpRouter.Exec("ip", "route", "replace", eipPrefix, "via", nonOwnerIP)
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() {
+				_, _ = bgpRouter.Exec("ip", "route", "del", eipPrefix)
+			})
+
+			route, err := bgpRouter.Exec("ip", "route", "show", eipPrefix)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(route).To(ContainSubstring("via " + nonOwnerIP))
+
+			By(fmt.Sprintf("curling http://%s/ through non-owner node %s", eipAddress, nonOwnerNode))
 			Eventually(func(g Gomega) {
 				out, err := bgpRouter.Exec("curl", "-sS", "--max-time", "3", fmt.Sprintf("http://%s/", eipAddress))
 				g.Expect(err).NotTo(HaveOccurred(), "curl output: %s", out)
@@ -191,7 +207,79 @@ spec:
 		Entry("Pod on worker[1]", 1),
 	)
 
-	It("S4: reflects peer disconnect and recovery in BGPNodeState", func() {
+	It("S4: serves a LoadBalancer VIP to an external BGP client without losing the VIP on reply", func() {
+		node := workerNodes[0]
+		namespace := "e2e-bgp-loadbalancer"
+		const (
+			podName = "lb-backend"
+			svcName = "lb-service"
+		)
+
+		createNamespace(namespace)
+		DeferCleanup(func() {
+			runBestEffort(repoRoot, "kubectl", "delete", "namespace", namespace, "--ignore-not-found=true", "--timeout=60s")
+		})
+
+		By("creating a local backend on one worker")
+		Expect(applyManifest(podManifest(namespace, podName, node, defaultSubnetName, true))).To(Succeed())
+		waitPodsReady(namespace, podName)
+		assertPodPlacement(namespace, podName, node)
+
+		By("creating a Juneau-managed LoadBalancer Service")
+		Expect(applyManifest(fmt.Sprintf(`apiVersion: v1
+kind: Service
+metadata:
+  namespace: %s
+  name: %s
+  annotations:
+    juneau.loutres.me/load-balancer-external-network: %s
+spec:
+  type: LoadBalancer
+  loadBalancerClass: juneau.loutres.me/load-balancer
+  externalTrafficPolicy: Local
+  selector:
+    app: %s
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 80
+`, namespace, svcName, bgpExternalNetworkName, podName))).To(Succeed())
+
+		var vip string
+		By("waiting for the VIP and its owner-only /32 route")
+		Eventually(func(g Gomega) {
+			out, err := kubectlJSONPath(repoRoot, `{.status.loadBalancer.ingress[0].ip}`,
+				"-n", namespace, "get", "service", svcName)
+			g.Expect(err).NotTo(HaveOccurred())
+			vip = strings.TrimSpace(out)
+			g.Expect(vip).NotTo(BeEmpty())
+		}).Should(Succeed())
+
+		Eventually(func(g Gomega) {
+			out, err := bgpRouter.Exec("birdc", "show", "route", vip+"/32", "all")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(ContainSubstring(bgpRouter.workerIPs[node]),
+				"VIP /32 should be advertised only by its local-backend owner: %s", out)
+		}).Should(Succeed())
+
+		By("curling the VIP from the external router")
+		Eventually(func(g Gomega) {
+			out, err := bgpRouter.Exec("curl", "-sS", "--max-time", "3", fmt.Sprintf("http://%s/", vip))
+			g.Expect(err).NotTo(HaveOccurred(), "curl output: %s", out)
+			g.Expect(out).To(ContainSubstring("Welcome to nginx"), "curl body: %s", out)
+		}, 90*time.Second, 3*time.Second).Should(Succeed())
+
+		By("verifying that the backend observed the original external client IP")
+		Eventually(func(g Gomega) {
+			out, err := kubectlOutput(repoRoot, "logs", "-n", namespace, podName)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(ContainSubstring(bgpRouter.ip),
+				"backend log should contain the external router IP")
+		}).Should(Succeed())
+	})
+
+	It("S5: reflects peer disconnect and recovery in BGPNodeState", func() {
 		By("stopping the opposing router container")
 		Expect(bgpRouter.Stop()).To(Succeed())
 		for _, node := range workerNodes {

@@ -55,22 +55,22 @@ type Manager struct {
 	networkACLInformer                cache.Informer
 	nodeInformer                      cache.Informer
 
-	subnetRunner        *runner.Runner
-	arpRunner           *runner.Runner
-	fdbRunner           *runner.Runner
-	podIfaceRunner      *runner.Runner
-	podAttacherRunner   *runner.Runner
-	fibRunner           *runner.Runner
-	natRunner           *runner.Runner
-	bgpPoolRunner       *runner.Runner
-	serviceRunner       *runner.Runner
-	naptRunner          *runner.Runner
-	serviceNATRunner    *runner.Runner
-	sgRunner            *runner.Runner
-	sgMembershipRunner  *runner.Runner
-	aclRunner           *runner.Runner
-	traceRunner         *runner.Runner
-	nodeUnderlayRunner  *runner.Runner
+	subnetRunner       *runner.Runner
+	arpRunner          *runner.Runner
+	fdbRunner          *runner.Runner
+	podIfaceRunner     *runner.Runner
+	podAttacherRunner  *runner.Runner
+	fibRunner          *runner.Runner
+	natRunner          *runner.Runner
+	bgpPoolRunner      *runner.Runner
+	serviceRunner      *runner.Runner
+	naptRunner         *runner.Runner
+	serviceNATRunner   *runner.Runner
+	sgRunner           *runner.Runner
+	sgMembershipRunner *runner.Runner
+	aclRunner          *runner.Runner
+	traceRunner        *runner.Runner
+	nodeUnderlayRunner *runner.Runner
 
 	serviceLoadBalancerInformer cache.Informer
 	serviceLBProgrammer         servicelbreconciler.Programmer
