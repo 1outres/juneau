@@ -2175,11 +2175,19 @@ handle_virtual_service(struct __sk_buff *skb, struct ethhdr *eth,
   // original packet (it builds a fresh response), so overwriting id
   // is safe. MAX_SUBNET caps VNIs at 16384, well within 16 bits.
   //
-  // We don't bother updating iph->check — userspace parses bytes
-  // directly without csum validation, and BPF redirect doesn't
-  // invoke kernel csum verification.
   if (subnet_id <= 0xFFFF) {
+    __be16 old_id = iph->id;
     __be16 sid_be = bpf_htons((__u16)subnet_id);
+
+    // UDP is parsed directly by userspace, but TCP is injected as a
+    // complete IPv4 packet into gVisor netstack, which validates the
+    // IPv4 header checksum. Keep the packet valid for both consumers.
+    if (bpf_l3_csum_replace(skb,
+                            sizeof(struct ethhdr) +
+                                __builtin_offsetof(struct iphdr, check),
+                            old_id, sid_be, sizeof(sid_be)) < 0)
+      return -1;
+
     if (bpf_skb_store_bytes(skb,
                             sizeof(struct ethhdr) +
                                 __builtin_offsetof(struct iphdr, id),

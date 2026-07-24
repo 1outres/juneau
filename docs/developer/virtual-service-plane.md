@@ -211,7 +211,7 @@ DNS の TCP 実装 (`dns/tcp_handler.go`) が参考になります。長さプ�
 注意点。
 
 - ServiceID の衝突。`virtservice/types.go` で ServiceIDDNS = 1 が定義済み。新サービスは新しい uint32 を割り当て、定数として export してください。BPF map の値として記録されるため、後から番号を変更すると map のライブマイグレーションが必要になります。
-- gVisor の NIC は VPC ごと。TCP listener は VPC NIC + protocol address (VIP) 単位で gVisor に登録されます。同じ VIP を別の用途 (UDP DNS と TCP DNS) で同時に使うことは許容されています。
+- DNS resolver と仮想サービス管理は Node 内で共有しますが、TCP の gVisor stack は VPC ごとに分けます。gVisor の単一 stack では device-bind した listener の `VIP:port` は分離できても、別 NIC に同じ 4-tuple の接続が存在すると transport demux が正しい listener へフォールバックしません。各 VPC を独立した stack + NIC + route に分け、endpoint も対象 NIC へ device-bind することで、同一 CIDR・同一 `VIP:port`・同一 4-tuple を持つ VPC を同時に扱います。
 
 ## 設計上の不変条件
 
@@ -273,6 +273,8 @@ packetplane 自体の TAP / AF_PACKET / netstack を単体テストするのは�
 - 純粋ロジック (`builder.go`、`flowtable.go` のキー生成、`dispatcher.go` のパース) に単体テストを書く。
 - Registry を NetstackFacade インタフェースで切り離してあるため、新サービスの「Registry に登録される側」のテストではモックを差し込める。
 - 結合は e2e で確認する。
+- TCP サービスの e2e は `dig +tcp` など、UDP fallback を許さないクライアントで実際の transport を固定する。
+- VPC 分離の e2e では、同一 CIDR と同一 `VIP:port` を持つ 2 つの VPC を同時に作り、両方から応答できることを確認する。
 
 ## 参考実装
 
