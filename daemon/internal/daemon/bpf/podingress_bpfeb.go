@@ -429,6 +429,7 @@ type PodIngressMapSpecs struct {
 	NaptSrc               *ebpf.MapSpec `ebpf:"napt_src"`
 	NatDnatMap            *ebpf.MapSpec `ebpf:"nat_dnat_map"`
 	NatSnatMap            *ebpf.MapSpec `ebpf:"nat_snat_map"`
+	NodeUnderlays         *ebpf.MapSpec `ebpf:"node_underlays"`
 	ServiceAclMap         *ebpf.MapSpec `ebpf:"service_acl_map"`
 	ServiceAffinityMap    *ebpf.MapSpec `ebpf:"service_affinity_map"`
 	ServiceMap            *ebpf.MapSpec `ebpf:"service_map"`
@@ -493,6 +494,7 @@ type PodIngressMaps struct {
 	NaptSrc               *ebpf.Map `ebpf:"napt_src"`
 	NatDnatMap            *ebpf.Map `ebpf:"nat_dnat_map"`
 	NatSnatMap            *ebpf.Map `ebpf:"nat_snat_map"`
+	NodeUnderlays         *ebpf.Map `ebpf:"node_underlays"`
 	ServiceAclMap         *ebpf.Map `ebpf:"service_acl_map"`
 	ServiceAffinityMap    *ebpf.Map `ebpf:"service_affinity_map"`
 	ServiceMap            *ebpf.Map `ebpf:"service_map"`
@@ -531,6 +533,7 @@ func (m *PodIngressMaps) Close() error {
 		m.NaptSrc,
 		m.NatDnatMap,
 		m.NatSnatMap,
+		m.NodeUnderlays,
 		m.ServiceAclMap,
 		m.ServiceAffinityMap,
 		m.ServiceMap,

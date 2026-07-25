@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -223,7 +224,7 @@ spec:
 		createCustomNetwork(ctx, false, true)
 
 		createServerPod(ctx, workerNodes[0], ctx.serverSubnet)
-		createClientPod(ctx, workerNodes[0], ctx.serverSubnet)
+		Expect(applyManifest(dnsClientPodManifest(ctx.namespace, clientPodName, workerNodes[0], ctx.serverSubnet))).To(Succeed())
 		createServerService(ctx, ctx.vpcName)
 		waitPodsReady(ctx.namespace, serverPodName, clientPodName)
 		waitServiceEndpoints(ctx.namespace, serverPodName)
@@ -231,18 +232,68 @@ spec:
 		fqdn := fmt.Sprintf("%s.%s.svc.cluster.local", serverPodName, ctx.namespace)
 		clusterIP := serviceClusterIP(ctx.namespace, serverPodName)
 
-		// busybox nslookup honours -tcp (or +vc on dig), but the
-		// curlimages/curl image has only nslookup. We force TCP via
-		// dig-style query if bind-tools is present, else we rely on
-		// the implicit TC retry path: oversize EDNS UDP forces
-		// truncation → client retries over TCP. We can simulate by
-		// picking a high-record-count query; for now a basic +tcp
-		// hint suffices on busybox.
+		// netshoot provides dig, so this exercises the TCP listener and
+		// response path directly instead of accepting a UDP lookup.
 		Eventually(func(g Gomega) {
 			ip, err := nslookupAddress(ctx.namespace, clientPodName, fqdn, true)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(ip).To(Equal(clusterIP))
 		}, 30*time.Second, time.Second).Should(Succeed())
+	})
+
+	It("serves TCP DNS in VPCs with overlapping Subnet CIDRs", func() {
+		base := sanitizeName("dns-tcp-overlap")
+		namespace := "e2e-" + base
+		vpcA := "vpc-a-" + base
+		vpcB := "vpc-b-" + base
+		subnetA := "subnet-a-" + base
+		subnetB := "subnet-b-" + base
+		const cidr = "10.224.0.0/24"
+		const (
+			serverA = "server-a"
+			serverB = "server-b"
+			clientA = "client-a"
+			clientB = "client-b"
+		)
+
+		DeferCleanup(func() {
+			runBestEffort(repoRoot, "kubectl", "delete", "namespace", namespace, "--ignore-not-found=true", "--timeout=60s")
+			runBestEffort(repoRoot, "kubectl", "delete", "subnet", subnetA, "--ignore-not-found=true")
+			runBestEffort(repoRoot, "kubectl", "delete", "subnet", subnetB, "--ignore-not-found=true")
+			runBestEffort(repoRoot, "kubectl", "delete", "vpc", vpcA, "--ignore-not-found=true")
+			runBestEffort(repoRoot, "kubectl", "delete", "vpc", vpcB, "--ignore-not-found=true")
+		})
+
+		Expect(applyManifest(twoVpcManifest(vpcA, vpcB, subnetA, cidr, subnetB, cidr))).To(Succeed())
+		waitSubnetReady(subnetA)
+		waitSubnetReady(subnetB)
+		createNamespace(namespace)
+
+		Expect(applyManifest(podManifest(namespace, serverA, workerNodes[0], subnetA, true))).To(Succeed())
+		Expect(applyManifest(podManifest(namespace, serverB, workerNodes[0], subnetB, true))).To(Succeed())
+		Expect(applyManifest(dnsClientPodManifest(namespace, clientA, workerNodes[0], subnetA))).To(Succeed())
+		Expect(applyManifest(dnsClientPodManifest(namespace, clientB, workerNodes[0], subnetB))).To(Succeed())
+		Expect(applyManifest(serviceManifestWithVpc(namespace, serverA, serverA, vpcA))).To(Succeed())
+		Expect(applyManifest(serviceManifestWithVpc(namespace, serverB, serverB, vpcB))).To(Succeed())
+		waitPodsReady(namespace, serverA, serverB, clientA, clientB)
+		waitServiceEndpoints(namespace, serverA)
+		waitServiceEndpoints(namespace, serverB)
+
+		for _, tc := range []struct {
+			client  string
+			service string
+		}{
+			{client: clientA, service: serverA},
+			{client: clientB, service: serverB},
+		} {
+			fqdn := fmt.Sprintf("%s.%s.svc.cluster.local", tc.service, namespace)
+			clusterIP := serviceClusterIP(namespace, tc.service)
+			Eventually(func(g Gomega) {
+				ip, err := nslookupAddress(namespace, tc.client, fqdn, true)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(ip).To(Equal(clusterIP))
+			}, 30*time.Second, time.Second).Should(Succeed())
+		}
 	})
 
 	It("leaves Pods in the default Vpc on kube-dns", func() {
@@ -365,14 +416,25 @@ func serviceClusterIP(namespace, name string) string {
 	return clusterIP
 }
 
-// nslookupAddress runs nslookup inside a Pod and returns the first
-// IPv4 address it reports. tcp=true forces TCP transport (busybox's
-// nslookup supports -type and -timeout but no transport flag, so we
-// shell out to a tiny shim that uses /dev/tcp under the hood — the
-// query still goes through the resolver chain because /etc/resolv.conf
-// is the input, but the wire-level transport is TCP via busybox's
-// internal handling).
+// nslookupAddress resolves fqdn using the Pod's injected DNS server and
+// returns the first IPv4 answer. tcp=true uses netshoot's dig +tcp so the
+// wire-level transport is guaranteed to exercise Juneau's TCP listener.
 func nslookupAddress(namespace, podName, fqdn string, tcp bool) (string, error) {
+	if tcp {
+		out, err := kubectlOutput(repoRoot, "exec", "-n", namespace, podName, "--",
+			"dig", "+tcp", "+short", "+time=3", "+tries=1", fqdn, "A")
+		if err != nil {
+			return "", fmt.Errorf("dig +tcp: %w (out=%s)", err, out)
+		}
+		for _, line := range strings.Split(out, "\n") {
+			ip := strings.TrimSpace(line)
+			if parsed := net.ParseIP(ip); parsed != nil && parsed.To4() != nil {
+				return ip, nil
+			}
+		}
+		return "", fmt.Errorf("no IPv4 answer in dig +tcp output: %s", out)
+	}
+
 	// busybox nslookup format:
 	//   Server: 10.x.y.2
 	//   Address: 10.x.y.2:53
@@ -382,16 +444,6 @@ func nslookupAddress(namespace, podName, fqdn string, tcp bool) (string, error) 
 	//
 	// We want the 2nd Address (the answer), not the server line.
 	args := []string{"exec", "-n", namespace, podName, "--", "nslookup"}
-	if tcp {
-		// Busybox supports -type but the way to force TCP varies;
-		// fall back to dig-style query if available, else accept
-		// UDP — the daemon still terminates UDP/53 on the same
-		// resolver chain so the answer correctness check is
-		// equivalent. The TCP-specific path is exercised under
-		// truncation in dispatcher tests; this E2E spec is
-		// primarily a smoke test that the AcceptLoop is wired up.
-		args = append(args, "-type=A")
-	}
 	args = append(args, fqdn)
 	out, err := kubectlOutput(repoRoot, args...)
 	if err != nil {
@@ -425,4 +477,22 @@ func nslookupAddress(namespace, podName, fqdn string, tcp bool) (string, error) 
 		return val, nil
 	}
 	return "", fmt.Errorf("no answer Address line in nslookup output: %s", out)
+}
+
+func dnsClientPodManifest(namespace, name, nodeName, subnet string) string {
+	return fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  namespace: %s
+  name: %s
+  annotations:
+    juneau.loutres.me/subnet: %s
+spec:
+  nodeName: %s
+  terminationGracePeriodSeconds: 0
+  containers:
+    - name: client
+      image: nicolaka/netshoot:v0.16
+      command: ["sleep", "3600"]
+`, namespace, name, subnet, nodeName)
 }

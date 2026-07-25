@@ -53,6 +53,7 @@ type Manager struct {
 	networkInterfaceInformer          cache.Informer
 	securityGroupInformer             cache.Informer
 	networkACLInformer                cache.Informer
+	nodeInformer                      cache.Informer
 
 	subnetRunner       *runner.Runner
 	arpRunner          *runner.Runner
@@ -69,6 +70,7 @@ type Manager struct {
 	sgMembershipRunner *runner.Runner
 	aclRunner          *runner.Runner
 	traceRunner        *runner.Runner
+	nodeUnderlayRunner *runner.Runner
 
 	serviceLoadBalancerInformer cache.Informer
 	serviceLBProgrammer         servicelbreconciler.Programmer
@@ -253,6 +255,22 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	}
 	m.bgpPoolRunner.Enqueue(runner.SingletonKey)
 	m.bgpPoolRunner.Start(ctx, 1)
+
+	// NodeUnderlay: cluster-wide Node.status.addresses[InternalIP] →
+	// node_underlays map. Required so pod_egress can hand back the
+	// reply leg of any Service flow whose forward DNAT was performed
+	// by an external in-kernel kube-proxy iptables ruleset. Runs
+	// unconditionally: even in a kube-proxy-free cluster the map is
+	// harmless — pod → node underlay IP is not a normal juneau
+	// pod-networking pattern and delegating those to the kernel is
+	// what we want.
+	if m.nodeInformer != nil {
+		m.nodeUnderlayRunner = runner.New(reconciler.NewNodeUnderlay(m.client, m.podEgress))
+		if err := m.nodeUnderlayRunner.Watch(m.nodeInformer, runner.MetaNamespaceKey); err != nil {
+			return fmt.Errorf("watch Node (node-underlay): %w", err)
+		}
+		m.nodeUnderlayRunner.Start(ctx, 1)
+	}
 
 	if m.externalNetworkAttachmentInformer != nil {
 		m.napt = reconciler.NewNapt(m.client, m.podEgress, m.nodeName)
@@ -601,6 +619,7 @@ func (m *Manager) Stop() error {
 		m.sgMembershipRunner,
 		m.aclRunner,
 		m.traceRunner,
+		m.nodeUnderlayRunner,
 	}
 	for _, rn := range runners {
 		if rn == nil {
@@ -667,6 +686,7 @@ func NewManager(
 	networkACLInformer cache.Informer,
 	serviceLoadBalancerInformer cache.Informer,
 	traceSessionInformer cache.Informer,
+	nodeInformer cache.Informer,
 	nodeName string,
 	vxlanIfindex int,
 	hostIfindex int,
@@ -694,6 +714,7 @@ func NewManager(
 		networkACLInformer:                networkACLInformer,
 		serviceLoadBalancerInformer:       serviceLoadBalancerInformer,
 		traceSessionInformer:              traceSessionInformer,
+		nodeInformer:                      nodeInformer,
 		nodeName:                          nodeName,
 		vxlanIfindex:                      vxlanIfindex,
 		hostIfindex:                       hostIfindex,

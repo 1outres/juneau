@@ -40,12 +40,12 @@ spec:
             description: BGPPeerSpec defines the desired state of BGPPeer.
             properties:
               myASN:
-                format: int32
+                format: int64
                 maximum: 4294967294
                 minimum: 1
                 type: integer
               peerASN:
-                format: int32
+                format: int64
                 maximum: 4294967294
                 minimum: 1
                 type: integer

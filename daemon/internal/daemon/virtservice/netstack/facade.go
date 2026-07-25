@@ -11,7 +11,7 @@
 //
 // Operationally the facade owns:
 //
-//   - one shared stack.Stack (TCP + IPv4 only — UDP terminates in
+//   - one stack.Stack per VPC (TCP + IPv4 only — UDP terminates in
 //     the upstream packet plane, not gVisor);
 //   - one channel.Endpoint per VPC, exposed as a tcpip.NIC, with
 //     every Subnet's DNS VIP added as a per-NIC protocol address;
@@ -41,6 +41,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
+	"gvisor.dev/gvisor/pkg/waiter"
 
 	"github.com/1outres/juneau/daemon/internal/daemon/virtservice/packetplane"
 )
@@ -49,7 +50,6 @@ import (
 // instance. Construct once at startup; share across every TCP
 // virtual service (DNS today).
 type Facade struct {
-	stack  *stack.Stack
 	sender *packetplane.Sender
 
 	mu    sync.Mutex
@@ -62,6 +62,7 @@ type Facade struct {
 // the shared sender, joining them with returnPath metadata recorded
 // when the matching inbound packet was injected.
 type vpcNIC struct {
+	stack    *stack.Stack
 	nicID    tcpip.NICID
 	endpoint *channel.Endpoint
 	addrs    map[netip.Addr]struct{} // VIPs registered on this NIC
@@ -93,15 +94,10 @@ type ReturnPath struct {
 	ServiceMAC net.HardwareAddr
 }
 
-// New constructs a Facade with a fresh gVisor stack configured for
-// TCP/IPv4. sender is borrowed; the facade does not close it.
+// New constructs a Facade. A TCP/IPv4 gVisor stack is created lazily
+// for each VPC. sender is borrowed; the facade does not close it.
 func New(sender *packetplane.Sender) *Facade {
-	s := stack.New(stack.Options{
-		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol},
-		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol},
-	})
 	return &Facade{
-		stack:  s,
 		sender: sender,
 		nics:   map[uint32]*vpcNIC{},
 		flows:  map[returnFlowKey]ReturnPath{},
@@ -124,7 +120,7 @@ func (f *Facade) Stop() error {
 			<-n.done
 		}
 		n.endpoint.Close()
-		f.stack.RemoveNIC(n.nicID)
+		n.stack.RemoveNIC(n.nicID)
 	}
 	return nil
 }
@@ -144,6 +140,10 @@ func (f *Facade) EnsureNIC(ctx context.Context, vpcID uint32, vip netip.Addr) er
 
 	n, ok := f.nics[vpcID]
 	if !ok {
+		vpcStack := stack.New(stack.Options{
+			NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol},
+			TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol},
+		})
 		nicID := tcpip.NICID(vpcID)
 		// MTU 9000 is intentionally large: the drain loop reads
 		// whole IP packets from gVisor and gVisor never produces
@@ -152,11 +152,16 @@ func (f *Facade) EnsureNIC(ctx context.Context, vpcID uint32, vip netip.Addr) er
 		// underlay's MTU. BPF / AF_PACKET don't fragment.
 		ep := channel.New(1024, 9000, "")
 		opts := stack.NICOptions{Name: fmt.Sprintf("juneau-vpc-%d", vpcID)}
-		if errt := f.stack.CreateNICWithOptions(nicID, ep, opts); errt != nil {
+		if errt := vpcStack.CreateNICWithOptions(nicID, ep, opts); errt != nil {
 			return fmt.Errorf("create NIC for vpc %d: %s", vpcID, errt)
 		}
+		vpcStack.AddRoute(tcpip.Route{
+			Destination: header.IPv4EmptySubnet,
+			NIC:         nicID,
+		})
 
 		n = &vpcNIC{
+			stack:    vpcStack,
 			nicID:    nicID,
 			endpoint: ep,
 			addrs:    map[netip.Addr]struct{}{},
@@ -184,7 +189,7 @@ func (f *Facade) EnsureNIC(ctx context.Context, vpcID uint32, vip netip.Addr) er
 			PrefixLen: 32,
 		},
 	}
-	if errt := f.stack.AddProtocolAddress(n.nicID, protoAddr, stack.AddressProperties{}); errt != nil {
+	if errt := n.stack.AddProtocolAddress(n.nicID, protoAddr, stack.AddressProperties{}); errt != nil {
 		return fmt.Errorf("add VIP %s on NIC %d: %s", vip, n.nicID, errt)
 	}
 	n.addrs[vip] = struct{}{}
@@ -205,7 +210,7 @@ func (f *Facade) RemoveVIP(vpcID uint32, vip netip.Addr) error {
 		return nil
 	}
 	addr4 := vip.As4()
-	if errt := f.stack.RemoveAddress(n.nicID, tcpip.AddrFromSlice(addr4[:])); errt != nil {
+	if errt := n.stack.RemoveAddress(n.nicID, tcpip.AddrFromSlice(addr4[:])); errt != nil {
 		return fmt.Errorf("remove VIP %s from NIC %d: %s", vip, n.nicID, errt)
 	}
 	delete(n.addrs, vip)
@@ -235,11 +240,45 @@ func (f *Facade) ListenTCP(vpcID uint32, vip netip.Addr, port uint16) (net.Liste
 		Addr: tcpip.AddrFromSlice(addr4[:]),
 		Port: port,
 	}
-	l, err := gonet.ListenTCP(f.stack, full, ipv4.ProtocolNumber)
+	l, err := listenTCPOnNIC(n.stack, full, ipv4.ProtocolNumber)
 	if err != nil {
-		return nil, fmt.Errorf("netstack: gonet.ListenTCP: %w", err)
+		return nil, fmt.Errorf("netstack: listen TCP on NIC %d: %w", n.nicID, err)
 	}
 	return l, nil
+}
+
+// listenTCPOnNIC is the device-bound counterpart of gonet.ListenTCP.
+// FullAddress.NIC only selects the NIC used to validate the local address;
+// gVisor's port reservation remains device-agnostic unless SO_BINDTODEVICE is
+// set on the endpoint before Bind. Juneau VPCs may use overlapping VIPs, so
+// every listener must reserve its address and port within its VPC NIC.
+func listenTCPOnNIC(s *stack.Stack, addr tcpip.FullAddress, network tcpip.NetworkProtocolNumber) (net.Listener, error) {
+	var wq waiter.Queue
+	ep, err := s.NewEndpoint(tcp.ProtocolNumber, network, &wq)
+	if err != nil {
+		return nil, fmt.Errorf("create endpoint: %s", err)
+	}
+
+	closeEndpoint := true
+	defer func() {
+		if closeEndpoint {
+			ep.Close()
+		}
+	}()
+
+	if err := ep.SocketOptions().SetBindToDevice(int32(addr.NIC)); err != nil {
+		return nil, fmt.Errorf("bind endpoint to NIC %d: %s", addr.NIC, err)
+	}
+	if err := ep.Bind(addr); err != nil {
+		return nil, fmt.Errorf("bind %s:%d: %s", addr.Addr, addr.Port, err)
+	}
+	const listenBacklog = 4096
+	if err := ep.Listen(listenBacklog); err != nil {
+		return nil, fmt.Errorf("listen %s:%d: %s", addr.Addr, addr.Port, err)
+	}
+
+	closeEndpoint = false
+	return gonet.NewTCPListener(s, &wq, ep), nil
 }
 
 // Inject delivers an IPv4 packet (no Ethernet header) into vpcID's

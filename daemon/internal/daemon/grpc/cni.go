@@ -147,6 +147,7 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to move peer veth to netns", err.Error())
 	}
 
+	var peerHWAddr net.HardwareAddr
 	if err = netns.Do(func(_ ns.NetNS) error {
 		link, err := netlink.LinkByName(vethPeerName)
 		if err != nil {
@@ -158,6 +159,11 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 		if err := netlink.LinkSetUp(link); err != nil {
 			return err
 		}
+		refreshed, err := netlink.LinkByName(req.Ifname)
+		if err != nil {
+			return fmt.Errorf("re-lookup peer veth after rename: %w", err)
+		}
+		peerHWAddr = refreshed.Attrs().HardwareAddr
 		return nil
 	}); err != nil {
 		zap.L().Error("failed to setup veth in netns", zap.Error(err))
@@ -223,6 +229,13 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to configure interface in netns", err.Error())
 	}
 
+	hostRefreshed, err := netlink.LinkByIndex(vethHost.Index)
+	if err != nil {
+		zap.L().Error("failed to re-lookup host veth", zap.Error(err))
+		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to re-lookup host veth", err.Error())
+	}
+	hostHWAddr := hostRefreshed.Attrs().HardwareAddr
+
 	nwep := &juneauv1alpha1.NetworkEndpoint{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: podNamespace,
@@ -247,10 +260,10 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 			NodeName:   nwiface.Spec.NodeName,
 			Subnet:     nwiface.Spec.Subnet,
 			Address:    nwiface.Status.Address,
-			MACAddress: vethPeer.HardwareAddr.String(),
+			MACAddress: peerHWAddr.String(),
 			Attachment: &juneauv1alpha1.NetworkEndpointAttachment{
 				Ifindex:        vethHost.Index,
-				HostMACAddress: vethHost.HardwareAddr.String(),
+				HostMACAddress: hostHWAddr.String(),
 			},
 		},
 		Status: juneauv1alpha1.NetworkEndpointStatus{},

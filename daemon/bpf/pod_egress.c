@@ -1697,6 +1697,39 @@ static __juneau_bpf_subprog int apply_conntrack_lb_rev_nat(struct __sk_buff *skb
   return 1;
 }
 
+// route_lb_reply_underlay sends a reverse-NATed LoadBalancer reply directly
+// through the host FIB. The flow entered through a Service VIP and has already
+// passed the backend Pod's ingress policy; treating its reply as a new VPC
+// egress flow would incorrectly apply the VPC default route (and potentially a
+// NATGateway) a second time.
+static __juneau_bpf_subprog int
+route_lb_reply_underlay(struct __sk_buff *skb) {
+  struct iphdr *iph = load_iph(skb);
+  if (!iph)
+    return TC_ACT_SHOT;
+
+  struct bpf_fib_lookup fib_params = {};
+  fib_params.family = AF_INET;
+  fib_params.l4_protocol = iph->protocol;
+  fib_params.ipv4_dst = iph->daddr;
+  fib_params.ifindex = skb->ifindex;
+
+  long rc = bpf_fib_lookup(skb, &fib_params, sizeof(fib_params), 0);
+  if (rc == BPF_FIB_LKUP_RET_NO_NEIGH)
+    return TC_ACT_OK;
+  if (rc != BPF_FIB_LKUP_RET_SUCCESS)
+    return TC_ACT_SHOT;
+
+  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_dest),
+                          fib_params.dmac, ETH_ALEN, 0) < 0)
+    return TC_ACT_SHOT;
+  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_source),
+                          fib_params.smac, ETH_ALEN, 0) < 0)
+    return TC_ACT_SHOT;
+
+  return bpf_redirect(fib_params.ifindex, 0);
+}
+
 // handle_napt is the forward NAPT path: it rewrites src IP/port to the
 // node's host_napt_ip and an allocated source port, installs both
 // forward (NAPT_OUT) and reverse (NAPT_IN) ct_map entries, and then
@@ -1910,6 +1943,88 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
 
   __u32 dst_be = iph->daddr; // keep network order for LPM trie
 
+  // Reply leg of a Service flow whose forward DNAT was performed by
+  // an external in-kernel kube-proxy iptables ruleset (rather than by
+  // handle_service below) surfaces here as (src=Pod, dst=Node
+  // underlay IP). Node underlay IPs live outside every Subnet CIDR so
+  // fib_map cannot resolve them; without this branch the reply would
+  // drop at the fib_map miss and the kernel's conntrack would never
+  // see the response to un-DNAT it back into the caller's ClusterIP.
+  //
+  // Two sub-cases with different handling:
+  //
+  //  1. dst == THIS Node's own underlay IP (caller was a host-network
+  //     process on the same Node, e.g. kube-apiserver → ClusterIP →
+  //     locally-scheduled Pod). The reply is delivered locally via
+  //     the INPUT chain, which does not traverse FORWARD, so
+  //     KUBE-FORWARD's ctstate INVALID drop is not a concern. Hand
+  //     the packet back to the kernel with TC_ACT_OK; kernel conntrack
+  //     un-DNATs it into the caller's socket. bpf_fib_lookup cannot
+  //     help here — it returns BPF_FIB_LKUP_RET_NOT_FWDED for RTN_LOCAL
+  //     destinations because "forwarding to self" is not a thing.
+  //
+  //  2. dst == a REMOTE Node's underlay IP (caller was on Node A,
+  //     backend Pod is on Node B, juneau's own data plane cross-Node'd
+  //     the SYN so this Node's conntrack has no forward-leg entry).
+  //     Netfilter marks the reply INVALID in FORWARD and the KUBE-
+  //     FORWARD rule drops it before it can reach eno1. Resolve the
+  //     underlay egress interface / neighbor via bpf_fib_lookup and
+  //     bpf_redirect past FORWARD + POSTROUTING; the remote Node's
+  //     conntrack un-DNATs the reply as usual.
+  if (bpf_map_lookup_elem(&node_underlays, &dst_be)) {
+    __u32 uk = 0;
+    const __u32 *self_underlay = bpf_map_lookup_elem(&host_underlay, &uk);
+    if (self_underlay && *self_underlay != 0 && *self_underlay == dst_be) {
+      // The Pod sent the reply to its default-gateway MAC (subnet
+      // gw_mac); eth_type_trans on the host-side veth therefore tagged
+      // skb->pkt_type=PACKET_OTHERHOST at reception. With dst now the
+      // local NodeIP the kernel's ip_rcv_core would drop with
+      // reason=OTHERHOST unless we reset pkt_type — same fix-up
+      // handle_service_host_local applies for its forward leg.
+      if (bpf_skb_change_type(skb, PACKET_HOST) < 0)
+        return TC_ACT_SHOT;
+      __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, subnet->vpc_id);
+      trace_emit_pass_kernel_l3(skb, __tid, TRACE_HOOK_POD_EGRESS,
+                                TRACE_SCOPE_VPC, subnet->vpc_id, 0);
+      return TC_ACT_OK;
+    }
+
+    struct bpf_fib_lookup fib_params = {};
+    fib_params.family   = AF_INET;
+    fib_params.l4_protocol = iph->protocol;
+    fib_params.ipv4_dst = iph->daddr;
+    fib_params.ifindex  = skb->ifindex;
+
+    long rc = bpf_fib_lookup(skb, &fib_params, sizeof(fib_params), 0);
+    if (rc == BPF_FIB_LKUP_RET_NO_NEIGH) {
+      // Neighbor not resolved yet: hand back to the kernel so it can
+      // trigger an ARP. Subsequent packets will hit the SUCCESS path
+      // and be redirected. This is the same fall-through pattern
+      // handle_snat uses for its underlay path.
+      return TC_ACT_OK;
+    }
+    if (rc != BPF_FIB_LKUP_RET_SUCCESS) {
+      __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, subnet->vpc_id);
+      trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_SHOT,
+                         TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                         subnet->vpc_id, 0);
+      return TC_ACT_SHOT;
+    }
+
+    if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_dest),
+                            fib_params.dmac, ETH_ALEN, 0) < 0)
+      return TC_ACT_SHOT;
+    if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_source),
+                            fib_params.smac, ETH_ALEN, 0) < 0)
+      return TC_ACT_SHOT;
+
+    __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, subnet->vpc_id);
+    trace_emit_redirect_l3(skb, __tid, TRACE_REASON_REDIRECT_IFINDEX,
+                           TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                           subnet->vpc_id, 0, fib_params.ifindex);
+    return bpf_redirect(fib_params.ifindex, 0);
+  }
+
   __u32 tid = subnet->table_id;
   void *fib_inner_map = bpf_map_lookup_elem(&fib_map, &tid);
   if (!fib_inner_map) {
@@ -2073,11 +2188,19 @@ handle_virtual_service(struct __sk_buff *skb, struct ethhdr *eth,
   // original packet (it builds a fresh response), so overwriting id
   // is safe. MAX_SUBNET caps VNIs at 16384, well within 16 bits.
   //
-  // We don't bother updating iph->check — userspace parses bytes
-  // directly without csum validation, and BPF redirect doesn't
-  // invoke kernel csum verification.
   if (subnet_id <= 0xFFFF) {
+    __be16 old_id = iph->id;
     __be16 sid_be = bpf_htons((__u16)subnet_id);
+
+    // UDP is parsed directly by userspace, but TCP is injected as a
+    // complete IPv4 packet into gVisor netstack, which validates the
+    // IPv4 header checksum. Keep the packet valid for both consumers.
+    if (bpf_l3_csum_replace(skb,
+                            sizeof(struct ethhdr) +
+                                __builtin_offsetof(struct iphdr, check),
+                            old_id, sid_be, sizeof(sid_be)) < 0)
+      return -1;
+
     if (bpf_skb_store_bytes(skb,
                             sizeof(struct ethhdr) +
                                 __builtin_offsetof(struct iphdr, id),
@@ -2189,9 +2312,7 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
     // LoadBalancer reverse NAT (Phase 7): the backend Pod is sending
     // a reply to the original external client. Rewriting saddr from
     // PodIP to VIP here ensures the client sees the VIP as the
-    // response source. We do not short-circuit the rest of the egress
-    // path on hit — the rewritten packet must still go through the
-    // policy + FIB stage so it routes out via the host underlay.
+    // response source.
     int lb_rc = apply_conntrack_lb_rev_nat(skb, subnet->vpc_id);
     if (lb_rc < 0) {
       trace_emit_drop_l3(skb, __trace_id, TRACE_REASON_DROP_SHOT,
@@ -2210,9 +2331,12 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
           bpf_map_lookup_elem(&pod_egress_nat_scratch, &lb_zero);
       if (lb_ne)
         trace_observe_nat(skb, lb_ne);
+
+      // This is the reply leg of an externally-originated LB flow, not a
+      // new VPC egress flow. Send it directly through the host FIB so a
+      // VPC default route cannot apply NATGateway NAPT to the VIP.
+      return route_lb_reply_underlay(skb);
     }
-    // lb_rc == 1: rewrite applied, fall through to the normal egress
-    // path so the host network stack routes the packet out.
 
     // Unified policy stage: NetworkACL → SecurityGroup → CT install.
     // Runs BEFORE apply_conntrack_dnat so each layer evaluates the
