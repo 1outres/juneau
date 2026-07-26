@@ -33,7 +33,7 @@ type Store struct {
 type sessionState struct {
 	traceID    uint32
 	expiresAt  time.Time
-	tuples     map[TupleKey]struct{}
+	tuples     map[TupleKey]Direction
 	generation int64
 }
 
@@ -91,8 +91,8 @@ func (s *Store) Apply(spec SessionSpec) error {
 		}
 	}
 
-	for k := range desired {
-		if err := s.putTuple(k, spec.TraceID); err != nil {
+	for k, dir := range desired {
+		if err := s.putTuple(k, spec.TraceID, dir); err != nil {
 			return err
 		}
 	}
@@ -116,16 +116,19 @@ func (s *Store) Delete(traceID uint32) error {
 }
 
 func (s *Store) deleteLocked(traceID uint32) error {
-	prev, ok := s.sessions[traceID]
-	if !ok {
+	if _, ok := s.sessions[traceID]; !ok {
 		return nil
 	}
 	delete(s.sessions, traceID)
 
-	for k := range prev.tuples {
-		if err := s.deleteTupleIfOwned(k, traceID); err != nil {
-			return err
-		}
+	// Scan trace_tuple_map for every entry this session owns rather than
+	// only the tuples we tracked in userspace. The dataplane auto-learns
+	// reverse (reply) tuples directly into the map without going through
+	// the Store, so a tracked-set-only sweep would leak them until the
+	// daemon restarts. Owning the value's trace_id makes the scan
+	// authoritative.
+	if err := s.deleteTuplesOwnedBy(traceID); err != nil {
+		return err
 	}
 	if err := s.config.Delete(traceID); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 		return fmt.Errorf("trace.Store: delete config %d: %w", traceID, err)
@@ -133,24 +136,105 @@ func (s *Store) deleteLocked(traceID uint32) error {
 	return s.refreshActiveCount()
 }
 
-// LearnTuple installs a learned post-NAT tuple. Used by the ringbuf
-// reader when daemons observe NAT events; the tuple is also fanned
-// out to remote nodes via the debug stream so the destination's
-// trace_tuple_map matches.
-func (s *Store) LearnTuple(traceID uint32, key TupleKey) error {
+// deleteTuplesOwnedBy removes every trace_tuple_map entry whose value's
+// trace_id matches. Keys are collected first, then deleted, because
+// mutating a BPF hash map mid-iteration risks skipping entries.
+func (s *Store) deleteTuplesOwnedBy(traceID uint32) error {
+	var (
+		keyBytes [TupleKeyBytes]byte
+		val      TupleVal
+		victims  [][]byte
+	)
+	it := s.tuples.Iterate()
+	for it.Next(&keyBytes, &val) {
+		if val.TraceID != traceID {
+			continue
+		}
+		k := make([]byte, TupleKeyBytes)
+		copy(k, keyBytes[:])
+		victims = append(victims, k)
+	}
+	if err := it.Err(); err != nil {
+		return fmt.Errorf("trace.Store: iterate tuples: %w", err)
+	}
+	for _, k := range victims {
+		if err := s.tuples.Delete(k); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			return fmt.Errorf("trace.Store: delete tuple: %w", err)
+		}
+	}
+	return nil
+}
+
+// LearnTuple installs a learned post-NAT continuation tuple with an
+// explicit leg. Used by the debug gRPC server when kubectl mirrors a
+// post-NAT forward tuple (Request) it decoded from one daemon over to
+// the peers whose dataplane may also see the continuation. The
+// dataplane itself auto-learns the matching reply tuple locally, so
+// this path only carries forward continuations.
+func (s *Store) LearnTuple(traceID uint32, key TupleKey, dir Direction) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st, ok := s.sessions[traceID]
 	if !ok {
 		return errors.New("trace.Store: unknown traceID for learned tuple")
 	}
-	if _, exists := st.tuples[key]; exists {
+	if existing, exists := st.tuples[key]; exists && existing == dir {
 		return nil
 	}
-	if err := s.putTuple(key, traceID); err != nil {
+	if err := s.putTuple(key, traceID, dir); err != nil {
 		return err
 	}
-	st.tuples[key] = struct{}{}
+	st.tuples[key] = dir
+	return nil
+}
+
+// LearnReverseFromEvent installs the opposite-leg (reply) mirror of a
+// tuple this node observed, replacing the in-kernel reverse-learn that
+// was removed to fit the BPF combined-stack budget. It is a no-op for
+// events that seed no mirror, so the ringbuf reader can call it
+// unconditionally on every decoded event.
+func (s *Store) LearnReverseFromEvent(ev Event) error {
+	key, dir, ok := reverseMirrorFromEvent(ev)
+	if !ok {
+		return nil
+	}
+	return s.learnReverseMirror(ev.TraceID, key, dir)
+}
+
+// learnReverseMirror writes a reply-mirror tuple with NOEXIST semantics
+// so it never clobbers a kubectl-seeded Reply mirror or an existing
+// Request tuple — the BPF reverse-learn used BPF_NOEXIST for exactly the
+// same reason.
+//
+// The mirror is deliberately not recorded in sessionState.tuples. Like
+// the dataplane's former direct map writes, it is reaped by Delete's
+// whole-map ownership scan (deleteTuplesOwnedBy), and keeping it out of
+// the Apply diff set stops a status-patch reconcile from sweeping it
+// between a request and its reply.
+func (s *Store) learnReverseMirror(traceID uint32, key TupleKey, dir Direction) error {
+	if traceID == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.sessions[traceID]; !ok {
+		// Session torn down between event emission and decode; nothing to
+		// attach the mirror to.
+		return nil
+	}
+	keyBytes, err := key.MarshalBinary()
+	if err != nil {
+		return fmt.Errorf("trace.Store: marshal reverse tuple: %w", err)
+	}
+	val := TupleVal{TraceID: traceID, Direction: uint8(dir)}
+	if err := s.tuples.Update(keyBytes, val, ebpf.UpdateNoExist); err != nil {
+		if errors.Is(err, ebpf.ErrKeyExist) {
+			// A kubectl-seeded mirror or another session already owns this
+			// key; leave it authoritative.
+			return nil
+		}
+		return fmt.Errorf("trace.Store: write reverse tuple: %w", err)
+	}
 	return nil
 }
 
@@ -183,12 +267,12 @@ func (s *Store) ActiveTraceIDs() []uint32 {
 	return out
 }
 
-func (s *Store) putTuple(k TupleKey, traceID uint32) error {
+func (s *Store) putTuple(k TupleKey, traceID uint32, dir Direction) error {
 	keyBytes, err := k.MarshalBinary()
 	if err != nil {
 		return fmt.Errorf("trace.Store: marshal tuple: %w", err)
 	}
-	val := struct{ TraceID uint32 }{TraceID: traceID}
+	val := TupleVal{TraceID: traceID, Direction: uint8(dir)}
 	if err := s.tuples.Update(keyBytes, val, ebpf.UpdateAny); err != nil {
 		return fmt.Errorf("trace.Store: write tuple: %w", err)
 	}
@@ -200,7 +284,7 @@ func (s *Store) deleteTupleIfOwned(k TupleKey, traceID uint32) error {
 	if err != nil {
 		return fmt.Errorf("trace.Store: marshal tuple: %w", err)
 	}
-	var existing struct{ TraceID uint32 }
+	var existing TupleVal
 	if err := s.tuples.Lookup(keyBytes, &existing); err != nil {
 		if errors.Is(err, ebpf.ErrKeyNotExist) {
 			return nil
@@ -225,6 +309,14 @@ func (s *Store) refreshActiveCount() error {
 	return nil
 }
 
+// Tuple pairs a trace_tuple_map key with the leg it is tagged as.
+// kubectl-computed forward tuples are Request; the reverse mirrors it
+// precomputes are Reply.
+type Tuple struct {
+	Key       TupleKey
+	Direction Direction
+}
+
 // SessionSpec is the daemon-side projection of TraceSession.spec —
 // the parts the BPF data plane cares about. The reconciler builds it
 // from the CRD; tests build it directly.
@@ -235,7 +327,7 @@ type SessionSpec struct {
 	CaptureFlags CaptureFlag
 	Level        CaptureLevel
 	Mode         uint8 // 0=ObserveOnly, 1=ActiveProbe
-	Tuples       []TupleKey
+	Tuples       []Tuple
 }
 
 func storeConfigVal(spec SessionSpec, bootNs int64) any {
@@ -269,10 +361,10 @@ func storeConfigVal(spec SessionSpec, bootNs int64) any {
 	return v
 }
 
-func tupleSet(in []TupleKey) map[TupleKey]struct{} {
-	out := make(map[TupleKey]struct{}, len(in))
-	for _, k := range in {
-		out[k] = struct{}{}
+func tupleSet(in []Tuple) map[TupleKey]Direction {
+	out := make(map[TupleKey]Direction, len(in))
+	for _, t := range in {
+		out[t.Key] = t.Direction
 	}
 	return out
 }

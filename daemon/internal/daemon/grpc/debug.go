@@ -203,7 +203,7 @@ func (d *DebugServer) LearnTuple(_ context.Context, req *debugpb.LearnTupleReque
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "tuple: %v", err)
 	}
-	if err := d.store.LearnTuple(req.TraceId, key); err != nil {
+	if err := d.store.LearnTuple(req.TraceId, key, directionFromProto(req.Tuple.Direction)); err != nil {
 		return nil, status.Errorf(codes.Internal, "learn tuple: %v", err)
 	}
 	return &emptypb.Empty{}, nil
@@ -236,6 +236,7 @@ func traceEventToProto(ev trace.Event, nodeName string) *debugpb.TraceEvent {
 		Protocol:    protoToProto(ev.Protocol),
 		Verdict:     verdictToProto(ev.Verdict),
 		Scope:       scopeToProto(ev.Scope),
+		Direction:   directionToProto(ev.Direction),
 		SrcIp:       cloneIP(ev.SrcIP),
 		DstIp:       cloneIP(ev.DstIP),
 		SrcPort:     uint32(ev.SrcPort),
@@ -333,6 +334,27 @@ func scopeToProto(s trace.Scope) debugpb.TupleScope {
 		return debugpb.TupleScope_TUPLE_SCOPE_VPC
 	}
 	return debugpb.TupleScope_TUPLE_SCOPE_HOST
+}
+
+func directionToProto(d trace.Direction) debugpb.TraceDirection {
+	switch d {
+	case trace.DirRequest:
+		return debugpb.TraceDirection_TRACE_DIRECTION_REQUEST
+	case trace.DirReply:
+		return debugpb.TraceDirection_TRACE_DIRECTION_REPLY
+	}
+	return debugpb.TraceDirection_TRACE_DIRECTION_UNSPECIFIED
+}
+
+// directionFromProto maps the wire leg to the BPF value. Unspecified
+// resolves to Request: the LearnTuple path only ever carries forward
+// (post-NAT) continuations, and the dataplane auto-learns their reply
+// mirrors on its own.
+func directionFromProto(d debugpb.TraceDirection) trace.Direction {
+	if d == debugpb.TraceDirection_TRACE_DIRECTION_REPLY {
+		return trace.DirReply
+	}
+	return trace.DirRequest
 }
 
 // SnapshotEvictTimer is exposed so callers can short-circuit the

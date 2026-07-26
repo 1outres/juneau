@@ -134,6 +134,17 @@ message TraceTuple {
   uint32 src_port = 5;    // host byte order
   uint32 dst_port = 6;
   TraceProtocol protocol = 7;
+  // direction is the leg this tuple belongs to. Programmed into
+  // trace_tuple_map's value so events carry an authoritative
+  // request/reply tag. Unspecified is treated as Request by daemons
+  // (the common forward-continuation case for LearnTuple).
+  TraceDirection direction = 8;
+}
+
+enum TraceDirection {
+  TRACE_DIRECTION_UNSPECIFIED = 0;
+  TRACE_DIRECTION_REQUEST = 1;
+  TRACE_DIRECTION_REPLY = 2;
 }
 
 enum TupleScope {
@@ -185,6 +196,11 @@ message TraceEvent {
 
   uint32 aux1 = 22;
   uint32 aux2 = 23;
+
+  // direction is the authoritative request/reply tag carried on the
+  // matched trace_tuple_map entry. kubectl renders it directly instead
+  // of inferring the leg from address orientation.
+  TraceDirection direction = 24;
 }
 
 enum TraceHook {

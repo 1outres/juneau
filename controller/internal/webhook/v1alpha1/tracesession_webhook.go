@@ -301,6 +301,18 @@ func validateTraceTuple(path *field.Path, t *juneauv1alpha1.TraceTuple) field.Er
 		}))
 	}
 
+	// Direction defaults to Request via the CRD schema; empty is
+	// therefore accepted here (the apiserver fills it before the object
+	// is persisted).
+	switch t.Direction {
+	case "", juneauv1alpha1.TraceTupleDirectionRequest, juneauv1alpha1.TraceTupleDirectionReply:
+	default:
+		errs = append(errs, field.NotSupported(path.Child("direction"), string(t.Direction), []string{
+			string(juneauv1alpha1.TraceTupleDirectionRequest),
+			string(juneauv1alpha1.TraceTupleDirectionReply),
+		}))
+	}
+
 	return errs
 }
 

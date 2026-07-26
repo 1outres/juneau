@@ -75,9 +75,9 @@ func TestDecodeEvent(t *testing.T) {
 	put8(6)             // proto = TCP
 	put8(byte(VerdictOK))
 	put8(byte(ScopeVPC))
-	put8(0)             // _pad0
-	putBE32(0x0a000208) // saddr2 10.0.2.8
-	putBE32(0x0a000105) // daddr2 10.0.1.5
+	put8(byte(DirReply)) // direction
+	putBE32(0x0a000208)  // saddr2 10.0.2.8
+	putBE32(0x0a000105)  // daddr2 10.0.1.5
 	putBE16(8443)
 	putBE16(50000)
 	put32(7)
@@ -108,6 +108,9 @@ func TestDecodeEvent(t *testing.T) {
 	}
 	if ev.SrcPort != 50000 || ev.DstPort != 443 {
 		t.Fatalf("ports: %d->%d", ev.SrcPort, ev.DstPort)
+	}
+	if ev.Direction != DirReply {
+		t.Fatalf("direction: %d (want Reply)", ev.Direction)
 	}
 	if !ev.HasAux {
 		t.Fatalf("expected HasAux")

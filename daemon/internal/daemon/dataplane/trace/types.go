@@ -95,6 +95,25 @@ const (
 	ScopeVPC  Scope = 1
 )
 
+// Direction mirrors TRACE_DIR_* in trace.h: the authoritative leg a
+// tuple (and every event resolved through it) belongs to.
+type Direction uint8
+
+const (
+	DirUnspecified Direction = 0
+	DirRequest     Direction = 1
+	DirReply       Direction = 2
+)
+
+// TupleVal is the userspace mirror of struct trace_tuple_val. Layout
+// matches the BPF side byte-for-byte (8 bytes): trace_id, direction,
+// and 3 bytes of explicit padding so the kernel value size agrees.
+type TupleVal struct {
+	TraceID   uint32
+	Direction uint8
+	Pad       [3]uint8
+}
+
 // CaptureFlag mirrors TRACE_CAP_* in trace.h.
 type CaptureFlag uint32
 
@@ -164,9 +183,10 @@ type Event struct {
 	// node only; cross-node ordering uses receive time.
 	At time.Duration
 
-	Protocol uint8
-	Verdict  Verdict
-	Scope    Scope
+	Protocol  uint8
+	Verdict   Verdict
+	Scope     Scope
+	Direction Direction
 
 	SrcIP   net.IP
 	DstIP   net.IP
@@ -219,7 +239,7 @@ func DecodeEvent(b []byte) (Event, error) {
 	ev.Protocol = u8()
 	ev.Verdict = Verdict(u8())
 	ev.Scope = Scope(u8())
-	off++ // _pad0
+	ev.Direction = Direction(u8())
 
 	src2 := be32()
 	dst2 := be32()
@@ -243,4 +263,88 @@ func ipFromBE(b uint32) net.IP {
 	out := make(net.IP, 4)
 	binary.BigEndian.PutUint32(out, b)
 	return out
+}
+
+// flipDirection returns the opposite leg; Unspecified maps to itself.
+// Mirrors trace_flip_dir, which used to live in the BPF datapath.
+func flipDirection(d Direction) Direction {
+	switch d {
+	case DirRequest:
+		return DirReply
+	case DirReply:
+		return DirRequest
+	}
+	return DirUnspecified
+}
+
+// isEnterReason reports whether r is one of the per-hook entry reasons
+// (TRACE_REASON_ENTER_*). Enter events carry the packet's primary tuple
+// with no aux tuple.
+func isEnterReason(r Reason) bool {
+	return r >= ReasonEnterPodEgress && r <= ReasonEnterNodeIngress
+}
+
+// reverseMirrorFromEvent derives the opposite-leg (reply) mirror tuple
+// the BPF datapath used to auto-learn before the reverse-learn
+// subprogram was removed to fit the 512-byte combined-stack ceiling. The
+// daemon's ringbuf reader installs the returned tuple into
+// trace_tuple_map so the return leg of a flow this node observed resolves
+// the same trace_id. ok is false for events that seed no mirror.
+//
+// Two event classes seed a mirror, matching the two former BPF call
+// sites:
+//   - a NAT event (carrying a post-translation aux tuple) mirrors that
+//     aux tuple with src/dst swapped, tagged the opposite of the event's
+//     leg — this is the mirror kubectl cannot precompute (NAPT, SNAT);
+//   - a Request-leg hook-entry event mirrors its primary tuple with
+//     src/dst swapped, tagged Reply.
+//
+// Both wildcard the ports to 0 so the datapath's dport=0 second-chance
+// lookup catches the reply's unknowable ephemeral port. The mirror is
+// tagged authoritatively so rendering never infers the leg from address
+// orientation.
+func reverseMirrorFromEvent(ev Event) (TupleKey, Direction, bool) {
+	var src, dst net.IP
+	var dir Direction
+	switch {
+	case ev.HasAux:
+		// NAT-class event: mirror the post-translation aux tuple.
+		src, dst = ev.AuxDst, ev.AuxSrc
+		dir = flipDirection(ev.Direction)
+	case isEnterReason(ev.Reason) && ev.Direction == DirRequest:
+		// A matched Reply's mirror is the Request tuple, already present,
+		// so only Request-leg entries seed a mirror.
+		src, dst = ev.DstIP, ev.SrcIP
+		dir = DirReply
+	default:
+		return TupleKey{}, DirUnspecified, false
+	}
+	if dir == DirUnspecified {
+		return TupleKey{}, DirUnspecified, false
+	}
+	sk, ok := ip4(src)
+	if !ok {
+		return TupleKey{}, DirUnspecified, false
+	}
+	dk, ok := ip4(dst)
+	if !ok {
+		return TupleKey{}, DirUnspecified, false
+	}
+	return TupleKey{
+		Scope:    ev.Scope,
+		Protocol: ev.Protocol,
+		VPCID:    ev.VPCID,
+		SrcIP:    sk,
+		DstIP:    dk,
+	}, dir, true
+}
+
+func ip4(ip net.IP) ([4]byte, bool) {
+	v4 := ip.To4()
+	if v4 == nil {
+		return [4]byte{}, false
+	}
+	var out [4]byte
+	copy(out[:], v4)
+	return out, true
 }

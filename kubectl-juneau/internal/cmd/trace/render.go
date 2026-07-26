@@ -33,10 +33,13 @@ func writeHeader(w io.Writer, format string, r *resolved, o *Options) {
 }
 
 // writeEvent emits a single event in the configured format. tree
-// formatting matches the streaming-friendly one-line layout; JSON
+// formatting matches the streaming-friendly one-line layout and is the
+// only format that carries the request/reply direction marker; JSON
 // produces NDJSON so downstream tooling can consume the stream
 // incrementally; YAML uses the kubectl idiom of one document per
-// record separated by `---`.
+// record separated by `---`. Machine formats emit the raw event as-is;
+// the direction marker is a tree-only presentation of ev.Direction,
+// which is already present on the structured record.
 func writeEvent(w io.Writer, format string, ev *debugpb.TraceEvent) error {
 	switch normaliseFormat(format) {
 	case outputJSON:
@@ -114,7 +117,11 @@ func endpointDisplay(e endpoint) string {
 
 // renderEvent renders a single TraceEvent as a one-line timeline
 // entry. Format mirrors the design handoff example with the addition
-// of a verdict suffix when non-OK.
+// of a request/reply direction marker and a verdict suffix when
+// non-OK. The leg comes straight off ev.Direction — an authoritative
+// tag the dataplane stamps from the matched tuple, so kubectl never
+// has to infer direction from address orientation (ambiguous under NAT
+// and across VPCs with overlapping Pod CIDRs).
 func renderEvent(ev *debugpb.TraceEvent) string {
 	ms := float64(ev.MonotonicNs) / 1e6
 	tuple := fmt.Sprintf("%s:%d->%s:%d",
@@ -129,8 +136,21 @@ func renderEvent(ev *debugpb.TraceEvent) string {
 			ipFormat(ev.AuxDstIp), ev.AuxDstPort)
 	}
 	verdict := verdictSuffix(ev.Verdict)
-	return fmt.Sprintf("  %9.3fms  %-12s  %-22s  %-32s%s%s%s",
-		ms, ev.NodeName, hook, reason, tuple, aux, verdict)
+	return fmt.Sprintf("  %9.3fms  %-12s  %-22s  %-32s  %s  %s%s%s",
+		ms, ev.NodeName, hook, reason, directionTag(ev.Direction), tuple, aux, verdict)
+}
+
+// directionTag renders the fixed-width leg marker. ASCII arrows keep
+// the timeline grep-friendly; an unspecified leg reserves the same
+// width so columns stay aligned.
+func directionTag(d debugpb.TraceDirection) string {
+	switch d {
+	case debugpb.TraceDirection_TRACE_DIRECTION_REQUEST:
+		return "[->]"
+	case debugpb.TraceDirection_TRACE_DIRECTION_REPLY:
+		return "[<-]"
+	}
+	return "    "
 }
 
 func ipFormat(b []byte) string {

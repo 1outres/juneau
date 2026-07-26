@@ -106,6 +106,28 @@ const (
 	TraceTupleScopeVPC  TraceTupleScope = "VPC"
 )
 
+// TraceTupleDirection labels a tuple's leg in the flow so daemons and
+// kubectl render request vs reply legs from an authoritative signal
+// rather than inferring direction from address orientation (which is
+// ambiguous under NAT and across VPCs with overlapping Pod CIDRs).
+//
+// +kubebuilder:validation:Enum=Request;Reply
+type TraceTupleDirection string
+
+const (
+	// TraceTupleDirectionRequest marks the forward leg (source ->
+	// destination). This is the default for kubectl-computed tuples.
+	TraceTupleDirectionRequest TraceTupleDirection = "Request"
+	// TraceTupleDirectionReply marks the return leg (destination ->
+	// source). kubectl installs one Reply mirror per Request tuple —
+	// source/destination swapped, ports wildcarded — so reply packets
+	// resolve the same trace_id from session start even for flows whose
+	// request leg is never observed during the session. The dataplane
+	// additionally learns Reply tuples for dynamically discovered /
+	// post-NAT legs the moment it matches the corresponding Request.
+	TraceTupleDirectionReply TraceTupleDirection = "Reply"
+)
+
 // TracePodReference identifies a Pod by namespace + name. Pod UID is
 // resolved at session creation by kubectl and not stored in the CRD,
 // so a Pod restart between create and observation does not invalidate
@@ -248,6 +270,14 @@ type TraceTuple struct {
 	// Protocol selects the IP protocol matched by this tuple.
 	// +required
 	Protocol TraceProtocol `json:"protocol"`
+
+	// Direction labels this tuple's leg. Defaults to Request. kubectl
+	// sets Reply on the return-direction mirror it precomputes for each
+	// Request tuple. Daemons program the value into trace_tuple_map so
+	// every emitted event carries an authoritative request/reply tag.
+	// +optional
+	// +kubebuilder:default=Request
+	Direction TraceTupleDirection `json:"direction,omitempty"`
 }
 
 // TraceSessionSpec is the desired state of a trace session.

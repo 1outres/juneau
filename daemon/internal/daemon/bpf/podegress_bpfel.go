@@ -302,6 +302,31 @@ type PodEgressTraceConfigVal struct {
 	Pad          [2]uint8
 }
 
+type PodEgressTraceEmitArgs struct {
+	_         structs.HostLayout
+	TraceId   uint32
+	Reason    uint16
+	Hook      uint8
+	Scope     uint8
+	Proto     uint8
+	Verdict   uint8
+	Direction uint8
+	Pad0      uint8
+	Ifindex   uint32
+	VpcId     uint32
+	SubnetId  uint32
+	Saddr     uint32
+	Daddr     uint32
+	Sport     uint16
+	Dport     uint16
+	Saddr2    uint32
+	Daddr2    uint32
+	Sport2    uint16
+	Dport2    uint16
+	Aux1      uint32
+	Aux2      uint32
+}
+
 type PodEgressTraceNatEvent struct {
 	_           structs.HostLayout
 	VpcId       uint32
@@ -334,8 +359,10 @@ type PodEgressTraceTupleKey struct {
 }
 
 type PodEgressTraceTupleVal struct {
-	_       structs.HostLayout
-	TraceId uint32
+	_         structs.HostLayout
+	TraceId   uint32
+	Direction uint8
+	Pad       [3]uint8
 }
 
 type PodEgressVirtualServiceFlowKey struct {
@@ -447,6 +474,7 @@ type PodEgressMapSpecs struct {
 	NatDnatMap            *ebpf.MapSpec `ebpf:"nat_dnat_map"`
 	NatSnatMap            *ebpf.MapSpec `ebpf:"nat_snat_map"`
 	NodeUnderlays         *ebpf.MapSpec `ebpf:"node_underlays"`
+	PodEgressEmitScratch  *ebpf.MapSpec `ebpf:"pod_egress_emit_scratch"`
 	PodEgressNatScratch   *ebpf.MapSpec `ebpf:"pod_egress_nat_scratch"`
 	ServiceAclMap         *ebpf.MapSpec `ebpf:"service_acl_map"`
 	ServiceAffinityMap    *ebpf.MapSpec `ebpf:"service_affinity_map"`
@@ -513,6 +541,7 @@ type PodEgressMaps struct {
 	NatDnatMap            *ebpf.Map `ebpf:"nat_dnat_map"`
 	NatSnatMap            *ebpf.Map `ebpf:"nat_snat_map"`
 	NodeUnderlays         *ebpf.Map `ebpf:"node_underlays"`
+	PodEgressEmitScratch  *ebpf.Map `ebpf:"pod_egress_emit_scratch"`
 	PodEgressNatScratch   *ebpf.Map `ebpf:"pod_egress_nat_scratch"`
 	ServiceAclMap         *ebpf.Map `ebpf:"service_acl_map"`
 	ServiceAffinityMap    *ebpf.Map `ebpf:"service_affinity_map"`
@@ -553,6 +582,7 @@ func (m *PodEgressMaps) Close() error {
 		m.NatDnatMap,
 		m.NatSnatMap,
 		m.NodeUnderlays,
+		m.PodEgressEmitScratch,
 		m.PodEgressNatScratch,
 		m.ServiceAclMap,
 		m.ServiceAffinityMap,

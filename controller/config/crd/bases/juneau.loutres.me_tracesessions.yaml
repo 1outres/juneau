@@ -186,6 +186,17 @@ spec:
                     daemons can program their BPF trace_tuple_map without re-resolving
                     CRDs.
                   properties:
+                    direction:
+                      default: Request
+                      description: |-
+                        Direction labels this tuple's leg. Defaults to Request. kubectl
+                        sets Reply on the return-direction mirror it precomputes for each
+                        Request tuple. Daemons program the value into trace_tuple_map so
+                        every emitted event carries an authoritative request/reply tag.
+                      enum:
+                      - Request
+                      - Reply
+                      type: string
                     dstIP:
                       description: DstIP is the destination IPv4 address.
                       minLength: 1

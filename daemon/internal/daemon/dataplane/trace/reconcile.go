@@ -190,13 +190,13 @@ func (r *Reconciler) markUnobserved(ctx context.Context, ts *juneauv1alpha1.Trac
 // have caught, but we re-validate at the daemon boundary so a
 // rogue / bypassed object cannot corrupt BPF state.
 func buildSessionSpec(ts *juneauv1alpha1.TraceSession) (SessionSpec, error) {
-	tuples := make([]TupleKey, 0, len(ts.Spec.InitialTuples))
+	tuples := make([]Tuple, 0, len(ts.Spec.InitialTuples))
 	for i := range ts.Spec.InitialTuples {
-		k, err := tupleFromCRD(&ts.Spec.InitialTuples[i])
+		t, err := tupleFromCRD(&ts.Spec.InitialTuples[i])
 		if err != nil {
 			return SessionSpec{}, fmt.Errorf("tuple[%d]: %w", i, err)
 		}
-		tuples = append(tuples, k)
+		tuples = append(tuples, t)
 	}
 	mode := uint8(0)
 	if ts.Spec.Mode == juneauv1alpha1.TraceModeActiveProbe {
@@ -213,28 +213,42 @@ func buildSessionSpec(ts *juneauv1alpha1.TraceSession) (SessionSpec, error) {
 	}, nil
 }
 
-func tupleFromCRD(t *juneauv1alpha1.TraceTuple) (TupleKey, error) {
+func tupleFromCRD(t *juneauv1alpha1.TraceTuple) (Tuple, error) {
 	src, err := parseIPv4(t.SrcIP)
 	if err != nil {
-		return TupleKey{}, fmt.Errorf("srcIP: %w", err)
+		return Tuple{}, fmt.Errorf("srcIP: %w", err)
 	}
 	dst, err := parseIPv4(t.DstIP)
 	if err != nil {
-		return TupleKey{}, fmt.Errorf("dstIP: %w", err)
+		return Tuple{}, fmt.Errorf("dstIP: %w", err)
 	}
 	scope := ScopeHost
 	if t.Scope == juneauv1alpha1.TraceTupleScopeVPC {
 		scope = ScopeVPC
 	}
-	return TupleKey{
-		Scope:    scope,
-		Protocol: ipProto(t.Protocol),
-		VPCID:    t.VPCID,
-		SrcIP:    src,
-		DstIP:    dst,
-		SrcPort:  uint16(t.SrcPort),
-		DstPort:  uint16(t.DstPort),
+	return Tuple{
+		Key: TupleKey{
+			Scope:    scope,
+			Protocol: ipProto(t.Protocol),
+			VPCID:    t.VPCID,
+			SrcIP:    src,
+			DstIP:    dst,
+			SrcPort:  uint16(t.SrcPort),
+			DstPort:  uint16(t.DstPort),
+		},
+		Direction: directionFromCRD(t.Direction),
 	}, nil
+}
+
+// directionFromCRD maps the CRD leg enum to the BPF value. Empty
+// defaults to Request — the apiserver fills the default, but daemons
+// re-validate at their boundary and must not treat an unset field as
+// an unknown leg.
+func directionFromCRD(d juneauv1alpha1.TraceTupleDirection) Direction {
+	if d == juneauv1alpha1.TraceTupleDirectionReply {
+		return DirReply
+	}
+	return DirRequest
 }
 
 func parseIPv4(s string) ([4]byte, error) {

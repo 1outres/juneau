@@ -167,42 +167,56 @@ type nodeagentClientHandle struct {
 func (s *streamSet) Events() <-chan *debugpb.TraceEvent { return s.events }
 func (s *streamSet) Errors() <-chan error               { return s.errors }
 
-// PropagateLearnedTuple installs the post-NAT tuple from `ev` on
-// every daemon node *other than* the one that emitted the event.
-// Best-effort: per-node failures are surfaced on the error channel
-// but never block trace rendering.
+// auxContinuationTuple builds the post-NAT continuation tuple from a
+// NAT event's aux (post-translation) tuple, carrying the event's
+// authoritative leg. The translated destination port is kept; the
+// ephemeral source port is wildcarded BPF-side.
+func auxContinuationTuple(ev *debugpb.TraceEvent) *debugpb.TraceTuple {
+	return &debugpb.TraceTuple{
+		Scope:     ev.Scope,
+		VpcId:     ev.VpcId,
+		SrcIp:     ev.AuxSrcIp,
+		DstIp:     ev.AuxDstIp,
+		SrcPort:   0,
+		DstPort:   ev.AuxDstPort,
+		Protocol:  ev.Protocol,
+		Direction: ev.Direction,
+	}
+}
+
+// PropagateLearnedTuple installs the post-NAT continuation tuple from
+// `ev` on every peer daemon so the rewritten flow keeps matching as it
+// crosses to a node kubectl could not precompute (NAPT, shared-Service
+// SNAT). Best-effort: per-node failures surface on the error channel
+// but never block rendering.
 //
-// The originating node's BPF program already learned the tuple
-// locally via trace_learn_tuple, so re-installing there would be a
-// redundant write and a wasted RPC. Skip it.
+// Only the same-leg continuation is relayed. The reply leg needs no
+// relay: the dataplane auto-learns the reverse mirror of any tuple it
+// matches the instant it sees the packet, so once a peer matches this
+// continuation it captures the reply locally. The originating node
+// already learned this tuple in-kernel, so it is skipped.
 func (s *streamSet) PropagateLearnedTuple(ctx context.Context, ev *debugpb.TraceEvent) {
 	if ev == nil || !ev.HasAuxTuple {
 		return
 	}
-	tuple := &debugpb.TraceTuple{
-		Scope:    ev.Scope,
-		VpcId:    ev.VpcId,
-		SrcIp:    ev.AuxSrcIp,
-		DstIp:    ev.AuxDstIp,
-		SrcPort:  0, // ephemeral source ports are wildcarded BPF-side
-		DstPort:  ev.AuxDstPort,
-		Protocol: ev.Protocol,
-	}
-	req := &debugpb.LearnTupleRequest{TraceId: ev.TraceId, Tuple: tuple}
-
+	tuple := auxContinuationTuple(ev)
 	for _, h := range s.clients {
 		if h.node == ev.NodeName {
 			continue
 		}
-		// 2s is enough for an RPC over the local exec / port-forward
-		// tunnel; capping prevents a stuck peer from leaking
-		// goroutines.
-		callCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		_, err := h.cl.Debug().LearnTuple(callCtx, req)
-		cancel()
-		if err != nil {
-			s.reportError(fmt.Errorf("node %s: LearnTuple: %w", h.node, err))
-		}
+		s.learnTuple(ctx, h, ev.TraceId, tuple)
+	}
+}
+
+// learnTuple issues a single LearnTuple RPC. 2s is enough for a call
+// over the local exec / port-forward tunnel; capping prevents a stuck
+// peer from leaking goroutines.
+func (s *streamSet) learnTuple(ctx context.Context, h nodeagentClientHandle, traceID uint32, tuple *debugpb.TraceTuple) {
+	callCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	req := &debugpb.LearnTupleRequest{TraceId: traceID, Tuple: tuple}
+	if _, err := h.cl.Debug().LearnTuple(callCtx, req); err != nil {
+		s.reportError(fmt.Errorf("node %s: LearnTuple: %w", h.node, err))
 	}
 }
 
