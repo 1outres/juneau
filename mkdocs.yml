@@ -60,6 +60,7 @@ nav:
     - ServiceNATAttachment: resources/servicenatattachment.md
     - ServiceLoadBalancer: resources/serviceloadbalancer.md
     - NetworkInterface: resources/networkinterface.md
+    - NetworkInterfaceAttachment: resources/networkinterfaceattachment.md
     - NetworkEndpoint: resources/networkendpoint.md
     - SecurityGroup: resources/securitygroup.md
     - NetworkACL: resources/networkacl.md

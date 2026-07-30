@@ -621,6 +621,26 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /validate-juneau-loutres-me-v1alpha1-networkinterfaceattachment
+  failurePolicy: Fail
+  name: vnetworkinterfaceattachment-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - networkinterfaceattachments
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /validate--v1-pod
   failurePolicy: Ignore
   name: vpod-juneau-loutres-me.kb.io

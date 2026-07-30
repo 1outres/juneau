@@ -73,6 +73,9 @@ resources:
 - networkinterface_admin_role.yaml
 - networkinterface_editor_role.yaml
 - networkinterface_viewer_role.yaml
+- networkinterfaceattachment_admin_role.yaml
+- networkinterfaceattachment_editor_role.yaml
+- networkinterfaceattachment_viewer_role.yaml
 - subnet_admin_role.yaml
 - subnet_editor_role.yaml
 - subnet_viewer_role.yaml
@@ -88,4 +91,3 @@ resources:
 - tracesession_admin_role.yaml
 - tracesession_editor_role.yaml
 - tracesession_viewer_role.yaml
-

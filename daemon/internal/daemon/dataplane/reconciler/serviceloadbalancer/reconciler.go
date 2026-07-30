@@ -326,14 +326,23 @@ func (r *Reconciler) resolveSubnetID(ctx context.Context, ep localEndpoint) (uin
 	if ep.targetRef == nil || ep.targetRef.Kind != "Pod" {
 		return 0, nil
 	}
-	var ifaces juneauv1alpha1.NetworkInterfaceList
-	if err := r.client.List(ctx, &ifaces, client.InNamespace(ep.targetRef.Namespace), client.MatchingFields{"spec.podRef.name": ep.targetRef.Name}); err != nil {
+	var attachments juneauv1alpha1.NetworkInterfaceAttachmentList
+	if err := r.client.List(ctx, &attachments, client.InNamespace(ep.targetRef.Namespace), client.MatchingFields{"spec.podRef.name": ep.targetRef.Name}); err != nil {
 		return 0, err
 	}
-	if len(ifaces.Items) == 0 {
+	if len(attachments.Items) == 0 {
 		return 0, nil
 	}
-	iface := ifaces.Items[0]
+	var iface juneauv1alpha1.NetworkInterface
+	if err := r.client.Get(ctx, client.ObjectKey{
+		Namespace: ep.targetRef.Namespace,
+		Name:      attachments.Items[0].Spec.NetworkInterfaceRef,
+	}, &iface); err != nil {
+		if apierrors.IsNotFound(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
 	if iface.Spec.Subnet == "" {
 		return 0, nil
 	}

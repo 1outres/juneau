@@ -24,6 +24,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -33,11 +34,12 @@ import (
 )
 
 const (
-	podAnnSubnet         = "juneau.loutres.me/subnet"
-	podAnnAddress        = "juneau.loutres.me/address"
-	podAnnSecurityGroups = "juneau.loutres.me/security-groups"
-	defaultIfName        = "eth0"
-	requeueDelay         = 5 * time.Second
+	podAnnSubnet           = "juneau.loutres.me/subnet"
+	podAnnAddress          = "juneau.loutres.me/address"
+	podAnnSecurityGroups   = "juneau.loutres.me/security-groups"
+	podAnnNetworkInterface = "juneau.loutres.me/network-interface"
+	defaultIfName          = "eth0"
+	requeueDelay           = 5 * time.Second
 )
 
 // PodReconciler reconciles a Pod object for NetworkInterface provisioning.
@@ -47,9 +49,12 @@ type PodReconciler struct {
 }
 
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
-// +kubebuilder:rbac:groups=juneau.loutres.me,resources=networkinterfaces,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=networkinterfaces,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=networkinterfaceattachments,verbs=get;list;watch;create;delete
 
-// Reconcile creates a NetworkInterface for a Pod based on annotations.
+// Reconcile creates a pod-scoped NetworkInterfaceAttachment. Pods without an
+// explicit persistent NetworkInterface receive a Pod-owned interface so the
+// default Kubernetes experience remains automatic.
 func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -78,60 +83,112 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
 		niName := pod.Name + "." + ifName
-		var nwiface juneauv1alpha1.NetworkInterface
-		if err := r.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: niName}, &nwiface); err != nil {
+		var attachment juneauv1alpha1.NetworkInterfaceAttachment
+		if err := r.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: niName}, &attachment); err != nil {
 			if errors.IsNotFound(err) {
 				return ctrl.Result{}, nil
 			}
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, r.Delete(ctx, &nwiface)
+		return ctrl.Result{}, r.Delete(ctx, &attachment)
 	}
 
+	networkInterfaceName := annotations[podAnnNetworkInterface]
 	subnetName := annotations[podAnnSubnet]
-	if subnetName == "" {
-		subnetName = "default"
-	}
 
 	if pod.Spec.NodeName == "" {
 		// ノード未確定なので少し待つ
 		return ctrl.Result{RequeueAfter: requeueDelay}, nil
 	}
 
-	var subnet juneauv1alpha1.Subnet
-	if err := r.Get(ctx, client.ObjectKey{Name: subnetName}, &subnet); err != nil {
-		if errors.IsNotFound(err) {
-			return ctrl.Result{RequeueAfter: requeueDelay}, nil
+	autoManaged := networkInterfaceName == ""
+	if autoManaged {
+		if subnetName == "" {
+			subnetName = "default"
 		}
-		return ctrl.Result{}, err
+		var subnet juneauv1alpha1.Subnet
+		if err := r.Get(ctx, client.ObjectKey{Name: subnetName}, &subnet); err != nil {
+			if errors.IsNotFound(err) {
+				return ctrl.Result{RequeueAfter: requeueDelay}, nil
+			}
+			return ctrl.Result{}, err
+		}
+	} else {
+		var networkInterface juneauv1alpha1.NetworkInterface
+		if err := r.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: networkInterfaceName}, &networkInterface); err != nil {
+			if errors.IsNotFound(err) {
+				return ctrl.Result{RequeueAfter: requeueDelay}, nil
+			}
+			return ctrl.Result{}, err
+		}
+		subnetName = networkInterface.Spec.Subnet
 	}
 
-	nwiface := &juneauv1alpha1.NetworkInterface{}
-	nwiface.SetName(pod.Name + "." + ifName)
-	nwiface.SetNamespace(pod.Namespace)
+	if autoManaged {
+		networkInterfaceName = pod.Name + "." + ifName
+		nwiface := &juneauv1alpha1.NetworkInterface{}
+		nwiface.SetName(networkInterfaceName)
+		nwiface.SetNamespace(pod.Namespace)
+		_, err := ctrl.CreateOrUpdate(ctx, r.Client, nwiface, func() error {
+			nwiface.Spec.Subnet = subnetName
+			nwiface.Spec.Address = annotations[podAnnAddress]
+			nwiface.Spec.SecurityGroups = ParsePodSecurityGroups(annotations[podAnnSecurityGroups])
+			return ctrl.SetControllerReference(&pod, nwiface, r.Scheme)
+		})
+		if err != nil {
+			if errors.IsConflict(err) || errors.IsAlreadyExists(err) {
+				return ctrl.Result{Requeue: true}, nil
+			}
+			logger.Error(err, "unable to create or update automatic NetworkInterface")
+			return ctrl.Result{}, err
+		}
+	}
 
-	_, err := ctrl.CreateOrUpdate(ctx, r.Client, nwiface, func() error {
-
-		nwiface.Spec.PodRef.Name = pod.Name
-		nwiface.Spec.PodRef.UID = string(pod.UID)
-		nwiface.Spec.PodRef.Interface = ifName
-
-		nwiface.Spec.NodeName = pod.Spec.NodeName
-		nwiface.Spec.Subnet = subnetName
-		nwiface.Spec.Address = annotations[podAnnAddress]
-		nwiface.Spec.SecurityGroups = ParsePodSecurityGroups(annotations[podAnnSecurityGroups])
-
-		return ctrl.SetControllerReference(&pod, nwiface, r.Scheme)
+	attachment := &juneauv1alpha1.NetworkInterfaceAttachment{}
+	attachment.SetName(pod.Name + "." + ifName)
+	attachment.SetNamespace(pod.Namespace)
+	_, err := ctrl.CreateOrUpdate(ctx, r.Client, attachment, func() error {
+		if attachment.UID != "" && !metav1.IsControlledBy(attachment, &pod) {
+			return errors.NewAlreadyExists(
+				juneauv1alpha1.GroupVersion.WithResource("networkinterfaceattachments").GroupResource(),
+				attachment.Name,
+			)
+		}
+		attachment.Spec.NetworkInterfaceRef = networkInterfaceName
+		attachment.Spec.PodRef = juneauv1alpha1.NetworkInterfaceAttachmentPodReference{
+			Name:      pod.Name,
+			UID:       string(pod.UID),
+			Interface: ifName,
+		}
+		attachment.Spec.NodeName = pod.Spec.NodeName
+		return ctrl.SetControllerReference(&pod, attachment, r.Scheme)
 	})
-
 	if err != nil {
 		if errors.IsConflict(err) || errors.IsAlreadyExists(err) {
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: requeueDelay}, nil
 		}
-		logger.Error(err, "unable to create or update NetworkInterface")
+		logger.Error(err, "unable to create NetworkInterfaceAttachment")
 		return ctrl.Result{}, err
 	}
 
+	if autoManaged {
+		var nwiface juneauv1alpha1.NetworkInterface
+		if err := r.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: networkInterfaceName}, &nwiface); err != nil {
+			return ctrl.Result{}, err
+		}
+		desired := &juneauv1alpha1.NetworkInterfaceAttachmentReference{Name: attachment.Name, UID: attachment.UID}
+		if nwiface.Spec.AttachmentRef == nil ||
+			nwiface.Spec.AttachmentRef.Name != desired.Name ||
+			nwiface.Spec.AttachmentRef.UID != desired.UID {
+			nwiface.Spec.AttachmentRef = desired
+			if err := r.Update(ctx, &nwiface); err != nil {
+				if errors.IsConflict(err) {
+					return ctrl.Result{Requeue: true}, nil
+				}
+				return ctrl.Result{}, err
+			}
+		}
+	}
 	return ctrl.Result{}, nil
 }
 

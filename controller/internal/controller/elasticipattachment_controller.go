@@ -55,6 +55,7 @@ type ElasticIPAttachmentReconciler struct {
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=elasticipattachments/finalizers,verbs=update
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=elasticips,verbs=get;list;watch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=networkinterfaces,verbs=get;list;watch
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=networkinterfaceattachments,verbs=get;list;watch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=networkendpoints,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -129,7 +130,7 @@ func (r *ElasticIPAttachmentReconciler) reconcileNormal(ctx context.Context, res
 		return ctrl.Result{}, nil
 	}
 
-	if networkInterface.Spec.NodeName == "" {
+	if networkInterface.Spec.AttachmentRef == nil {
 		podIP, err := normalizeIPAddress(networkInterface.Status.Address)
 		if err != nil {
 			if err := r.updateErrorStatus(ctx, resource, elasticIPAttachmentReasonReconcileFailed, fmt.Sprintf("invalid NetworkInterface %q address %q", networkInterface.Name, networkInterface.Status.Address)); err != nil {
@@ -137,10 +138,28 @@ func (r *ElasticIPAttachmentReconciler) reconcileNormal(ctx context.Context, res
 			}
 			return ctrl.Result{}, nil
 		}
-		if err := r.updatePendingStatus(ctx, resource, elasticIP.Status.Address, podIP, "", elasticIPAttachmentReasonReconcileFailed, fmt.Sprintf("waiting for NetworkInterface %q node assignment", networkInterface.Name)); err != nil {
+		if err := r.updatePendingStatus(ctx, resource, elasticIP.Status.Address, podIP, "", elasticIPAttachmentReasonReconcileFailed, fmt.Sprintf("waiting for NetworkInterface %q attachment", networkInterface.Name)); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
+	}
+
+	var interfaceAttachment juneauloutresmev1alpha1.NetworkInterfaceAttachment
+	if err := r.Get(ctx, client.ObjectKey{
+		Namespace: resource.Namespace,
+		Name:      networkInterface.Spec.AttachmentRef.Name,
+	}, &interfaceAttachment); err != nil {
+		if errors.IsNotFound(err) {
+			return ctrl.Result{}, r.updatePendingStatus(ctx, resource, elasticIP.Status.Address, "", "", elasticIPAttachmentReasonReconcileFailed, fmt.Sprintf("waiting for NetworkInterfaceAttachment %q", networkInterface.Spec.AttachmentRef.Name))
+		}
+		return ctrl.Result{}, err
+	}
+	if interfaceAttachment.UID != networkInterface.Spec.AttachmentRef.UID ||
+		interfaceAttachment.Spec.NetworkInterfaceRef != networkInterface.Name {
+		return ctrl.Result{}, r.updateErrorStatus(ctx, resource, elasticIPAttachmentReasonReconcileFailed, "NetworkInterface attachment reference is stale or invalid")
+	}
+	if !interfaceAttachment.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, r.updatePendingStatus(ctx, resource, elasticIP.Status.Address, "", "", elasticIPAttachmentReasonWaitingForNetworkEndpoint, fmt.Sprintf("NetworkInterfaceAttachment %q is being deleted", interfaceAttachment.Name))
 	}
 
 	podIP, err := normalizeIPAddress(networkInterface.Status.Address)
@@ -151,20 +170,25 @@ func (r *ElasticIPAttachmentReconciler) reconcileNormal(ctx context.Context, res
 		return ctrl.Result{}, nil
 	}
 
-	matchingEndpoints, err := r.findMatchingNetworkEndpoints(ctx, resource.Namespace, networkInterface.Spec.PodRef)
+	matchingEndpoints, err := r.findMatchingNetworkEndpoints(
+		ctx,
+		resource.Namespace,
+		networkInterface.Name,
+		networkInterface.Spec.AttachmentRef,
+	)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
 	switch len(matchingEndpoints) {
 	case 0:
-		if err := r.updatePendingStatus(ctx, resource, elasticIP.Status.Address, podIP, networkInterface.Spec.NodeName, elasticIPAttachmentReasonWaitingForNetworkEndpoint, fmt.Sprintf("waiting for NetworkEndpoint matching podRef uid=%q name=%q interface=%q", networkInterface.Spec.PodRef.UID, networkInterface.Spec.PodRef.Name, networkInterface.Spec.PodRef.Interface)); err != nil {
+		if err := r.updatePendingStatus(ctx, resource, elasticIP.Status.Address, podIP, interfaceAttachment.Spec.NodeName, elasticIPAttachmentReasonWaitingForNetworkEndpoint, fmt.Sprintf("waiting for NetworkEndpoint for NetworkInterface %q", networkInterface.Name)); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
 	case 1:
 	default:
-		if err := r.updateErrorStatus(ctx, resource, elasticIPAttachmentReasonReconcileFailed, fmt.Sprintf("multiple NetworkEndpoints match podRef uid=%q name=%q interface=%q", networkInterface.Spec.PodRef.UID, networkInterface.Spec.PodRef.Name, networkInterface.Spec.PodRef.Interface)); err != nil {
+		if err := r.updateErrorStatus(ctx, resource, elasticIPAttachmentReasonReconcileFailed, fmt.Sprintf("multiple NetworkEndpoints match NetworkInterface %q", networkInterface.Name)); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
@@ -173,7 +197,7 @@ func (r *ElasticIPAttachmentReconciler) reconcileNormal(ctx context.Context, res
 	networkEndpoint := matchingEndpoints[0]
 
 	if networkEndpoint.DeletionTimestamp != nil {
-		if err := r.updatePendingStatus(ctx, resource, elasticIP.Status.Address, podIP, networkInterface.Spec.NodeName, elasticIPAttachmentReasonWaitingForNetworkEndpoint, fmt.Sprintf("NetworkEndpoint %q is being deleted", networkEndpoint.Name)); err != nil {
+		if err := r.updatePendingStatus(ctx, resource, elasticIP.Status.Address, podIP, interfaceAttachment.Spec.NodeName, elasticIPAttachmentReasonWaitingForNetworkEndpoint, fmt.Sprintf("NetworkEndpoint %q is being deleted", networkEndpoint.Name)); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
@@ -183,7 +207,7 @@ func (r *ElasticIPAttachmentReconciler) reconcileNormal(ctx context.Context, res
 		juneauloutresmev1alpha1.ElasticIPAttachmentPhaseAttached,
 		elasticIP.Status.Address,
 		podIP,
-		networkInterface.Spec.NodeName,
+		interfaceAttachment.Spec.NodeName,
 		metav1.Condition{
 			Type:               elasticIPAttachmentConditionReady,
 			Status:             metav1.ConditionTrue,
@@ -272,7 +296,8 @@ func (r *ElasticIPAttachmentReconciler) updateStatus(
 func (r *ElasticIPAttachmentReconciler) findMatchingNetworkEndpoints(
 	ctx context.Context,
 	namespace string,
-	podRef juneauloutresmev1alpha1.NetworkInterfacePodReference,
+	networkInterfaceName string,
+	attachmentRef *juneauloutresmev1alpha1.NetworkInterfaceAttachmentReference,
 ) ([]juneauloutresmev1alpha1.NetworkEndpoint, error) {
 	var networkEndpointList juneauloutresmev1alpha1.NetworkEndpointList
 	if err := r.List(ctx, &networkEndpointList, client.InNamespace(namespace)); err != nil {
@@ -282,16 +307,13 @@ func (r *ElasticIPAttachmentReconciler) findMatchingNetworkEndpoints(
 	matches := make([]juneauloutresmev1alpha1.NetworkEndpoint, 0, 1)
 	for i := range networkEndpointList.Items {
 		item := networkEndpointList.Items[i]
-		if item.Spec.PodRef == nil {
+		if item.Spec.NetworkInterfaceRef != networkInterfaceName {
 			continue
 		}
-		if item.Spec.PodRef.UID != podRef.UID {
-			continue
-		}
-		if item.Spec.PodRef.Name != podRef.Name {
-			continue
-		}
-		if item.Spec.PodRef.Interface != podRef.Interface {
+		if attachmentRef == nil ||
+			item.Spec.NetworkInterfaceAttachmentRef == nil ||
+			item.Spec.NetworkInterfaceAttachmentRef.Name != attachmentRef.Name ||
+			item.Spec.NetworkInterfaceAttachmentRef.UID != attachmentRef.UID {
 			continue
 		}
 		matches = append(matches, item)
@@ -368,45 +390,44 @@ func (r *ElasticIPAttachmentReconciler) mapNetworkEndpointToAttachments(ctx cont
 		return nil
 	}
 
-	var networkInterfaceList juneauloutresmev1alpha1.NetworkInterfaceList
-	if err := r.List(ctx, &networkInterfaceList, client.InNamespace(networkEndpoint.Namespace)); err != nil {
-		return nil
-	}
-
 	requests := make([]reconcile.Request, 0)
-	seen := make(map[client.ObjectKey]struct{})
-	if networkEndpoint.Spec.PodRef == nil {
+	if networkEndpoint.Spec.NetworkInterfaceRef == "" {
 		return nil
 	}
-	for i := range networkInterfaceList.Items {
-		networkInterface := networkInterfaceList.Items[i]
-		if networkInterface.Spec.PodRef.UID != networkEndpoint.Spec.PodRef.UID {
-			continue
-		}
-		if networkInterface.Spec.PodRef.Name != networkEndpoint.Spec.PodRef.Name {
-			continue
-		}
-		if networkInterface.Spec.PodRef.Interface != networkEndpoint.Spec.PodRef.Interface {
-			continue
-		}
+	var attachmentList juneauloutresmev1alpha1.ElasticIPAttachmentList
+	if err := r.List(ctx, &attachmentList,
+		client.InNamespace(networkEndpoint.Namespace),
+		client.MatchingFields{"spec.targetRef.networkInterfaceName": networkEndpoint.Spec.NetworkInterfaceRef},
+	); err != nil {
+		return nil
+	}
+	for i := range attachmentList.Items {
+		item := attachmentList.Items[i]
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Namespace: item.Namespace, Name: item.Name}})
+	}
+	return requests
+}
 
-		var attachmentList juneauloutresmev1alpha1.ElasticIPAttachmentList
-		if err := r.List(ctx, &attachmentList,
-			client.InNamespace(networkEndpoint.Namespace),
-			client.MatchingFields{"spec.targetRef.networkInterfaceName": networkInterface.Name},
-		); err != nil {
-			return nil
-		}
+func (r *ElasticIPAttachmentReconciler) mapNetworkInterfaceAttachmentToElasticIPAttachments(ctx context.Context, obj client.Object) []reconcile.Request {
+	interfaceAttachment, ok := obj.(*juneauloutresmev1alpha1.NetworkInterfaceAttachment)
+	if !ok || interfaceAttachment.Spec.NetworkInterfaceRef == "" {
+		return nil
+	}
 
-		for j := range attachmentList.Items {
-			item := attachmentList.Items[j]
-			key := client.ObjectKey{Namespace: item.Namespace, Name: item.Name}
-			if _, exists := seen[key]; exists {
-				continue
-			}
-			seen[key] = struct{}{}
-			requests = append(requests, reconcile.Request{NamespacedName: key})
-		}
+	var attachmentList juneauloutresmev1alpha1.ElasticIPAttachmentList
+	if err := r.List(ctx, &attachmentList,
+		client.InNamespace(interfaceAttachment.Namespace),
+		client.MatchingFields{"spec.targetRef.networkInterfaceName": interfaceAttachment.Spec.NetworkInterfaceRef},
+	); err != nil {
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0, len(attachmentList.Items))
+	for i := range attachmentList.Items {
+		item := attachmentList.Items[i]
+		requests = append(requests, reconcile.Request{
+			NamespacedName: client.ObjectKey{Namespace: item.Namespace, Name: item.Name},
+		})
 	}
 	return requests
 }
@@ -417,6 +438,7 @@ func (r *ElasticIPAttachmentReconciler) SetupWithManager(mgr ctrl.Manager) error
 		For(&juneauloutresmev1alpha1.ElasticIPAttachment{}).
 		Watches(&juneauloutresmev1alpha1.ElasticIP{}, handler.EnqueueRequestsFromMapFunc(r.mapElasticIPToAttachments)).
 		Watches(&juneauloutresmev1alpha1.NetworkInterface{}, handler.EnqueueRequestsFromMapFunc(r.mapNetworkInterfaceToAttachments)).
+		Watches(&juneauloutresmev1alpha1.NetworkInterfaceAttachment{}, handler.EnqueueRequestsFromMapFunc(r.mapNetworkInterfaceAttachmentToElasticIPAttachments)).
 		Watches(&juneauloutresmev1alpha1.NetworkEndpoint{}, handler.EnqueueRequestsFromMapFunc(r.mapNetworkEndpointToAttachments)).
 		Named("elasticipattachment").
 		Complete(r)

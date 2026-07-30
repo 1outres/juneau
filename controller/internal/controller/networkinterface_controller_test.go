@@ -18,11 +18,9 @@ package controller
 
 import (
 	"context"
-	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -48,9 +46,7 @@ var _ = Describe("NetworkInterface controller", func() {
 		ni := &juneauv1alpha1.NetworkInterface{
 			ObjectMeta: metav1.ObjectMeta{Name: "ni-alloc.eth0", Namespace: "default"},
 			Spec: juneauv1alpha1.NetworkInterfaceSpec{
-				PodRef:   juneauv1alpha1.NetworkInterfacePodReference{UID: "uid-alloc", Name: "pod-alloc", Interface: "eth0"},
-				NodeName: "node-a",
-				Subnet:   "default",
+				Subnet: "default",
 			},
 		}
 		Expect(k8sClient.Create(ctx, ni)).To(Succeed())
@@ -65,10 +61,8 @@ var _ = Describe("NetworkInterface controller", func() {
 		ni := &juneauv1alpha1.NetworkInterface{
 			ObjectMeta: metav1.ObjectMeta{Name: "ni-fixed.eth0", Namespace: "default"},
 			Spec: juneauv1alpha1.NetworkInterfaceSpec{
-				PodRef:   juneauv1alpha1.NetworkInterfacePodReference{UID: "uid-fixed", Name: "pod-fixed", Interface: "eth0"},
-				NodeName: "node-a",
-				Subnet:   "default",
-				Address:  "10.16.0.50",
+				Subnet:  "default",
+				Address: "10.16.0.50",
 			},
 		}
 		Expect(k8sClient.Create(ctx, ni)).To(Succeed())
@@ -78,55 +72,23 @@ var _ = Describe("NetworkInterface controller", func() {
 		Expect(ni.Status.Address).To(Equal("10.16.0.50/16"))
 	})
 
-	It("re-uses the same IP when a same-named NetworkInterface is recreated", func() {
-		const niName = "ni-reuse.eth0"
+	It("keeps the allocated IP while the persistent interface is detached", func() {
+		const niName = "ni-detached"
 		ni := &juneauv1alpha1.NetworkInterface{
 			ObjectMeta: metav1.ObjectMeta{Name: niName, Namespace: "default"},
 			Spec: juneauv1alpha1.NetworkInterfaceSpec{
-				PodRef:   juneauv1alpha1.NetworkInterfacePodReference{UID: "uid-reuse-1", Name: "pod-reuse", Interface: "eth0"},
-				NodeName: "node-a",
-				Subnet:   "default",
+				Subnet: "default",
 			},
 		}
 		Expect(k8sClient.Create(ctx, ni)).To(Succeed())
+		DeferCleanup(func() { cleanupNetworkInterface(ctx, ni) })
 		allocateNetworkInterface(ni)
 		firstAddress := ni.Status.Address
-		// lease stores the bare IP (no mask) while NetworkInterface.status.Address
-		// includes the subnet mask suffix.
-		firstIPOnly, _, _ := strings.Cut(firstAddress, "/")
-		claimName := ni.Status.AllocationClaim
-		Expect(claimName).NotTo(BeEmpty())
-
-		// Drive the deletion finalizer so the AllocationClaim is removed
-		// (which leaves an AllocationLease behind because of ReleaseAfter).
 		r := &NetworkInterfaceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-		Expect(k8sClient.Delete(ctx, ni)).To(Succeed())
-		Eventually(func(g Gomega) {
-			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: niName, Namespace: "default"}})
-			g.Expect(err).NotTo(HaveOccurred())
-			err = k8sClient.Get(ctx, client.ObjectKey{Name: niName, Namespace: "default"}, &juneauv1alpha1.NetworkInterface{})
-			g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "NetworkInterface should be deleted after finalizer drains")
-		}).Should(Succeed())
-
-		// Lease must persist (ReleaseAfter > 0) and pin the value.
-		var lease juneauv1alpha1.AllocationLease
-		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: claimName}, &lease)).To(Succeed())
-		Expect(lease.Spec.Value.IP).To(Equal(firstIPOnly))
-
-		// Recreate the same-named NetworkInterface.
-		recreated := &juneauv1alpha1.NetworkInterface{
-			ObjectMeta: metav1.ObjectMeta{Name: niName, Namespace: "default"},
-			Spec: juneauv1alpha1.NetworkInterfaceSpec{
-				PodRef:   juneauv1alpha1.NetworkInterfacePodReference{UID: "uid-reuse-2", Name: "pod-reuse", Interface: "eth0"},
-				NodeName: "node-a",
-				Subnet:   "default",
-			},
-		}
-		Expect(k8sClient.Create(ctx, recreated)).To(Succeed())
-		DeferCleanup(func() { cleanupNetworkInterface(ctx, recreated) })
-
-		allocateNetworkInterface(recreated)
-		Expect(recreated.Status.Address).To(Equal(firstAddress))
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: niName, Namespace: "default"}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ni), ni)).To(Succeed())
+		Expect(ni.Status.Address).To(Equal(firstAddress))
 	})
 
 	It("auto-generates a per-subnet AllocationPool with the gateway excluded", func() {

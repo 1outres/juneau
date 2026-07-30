@@ -18,20 +18,17 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // NetworkInterfaceSpec defines the desired state of NetworkInterface.
 type NetworkInterfaceSpec struct {
 	// +required
-	PodRef NetworkInterfacePodReference `json:"podRef"`
-
-	// +required
-	// +kubebuilder:validation:MinLength=1
-	NodeName string `json:"nodeName"`
-
-	// +required
 	// +kubebuilder:validation:MinLength=1
 	Subnet string `json:"subnet"`
+
+	// Address requests a specific primary address. When empty, Juneau
+	// allocates one from the referenced Subnet.
 	// +optional
 	Address string `json:"address,omitempty"`
 
@@ -47,6 +44,12 @@ type NetworkInterfaceSpec struct {
 	// +kubebuilder:validation:MaxItems=2
 	// +listType=set
 	SecurityGroups []string `json:"securityGroups,omitempty"`
+
+	// AttachmentRef selects the single pod-scoped attachment that may use
+	// this interface. The owning workload controller updates this reference
+	// as Pods are replaced; the interface and its address remain stable.
+	// +optional
+	AttachmentRef *NetworkInterfaceAttachmentReference `json:"attachmentRef,omitempty"`
 }
 
 // NetworkInterfaceStatus defines the observed state of NetworkInterface.
@@ -77,16 +80,14 @@ type NetworkInterfaceEffectiveSG struct {
 	GroupID uint32 `json:"groupID"`
 }
 
-type NetworkInterfacePodReference struct {
-	// +required
-	// +kubebuilder:validation:MinLength=1
-	UID string `json:"uid"`
+// NetworkInterfaceAttachmentReference identifies an attachment by name and
+// UID so a deleted and re-created object cannot inherit an existing binding.
+type NetworkInterfaceAttachmentReference struct {
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 	// +required
-	// +kubebuilder:validation:MinLength=1
-	Interface string `json:"interface"`
+	UID types.UID `json:"uid"`
 }
 
 type NetworkRoute struct {
@@ -97,9 +98,9 @@ type NetworkRoute struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName={"interface","iface","nwinterface","nwiface"}
-// +kubebuilder:printcolumn:name="Node",type="string",JSONPath=".spec.nodeName"
 // +kubebuilder:printcolumn:name="Subnet",type="string",JSONPath=".spec.subnet"
 // +kubebuilder:printcolumn:name="Address",type="string",JSONPath=".status.address"
+// +kubebuilder:printcolumn:name="Attachment",type="string",JSONPath=".spec.attachmentRef.name"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 
 // NetworkInterface is the Schema for the networkinterfaces API.

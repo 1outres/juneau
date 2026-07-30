@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -84,6 +85,7 @@ func (v *NetworkEndpointCustomValidator) ValidateCreate(ctx context.Context, obj
 
 	specPath := field.NewPath("spec")
 	errs := validatePodRefForKind(specPath, networkendpoint.Spec.Kind, networkendpoint.Spec.PodRef)
+	errs = append(errs, validateInterfaceRefsForKind(specPath, networkendpoint)...)
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "NetworkEndpoint"}, networkendpoint.Name, errs)
 		networkendpointlog.Info("Validation failed for NetworkEndpoint", "name", networkendpoint.GetName(), "error", err)
@@ -131,6 +133,13 @@ func (v *NetworkEndpointCustomValidator) ValidateUpdate(ctx context.Context, old
 	}
 	errs = append(errs, validatePodRefImmutable(podRefPath, oldNetworkEndpoint.Spec.PodRef, networkendpoint.Spec.PodRef)...)
 	errs = append(errs, validatePodRefForKind(specPath, networkendpoint.Spec.Kind, networkendpoint.Spec.PodRef)...)
+	if networkendpoint.Spec.NetworkInterfaceRef != oldNetworkEndpoint.Spec.NetworkInterfaceRef {
+		errs = append(errs, field.Invalid(specPath.Child("networkInterfaceRef"), networkendpoint.Spec.NetworkInterfaceRef, "spec.networkInterfaceRef is immutable"))
+	}
+	if !reflect.DeepEqual(networkendpoint.Spec.NetworkInterfaceAttachmentRef, oldNetworkEndpoint.Spec.NetworkInterfaceAttachmentRef) {
+		errs = append(errs, field.Invalid(specPath.Child("networkInterfaceAttachmentRef"), networkendpoint.Spec.NetworkInterfaceAttachmentRef, "spec.networkInterfaceAttachmentRef is immutable"))
+	}
+	errs = append(errs, validateInterfaceRefsForKind(specPath, networkendpoint)...)
 
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "NetworkEndpoint"}, networkendpoint.Name, errs)
@@ -139,6 +148,20 @@ func (v *NetworkEndpointCustomValidator) ValidateUpdate(ctx context.Context, old
 	}
 
 	return nil, nil
+}
+
+func validateInterfaceRefsForKind(path *field.Path, endpoint *juneauv1alpha1.NetworkEndpoint) field.ErrorList {
+	if endpoint.Spec.Kind != juneauv1alpha1.EndpointKindPod {
+		return nil
+	}
+	var errs field.ErrorList
+	if endpoint.Spec.NetworkInterfaceRef == "" {
+		errs = append(errs, field.Required(path.Child("networkInterfaceRef"), "required for Pod endpoints"))
+	}
+	if endpoint.Spec.NetworkInterfaceAttachmentRef == nil {
+		errs = append(errs, field.Required(path.Child("networkInterfaceAttachmentRef"), "required for Pod endpoints"))
+	}
+	return errs
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type NetworkEndpoint.

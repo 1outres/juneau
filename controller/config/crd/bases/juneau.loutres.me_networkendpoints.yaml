@@ -91,6 +91,29 @@ spec:
                   this endpoint on the overlay. Always required for endpoints that
                   participate in arp/fdb (i.e. all Kind=Pod and Kind=Node).
                 type: string
+              networkInterfaceAttachmentRef:
+                description: |-
+                  NetworkInterfaceAttachmentRef identifies the pod-scoped attachment
+                  authorized to realize this endpoint.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                  uid:
+                    description: |-
+                      UID is a type that holds unique ID values, including UUIDs.  Because we
+                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                      intent and helps make sure that UIDs and names do not get conflated.
+                    type: string
+                required:
+                - name
+                - uid
+                type: object
+              networkInterfaceRef:
+                description: |-
+                  NetworkInterfaceRef identifies the persistent interface whose L2/L3
+                  identity this endpoint realizes.
+                type: string
               nodeName:
                 description: |-
                   NodeName pins the endpoint to a specific node. The daemon on

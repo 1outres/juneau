@@ -138,6 +138,7 @@ func NewApp() *cli.Command {
 				Scheme: scheme,
 				ByObject: map[client.Object]cache.ByObject{
 					&juneauv1alpha1.NetworkInterface{}:          {},
+					&juneauv1alpha1.NetworkInterfaceAttachment{}: {},
 					&juneauv1alpha1.NetworkEndpoint{}:           {},
 					&juneauv1alpha1.ElasticIPAttachment{}:       {},
 					&juneauv1alpha1.AddressPool{}:               {},
@@ -263,45 +264,45 @@ func NewApp() *cli.Command {
 
 			if err := cache.IndexField(
 				ctx,
-				&juneauv1alpha1.NetworkInterface{},
+				&juneauv1alpha1.NetworkInterfaceAttachment{},
 				"spec.podRef.interface",
 				func(obj client.Object) []string {
-					nwif := obj.(*juneauv1alpha1.NetworkInterface)
-					if nwif.Spec.PodRef.Interface == "" {
+					attachment := obj.(*juneauv1alpha1.NetworkInterfaceAttachment)
+					if attachment.Spec.PodRef.Interface == "" {
 						return nil
 					}
-					return []string{nwif.Spec.PodRef.Interface}
+					return []string{attachment.Spec.PodRef.Interface}
 				},
 			); err != nil {
-				return fmt.Errorf("index NetworkInterface by spec.podRef.interface: %w", err)
+				return fmt.Errorf("index NetworkInterfaceAttachment by spec.podRef.interface: %w", err)
 			}
 			if err := cache.IndexField(
 				ctx,
-				&juneauv1alpha1.NetworkInterface{},
+				&juneauv1alpha1.NetworkInterfaceAttachment{},
 				"spec.podRef.name",
 				func(obj client.Object) []string {
-					nwif := obj.(*juneauv1alpha1.NetworkInterface)
-					if nwif.Spec.PodRef.Name == "" {
+					attachment := obj.(*juneauv1alpha1.NetworkInterfaceAttachment)
+					if attachment.Spec.PodRef.Name == "" {
 						return nil
 					}
-					return []string{nwif.Spec.PodRef.Name}
+					return []string{attachment.Spec.PodRef.Name}
 				},
 			); err != nil {
-				return fmt.Errorf("index NetworkInterface by spec.podRef.name: %w", err)
+				return fmt.Errorf("index NetworkInterfaceAttachment by spec.podRef.name: %w", err)
 			}
 			if err := cache.IndexField(
 				ctx,
-				&juneauv1alpha1.NetworkInterface{},
+				&juneauv1alpha1.NetworkInterfaceAttachment{},
 				"spec.podRef.uid",
 				func(obj client.Object) []string {
-					nwif := obj.(*juneauv1alpha1.NetworkInterface)
-					if nwif.Spec.PodRef.UID == "" {
+					attachment := obj.(*juneauv1alpha1.NetworkInterfaceAttachment)
+					if attachment.Spec.PodRef.UID == "" {
 						return nil
 					}
-					return []string{nwif.Spec.PodRef.UID}
+					return []string{attachment.Spec.PodRef.UID}
 				},
 			); err != nil {
-				return fmt.Errorf("index NetworkInterface by spec.podRef.uid: %w", err)
+				return fmt.Errorf("index NetworkInterfaceAttachment by spec.podRef.uid: %w", err)
 			}
 
 			if err := cache.IndexField(

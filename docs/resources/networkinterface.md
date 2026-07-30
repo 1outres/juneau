@@ -1,8 +1,14 @@
 # NetworkInterface
 
-NetworkInterfaceは、Podに紐づく論理NICを表すリソースです。
+NetworkInterfaceは、ワークロードのライフサイクルにわたって維持される論理NICです。
+IPアドレスとSecurityGroupはこのリソースに紐づき、Podが再作成されても
+NetworkInterfaceが削除されない限り維持されます。
 
-通常はユーザーが直接作成するのではなく、PodControllerがPodのネットワーク要求に応じて自動作成します。
+VMやコンテナなどの上位コントローラーは、ワークロードごとに
+NetworkInterfaceを作成し、Pod templateへ
+`juneau.loutres.me/network-interface` annotationを設定します。
+annotationがない通常のPodには、PodControllerがPod所有の
+NetworkInterfaceを自動作成します。
 
 ## spec
 
@@ -11,7 +17,9 @@ NetworkInterfaceは、Podに紐づく論理NICを表すリソースです。
 `spec.address`は省略可能で、指定した場合はそのIPv4アドレスを要求します。
 未指定の場合は、Juneauが`spec.subnet`の範囲から空いているアドレスを自動割り当てします。
 
-`spec.podRef`は、この論理NICがどのPodのどのインターフェースを表しているかを示します。
+`spec.attachmentRef`は、現在このNICを実体化する
+NetworkInterfaceAttachmentの名前とUIDです。Pod再作成時は、旧Endpointの削除後に
+新しいAttachmentへ更新します。
 
 ## status
 

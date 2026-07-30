@@ -21,10 +21,6 @@ var _ = Describe("NetworkInterface webhook", func() {
 		})
 
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("spec.podRef.uid"))
-		Expect(err.Error()).To(ContainSubstring("spec.podRef.name"))
-		Expect(err.Error()).To(ContainSubstring("spec.podRef.interface"))
-		Expect(err.Error()).To(ContainSubstring("spec.nodeName"))
 		Expect(err.Error()).To(ContainSubstring("spec.subnet"))
 	})
 
@@ -56,21 +52,48 @@ var _ = Describe("NetworkInterface webhook", func() {
 		var current juneauv1alpha1.NetworkInterface
 		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKeyFromObject(networkInterface), &current)).To(Succeed())
 
-		current.Spec.NodeName = "node-b"
 		current.Spec.Subnet = "other-subnet"
 		current.Spec.Address = "10.16.0.11"
-		current.Spec.PodRef.UID = "pod-uid-2"
-		current.Spec.PodRef.Name = "pod-b"
-		current.Spec.PodRef.Interface = "net2"
 
 		err := webhookK8sClient.Update(context.Background(), &current)
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("spec.nodeName is immutable"))
 		Expect(err.Error()).To(ContainSubstring("spec.subnet is immutable"))
 		Expect(err.Error()).To(ContainSubstring("spec.address is immutable"))
-		Expect(err.Error()).To(ContainSubstring("spec.podRef.uid is immutable"))
-		Expect(err.Error()).To(ContainSubstring("spec.podRef.name is immutable"))
-		Expect(err.Error()).To(ContainSubstring("spec.podRef.interface is immutable"))
+	})
+
+	It("rejects rebinding while the previous attachment still has an endpoint", func() {
+		ctx := context.Background()
+		name := webhookUniqueTestName("networkinterface")
+		networkInterface := newValidNetworkInterface(name, "default", "")
+		Expect(webhookK8sClient.Create(ctx, networkInterface)).To(Succeed())
+
+		oldAttachment := newValidNetworkInterfaceAttachment(webhookUniqueTestName("attachment"), name)
+		Expect(webhookK8sClient.Create(ctx, oldAttachment)).To(Succeed())
+
+		var current juneauv1alpha1.NetworkInterface
+		Expect(webhookK8sClient.Get(ctx, client.ObjectKeyFromObject(networkInterface), &current)).To(Succeed())
+		current.Spec.AttachmentRef = &juneauv1alpha1.NetworkInterfaceAttachmentReference{
+			Name: oldAttachment.Name,
+			UID:  oldAttachment.UID,
+		}
+		Expect(webhookK8sClient.Update(ctx, &current)).To(Succeed())
+
+		endpoint := newValidNetworkEndpoint(webhookUniqueTestName("networkendpoint"))
+		endpoint.Spec.NetworkInterfaceRef = name
+		endpoint.Spec.NetworkInterfaceAttachmentRef = current.Spec.AttachmentRef.DeepCopy()
+		Expect(webhookK8sClient.Create(ctx, endpoint)).To(Succeed())
+
+		newAttachment := newValidNetworkInterfaceAttachment(webhookUniqueTestName("attachment"), name)
+		Expect(webhookK8sClient.Create(ctx, newAttachment)).To(Succeed())
+		Expect(webhookK8sClient.Get(ctx, client.ObjectKeyFromObject(networkInterface), &current)).To(Succeed())
+		current.Spec.AttachmentRef = &juneauv1alpha1.NetworkInterfaceAttachmentReference{
+			Name: newAttachment.Name,
+			UID:  newAttachment.UID,
+		}
+
+		err := webhookK8sClient.Update(ctx, &current)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("still realizes the previous attachment"))
 	})
 })
 
@@ -81,14 +104,8 @@ func newValidNetworkInterface(name, subnet, address string) *juneauv1alpha1.Netw
 			Namespace: "default",
 		},
 		Spec: juneauv1alpha1.NetworkInterfaceSpec{
-			NodeName: "node-a",
-			Subnet:   subnet,
-			Address:  address,
-			PodRef: juneauv1alpha1.NetworkInterfacePodReference{
-				UID:       "pod-uid-1",
-				Name:      "pod-a",
-				Interface: "net1",
-			},
+			Subnet:  subnet,
+			Address: address,
 		},
 	}
 }

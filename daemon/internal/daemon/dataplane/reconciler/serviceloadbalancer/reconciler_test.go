@@ -16,7 +16,7 @@ import (
 
 // newFakeClient builds a controller-runtime fake client preloaded
 // with the supplied objects and the field index the LB reconciler
-// relies on (NetworkInterface.spec.podRef.name).
+// relies on (NetworkInterfaceAttachment.spec.podRef.name).
 func newFakeClient(t *testing.T, objs ...client.Object) client.Client {
 	t.Helper()
 	scheme := runtime.NewScheme()
@@ -32,12 +32,12 @@ func newFakeClient(t *testing.T, objs ...client.Object) client.Client {
 	return fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(objs...).
-		WithIndex(&juneauv1alpha1.NetworkInterface{}, "spec.podRef.name", func(obj client.Object) []string {
-			ni := obj.(*juneauv1alpha1.NetworkInterface)
-			if ni.Spec.PodRef.Name == "" {
+		WithIndex(&juneauv1alpha1.NetworkInterfaceAttachment{}, "spec.podRef.name", func(obj client.Object) []string {
+			attachment := obj.(*juneauv1alpha1.NetworkInterfaceAttachment)
+			if attachment.Spec.PodRef.Name == "" {
 				return nil
 			}
-			return []string{ni.Spec.PodRef.Name}
+			return []string{attachment.Spec.PodRef.Name}
 		}).
 		Build()
 }
@@ -89,9 +89,15 @@ func newJuneauPod(podName, namespace, ip, subnet string, vni uint32) []client.Ob
 	iface := &juneauv1alpha1.NetworkInterface{
 		ObjectMeta: metav1.ObjectMeta{Name: podName + "-iface", Namespace: namespace},
 		Spec: juneauv1alpha1.NetworkInterfaceSpec{
-			Subnet:   subnet,
-			NodeName: "node-a",
-			PodRef: juneauv1alpha1.NetworkInterfacePodReference{
+			Subnet: subnet,
+		},
+	}
+	attachment := &juneauv1alpha1.NetworkInterfaceAttachment{
+		ObjectMeta: metav1.ObjectMeta{Name: podName + "-attachment", Namespace: namespace},
+		Spec: juneauv1alpha1.NetworkInterfaceAttachmentSpec{
+			NetworkInterfaceRef: iface.Name,
+			NodeName:            "node-a",
+			PodRef: juneauv1alpha1.NetworkInterfaceAttachmentPodReference{
 				UID:       "uid-" + podName,
 				Name:      podName,
 				Interface: "eth0",
@@ -99,7 +105,7 @@ func newJuneauPod(podName, namespace, ip, subnet string, vni uint32) []client.Ob
 		},
 	}
 	_ = ip
-	return []client.Object{subnetObj, iface}
+	return []client.Object{subnetObj, iface, attachment}
 }
 
 func TestLBReconciler_ProgramsLocalBackends(t *testing.T) {

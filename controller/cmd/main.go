@@ -293,6 +293,10 @@ func main() {
 			setupLog.Error(err, "unable to create webhook", "webhook", "NetworkInterface")
 			os.Exit(1)
 		}
+		if err = webhookjuneauv1alpha1.SetupNetworkInterfaceAttachmentWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "NetworkInterfaceAttachment")
+			os.Exit(1)
+		}
 	}
 	if err = (&controller.NetworkEndpointReconciler{
 		Client: mgr.GetClient(),

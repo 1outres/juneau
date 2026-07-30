@@ -83,6 +83,11 @@ var _ = Describe("NetworkEndpoint webhook", func() {
 		current.Spec.PodRef.UID = "pod-uid-2"
 		current.Spec.PodRef.Name = "pod-b"
 		current.Spec.PodRef.Interface = "net2"
+		current.Spec.NetworkInterfaceRef = "interface-b"
+		current.Spec.NetworkInterfaceAttachmentRef = &juneauv1alpha1.NetworkInterfaceAttachmentReference{
+			Name: "attachment-b",
+			UID:  "attachment-uid-b",
+		}
 
 		err := webhookK8sClient.Update(context.Background(), &current)
 		Expect(err).To(HaveOccurred())
@@ -94,6 +99,8 @@ var _ = Describe("NetworkEndpoint webhook", func() {
 		Expect(err.Error()).To(ContainSubstring("spec.podRef.uid is immutable"))
 		Expect(err.Error()).To(ContainSubstring("spec.podRef.name is immutable"))
 		Expect(err.Error()).To(ContainSubstring("spec.podRef.interface is immutable"))
+		Expect(err.Error()).To(ContainSubstring("spec.networkInterfaceRef is immutable"))
+		Expect(err.Error()).To(ContainSubstring("spec.networkInterfaceAttachmentRef is immutable"))
 	})
 
 	It("permits attachment mutation", func() {
@@ -119,11 +126,16 @@ func newValidNetworkEndpoint(name string) *juneauv1alpha1.NetworkEndpoint {
 			Namespace: "default",
 		},
 		Spec: juneauv1alpha1.NetworkEndpointSpec{
-			Kind:       juneauv1alpha1.EndpointKindPod,
-			NodeName:   "node-a",
-			Subnet:     "default",
-			Address:    "10.16.0.10/24",
-			MACAddress: "02:42:ac:10:00:01",
+			Kind:                juneauv1alpha1.EndpointKindPod,
+			NodeName:            "node-a",
+			Subnet:              "default",
+			Address:             "10.16.0.10/24",
+			MACAddress:          "02:42:ac:10:00:01",
+			NetworkInterfaceRef: "interface-a",
+			NetworkInterfaceAttachmentRef: &juneauv1alpha1.NetworkInterfaceAttachmentReference{
+				Name: "attachment-a",
+				UID:  "attachment-uid-a",
+			},
 			PodRef: &juneauv1alpha1.NetworkEndpointPodReference{
 				UID:       "pod-uid-1",
 				Name:      "pod-a",

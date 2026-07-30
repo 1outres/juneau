@@ -175,19 +175,21 @@ func (r *Reconciler) resolveBackends(ctx context.Context, svc *corev1.Service, v
 }
 
 func (r *Reconciler) findInterfaceForPod(ctx context.Context, namespace, podName string) (*juneauv1alpha1.NetworkInterface, error) {
-	var ifaceList juneauv1alpha1.NetworkInterfaceList
-	if err := r.client.List(ctx, &ifaceList, client.InNamespace(namespace), client.MatchingFields{"spec.podRef.name": podName}); err != nil {
+	var attachments juneauv1alpha1.NetworkInterfaceAttachmentList
+	if err := r.client.List(ctx, &attachments, client.InNamespace(namespace), client.MatchingFields{"spec.podRef.name": podName}); err != nil {
 		return nil, err
 	}
-	if len(ifaceList.Items) == 0 {
+	if len(attachments.Items) == 0 {
 		return nil, nil
 	}
-	for i := range ifaceList.Items {
-		if ifaceList.Items[i].Status.Phase == juneauv1alpha1.NetworkInterfacePhaseReady {
-			return &ifaceList.Items[i], nil
-		}
+	var networkInterface juneauv1alpha1.NetworkInterface
+	if err := r.client.Get(ctx, client.ObjectKey{
+		Namespace: namespace,
+		Name:      attachments.Items[0].Spec.NetworkInterfaceRef,
+	}, &networkInterface); err != nil {
+		return nil, client.IgnoreNotFound(err)
 	}
-	return &ifaceList.Items[0], nil
+	return &networkInterface, nil
 }
 
 // matchEndpointsForPort returns the endpoint rows that backend the

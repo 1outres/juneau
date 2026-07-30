@@ -24,6 +24,7 @@ var _ = Describe("ElasticIPAttachment controller", func() {
 
 		Expect(k8sClient.Create(ctx, newControllerElasticIP(elasticIPName, uniqueTestName("missing-externalnetwork")))).To(Succeed())
 		Expect(k8sClient.Create(ctx, newControllerNetworkInterface(networkInterfaceName, "10.16.0.10", "node-a", "pod-uid-1", "pod-a", "net1"))).To(Succeed())
+		bindControllerNetworkInterface(ctx, networkInterfaceName, "node-a", "pod-uid-1", "pod-a", "net1")
 		Expect(k8sClient.Create(ctx, newControllerElasticIPAttachment(name, elasticIPName, networkInterfaceName))).To(Succeed())
 
 		Eventually(func(g Gomega) {
@@ -49,6 +50,7 @@ var _ = Describe("ElasticIPAttachment controller", func() {
 		setControllerElasticIPStatus(elasticIPName, "10.200.0.10")
 
 		Expect(k8sClient.Create(ctx, newControllerNetworkInterface(networkInterfaceName, "", "node-a", "pod-uid-2", "pod-b", "net1"))).To(Succeed())
+		bindControllerNetworkInterface(ctx, networkInterfaceName, "node-a", "pod-uid-2", "pod-b", "net1")
 		Expect(k8sClient.Create(ctx, newControllerElasticIPAttachment(name, elasticIPName, networkInterfaceName))).To(Succeed())
 
 		Eventually(func(g Gomega) {
@@ -75,6 +77,7 @@ var _ = Describe("ElasticIPAttachment controller", func() {
 
 		networkInterface := newControllerNetworkInterface(networkInterfaceName, "10.16.0.11/24", "node-a", "pod-uid-3", "pod-c", "net1")
 		Expect(k8sClient.Create(ctx, networkInterface)).To(Succeed())
+		bindControllerNetworkInterface(ctx, networkInterfaceName, "node-a", "pod-uid-3", "pod-c", "net1")
 		setControllerNetworkInterfaceStatus(networkInterfaceName, "10.16.0.11/24")
 
 		Expect(k8sClient.Create(ctx, newControllerElasticIPAttachment(name, elasticIPName, networkInterfaceName))).To(Succeed())
@@ -105,6 +108,7 @@ var _ = Describe("ElasticIPAttachment controller", func() {
 
 		networkInterface := newControllerNetworkInterface(networkInterfaceName, "10.16.0.12/24", "node-a", "pod-uid-4", "pod-d", "net1")
 		Expect(k8sClient.Create(ctx, networkInterface)).To(Succeed())
+		attachmentRef := bindControllerNetworkInterface(ctx, networkInterfaceName, "node-a", "pod-uid-4", "pod-d", "net1")
 		setControllerNetworkInterfaceStatus(networkInterfaceName, "10.16.0.12/24")
 
 		Expect(k8sClient.Create(ctx, &juneauv1alpha1.NetworkEndpoint{
@@ -118,6 +122,8 @@ var _ = Describe("ElasticIPAttachment controller", func() {
 					Name:      "pod-d",
 					Interface: "net1",
 				},
+				NetworkInterfaceRef:           networkInterfaceName,
+				NetworkInterfaceAttachmentRef: attachmentRef,
 			},
 		})).To(Succeed())
 
@@ -149,6 +155,7 @@ var _ = Describe("ElasticIPAttachment controller", func() {
 
 		networkInterface := newControllerNetworkInterface(networkInterfaceName, "10.16.0.13/24", "node-a", "pod-uid-5", "pod-e", "net1")
 		Expect(k8sClient.Create(ctx, networkInterface)).To(Succeed())
+		attachmentRef := bindControllerNetworkInterface(ctx, networkInterfaceName, "node-a", "pod-uid-5", "pod-e", "net1")
 		setControllerNetworkInterfaceStatus(networkInterfaceName, "10.16.0.13/24")
 
 		for i := 0; i < 2; i++ {
@@ -163,6 +170,8 @@ var _ = Describe("ElasticIPAttachment controller", func() {
 						Name:      "pod-e",
 						Interface: "net1",
 					},
+					NetworkInterfaceRef:           networkInterfaceName,
+					NetworkInterfaceAttachmentRef: attachmentRef.DeepCopy(),
 				},
 			})).To(Succeed())
 		}
@@ -177,7 +186,7 @@ var _ = Describe("ElasticIPAttachment controller", func() {
 			g.Expect(ready).NotTo(BeNil())
 			g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
 			g.Expect(ready.Reason).To(Equal("ReconcileFailed"))
-			g.Expect(ready.Message).To(ContainSubstring("multiple NetworkEndpoints match podRef"))
+			g.Expect(ready.Message).To(ContainSubstring("multiple NetworkEndpoints match NetworkInterface"))
 			g.Expect(ready.ObservedGeneration).To(Equal(attachment.Generation))
 		}).Should(Succeed())
 	})
@@ -207,16 +216,35 @@ func newControllerNetworkInterface(name, address, nodeName, uid, podName, iface 
 	return &juneauv1alpha1.NetworkInterface{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 		Spec: juneauv1alpha1.NetworkInterfaceSpec{
-			NodeName: nodeName,
-			Subnet:   "default",
-			PodRef: juneauv1alpha1.NetworkInterfacePodReference{
-				UID:       uid,
+			Subnet: "default",
+		},
+		Status: juneauv1alpha1.NetworkInterfaceStatus{Address: address},
+	}
+}
+
+func bindControllerNetworkInterface(ctx context.Context, name, nodeName, podUID, podName, iface string) *juneauv1alpha1.NetworkInterfaceAttachmentReference {
+	attachmentName := name + "-attachment"
+	attachment := &juneauv1alpha1.NetworkInterfaceAttachment{
+		ObjectMeta: metav1.ObjectMeta{Name: attachmentName, Namespace: "default"},
+		Spec: juneauv1alpha1.NetworkInterfaceAttachmentSpec{
+			NetworkInterfaceRef: name,
+			NodeName:            nodeName,
+			PodRef: juneauv1alpha1.NetworkInterfaceAttachmentPodReference{
+				UID:       podUID,
 				Name:      podName,
 				Interface: iface,
 			},
 		},
-		Status: juneauv1alpha1.NetworkInterfaceStatus{Address: address},
 	}
+	Expect(k8sClient.Create(ctx, attachment)).To(Succeed())
+	var networkInterface juneauv1alpha1.NetworkInterface
+	Expect(k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: "default"}, &networkInterface)).To(Succeed())
+	networkInterface.Spec.AttachmentRef = &juneauv1alpha1.NetworkInterfaceAttachmentReference{
+		Name: attachment.Name,
+		UID:  attachment.UID,
+	}
+	Expect(k8sClient.Update(ctx, &networkInterface)).To(Succeed())
+	return networkInterface.Spec.AttachmentRef.DeepCopy()
 }
 
 func setControllerElasticIPStatus(name, address string) {

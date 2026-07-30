@@ -94,6 +94,7 @@ var _ = BeforeSuite(func() {
 	Expect(SetupServiceWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupPodWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupNetworkInterfaceWebhookWithManager(mgr)).To(Succeed())
+	Expect(SetupNetworkInterfaceAttachmentWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupElasticIPAttachmentWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupNetworkEndpointWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupElasticIPWebhookWithManager(mgr)).To(Succeed())

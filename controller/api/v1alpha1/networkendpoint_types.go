@@ -104,6 +104,16 @@ type NetworkEndpointSpec struct {
 	// PodRef is required when Kind=Pod and otherwise omitted.
 	// +optional
 	PodRef *NetworkEndpointPodReference `json:"podRef,omitempty"`
+
+	// NetworkInterfaceRef identifies the persistent interface whose L2/L3
+	// identity this endpoint realizes.
+	// +optional
+	NetworkInterfaceRef string `json:"networkInterfaceRef,omitempty"`
+
+	// NetworkInterfaceAttachmentRef identifies the pod-scoped attachment
+	// authorized to realize this endpoint.
+	// +optional
+	NetworkInterfaceAttachmentRef *NetworkInterfaceAttachmentReference `json:"networkInterfaceAttachmentRef,omitempty"`
 }
 
 // NetworkEndpointStatus defines the observed state of NetworkEndpoint.

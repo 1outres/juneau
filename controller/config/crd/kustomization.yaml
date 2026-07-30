@@ -5,6 +5,7 @@ resources:
 - bases/juneau.loutres.me_vpcs.yaml
 - bases/juneau.loutres.me_subnets.yaml
 - bases/juneau.loutres.me_networkinterfaces.yaml
+- bases/juneau.loutres.me_networkinterfaceattachments.yaml
 - bases/juneau.loutres.me_networkendpoints.yaml
 - bases/juneau.loutres.me_routetables.yaml
 - bases/juneau.loutres.me_addresspools.yaml

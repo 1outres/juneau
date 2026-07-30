@@ -62,22 +62,10 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 		}
 	}()
 
-	var nwifaceList juneauv1alpha1.NetworkInterfaceList
-	if err := c.client.List(ctx, &nwifaceList, client.InNamespace(podNamespace), client.MatchingFields{
-		"spec.podRef.uid":       podUID,
-		"spec.podRef.name":      podName,
-		"spec.podRef.interface": req.Ifname,
-	}); err != nil {
-		zap.L().Error("failed to list NetworkInterface resources", zap.Error(err))
-		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to list NetworkInterface resources", err.Error())
+	attachment, nwiface, err := c.resolveNetworkInterface(ctx, podNamespace, podName, podUID, req.Ifname)
+	if err != nil {
+		return nil, err
 	}
-
-	if len(nwifaceList.Items) == 0 {
-		zap.L().Error("no NetworkInterface resource found for pod/interface")
-		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "No NetworkInterface resource found for pod/interface", "")
-	}
-
-	nwiface := &nwifaceList.Items[0]
 
 	if meta.IsStatusConditionFalse(nwiface.Status.Conditions, juneauv1alpha1.NetworkInterfaceStatusAllocated) {
 		zap.L().Error("NetworkInterface resource is not yet allocated")
@@ -243,9 +231,9 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 			OwnerReferences: []metav1.OwnerReference{
 				{
 					APIVersion: juneauv1alpha1.GroupVersion.String(),
-					Kind:       "NetworkInterface",
-					Name:       nwiface.Name,
-					UID:        nwiface.UID,
+					Kind:       "NetworkInterfaceAttachment",
+					Name:       attachment.Name,
+					UID:        attachment.UID,
 					Controller: ptr.To(true),
 				},
 			},
@@ -257,10 +245,15 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 				Interface: req.Ifname,
 				UID:       podUID,
 			},
-			NodeName:   nwiface.Spec.NodeName,
-			Subnet:     nwiface.Spec.Subnet,
-			Address:    nwiface.Status.Address,
-			MACAddress: peerHWAddr.String(),
+			NodeName:            attachment.Spec.NodeName,
+			Subnet:              nwiface.Spec.Subnet,
+			Address:             nwiface.Status.Address,
+			MACAddress:          peerHWAddr.String(),
+			NetworkInterfaceRef: nwiface.Name,
+			NetworkInterfaceAttachmentRef: &juneauv1alpha1.NetworkInterfaceAttachmentReference{
+				Name: attachment.Name,
+				UID:  attachment.UID,
+			},
 			Attachment: &juneauv1alpha1.NetworkEndpointAttachment{
 				Ifindex:        vethHost.Index,
 				HostMACAddress: hostHWAddr.String(),
@@ -324,19 +317,12 @@ func (c *CNIServer) Check(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.
 
 	zap.S().Infof("CNI CHECK request for pod %s/%s ifname=%s", podNamespace, podName, req.Ifname)
 
-	// 1. NetworkInterface exists and has been allocated.
-	var nwifList juneauv1alpha1.NetworkInterfaceList
-	if err := c.client.List(ctx, &nwifList, client.InNamespace(podNamespace), client.MatchingFields{
-		"spec.podRef.uid":       podUID,
-		"spec.podRef.name":      podName,
-		"spec.podRef.interface": req.Ifname,
-	}); err != nil {
-		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to list NetworkInterface resources", err.Error())
+	// 1. The attachment is authorized and its persistent NetworkInterface
+	// exists and has been allocated.
+	_, nwif, err := c.resolveNetworkInterface(ctx, podNamespace, podName, podUID, req.Ifname)
+	if err != nil {
+		return nil, err
 	}
-	if len(nwifList.Items) == 0 {
-		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "NetworkInterface not found for pod/interface", "")
-	}
-	nwif := &nwifList.Items[0]
 	if meta.IsStatusConditionFalse(nwif.Status.Conditions, juneauv1alpha1.NetworkInterfaceStatusAllocated) {
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "NetworkInterface is not yet allocated", "")
 	}
@@ -376,6 +362,41 @@ func (c *CNIServer) Check(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.
 
 	zap.S().Debugf("CNI CHECK succeeded for pod %s/%s ifname=%s", podNamespace, podName, req.Ifname)
 	return &emptypb.Empty{}, nil
+}
+
+func (c *CNIServer) resolveNetworkInterface(
+	ctx context.Context,
+	namespace, podName, podUID, ifName string,
+) (*juneauv1alpha1.NetworkInterfaceAttachment, *juneauv1alpha1.NetworkInterface, error) {
+	var attachments juneauv1alpha1.NetworkInterfaceAttachmentList
+	if err := c.client.List(ctx, &attachments, client.InNamespace(namespace), client.MatchingFields{
+		"spec.podRef.uid":       podUID,
+		"spec.podRef.name":      podName,
+		"spec.podRef.interface": ifName,
+	}); err != nil {
+		return nil, nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to list NetworkInterfaceAttachment resources", err.Error())
+	}
+	if len(attachments.Items) == 0 {
+		return nil, nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "NetworkInterfaceAttachment not found for pod/interface", "")
+	}
+	attachment := &attachments.Items[0]
+
+	var networkInterface juneauv1alpha1.NetworkInterface
+	if err := c.client.Get(ctx, client.ObjectKey{
+		Namespace: namespace,
+		Name:      attachment.Spec.NetworkInterfaceRef,
+	}, &networkInterface); err != nil {
+		return nil, nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to get NetworkInterface", err.Error())
+	}
+	ref := networkInterface.Spec.AttachmentRef
+	if ref == nil || ref.Name != attachment.Name || ref.UID != attachment.UID {
+		return nil, nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "NetworkInterfaceAttachment is not bound to NetworkInterface", "")
+	}
+	if meta.IsStatusConditionFalse(networkInterface.Status.Conditions, juneauv1alpha1.NetworkInterfaceStatusAllocated) ||
+		networkInterface.Status.Address == "" {
+		return nil, nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "NetworkInterface resource is not yet allocated", "")
+	}
+	return attachment, &networkInterface, nil
 }
 
 // verifyPodInterface enters the pod netns and checks that the named

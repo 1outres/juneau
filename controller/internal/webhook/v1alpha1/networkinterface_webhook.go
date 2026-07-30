@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"reflect"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -103,6 +104,12 @@ func (v *NetworkInterfaceCustomValidator) ValidateCreate(ctx context.Context, ob
 	}
 	errs = append(errs, sgErrs...)
 
+	attachmentErrs, attachmentErr := validateNetworkInterfaceAttachmentRef(ctx, v.Reader, networkinterface, specPath.Child("attachmentRef"))
+	if attachmentErr != nil {
+		return nil, attachmentErr
+	}
+	errs = append(errs, attachmentErrs...)
+
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "NetworkInterface"}, networkinterface.Name, errs)
 		networkinterfacelog.Info("Validation failed for NetworkInterface", "name", networkinterface.GetName(), "error", err)
@@ -126,27 +133,24 @@ func (v *NetworkInterfaceCustomValidator) ValidateUpdate(ctx context.Context, ol
 
 	var errs field.ErrorList
 	specPath := field.NewPath("spec")
-	podRefPath := specPath.Child("podRef")
-
-	if networkinterface.Spec.NodeName != oldNetworkInterface.Spec.NodeName {
-		errs = append(errs, field.Invalid(specPath.Child("nodeName"), networkinterface.Spec.NodeName, "spec.nodeName is immutable"))
-	}
 	if networkinterface.Spec.Subnet != oldNetworkInterface.Spec.Subnet {
 		errs = append(errs, field.Invalid(specPath.Child("subnet"), networkinterface.Spec.Subnet, "spec.subnet is immutable"))
 	}
 	if networkinterface.Spec.Address != oldNetworkInterface.Spec.Address {
 		errs = append(errs, field.Invalid(specPath.Child("address"), networkinterface.Spec.Address, "spec.address is immutable"))
 	}
-	if networkinterface.Spec.PodRef.UID != oldNetworkInterface.Spec.PodRef.UID {
-		errs = append(errs, field.Invalid(podRefPath.Child("uid"), networkinterface.Spec.PodRef.UID, "spec.podRef.uid is immutable"))
+	if !reflect.DeepEqual(networkinterface.Spec.AttachmentRef, oldNetworkInterface.Spec.AttachmentRef) {
+		attachmentErrs, attachmentErr := validateNetworkInterfaceAttachmentTransition(
+			ctx,
+			v.Reader,
+			networkinterface,
+			specPath.Child("attachmentRef"),
+		)
+		if attachmentErr != nil {
+			return nil, attachmentErr
+		}
+		errs = append(errs, attachmentErrs...)
 	}
-	if networkinterface.Spec.PodRef.Name != oldNetworkInterface.Spec.PodRef.Name {
-		errs = append(errs, field.Invalid(podRefPath.Child("name"), networkinterface.Spec.PodRef.Name, "spec.podRef.name is immutable"))
-	}
-	if networkinterface.Spec.PodRef.Interface != oldNetworkInterface.Spec.PodRef.Interface {
-		errs = append(errs, field.Invalid(podRefPath.Child("interface"), networkinterface.Spec.PodRef.Interface, "spec.podRef.interface is immutable"))
-	}
-
 	// Re-validate SG references on update so changing SGs goes through
 	// the same vetting as create (existence + same Vpc as Subnet).
 	//
@@ -182,6 +186,74 @@ func (v *NetworkInterfaceCustomValidator) ValidateUpdate(ctx context.Context, ol
 	}
 
 	return nil, nil
+}
+
+func validateNetworkInterfaceAttachmentRef(
+	ctx context.Context,
+	c client.Reader,
+	networkInterface *juneauv1alpha1.NetworkInterface,
+	path *field.Path,
+) (field.ErrorList, error) {
+	ref := networkInterface.Spec.AttachmentRef
+	if ref == nil {
+		return nil, nil
+	}
+	var attachment juneauv1alpha1.NetworkInterfaceAttachment
+	if err := c.Get(ctx, client.ObjectKey{
+		Namespace: networkInterface.Namespace,
+		Name:      ref.Name,
+	}, &attachment); err != nil {
+		if errors.IsNotFound(err) {
+			return field.ErrorList{field.Invalid(path, ref, "referenced NetworkInterfaceAttachment does not exist")}, nil
+		}
+		return nil, err
+	}
+	var errs field.ErrorList
+	if attachment.UID != ref.UID {
+		errs = append(errs, field.Invalid(path.Child("uid"), ref.UID, "does not match the referenced attachment UID"))
+	}
+	if attachment.Spec.NetworkInterfaceRef != networkInterface.Name {
+		errs = append(errs, field.Invalid(path.Child("name"), ref.Name, "attachment references a different NetworkInterface"))
+	}
+	return errs, nil
+}
+
+func validateNetworkInterfaceAttachmentTransition(
+	ctx context.Context,
+	c client.Reader,
+	networkInterface *juneauv1alpha1.NetworkInterface,
+	path *field.Path,
+) (field.ErrorList, error) {
+	errs, err := validateNetworkInterfaceAttachmentRef(ctx, c, networkInterface, path)
+	if err != nil {
+		return nil, err
+	}
+
+	var endpoints juneauv1alpha1.NetworkEndpointList
+	if err := c.List(ctx, &endpoints, client.InNamespace(networkInterface.Namespace)); err != nil {
+		return nil, err
+	}
+	for i := range endpoints.Items {
+		endpoint := &endpoints.Items[i]
+		if endpoint.Spec.NetworkInterfaceRef != networkInterface.Name {
+			continue
+		}
+		ref := endpoint.Spec.NetworkInterfaceAttachmentRef
+		if networkInterface.Spec.AttachmentRef != nil &&
+			ref != nil &&
+			ref.Name == networkInterface.Spec.AttachmentRef.Name &&
+			ref.UID == networkInterface.Spec.AttachmentRef.UID {
+			continue
+		}
+		return append(errs, field.Forbidden(
+			path,
+			fmt.Sprintf(
+				"NetworkEndpoint %q still realizes the previous attachment; detach it before changing attachmentRef",
+				endpoint.Name,
+			),
+		)), nil
+	}
+	return errs, nil
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type NetworkInterface.

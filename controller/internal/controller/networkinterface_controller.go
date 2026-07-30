@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"net"
 	"reflect"
-	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -51,11 +50,6 @@ const (
 	conditionReasonAllocating          = "Allocating"
 
 	networkInterfaceFinalizer = "networkinterface.juneau.loutres.me/allocation-claim"
-
-	// networkInterfaceReleaseAfter is the grace period applied to the
-	// backing AllocationClaim. Matches the legacy IPLease behaviour so
-	// that a pod deleted and re-created with the same name keeps its IP.
-	networkInterfaceReleaseAfter = time.Hour
 )
 
 // NetworkInterfaceReconciler reconciles a NetworkInterface object.
@@ -195,12 +189,27 @@ func (r *NetworkInterfaceReconciler) handleDeletion(ctx context.Context, resourc
 		return nil
 	}
 
+	var endpoints juneauv1alpha1.NetworkEndpointList
+	if err := r.List(ctx, &endpoints, client.InNamespace(resource.Namespace)); err != nil {
+		return err
+	}
+	for i := range endpoints.Items {
+		if endpoints.Items[i].Spec.NetworkInterfaceRef == resource.Name {
+			return nil
+		}
+	}
+
 	claimName := claimNameForNetworkInterface(resource)
 	var claim juneauv1alpha1.AllocationClaim
 	if err := r.Get(ctx, client.ObjectKey{Name: claimName}, &claim); err == nil {
-		if err := r.Delete(ctx, &claim); err != nil && !errors.IsNotFound(err) {
-			return err
+		if claim.DeletionTimestamp.IsZero() {
+			if err := r.Delete(ctx, &claim); err != nil && !errors.IsNotFound(err) {
+				return err
+			}
 		}
+		// Keep the interface finalizer until the claim controller has
+		// released its AllocationLease and the claim is actually gone.
+		return nil
 	} else if !errors.IsNotFound(err) {
 		return err
 	}
@@ -256,8 +265,7 @@ func (r *NetworkInterfaceReconciler) ensureClaim(ctx context.Context, resource *
 			Namespace:  resource.Namespace,
 			Name:       resource.Name,
 		},
-		Attribute:    "status.address",
-		ReleaseAfter: &metav1.Duration{Duration: networkInterfaceReleaseAfter},
+		Attribute: "status.address",
 	}
 	if resource.Spec.Address != "" {
 		ip := resource.Spec.Address
@@ -349,12 +357,13 @@ func (r *NetworkInterfaceReconciler) updateAllocatedStatus(ctx context.Context, 
 
 	hasMatchingEndpoint := false
 	for _, ep := range nwepList.Items {
-		if ep.Spec.PodRef == nil {
+		if ep.Spec.NetworkInterfaceRef != resource.Name {
 			continue
 		}
-		if ep.Spec.PodRef.Interface == resource.Spec.PodRef.Interface &&
-			ep.Spec.PodRef.Name == resource.Spec.PodRef.Name &&
-			ep.Spec.PodRef.UID == resource.Spec.PodRef.UID {
+		if resource.Spec.AttachmentRef != nil &&
+			ep.Spec.NetworkInterfaceAttachmentRef != nil &&
+			ep.Spec.NetworkInterfaceAttachmentRef.Name == resource.Spec.AttachmentRef.Name &&
+			ep.Spec.NetworkInterfaceAttachmentRef.UID == resource.Spec.AttachmentRef.UID {
 			hasMatchingEndpoint = true
 			break
 		}
@@ -446,7 +455,21 @@ func (r *NetworkInterfaceReconciler) commitStatus(ctx context.Context, resource 
 func (r *NetworkInterfaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&juneauv1alpha1.NetworkInterface{}).
-		Owns(&juneauv1alpha1.NetworkEndpoint{}).
+		Watches(
+			&juneauv1alpha1.NetworkEndpoint{},
+			handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
+				endpoint, ok := obj.(*juneauv1alpha1.NetworkEndpoint)
+				if !ok || endpoint.Spec.NetworkInterfaceRef == "" {
+					return nil
+				}
+				return []reconcile.Request{{
+					NamespacedName: client.ObjectKey{
+						Namespace: endpoint.Namespace,
+						Name:      endpoint.Spec.NetworkInterfaceRef,
+					},
+				}}
+			}),
+		).
 		Watches(
 			&juneauv1alpha1.AllocationClaim{},
 			handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
