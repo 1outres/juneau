@@ -28,8 +28,9 @@ Print build identity. `-o json` / `-o yaml` are supported.
 
 ### `kubectl juneau describe pod NAME`
 
-Walks Pod → NetworkInterface → Subnet → Vpc → RouteTable → NetworkACL
-→ SecurityGroups → ElasticIP and renders the chain as a tree.
+Walks Pod → NetworkInterfaceAttachment → NetworkInterface → Subnet → Vpc
+→ RouteTable → NetworkACL → SecurityGroups → ElasticIP and renders the
+chain as a tree.
 
 ```text
 Pod  default/nginx  (Node: worker-1, podIP: 10.80.0.5)

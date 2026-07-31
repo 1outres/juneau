@@ -86,12 +86,19 @@ func presentNICTree(w io.Writer, ic *topology.InterfaceContext) error {
 		displayOrDash(string(ic.NetworkInterface.Status.Phase)),
 		displayOrDash(ic.NetworkInterface.Status.Address)))
 
-	root.Childf("Pod      %s/%s  (uid: %s, iface: %s)",
-		displayOrDash(ic.NetworkInterface.Namespace),
-		displayOrDash(ic.NetworkInterface.Spec.PodRef.Name),
-		displayOrDash(ic.NetworkInterface.Spec.PodRef.UID),
-		displayOrDash(ic.NetworkInterface.Spec.PodRef.Interface))
-	root.Childf("Node     %s", displayOrDash(ic.NetworkInterface.Spec.NodeName))
+	if ic.Attachment != nil {
+		root.Childf("Pod      %s/%s  (uid: %s, iface: %s)",
+			displayOrDash(ic.Attachment.Namespace),
+			displayOrDash(ic.Attachment.Spec.PodRef.Name),
+			displayOrDash(ic.Attachment.Spec.PodRef.UID),
+			displayOrDash(ic.Attachment.Spec.PodRef.Interface))
+		root.Childf("Node     %s", displayOrDash(ic.Attachment.Spec.NodeName))
+	} else if ic.NetworkInterface.Spec.AttachmentRef != nil {
+		root.Childf("Attachment  %s  (not found or UID mismatch)",
+			ic.NetworkInterface.Spec.AttachmentRef.Name)
+	} else {
+		root.Child("Attachment  (none)")
+	}
 
 	if ic.Subnet != nil {
 		sub := root.Childf("Subnet   %s  (cidr: %s, vni: %d)",

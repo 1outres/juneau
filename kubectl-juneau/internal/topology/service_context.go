@@ -60,8 +60,8 @@ func isSharedService(svc *corev1.Service) bool {
 
 // collectServiceBackends translates EndpointSlice addresses into
 // ServiceBackend rows by joining each address back to a Pod (via
-// targetRef.kind=Pod) and that Pod's NetworkInterface → Subnet → Vpc
-// chain.
+// targetRef.kind=Pod) and that Pod's NetworkInterfaceAttachment →
+// NetworkInterface → Subnet → Vpc chain.
 //
 // Missing references are tolerated: a backend whose target Pod has
 // been deleted still surfaces as a row with empty Pod/Vpc fields and
@@ -84,7 +84,7 @@ func collectServiceBackends(
 				if ep.TargetRef != nil && ep.TargetRef.Kind == "Pod" {
 					b.PodNamespace = ep.TargetRef.Namespace
 					b.PodName = ep.TargetRef.Name
-					if err := fillBackendFromPod(ctx, v, &b); err != nil {
+					if err := fillBackendFromPod(ctx, v, &b, string(ep.TargetRef.UID)); err != nil {
 						return nil, err
 					}
 				}
@@ -98,8 +98,8 @@ func collectServiceBackends(
 
 // fillBackendFromPod resolves the Pod's owning Subnet/Vpc through its
 // NetworkInterface and stamps the backend row.
-func fillBackendFromPod(ctx context.Context, v View, b *ServiceBackend) error {
-	nics, err := v.NetworkInterfacesByPod(ctx, b.PodNamespace, b.PodName)
+func fillBackendFromPod(ctx context.Context, v View, b *ServiceBackend, podUID string) error {
+	nics, err := v.NetworkInterfacesByPod(ctx, b.PodNamespace, b.PodName, podUID)
 	if err != nil {
 		return err
 	}

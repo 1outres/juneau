@@ -35,6 +35,7 @@ type View interface {
 	Subnet(ctx context.Context, name string) (*juneauv1alpha1.Subnet, error)
 	RouteTable(ctx context.Context, name string) (*juneauv1alpha1.RouteTable, error)
 	NetworkInterface(ctx context.Context, ns, name string) (*juneauv1alpha1.NetworkInterface, error)
+	NetworkInterfaceAttachment(ctx context.Context, ns, name string) (*juneauv1alpha1.NetworkInterfaceAttachment, error)
 	SecurityGroup(ctx context.Context, name string) (*juneauv1alpha1.SecurityGroup, error)
 	NetworkACL(ctx context.Context, name string) (*juneauv1alpha1.NetworkACL, error)
 	NATGateway(ctx context.Context, name string) (*juneauv1alpha1.NATGateway, error)
@@ -47,7 +48,7 @@ type View interface {
 	NetworkACLsByVpc(ctx context.Context, vpc string) ([]juneauv1alpha1.NetworkACL, error)
 	NATGatewaysByVpc(ctx context.Context, vpc string) ([]juneauv1alpha1.NATGateway, error)
 
-	NetworkInterfacesByPod(ctx context.Context, ns, name string) ([]juneauv1alpha1.NetworkInterface, error)
+	NetworkInterfacesByPod(ctx context.Context, ns, name, uid string) ([]juneauv1alpha1.NetworkInterface, error)
 	NetworkInterfacesBySubnet(ctx context.Context, subnet string) ([]juneauv1alpha1.NetworkInterface, error)
 
 	ElasticIPAttachmentsForNIC(ctx context.Context, nicName string) ([]juneauv1alpha1.ElasticIPAttachment, error)

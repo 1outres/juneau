@@ -21,7 +21,8 @@ type PodContext struct {
 // NetworkInterface. Used both as a leaf inside PodContext and as a
 // standalone result for `describe networkinterface`.
 type InterfaceContext struct {
-	NetworkInterface *juneauv1alpha1.NetworkInterface `json:"networkInterface,omitempty"`
+	NetworkInterface *juneauv1alpha1.NetworkInterface           `json:"networkInterface,omitempty"`
+	Attachment       *juneauv1alpha1.NetworkInterfaceAttachment `json:"attachment,omitempty"`
 
 	Subnet *juneauv1alpha1.Subnet `json:"subnet,omitempty"`
 	Vpc    *juneauv1alpha1.Vpc    `json:"vpc,omitempty"`
@@ -60,8 +61,8 @@ type SubnetContext struct {
 	RouteTable       *RouteTableSummary `json:"routeTable,omitempty"`
 	RouteTableIsMain bool               `json:"routeTableIsMain,omitempty"`
 
-	NetworkACL *NetworkACLSummary                `json:"networkACL,omitempty"`
-	Interfaces []juneauv1alpha1.NetworkInterface `json:"interfaces,omitempty"`
+	NetworkACL *NetworkACLSummary `json:"networkACL,omitempty"`
+	Interfaces []InterfaceContext `json:"interfaces,omitempty"`
 }
 
 // ServiceContext is the result returned for `describe service`. It

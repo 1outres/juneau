@@ -391,8 +391,8 @@ func (o *Options) resolvePodEndpoint(ctx context.Context, cl client.Client, ref 
 			ep.ip = addr
 		}
 	}
-	// VPC discovery: fetch the NetworkInterface for this Pod and
-	// derive the VPC ID from the attached Subnet → Vpc chain.
+	// VPC discovery: follow this Pod's attachment to its
+	// NetworkInterface and derive the VPC ID from the Subnet → Vpc chain.
 	if vpcID, err := lookupPodVPC(ctx, cl, &pod); err == nil {
 		ep.vpcID = vpcID
 	}
@@ -414,25 +414,34 @@ func (o *Options) resolveServiceEndpoint(ctx context.Context, cl client.Client, 
 	return ep, nil
 }
 
-// lookupPodVPC walks Pod → NetworkInterface → Subnet → Vpc to learn
+// lookupPodVPC walks Pod → NetworkInterfaceAttachment →
+// NetworkInterface → Subnet → Vpc to learn
 // the VPC ID. Best-effort: missing links return 0 and the caller
 // falls back to host scope.
 func lookupPodVPC(ctx context.Context, cl client.Client, pod *corev1.Pod) (uint32, error) {
-	var nwifs juneauv1alpha1.NetworkInterfaceList
-	if err := cl.List(ctx, &nwifs, client.InNamespace(pod.Namespace)); err != nil {
+	var attachments juneauv1alpha1.NetworkInterfaceAttachmentList
+	if err := cl.List(ctx, &attachments, client.InNamespace(pod.Namespace)); err != nil {
 		return 0, err
 	}
-	var nwif *juneauv1alpha1.NetworkInterface
-	for i := range nwifs.Items {
-		if nwifs.Items[i].Spec.PodRef.UID == string(pod.UID) {
-			nwif = &nwifs.Items[i]
+	var attachment *juneauv1alpha1.NetworkInterfaceAttachment
+	for i := range attachments.Items {
+		if attachments.Items[i].Spec.PodRef.UID == string(pod.UID) {
+			attachment = &attachments.Items[i]
 			break
 		}
-		if nwifs.Items[i].Spec.PodRef.Name == pod.Name {
-			nwif = &nwifs.Items[i]
-		}
 	}
-	if nwif == nil {
+	if attachment == nil {
+		return 0, apierrors.NewNotFound(corev1.Resource("networkinterfaces"), pod.Name)
+	}
+	var nwif juneauv1alpha1.NetworkInterface
+	if err := cl.Get(ctx, types.NamespacedName{
+		Namespace: pod.Namespace,
+		Name:      attachment.Spec.NetworkInterfaceRef,
+	}, &nwif); err != nil {
+		return 0, err
+	}
+	ref := nwif.Spec.AttachmentRef
+	if ref == nil || ref.Name != attachment.Name || ref.UID != attachment.UID {
 		return 0, apierrors.NewNotFound(corev1.Resource("networkinterfaces"), pod.Name)
 	}
 	if nwif.Spec.Subnet == "" {

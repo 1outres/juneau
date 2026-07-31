@@ -43,6 +43,13 @@ func ResolveSubnetContext(ctx context.Context, v View, name string) (*SubnetCont
 	if err != nil {
 		return nil, err
 	}
-	out.Interfaces = nics
+	out.Interfaces = make([]InterfaceContext, 0, len(nics))
+	for i := range nics {
+		ic, err := buildInterfaceContext(ctx, v, &nics[i])
+		if err != nil {
+			return nil, err
+		}
+		out.Interfaces = append(out.Interfaces, ic)
+	}
 	return out, nil
 }

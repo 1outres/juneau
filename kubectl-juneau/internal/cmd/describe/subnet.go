@@ -126,12 +126,18 @@ func presentSubnetTree(w io.Writer, sc *topology.SubnetContext) error {
 		root.Child("NetworkInterfaces  (none)")
 	} else {
 		nicRoot := root.Childf("NetworkInterfaces  (%d)", len(sc.Interfaces))
-		for _, nic := range sc.Interfaces {
-			nicRoot.Childf("%s  (pod: %s/%s, address: %s)",
-				nic.Name,
-				displayOrDash(nic.Namespace),
-				displayOrDash(nic.Spec.PodRef.Name),
-				displayOrDash(nic.Status.Address))
+		for _, ic := range sc.Interfaces {
+			nic := ic.NetworkInterface
+			if ic.Attachment != nil {
+				nicRoot.Childf("%s  (pod: %s/%s, address: %s)",
+					nic.Name,
+					displayOrDash(ic.Attachment.Namespace),
+					displayOrDash(ic.Attachment.Spec.PodRef.Name),
+					displayOrDash(nic.Status.Address))
+				continue
+			}
+			nicRoot.Childf("%s  (unattached, address: %s)",
+				nic.Name, displayOrDash(nic.Status.Address))
 		}
 	}
 

@@ -6,9 +6,10 @@ import (
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
-// ResolvePodContext walks the chain Pod → NetworkInterface(s) → Subnet
-// → Vpc → RouteTable / NetworkACL / SecurityGroup / ElasticIP and
-// returns a flat snapshot suitable for rendering. The walk is
+// ResolvePodContext walks the chain Pod → NetworkInterfaceAttachment(s)
+// → NetworkInterface(s) → Subnet → Vpc → RouteTable / NetworkACL /
+// SecurityGroup / ElasticIP and returns a flat snapshot suitable for
+// rendering. The walk is
 // best-effort: if any link is missing (Pod has no NIC yet, ACL ref
 // dangles) the corresponding field is left nil and the presenter
 // surfaces "(not found)" or "(none)" — the command itself does not
@@ -25,14 +26,10 @@ func ResolvePodContext(ctx context.Context, v View, namespace, name string) (*Po
 		return out, nil
 	}
 
-	nics, err := v.NetworkInterfacesByPod(ctx, namespace, name)
+	nics, err := v.NetworkInterfacesByPod(ctx, namespace, name, string(pod.UID))
 	if err != nil {
 		return nil, err
 	}
-	// Prefer NICs whose UID matches the live Pod when both UID-matched
-	// and unmatched entries are present. Stale NICs (Pod re-created)
-	// would otherwise mislead the operator.
-	nics = filterNICsByPodUID(nics, string(pod.UID))
 
 	out.Interfaces = make([]InterfaceContext, 0, len(nics))
 	for i := range nics {
@@ -67,6 +64,16 @@ func ResolveNetworkInterfaceContext(ctx context.Context, v View, namespace, name
 // ResolveNetworkInterfaceContext.
 func buildInterfaceContext(ctx context.Context, v View, nic *juneauv1alpha1.NetworkInterface) (InterfaceContext, error) {
 	ic := InterfaceContext{NetworkInterface: nic}
+
+	if nic.Spec.AttachmentRef != nil {
+		attachment, err := v.NetworkInterfaceAttachment(ctx, nic.Namespace, nic.Spec.AttachmentRef.Name)
+		if err != nil {
+			return ic, err
+		}
+		if attachment != nil && attachment.UID == nic.Spec.AttachmentRef.UID {
+			ic.Attachment = attachment
+		}
+	}
 
 	if nic.Spec.Subnet != "" {
 		subnet, err := v.Subnet(ctx, nic.Spec.Subnet)
@@ -135,23 +142,4 @@ func buildInterfaceContext(ctx context.Context, v View, nic *juneauv1alpha1.Netw
 		}
 	}
 	return ic, nil
-}
-
-// filterNICsByPodUID keeps NICs whose podRef.UID matches uid. If no
-// NIC matches by UID (UID may be empty for older NICs), returns the
-// input unchanged.
-func filterNICsByPodUID(nics []juneauv1alpha1.NetworkInterface, uid string) []juneauv1alpha1.NetworkInterface {
-	if uid == "" {
-		return nics
-	}
-	matched := make([]juneauv1alpha1.NetworkInterface, 0, len(nics))
-	for i := range nics {
-		if nics[i].Spec.PodRef.UID == uid {
-			matched = append(matched, nics[i])
-		}
-	}
-	if len(matched) == 0 {
-		return nics
-	}
-	return matched
 }

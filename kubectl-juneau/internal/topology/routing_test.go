@@ -37,6 +37,9 @@ func (s *stubView) RouteTable(_ context.Context, name string) (*juneauv1alpha1.R
 func (s *stubView) NetworkInterface(_ context.Context, _, _ string) (*juneauv1alpha1.NetworkInterface, error) {
 	return nil, nil
 }
+func (s *stubView) NetworkInterfaceAttachment(_ context.Context, _, _ string) (*juneauv1alpha1.NetworkInterfaceAttachment, error) {
+	return nil, nil
+}
 func (s *stubView) SecurityGroup(_ context.Context, _ string) (*juneauv1alpha1.SecurityGroup, error) {
 	return nil, nil
 }
@@ -61,7 +64,7 @@ func (s *stubView) NetworkACLsByVpc(_ context.Context, _ string) ([]juneauv1alph
 func (s *stubView) NATGatewaysByVpc(_ context.Context, _ string) ([]juneauv1alpha1.NATGateway, error) {
 	return nil, nil
 }
-func (s *stubView) NetworkInterfacesByPod(_ context.Context, _, _ string) ([]juneauv1alpha1.NetworkInterface, error) {
+func (s *stubView) NetworkInterfacesByPod(_ context.Context, _, _, _ string) ([]juneauv1alpha1.NetworkInterface, error) {
 	return nil, nil
 }
 func (s *stubView) NetworkInterfacesBySubnet(_ context.Context, _ string) ([]juneauv1alpha1.NetworkInterface, error) {

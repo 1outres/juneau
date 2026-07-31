@@ -118,6 +118,60 @@ func TestServiceBackendTuplesSeedsBackendsWithTargetPort(t *testing.T) {
 	}
 }
 
+func TestLookupPodVPCFollowsNetworkInterfaceAttachment(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "default",
+			Name:      "workload",
+			UID:       "pod-uid",
+		},
+	}
+	attachment := &juneauv1alpha1.NetworkInterfaceAttachment{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "default",
+			Name:      "workload",
+			UID:       "attachment-uid",
+		},
+		Spec: juneauv1alpha1.NetworkInterfaceAttachmentSpec{
+			NetworkInterfaceRef: "workload",
+			PodRef: juneauv1alpha1.NetworkInterfaceAttachmentPodReference{
+				Name: "workload",
+				UID:  "pod-uid",
+			},
+		},
+	}
+	nic := &juneauv1alpha1.NetworkInterface{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "workload"},
+		Spec: juneauv1alpha1.NetworkInterfaceSpec{
+			Subnet: "app-subnet",
+			AttachmentRef: &juneauv1alpha1.NetworkInterfaceAttachmentReference{
+				Name: attachment.Name,
+				UID:  attachment.UID,
+			},
+		},
+	}
+	subnet := &juneauv1alpha1.Subnet{
+		ObjectMeta: metav1.ObjectMeta{Name: "app-subnet"},
+		Spec:       juneauv1alpha1.SubnetSpec{Vpc: "app-vpc"},
+	}
+	vpc := &juneauv1alpha1.Vpc{
+		ObjectMeta: metav1.ObjectMeta{Name: "app-vpc"},
+		Status:     juneauv1alpha1.VpcStatus{VpcID: 42},
+	}
+	cl := fake.NewClientBuilder().
+		WithScheme(newSchemeForTest(t)).
+		WithObjects(pod, attachment, nic, subnet, vpc).
+		Build()
+
+	got, err := lookupPodVPC(context.Background(), cl, pod)
+	if err != nil {
+		t.Fatalf("lookupPodVPC: %v", err)
+	}
+	if got != 42 {
+		t.Fatalf("VPC ID = %d, want 42", got)
+	}
+}
+
 func TestServiceBackendTuplesReturnsNilWhenPortNotMatched(t *testing.T) {
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "api"},

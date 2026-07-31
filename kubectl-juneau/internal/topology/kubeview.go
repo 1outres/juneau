@@ -197,6 +197,14 @@ func (v *kubeView) NetworkInterface(ctx context.Context, ns, name string) (*june
 	return &obj, nil
 }
 
+func (v *kubeView) NetworkInterfaceAttachment(ctx context.Context, ns, name string) (*juneauv1alpha1.NetworkInterfaceAttachment, error) {
+	var obj juneauv1alpha1.NetworkInterfaceAttachment
+	if err := v.cl.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &obj); err != nil {
+		return nil, ignoreNotFound(err)
+	}
+	return &obj, nil
+}
+
 func (v *kubeView) SecurityGroup(ctx context.Context, name string) (*juneauv1alpha1.SecurityGroup, error) {
 	v.mu.Lock()
 	if cached, ok := v.sgCache[name]; ok {
@@ -413,15 +421,34 @@ func (v *kubeView) NATGatewaysByVpc(ctx context.Context, vpc string) ([]juneauv1
 	return out, nil
 }
 
-func (v *kubeView) NetworkInterfacesByPod(ctx context.Context, ns, name string) ([]juneauv1alpha1.NetworkInterface, error) {
-	var list juneauv1alpha1.NetworkInterfaceList
-	if err := v.cl.List(ctx, &list, client.InNamespace(ns)); err != nil {
+func (v *kubeView) NetworkInterfacesByPod(ctx context.Context, ns, name, uid string) ([]juneauv1alpha1.NetworkInterface, error) {
+	var attachments juneauv1alpha1.NetworkInterfaceAttachmentList
+	if err := v.cl.List(ctx, &attachments, client.InNamespace(ns)); err != nil {
 		return nil, err
 	}
-	out := make([]juneauv1alpha1.NetworkInterface, 0, len(list.Items))
-	for i := range list.Items {
-		if list.Items[i].Spec.PodRef.Name == name {
-			out = append(out, list.Items[i])
+	out := make([]juneauv1alpha1.NetworkInterface, 0, len(attachments.Items))
+	seen := make(map[string]struct{}, len(attachments.Items))
+	for i := range attachments.Items {
+		attachment := &attachments.Items[i]
+		if attachment.Spec.PodRef.Name != name ||
+			(uid != "" && attachment.Spec.PodRef.UID != uid) {
+			continue
+		}
+		nicName := attachment.Spec.NetworkInterfaceRef
+		if _, ok := seen[nicName]; ok {
+			continue
+		}
+		nic, err := v.NetworkInterface(ctx, ns, nicName)
+		if err != nil {
+			return nil, err
+		}
+		if nic != nil {
+			ref := nic.Spec.AttachmentRef
+			if ref == nil || ref.Name != attachment.Name || ref.UID != attachment.UID {
+				continue
+			}
+			out = append(out, *nic)
+			seen[nicName] = struct{}{}
 		}
 	}
 	return out, nil
