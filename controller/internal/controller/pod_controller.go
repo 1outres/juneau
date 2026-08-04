@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	"github.com/1outres/juneau/controller/internal/workload"
 )
 
 const (
@@ -120,6 +121,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		nwiface.Spec.Subnet = subnetName
 		nwiface.Spec.Address = annotations[podAnnAddress]
 		nwiface.Spec.SecurityGroups = ParsePodSecurityGroups(annotations[podAnnSecurityGroups])
+		nwiface.Spec.AllocationIdentity = workload.AllocationIdentity(&pod)
 
 		return ctrl.SetControllerReference(&pod, nwiface, r.Scheme)
 	})

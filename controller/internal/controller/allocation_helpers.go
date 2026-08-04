@@ -60,6 +60,31 @@ func newAllocationClaim(poolName string, gvk schema.GroupVersionKind, namespace,
 	return claim
 }
 
+// leaseNameFor returns the AllocationLease name that backs a claim. The
+// reuse key decouples the reservation from the claim's own name, which lets
+// a workload keep its value across recreations that rename the claim.
+func leaseNameFor(claim *juneauv1alpha1.AllocationClaim) string {
+	if claim.Spec.ReuseKey != "" {
+		return claim.Spec.ReuseKey
+	}
+	return claim.Name
+}
+
+// leaseOwnedByClaim reports whether the claim is the recorded holder of the
+// lease. Claim names are unique at any point in time, so the name alone
+// identifies the holder; a claim re-created under the same name is the same
+// holder and keeps its value even though its UID changed.
+func leaseOwnedByClaim(lease *juneauv1alpha1.AllocationLease, claim *juneauv1alpha1.AllocationClaim) bool {
+	return lease.Spec.ClaimRef.Name == claim.Name
+}
+
+// leaseHeldByOtherClaim reports whether another claim holds the lease and has
+// not been deleted yet. Such a lease is off limits: taking it would hand the
+// same value to two live claims.
+func leaseHeldByOtherClaim(lease *juneauv1alpha1.AllocationLease, claim *juneauv1alpha1.AllocationClaim) bool {
+	return !leaseOwnedByClaim(lease, claim) && lease.Spec.OwnerDeletionTimestamp.IsZero()
+}
+
 // claimReferencesPool reports whether the claim lists the given pool among
 // its candidates.
 func claimReferencesPool(claim *juneauv1alpha1.AllocationClaim, poolName string) bool {

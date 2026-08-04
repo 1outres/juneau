@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -103,6 +104,8 @@ func (v *NetworkInterfaceCustomValidator) ValidateCreate(ctx context.Context, ob
 	}
 	errs = append(errs, sgErrs...)
 
+	errs = append(errs, validateNetworkInterfaceAllocationIdentity(networkinterface.Spec.AllocationIdentity, specPath.Child("allocationIdentity"))...)
+
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "NetworkInterface"}, networkinterface.Name, errs)
 		networkinterfacelog.Info("Validation failed for NetworkInterface", "name", networkinterface.GetName(), "error", err)
@@ -145,6 +148,9 @@ func (v *NetworkInterfaceCustomValidator) ValidateUpdate(ctx context.Context, ol
 	}
 	if networkinterface.Spec.PodRef.Interface != oldNetworkInterface.Spec.PodRef.Interface {
 		errs = append(errs, field.Invalid(podRefPath.Child("interface"), networkinterface.Spec.PodRef.Interface, "spec.podRef.interface is immutable"))
+	}
+	if networkinterface.Spec.AllocationIdentity != oldNetworkInterface.Spec.AllocationIdentity {
+		errs = append(errs, field.Invalid(specPath.Child("allocationIdentity"), networkinterface.Spec.AllocationIdentity, "spec.allocationIdentity is immutable"))
 	}
 
 	// Re-validate SG references on update so changing SGs goes through
@@ -235,6 +241,19 @@ func validateNetworkInterfaceAddress(address string, subnet *juneauv1alpha1.Subn
 	}
 
 	return nil
+}
+
+func validateNetworkInterfaceAllocationIdentity(identity string, path *field.Path) field.ErrorList {
+	if identity == "" {
+		return nil
+	}
+
+	var errs field.ErrorList
+	// The identity becomes part of the backing AllocationLease object name.
+	for _, msg := range validation.IsDNS1123Subdomain(identity) {
+		errs = append(errs, field.Invalid(path, identity, msg))
+	}
+	return errs
 }
 
 // validateNetworkInterfaceSecurityGroups checks that every entry in

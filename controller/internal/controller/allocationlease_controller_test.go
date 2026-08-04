@@ -113,6 +113,228 @@ var _ = Describe("Allocation lease", func() {
 		}).Should(Succeed())
 	})
 
+	It("lets a differently named claim inherit the value through a shared reuse key", func() {
+		releaseAfter := metav1.Duration{Duration: time.Hour}
+		const reuseKey = "lease-shared-key"
+		pool := &juneauv1alpha1.AllocationPool{
+			ObjectMeta: metav1.ObjectMeta{Name: "pool-lease-shared"},
+			Spec: juneauv1alpha1.AllocationPoolSpec{
+				Type:     juneauv1alpha1.AllocationTypeNumber,
+				Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+				Number:   &juneauv1alpha1.AllocationPoolNumberSpec{Min: 100, Max: 200},
+			},
+		}
+		owner := &juneauv1alpha1.Vpc{ObjectMeta: metav1.ObjectMeta{Name: "lease-shared-owner"}}
+		makeClaim := func(name string) *juneauv1alpha1.AllocationClaim {
+			return &juneauv1alpha1.AllocationClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: name},
+				Spec: juneauv1alpha1.AllocationClaimSpec{
+					PoolRefs:     []juneauv1alpha1.AllocationPoolReference{{Name: pool.Name}},
+					ResourceRef:  juneauv1alpha1.AllocationResourceReference{APIVersion: juneauv1alpha1.GroupVersion.String(), Kind: "Vpc", Name: owner.Name},
+					Attribute:    "status.vni",
+					ReuseKey:     reuseKey,
+					ReleaseAfter: &releaseAfter,
+				},
+			}
+		}
+
+		Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+		Expect(k8sClient.Create(ctx, owner)).To(Succeed())
+		first := makeClaim("lease-shared-a")
+		Expect(k8sClient.Create(ctx, first)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupLeaseTestArtifacts(ctx, "lease-shared-a", nil, nil)
+			cleanupLeaseTestArtifacts(ctx, "lease-shared-b", owner, pool)
+			_ = k8sClient.Delete(ctx, &juneauv1alpha1.AllocationLease{ObjectMeta: metav1.ObjectMeta{Name: reuseKey}})
+		})
+
+		reconciler := &AllocationClaimReconciler{Client: k8sClient, APIReader: k8sClient, Scheme: k8sClient.Scheme()}
+		Eventually(func(g Gomega) {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: first.Name}})
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: first.Name}, first)).To(Succeed())
+			g.Expect(first.Status.Phase).To(Equal(juneauv1alpha1.AllocationClaimPhaseAllocated))
+		}).Should(Succeed())
+		firstValue := first.Status.Value.Number
+		Expect(firstValue).NotTo(BeZero())
+
+		// The lease is named after the reuse key, not after the claim.
+		var lease juneauv1alpha1.AllocationLease
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: reuseKey}, &lease)).To(Succeed())
+			g.Expect(lease.Spec.Value.Number).To(Equal(firstValue))
+			g.Expect(lease.Spec.ClaimRef.Name).To(Equal(first.Name))
+		}).Should(Succeed())
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: first.Name}, &juneauv1alpha1.AllocationLease{})).NotTo(Succeed())
+
+		Expect(k8sClient.Delete(ctx, first)).To(Succeed())
+		Eventually(func(g Gomega) {
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: first.Name}, &juneauv1alpha1.AllocationClaim{})
+			g.Expect(errors.IsNotFound(err)).To(BeTrue())
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: reuseKey}, &lease)).To(Succeed())
+			g.Expect(lease.Spec.OwnerDeletionTimestamp).NotTo(BeNil())
+		}).Should(Succeed())
+
+		second := makeClaim("lease-shared-b")
+		Expect(k8sClient.Create(ctx, second)).To(Succeed())
+		Eventually(func(g Gomega) {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: second.Name}})
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: second.Name}, second)).To(Succeed())
+			g.Expect(second.Status.Phase).To(Equal(juneauv1alpha1.AllocationClaimPhaseAllocated))
+			g.Expect(second.Status.Value.Number).To(Equal(firstValue))
+		}).Should(Succeed())
+
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: reuseKey}, &lease)).To(Succeed())
+			g.Expect(lease.Spec.ClaimRef.Name).To(Equal(second.Name))
+			g.Expect(lease.Spec.OwnerDeletionTimestamp).To(BeNil())
+		}).Should(Succeed())
+	})
+
+	It("does not take a lease that another live claim holds", func() {
+		releaseAfter := metav1.Duration{Duration: time.Hour}
+		const reuseKey = "lease-held-key"
+		pool := &juneauv1alpha1.AllocationPool{
+			ObjectMeta: metav1.ObjectMeta{Name: "pool-lease-held"},
+			Spec: juneauv1alpha1.AllocationPoolSpec{
+				Type:     juneauv1alpha1.AllocationTypeNumber,
+				Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+				Number:   &juneauv1alpha1.AllocationPoolNumberSpec{Min: 300, Max: 400},
+			},
+		}
+		owner := &juneauv1alpha1.Vpc{ObjectMeta: metav1.ObjectMeta{Name: "lease-held-owner"}}
+		makeClaim := func(name string) *juneauv1alpha1.AllocationClaim {
+			return &juneauv1alpha1.AllocationClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: name},
+				Spec: juneauv1alpha1.AllocationClaimSpec{
+					PoolRefs:     []juneauv1alpha1.AllocationPoolReference{{Name: pool.Name}},
+					ResourceRef:  juneauv1alpha1.AllocationResourceReference{APIVersion: juneauv1alpha1.GroupVersion.String(), Kind: "Vpc", Name: owner.Name},
+					Attribute:    "status.vni",
+					ReuseKey:     reuseKey,
+					ReleaseAfter: &releaseAfter,
+				},
+			}
+		}
+
+		Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+		Expect(k8sClient.Create(ctx, owner)).To(Succeed())
+		holder := makeClaim("lease-held-a")
+		Expect(k8sClient.Create(ctx, holder)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupLeaseTestArtifacts(ctx, "lease-held-a", nil, nil)
+			cleanupLeaseTestArtifacts(ctx, "lease-held-b", owner, pool)
+			_ = k8sClient.Delete(ctx, &juneauv1alpha1.AllocationLease{ObjectMeta: metav1.ObjectMeta{Name: reuseKey}})
+		})
+
+		reconciler := &AllocationClaimReconciler{Client: k8sClient, APIReader: k8sClient, Scheme: k8sClient.Scheme()}
+		Eventually(func(g Gomega) {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: holder.Name}})
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: holder.Name}, holder)).To(Succeed())
+			g.Expect(holder.Status.Phase).To(Equal(juneauv1alpha1.AllocationClaimPhaseAllocated))
+		}).Should(Succeed())
+		heldValue := holder.Status.Value.Number
+
+		rival := makeClaim("lease-held-b")
+		Expect(k8sClient.Create(ctx, rival)).To(Succeed())
+		Eventually(func(g Gomega) {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: rival.Name}})
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: rival.Name}, rival)).To(Succeed())
+			g.Expect(rival.Status.Phase).To(Equal(juneauv1alpha1.AllocationClaimPhaseAllocated))
+			g.Expect(rival.Status.Value.Number).NotTo(Equal(heldValue))
+		}).Should(Succeed())
+
+		var lease juneauv1alpha1.AllocationLease
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: reuseKey}, &lease)).To(Succeed())
+		Expect(lease.Spec.ClaimRef.Name).To(Equal(holder.Name))
+		Expect(lease.Spec.Value.Number).To(Equal(heldValue))
+		Expect(lease.Spec.OwnerDeletionTimestamp).To(BeNil())
+
+		// Reconciling the allocated rival again must not take the lease
+		// over the holder's head, nor change the value the rival got.
+		rivalValue := rival.Status.Value.Number
+		Consistently(func(g Gomega) {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: rival.Name}})
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: reuseKey}, &lease)).To(Succeed())
+			g.Expect(lease.Spec.ClaimRef.Name).To(Equal(holder.Name))
+			g.Expect(lease.Spec.Value.Number).To(Equal(heldValue))
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: rival.Name}, rival)).To(Succeed())
+			g.Expect(rival.Status.Value.Number).To(Equal(rivalValue))
+		}, "2s", "200ms").Should(Succeed())
+	})
+
+	It("adopts a lease that was written before it recorded a holder", func() {
+		releaseAfter := metav1.Duration{Duration: time.Hour}
+		pool := &juneauv1alpha1.AllocationPool{
+			ObjectMeta: metav1.ObjectMeta{Name: "pool-lease-adopt"},
+			Spec: juneauv1alpha1.AllocationPoolSpec{
+				Type:     juneauv1alpha1.AllocationTypeNumber,
+				Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+				Number:   &juneauv1alpha1.AllocationPoolNumberSpec{Min: 500, Max: 600},
+			},
+		}
+		owner := &juneauv1alpha1.Vpc{ObjectMeta: metav1.ObjectMeta{Name: "lease-adopt-owner"}}
+		claim := &juneauv1alpha1.AllocationClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "lease-adopt-claim"},
+			Spec: juneauv1alpha1.AllocationClaimSpec{
+				PoolRefs:     []juneauv1alpha1.AllocationPoolReference{{Name: pool.Name}},
+				ResourceRef:  juneauv1alpha1.AllocationResourceReference{APIVersion: juneauv1alpha1.GroupVersion.String(), Kind: "Vpc", Name: owner.Name},
+				Attribute:    "status.vni",
+				ReleaseAfter: &releaseAfter,
+			},
+		}
+
+		Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+		Expect(k8sClient.Create(ctx, owner)).To(Succeed())
+		Expect(k8sClient.Create(ctx, claim)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupLeaseTestArtifacts(ctx, claim.Name, owner, pool)
+		})
+
+		reconciler := &AllocationClaimReconciler{Client: k8sClient, APIReader: k8sClient, Scheme: k8sClient.Scheme()}
+		Eventually(func(g Gomega) {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: claim.Name}})
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: claim.Name}, claim)).To(Succeed())
+			g.Expect(claim.Status.Phase).To(Equal(juneauv1alpha1.AllocationClaimPhaseAllocated))
+		}).Should(Succeed())
+		allocatedValue := claim.Status.Value.Number
+
+		// Recreate the state a lease written by an older controller is in:
+		// the value is recorded but the holder is not.
+		var lease juneauv1alpha1.AllocationLease
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: claim.Name}, &lease)).To(Succeed())
+			lease.Spec.ClaimRef = juneauv1alpha1.AllocationLeaseClaimReference{}
+			g.Expect(k8sClient.Update(ctx, &lease)).To(Succeed())
+		}).Should(Succeed())
+
+		Eventually(func(g Gomega) {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: claim.Name}})
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: claim.Name}, &lease)).To(Succeed())
+			g.Expect(lease.Spec.ClaimRef.Name).To(Equal(claim.Name))
+			g.Expect(lease.Spec.ClaimRef.UID).To(Equal(string(claim.UID)))
+		}).Should(Succeed())
+
+		// Adoption must leave the reservation itself untouched.
+		Expect(lease.Spec.Value.Number).To(Equal(allocatedValue))
+		Expect(lease.Spec.OwnerDeletionTimestamp).To(BeNil())
+
+		// An adopted lease is released when the claim goes away, which is
+		// what stops it from leaking after an upgrade.
+		Expect(k8sClient.Delete(ctx, claim)).To(Succeed())
+		Eventually(func(g Gomega) {
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: claim.Name}, &juneauv1alpha1.AllocationClaim{})
+			g.Expect(errors.IsNotFound(err)).To(BeTrue())
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: claim.Name}, &lease)).To(Succeed())
+			g.Expect(lease.Spec.OwnerDeletionTimestamp).NotTo(BeNil())
+		}).Should(Succeed())
+	})
+
 	It("removes the lease immediately when ReleaseAfter is unset", func() {
 		pool := &juneauv1alpha1.AllocationPool{
 			ObjectMeta: metav1.ObjectMeta{Name: "pool-lease-noretain"},
@@ -183,10 +405,9 @@ var _ = Describe("Allocation lease", func() {
 			Spec: juneauv1alpha1.AllocationLeaseSpec{
 				PoolRef: juneauv1alpha1.AllocationPoolReference{Name: pool.Name},
 				Value:   juneauv1alpha1.AllocationValue{Number: 5},
-				ReuseKey: juneauv1alpha1.AllocationResourceReference{
-					APIVersion: juneauv1alpha1.GroupVersion.String(),
-					Kind:       "Vpc",
-					Name:       "ghost",
+				ClaimRef: juneauv1alpha1.AllocationLeaseClaimReference{
+					Name: "ghost",
+					UID:  "ghost-uid",
 				},
 				OwnerDeletionTimestamp: &past,
 				TTLSeconds:             &ttl,

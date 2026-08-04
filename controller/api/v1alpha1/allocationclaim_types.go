@@ -56,6 +56,14 @@ type AllocationClaimSpec struct {
 	// inherit the same value. When unset, the lease is deleted immediately
 	// alongside the claim.
 	ReleaseAfter *metav1.Duration `json:"releaseAfter,omitempty"`
+
+	// ReuseKey is the stable identity used to find an existing
+	// AllocationLease. Claims that share a ReuseKey inherit the same value
+	// across recreations, even when their own names differ. When empty the
+	// claim name is used, so owners with a stable name keep working without
+	// setting it. Must be a DNS-1123 subdomain because it names the lease.
+	// +optional
+	ReuseKey string `json:"reuseKey,omitempty"`
 }
 
 type AllocationFilter struct {

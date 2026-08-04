@@ -244,5 +244,95 @@ var _ = Describe("Allocation webhooks", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("spec.resourceRef is immutable"))
 		})
+
+		It("accepts a spec.reuseKey that is a DNS-1123 subdomain", func() {
+			Expect(webhookK8sClient.Create(ctx, &juneauv1alpha1.AllocationClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("allocationclaim")},
+				Spec: juneauv1alpha1.AllocationClaimSpec{
+					PoolRefs:    []juneauv1alpha1.AllocationPoolReference{{Name: "subnet-vni"}},
+					ResourceRef: juneauv1alpha1.AllocationResourceReference{APIVersion: juneauv1alpha1.GroupVersion.String(), Kind: "Vpc", Name: "owner"},
+					Attribute:   "status.vni",
+					ReuseKey:    "subnet-ip-default--networkinterface--default--vmi-web-0-eth0--status-address",
+				},
+			})).To(Succeed())
+		})
+
+		It("rejects a spec.reuseKey that is not a DNS-1123 subdomain", func() {
+			err := webhookK8sClient.Create(ctx, &juneauv1alpha1.AllocationClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("allocationclaim")},
+				Spec: juneauv1alpha1.AllocationClaimSpec{
+					PoolRefs:    []juneauv1alpha1.AllocationPoolReference{{Name: "subnet-vni"}},
+					ResourceRef: juneauv1alpha1.AllocationResourceReference{APIVersion: juneauv1alpha1.GroupVersion.String(), Kind: "Vpc", Name: "owner"},
+					Attribute:   "status.vni",
+					ReuseKey:    "Not A Valid Name",
+				},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("spec.reuseKey"))
+		})
+
+		It("rejects an immutable spec.reuseKey update", func() {
+			claim := &juneauv1alpha1.AllocationClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("allocationclaim")},
+				Spec: juneauv1alpha1.AllocationClaimSpec{
+					PoolRefs:    []juneauv1alpha1.AllocationPoolReference{{Name: "subnet-vni"}},
+					ResourceRef: juneauv1alpha1.AllocationResourceReference{APIVersion: juneauv1alpha1.GroupVersion.String(), Kind: "Vpc", Name: "owner"},
+					Attribute:   "status.vni",
+					ReuseKey:    "reuse-key-before",
+				},
+			}
+			Expect(webhookK8sClient.Create(ctx, claim)).To(Succeed())
+
+			var current juneauv1alpha1.AllocationClaim
+			Expect(webhookK8sClient.Get(ctx, client.ObjectKeyFromObject(claim), &current)).To(Succeed())
+			current.Spec.ReuseKey = "reuse-key-after"
+			err := webhookK8sClient.Update(ctx, &current)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("spec.reuseKey is immutable"))
+		})
+	})
+
+	Describe("AllocationLease", func() {
+		newLease := func() *juneauv1alpha1.AllocationLease {
+			return &juneauv1alpha1.AllocationLease{
+				ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("allocationlease")},
+				Spec: juneauv1alpha1.AllocationLeaseSpec{
+					PoolRef:  juneauv1alpha1.AllocationPoolReference{Name: "subnet-vni"},
+					Value:    juneauv1alpha1.AllocationValue{Number: 7},
+					ClaimRef: juneauv1alpha1.AllocationLeaseClaimReference{Name: "holder", UID: "holder-uid"},
+				},
+			}
+		}
+
+		It("accepts a lease that names its holding claim", func() {
+			_, err := (&AllocationLeaseCustomValidator{}).ValidateCreate(ctx, newLease())
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("rejects a lease without spec.claimRef", func() {
+			lease := newLease()
+			lease.Spec.ClaimRef = juneauv1alpha1.AllocationLeaseClaimReference{}
+			_, err := (&AllocationLeaseCustomValidator{}).ValidateCreate(ctx, lease)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("spec.claimRef.name"))
+			Expect(err.Error()).To(ContainSubstring("spec.claimRef.uid"))
+		})
+
+		It("allows spec.claimRef to change so a released lease can be handed over", func() {
+			old := newLease()
+			updated := old.DeepCopy()
+			updated.Spec.ClaimRef = juneauv1alpha1.AllocationLeaseClaimReference{Name: "successor", UID: "successor-uid"}
+			_, err := (&AllocationLeaseCustomValidator{}).ValidateUpdate(ctx, old, updated)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("keeps spec.value immutable", func() {
+			old := newLease()
+			updated := old.DeepCopy()
+			updated.Spec.Value = juneauv1alpha1.AllocationValue{Number: 8}
+			_, err := (&AllocationLeaseCustomValidator{}).ValidateUpdate(ctx, old, updated)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("spec.value is immutable"))
+		})
 	})
 })
