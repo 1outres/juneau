@@ -176,7 +176,7 @@ spec:
 		secondPod := "virt-launcher-" + vmName + "-bbbbb"
 		plainPod := "plain-" + base
 		renamedPlainPod := "plain-" + base + "-renamed"
-		leaseName := fmt.Sprintf("subnet-ip-default--networkinterface--%s--vmi-%s-eth0--status-address", namespace, vmName)
+		leaseName := identityLeaseName(namespace, vmName)
 
 		DeferCleanup(func() {
 			for _, pod := range []string{firstPod, secondPod, plainPod, renamedPlainPod} {
@@ -184,9 +184,7 @@ spec:
 			}
 			runBestEffort(repoRoot, "kubectl", "delete", "allocationlease", leaseName, "--ignore-not-found=true")
 			for _, pod := range []string{plainPod, renamedPlainPod} {
-				runBestEffort(repoRoot, "kubectl", "delete", "allocationlease",
-					fmt.Sprintf("subnet-ip-default--networkinterface--%s--%s-eth0--status-address", namespace, pod),
-					"--ignore-not-found=true")
+				runBestEffort(repoRoot, "kubectl", "delete", "allocationlease", podInterfaceLeaseName(namespace, pod), "--ignore-not-found=true")
 			}
 		})
 
@@ -204,11 +202,7 @@ spec:
 
 		// The replacement pod may only take the lease once the first claim
 		// has let go of it, so wait for the hand-back before creating it.
-		Eventually(func(g Gomega) {
-			phase, err := kubectlJSONPath(repoRoot, `{.status.phase}`, "get", "allocationlease", leaseName)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(strings.TrimSpace(phase)).To(Equal("Released"))
-		}).Should(Succeed())
+		waitLeaseReleased(leaseName)
 
 		Expect(applyManifest(virtLauncherPodManifest(namespace, secondPod, vmName))).To(Succeed())
 		waitPodsReady(namespace, secondPod)
