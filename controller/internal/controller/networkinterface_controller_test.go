@@ -129,6 +129,54 @@ var _ = Describe("NetworkInterface controller", func() {
 		Expect(recreated.Status.Address).To(Equal(firstAddress))
 	})
 
+	It("re-uses the same IP for a differently named NetworkInterface with the same allocation identity", func() {
+		const identity = "vmi.ni-ident"
+		first := &juneauv1alpha1.NetworkInterface{
+			ObjectMeta: metav1.ObjectMeta{Name: "ni-ident-a.eth0", Namespace: "default"},
+			Spec: juneauv1alpha1.NetworkInterfaceSpec{
+				PodRef:             juneauv1alpha1.NetworkInterfacePodReference{UID: "uid-ident-a", Name: "ni-ident-a", Interface: "eth0"},
+				NodeName:           "node-a",
+				Subnet:             "default",
+				AllocationIdentity: identity,
+			},
+		}
+		Expect(k8sClient.Create(ctx, first)).To(Succeed())
+		allocateNetworkInterface(first)
+		firstAddress := first.Status.Address
+		firstClaimName := first.Status.AllocationClaim
+		Expect(firstClaimName).NotTo(BeEmpty())
+
+		r := &NetworkInterfaceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		Expect(k8sClient.Delete(ctx, first)).To(Succeed())
+		Eventually(func(g Gomega) {
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: first.Name, Namespace: first.Namespace}})
+			g.Expect(err).NotTo(HaveOccurred())
+			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(first), &juneauv1alpha1.NetworkInterface{})
+			g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+			err = k8sClient.Get(ctx, client.ObjectKey{Name: firstClaimName}, &juneauv1alpha1.AllocationClaim{})
+			g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the backing claim must be gone before the identity is re-used")
+		}).Should(Succeed())
+
+		second := &juneauv1alpha1.NetworkInterface{
+			ObjectMeta: metav1.ObjectMeta{Name: "ni-ident-b.eth0", Namespace: "default"},
+			Spec: juneauv1alpha1.NetworkInterfaceSpec{
+				PodRef:             juneauv1alpha1.NetworkInterfacePodReference{UID: "uid-ident-b", Name: "ni-ident-b", Interface: "eth0"},
+				NodeName:           "node-a",
+				Subnet:             "default",
+				AllocationIdentity: identity,
+			},
+		}
+		Expect(k8sClient.Create(ctx, second)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupNetworkInterface(ctx, second)
+			_ = k8sClient.Delete(ctx, &juneauv1alpha1.AllocationLease{ObjectMeta: metav1.ObjectMeta{Name: leaseNameForNetworkInterface(second)}})
+		})
+
+		allocateNetworkInterface(second)
+		Expect(second.Status.Address).To(Equal(firstAddress))
+		Expect(second.Status.AllocationClaim).NotTo(Equal(firstClaimName))
+	})
+
 	It("auto-generates a per-subnet AllocationPool with the gateway excluded", func() {
 		var pool juneauv1alpha1.AllocationPool
 		Eventually(func(g Gomega) {

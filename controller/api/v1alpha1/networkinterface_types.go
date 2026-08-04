@@ -47,6 +47,15 @@ type NetworkInterfaceSpec struct {
 	// +kubebuilder:validation:MaxItems=2
 	// +listType=set
 	SecurityGroups []string `json:"securityGroups,omitempty"`
+
+	// AllocationIdentity keeps the allocated address attached to the
+	// workload instead of the pod name. Pods that get a new name on every
+	// restart (KubeVirt virt-launcher pods, for example) set this. Two
+	// interfaces that share an identity share the address reservation, so
+	// the value must be unique per workload within the namespace. Must be a
+	// DNS-1123 subdomain.
+	// +optional
+	AllocationIdentity string `json:"allocationIdentity,omitempty"`
 }
 
 // NetworkInterfaceStatus defines the observed state of NetworkInterface.

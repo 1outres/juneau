@@ -23,11 +23,11 @@ import (
 // AllocationLeaseSpec defines the desired state of AllocationLease.
 //
 // AllocationLease records a single (pool, value) reservation that survives
-// the deletion of its owning AllocationClaim. While a lease exists no other
-// claim can take the same value, and a claim re-created with the same
-// ReuseKey will inherit the recorded value. Leases are managed entirely by
-// the AllocationClaim controller; consumers of the allocation framework
-// should never create or modify AllocationLease objects directly.
+// the deletion of its owning AllocationClaim. The lease is named after the
+// claim's reuse key, so a claim re-created under that key inherits the
+// recorded value. Leases are managed entirely by the AllocationClaim
+// controller; consumers of the allocation framework should never create or
+// modify AllocationLease objects directly.
 type AllocationLeaseSpec struct {
 	// PoolRef references the AllocationPool that owns this lease via
 	// metadata.ownerReferences. The pool name is also kept here for
@@ -39,10 +39,16 @@ type AllocationLeaseSpec struct {
 	// +required
 	Value AllocationValue `json:"value"`
 
-	// ReuseKey identifies the upstream owner so that a re-created
-	// AllocationClaim with the same identity can recover the value.
-	// +required
-	ReuseKey AllocationResourceReference `json:"reuseKey"`
+	// ClaimRef identifies the AllocationClaim that currently holds this
+	// lease. It changes when a released lease is handed over to another
+	// claim that shares the same reuse key.
+	//
+	// Leases stored before this field existed read back with an empty
+	// holder. The schema therefore accepts one, while admission rejects
+	// it, so the controller can adopt those leases on the next reconcile
+	// but can never write a lease without a holder itself.
+	// +optional
+	ClaimRef AllocationLeaseClaimReference `json:"claimRef,omitempty"`
 
 	// OwnerDeletionTimestamp records when the owning AllocationClaim was
 	// deleted. While unset, the lease is considered Active and will not be
@@ -54,6 +60,14 @@ type AllocationLeaseSpec struct {
 	// Copied from the originating AllocationClaim.spec.releaseAfter.
 	// +kubebuilder:validation:Minimum=0
 	TTLSeconds *int32 `json:"ttlSeconds,omitempty"`
+}
+
+// AllocationLeaseClaimReference names the AllocationClaim that holds a lease.
+type AllocationLeaseClaimReference struct {
+	// +optional
+	Name string `json:"name,omitempty"`
+	// +optional
+	UID string `json:"uid,omitempty"`
 }
 
 type AllocationLeasePhase string
@@ -80,6 +94,7 @@ type AllocationLeaseStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Pool",type="string",JSONPath=".spec.poolRef.name"
+// +kubebuilder:printcolumn:name="Claim",type="string",JSONPath=".spec.claimRef.name"
 // +kubebuilder:printcolumn:name="Number",type="integer",JSONPath=".spec.value.number"
 // +kubebuilder:printcolumn:name="IP",type="string",JSONPath=".spec.value.ip"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"

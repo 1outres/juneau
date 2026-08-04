@@ -117,7 +117,7 @@ func (r *AllocationClaimReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	if allocationClaimReady(resource) {
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, r.reconcileLease(ctx, &resource)
 	}
 
 	if len(resource.Spec.PoolRefs) == 0 {
@@ -185,13 +185,13 @@ func (r *AllocationClaimReconciler) handleDeletion(ctx context.Context, claim *j
 		return nil
 	}
 
-	leaseName := claim.Name
+	leaseName := leaseNameFor(claim)
 	var lease juneauloutresmev1alpha1.AllocationLease
 	if err := r.Get(ctx, client.ObjectKey{Name: leaseName}, &lease); err != nil {
 		if !apierrors.IsNotFound(err) {
 			return err
 		}
-	} else {
+	} else if leaseOwnedByClaim(&lease, claim) {
 		if claim.Spec.ReleaseAfter != nil && claim.Spec.ReleaseAfter.Duration > 0 {
 			now := metav1.Now()
 			ttl := int32(claim.Spec.ReleaseAfter.Seconds())
@@ -223,7 +223,8 @@ func (r *AllocationClaimReconciler) handleDeletion(ctx context.Context, claim *j
 // a second pass through ensureLease will see the lease and fall into the
 // update branch.
 func (r *AllocationClaimReconciler) ensureLease(ctx context.Context, claim *juneauloutresmev1alpha1.AllocationClaim, pool *juneauloutresmev1alpha1.AllocationPool, result allocationResult) error {
-	leaseName := claim.Name
+	leaseName := leaseNameFor(claim)
+	claimRef := juneauloutresmev1alpha1.AllocationLeaseClaimReference{Name: claim.Name, UID: string(claim.UID)}
 
 	var existing juneauloutresmev1alpha1.AllocationLease
 	if err := r.Get(ctx, client.ObjectKey{Name: leaseName}, &existing); err != nil {
@@ -235,7 +236,7 @@ func (r *AllocationClaimReconciler) ensureLease(ctx context.Context, claim *june
 			Spec: juneauloutresmev1alpha1.AllocationLeaseSpec{
 				PoolRef:  juneauloutresmev1alpha1.AllocationPoolReference{Name: pool.Name},
 				Value:    juneauloutresmev1alpha1.AllocationValue{Number: result.number, IP: result.ip},
-				ReuseKey: claim.Spec.ResourceRef,
+				ClaimRef: claimRef,
 			},
 		}
 		if err := controllerutil.SetControllerReference(pool, lease, r.Scheme); err != nil {
@@ -250,12 +251,20 @@ func (r *AllocationClaimReconciler) ensureLease(ctx context.Context, claim *june
 		return nil
 	}
 
+	// The reuse key still belongs to a live claim, so the value allocated
+	// here is not recorded as a lease. It stays reserved by the claim's own
+	// status for as long as the claim exists, and the holder keeps the
+	// reservation that outlives it.
+	if leaseHeldByOtherClaim(&existing, claim) {
+		return nil
+	}
+
 	// Existing lease: clear OwnerDeletionTimestamp so that re-attached claims
 	// (same identity, recreated after deletion) become Active again.
 	desired := existing.DeepCopy()
 	desired.Spec.PoolRef = juneauloutresmev1alpha1.AllocationPoolReference{Name: pool.Name}
 	desired.Spec.Value = juneauloutresmev1alpha1.AllocationValue{Number: result.number, IP: result.ip}
-	desired.Spec.ReuseKey = claim.Spec.ResourceRef
+	desired.Spec.ClaimRef = claimRef
 	desired.Spec.OwnerDeletionTimestamp = nil
 	desired.Spec.TTLSeconds = nil
 	if reflect.DeepEqual(existing.Spec, desired.Spec) {
@@ -267,15 +276,30 @@ func (r *AllocationClaimReconciler) ensureLease(ctx context.Context, claim *june
 // allocate iterates the claim's PoolRefs in order and returns the first
 // successful allocation. The pool object that produced the result is also
 // returned so the caller can update its status. Before scanning pools the
-// allocator looks up an existing AllocationLease with the same name as the
-// claim and, if found, re-uses its value (this is what allows a claim
-// deleted with ReleaseAfter and then re-created to inherit its prior
+// allocator looks up the AllocationLease named after the claim's reuse key
+// and, if the claim may take it, re-uses its value (this is what allows a
+// claim deleted with ReleaseAfter and then re-created to inherit its prior
 // allocation).
 func (r *AllocationClaimReconciler) allocate(ctx context.Context, claim *juneauloutresmev1alpha1.AllocationClaim) (allocationResult, *juneauloutresmev1alpha1.AllocationPool, error) {
-	if reused, pool, ok, err := r.tryReuseLease(ctx, claim); err != nil {
+	held, err := r.getLease(ctx, leaseNameFor(claim))
+	if err != nil {
 		return allocationResult{}, nil, err
-	} else if ok {
-		return reused, pool, nil
+	}
+
+	// A lease that another live claim holds is off limits: its value has to
+	// count as used, so it must not be excluded as "this claim's own lease".
+	selfLeaseName := leaseNameFor(claim)
+	if held != nil && leaseHeldByOtherClaim(held, claim) {
+		selfLeaseName = ""
+		held = nil
+	}
+
+	if held != nil {
+		if reused, pool, ok, err := r.reuseLease(ctx, claim, held); err != nil {
+			return allocationResult{}, nil, err
+		} else if ok {
+			return reused, pool, nil
+		}
 	}
 
 	var firstMissingPool string
@@ -293,7 +317,7 @@ func (r *AllocationClaimReconciler) allocate(ctx context.Context, claim *juneaul
 
 		switch pool.Spec.Type {
 		case juneauloutresmev1alpha1.AllocationTypeNumber:
-			n, err := r.allocateNumber(ctx, &pool, claim)
+			n, err := r.allocateNumber(ctx, &pool, claim, selfLeaseName)
 			if err != nil {
 				if errors.Is(err, errAllPoolsExhausted) {
 					continue
@@ -302,7 +326,7 @@ func (r *AllocationClaimReconciler) allocate(ctx context.Context, claim *juneaul
 			}
 			return allocationResult{poolName: pool.Name, number: n}, &pool, nil
 		case juneauloutresmev1alpha1.AllocationTypeIP:
-			ip, err := r.allocateIP(ctx, &pool, claim)
+			ip, err := r.allocateIP(ctx, &pool, claim, selfLeaseName)
 			if err != nil {
 				if errors.Is(err, errAllPoolsExhausted) {
 					continue
@@ -320,12 +344,12 @@ func (r *AllocationClaimReconciler) allocate(ctx context.Context, claim *juneaul
 	return allocationResult{}, nil, errAllPoolsExhausted
 }
 
-func (r *AllocationClaimReconciler) allocateNumber(ctx context.Context, pool *juneauloutresmev1alpha1.AllocationPool, claim *juneauloutresmev1alpha1.AllocationClaim) (uint64, error) {
+func (r *AllocationClaimReconciler) allocateNumber(ctx context.Context, pool *juneauloutresmev1alpha1.AllocationPool, claim *juneauloutresmev1alpha1.AllocationClaim, selfLeaseName string) (uint64, error) {
 	if pool.Spec.Number == nil {
 		return 0, fmt.Errorf("pool %q is type=number but spec.number is nil", pool.Name)
 	}
 
-	used, err := r.collectUsedNumbers(ctx, pool.Name, claim.Name)
+	used, err := r.collectUsedNumbers(ctx, pool.Name, claim.Name, selfLeaseName)
 	if err != nil {
 		return 0, err
 	}
@@ -348,7 +372,7 @@ func (r *AllocationClaimReconciler) allocateNumber(ctx context.Context, pool *ju
 	return 0, errAllPoolsExhausted
 }
 
-func (r *AllocationClaimReconciler) allocateIP(ctx context.Context, pool *juneauloutresmev1alpha1.AllocationPool, claim *juneauloutresmev1alpha1.AllocationClaim) (string, error) {
+func (r *AllocationClaimReconciler) allocateIP(ctx context.Context, pool *juneauloutresmev1alpha1.AllocationPool, claim *juneauloutresmev1alpha1.AllocationClaim, selfLeaseName string) (string, error) {
 	if pool.Spec.IP == nil {
 		return "", fmt.Errorf("pool %q is type=ip but spec.ip is nil", pool.Name)
 	}
@@ -369,7 +393,7 @@ func (r *AllocationClaimReconciler) allocateIP(ctx context.Context, pool *juneau
 		}
 	}
 
-	used, err := r.collectUsedIPs(ctx, pool.Name, claim.Name)
+	used, err := r.collectUsedIPs(ctx, pool.Name, claim.Name, selfLeaseName)
 	if err != nil {
 		return "", err
 	}
@@ -407,14 +431,14 @@ func (r *AllocationClaimReconciler) allocateIP(ctx context.Context, pool *juneau
 	return "", errAllPoolsExhausted
 }
 
-func (r *AllocationClaimReconciler) collectUsedNumbers(ctx context.Context, poolName, selfName string) (map[uint64]string, error) {
+func (r *AllocationClaimReconciler) collectUsedNumbers(ctx context.Context, poolName, selfClaimName, selfLeaseName string) (map[uint64]string, error) {
 	var claims juneauloutresmev1alpha1.AllocationClaimList
 	if err := r.reader().List(ctx, &claims); err != nil {
 		return nil, fmt.Errorf("failed to list claims for pool %q: %w", poolName, err)
 	}
 	used := make(map[uint64]string, len(claims.Items))
 	for _, existing := range claims.Items {
-		if existing.Name == selfName {
+		if existing.Name == selfClaimName {
 			continue
 		}
 		if !claimReferencesPool(&existing, poolName) {
@@ -439,7 +463,7 @@ func (r *AllocationClaimReconciler) collectUsedNumbers(ctx context.Context, pool
 			continue
 		}
 		// Skip the lease that this claim itself owns.
-		if lease.Name == selfName {
+		if lease.Name == selfLeaseName {
 			continue
 		}
 		if lease.Spec.Value.Number == 0 {
@@ -452,14 +476,14 @@ func (r *AllocationClaimReconciler) collectUsedNumbers(ctx context.Context, pool
 	return used, nil
 }
 
-func (r *AllocationClaimReconciler) collectUsedIPs(ctx context.Context, poolName, selfName string) (map[netip.Addr]string, error) {
+func (r *AllocationClaimReconciler) collectUsedIPs(ctx context.Context, poolName, selfClaimName, selfLeaseName string) (map[netip.Addr]string, error) {
 	var claims juneauloutresmev1alpha1.AllocationClaimList
 	if err := r.reader().List(ctx, &claims); err != nil {
 		return nil, fmt.Errorf("failed to list claims for pool %q: %w", poolName, err)
 	}
 	used := make(map[netip.Addr]string, len(claims.Items))
 	for _, existing := range claims.Items {
-		if existing.Name == selfName {
+		if existing.Name == selfClaimName {
 			continue
 		}
 		if !claimReferencesPool(&existing, poolName) {
@@ -486,7 +510,7 @@ func (r *AllocationClaimReconciler) collectUsedIPs(ctx context.Context, poolName
 		if lease.Spec.PoolRef.Name != poolName {
 			continue
 		}
-		if lease.Name == selfName {
+		if lease.Name == selfLeaseName {
 			continue
 		}
 		if lease.Spec.Value.IP == "" {
@@ -503,20 +527,50 @@ func (r *AllocationClaimReconciler) collectUsedIPs(ctx context.Context, poolName
 	return used, nil
 }
 
-// tryReuseLease checks whether an AllocationLease with the same name as the
-// claim already exists. If so, the recorded value is returned as-is (rather
-// than running the allocator) so the claim inherits the prior allocation.
-// This is the mechanism that lets a claim deleted with ReleaseAfter and
-// then re-created with the same name keep its previous value.
-func (r *AllocationClaimReconciler) tryReuseLease(ctx context.Context, claim *juneauloutresmev1alpha1.AllocationClaim) (allocationResult, *juneauloutresmev1alpha1.AllocationPool, bool, error) {
-	var lease juneauloutresmev1alpha1.AllocationLease
-	if err := r.reader().Get(ctx, client.ObjectKey{Name: claim.Name}, &lease); err != nil {
-		if apierrors.IsNotFound(err) {
-			return allocationResult{}, nil, false, nil
-		}
-		return allocationResult{}, nil, false, err
+// reconcileLease brings the lease of an already allocated claim back to its
+// desired state. Only the holder is written: the pool and the value are
+// immutable once the lease exists, and the claim keeps the value it already
+// reports in status.
+//
+// A lease that records another claim is never touched, not even when it is
+// Released, so a claim that had to allocate around a held reuse key keeps
+// the value it got. A lease with no holder at all is one written before the
+// field existed, and this claim adopts it.
+func (r *AllocationClaimReconciler) reconcileLease(ctx context.Context, claim *juneauloutresmev1alpha1.AllocationClaim) error {
+	lease, err := r.getLease(ctx, leaseNameFor(claim))
+	if err != nil || lease == nil {
+		return err
+	}
+	if lease.Spec.ClaimRef.Name != "" && !leaseOwnedByClaim(lease, claim) {
+		return nil
 	}
 
+	desired := lease.DeepCopy()
+	desired.Spec.ClaimRef = juneauloutresmev1alpha1.AllocationLeaseClaimReference{Name: claim.Name, UID: string(claim.UID)}
+	if reflect.DeepEqual(lease.Spec, desired.Spec) {
+		return nil
+	}
+	return r.Update(ctx, desired)
+}
+
+// getLease reads an AllocationLease by name, returning nil when it does not
+// exist.
+func (r *AllocationClaimReconciler) getLease(ctx context.Context, name string) (*juneauloutresmev1alpha1.AllocationLease, error) {
+	var lease juneauloutresmev1alpha1.AllocationLease
+	if err := r.reader().Get(ctx, client.ObjectKey{Name: name}, &lease); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &lease, nil
+}
+
+// reuseLease returns the value already recorded on a lease the claim may
+// take, so the claim inherits the prior allocation instead of running the
+// allocator. This is the mechanism that lets a claim deleted with
+// ReleaseAfter and then re-created under the same reuse key keep its value.
+func (r *AllocationClaimReconciler) reuseLease(ctx context.Context, claim *juneauloutresmev1alpha1.AllocationClaim, lease *juneauloutresmev1alpha1.AllocationLease) (allocationResult, *juneauloutresmev1alpha1.AllocationPool, bool, error) {
 	// Verify the lease still references one of the claim's candidate pools.
 	if !claimReferencesPool(claim, lease.Spec.PoolRef.Name) {
 		return allocationResult{}, nil, false, nil

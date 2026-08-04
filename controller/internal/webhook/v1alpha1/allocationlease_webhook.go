@@ -86,9 +86,6 @@ func (v *AllocationLeaseCustomValidator) ValidateUpdate(_ context.Context, oldOb
 	if lease.Spec.Value != old.Spec.Value {
 		errs = append(errs, field.Invalid(specPath.Child("value"), lease.Spec.Value, "spec.value is immutable"))
 	}
-	if lease.Spec.ReuseKey != old.Spec.ReuseKey {
-		errs = append(errs, field.Invalid(specPath.Child("reuseKey"), lease.Spec.ReuseKey, "spec.reuseKey is immutable"))
-	}
 	errs = append(errs, validateAllocationLeaseSpec(lease)...)
 
 	if len(errs) > 0 {
@@ -119,14 +116,11 @@ func validateAllocationLeaseSpec(lease *juneauloutresmev1alpha1.AllocationLease)
 	if lease.Spec.Value.Number != 0 && lease.Spec.Value.IP != "" {
 		errs = append(errs, field.Invalid(specPath.Child("value"), lease.Spec.Value, "spec.value.number and spec.value.ip are mutually exclusive"))
 	}
-	if lease.Spec.ReuseKey.APIVersion == "" {
-		errs = append(errs, field.Required(specPath.Child("reuseKey", "apiVersion"), "spec.reuseKey.apiVersion is required"))
+	if lease.Spec.ClaimRef.Name == "" {
+		errs = append(errs, field.Required(specPath.Child("claimRef", "name"), "spec.claimRef.name is required"))
 	}
-	if lease.Spec.ReuseKey.Kind == "" {
-		errs = append(errs, field.Required(specPath.Child("reuseKey", "kind"), "spec.reuseKey.kind is required"))
-	}
-	if lease.Spec.ReuseKey.Name == "" {
-		errs = append(errs, field.Required(specPath.Child("reuseKey", "name"), "spec.reuseKey.name is required"))
+	if lease.Spec.ClaimRef.UID == "" {
+		errs = append(errs, field.Required(specPath.Child("claimRef", "uid"), "spec.claimRef.uid is required"))
 	}
 	return errs
 }

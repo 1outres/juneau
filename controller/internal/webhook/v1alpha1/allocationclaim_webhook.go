@@ -24,6 +24,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -87,6 +88,12 @@ func (v *AllocationClaimCustomValidator) ValidateCreate(ctx context.Context, obj
 	}
 	allocationclaimlog.Info("Validation for AllocationClaim upon creation", "name", allocationclaim.GetName())
 
+	if errs := validateAllocationClaimSpec(allocationclaim); len(errs) > 0 {
+		err := apierrors.NewInvalid(schema.GroupKind{Group: juneauloutresmev1alpha1.GroupVersion.Group, Kind: "AllocationClaim"}, allocationclaim.Name, errs)
+		allocationclaimlog.Info("Validation failed for AllocationClaim", "name", allocationclaim.GetName(), "error", err)
+		return nil, err
+	}
+
 	return nil, nil
 }
 
@@ -127,6 +134,10 @@ func (v *AllocationClaimCustomValidator) ValidateUpdate(ctx context.Context, old
 	if !reflect.DeepEqual(allocationclaim.Spec.AllocationFilter, oldClaim.Spec.AllocationFilter) {
 		errs = append(errs, field.Invalid(specPath.Child("allocationFilter"), allocationclaim.Spec.AllocationFilter, "spec.allocationFilter is immutable"))
 	}
+	if allocationclaim.Spec.ReuseKey != oldClaim.Spec.ReuseKey {
+		errs = append(errs, field.Invalid(specPath.Child("reuseKey"), allocationclaim.Spec.ReuseKey, "spec.reuseKey is immutable"))
+	}
+	errs = append(errs, validateAllocationClaimSpec(allocationclaim)...)
 	if len(errs) > 0 {
 		err := apierrors.NewInvalid(schema.GroupKind{Group: juneauloutresmev1alpha1.GroupVersion.Group, Kind: "AllocationClaim"}, allocationclaim.Name, errs)
 		allocationclaimlog.Info("Validation failed for AllocationClaim", "name", allocationclaim.GetName(), "error", err)
@@ -134,6 +145,19 @@ func (v *AllocationClaimCustomValidator) ValidateUpdate(ctx context.Context, old
 	}
 
 	return nil, nil
+}
+
+// validateAllocationClaimSpec checks the fields that markers cannot express.
+func validateAllocationClaimSpec(claim *juneauloutresmev1alpha1.AllocationClaim) field.ErrorList {
+	var errs field.ErrorList
+	if claim.Spec.ReuseKey == "" {
+		return errs
+	}
+	// The reuse key names the backing AllocationLease object.
+	for _, msg := range validation.IsDNS1123Subdomain(claim.Spec.ReuseKey) {
+		errs = append(errs, field.Invalid(field.NewPath("spec").Child("reuseKey"), claim.Spec.ReuseKey, msg))
+	}
+	return errs
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type AllocationClaim.

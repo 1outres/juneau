@@ -167,7 +167,98 @@ spec:
 			}
 		}).Should(Succeed())
 	})
+
+	It("keeps the address when a virt-launcher Pod comes back under a new name", func() {
+		const namespace = "default"
+		base := sanitizeName(uniqueAllocationBase())
+		vmName := "vm-" + base
+		firstPod := "virt-launcher-" + vmName + "-aaaaa"
+		secondPod := "virt-launcher-" + vmName + "-bbbbb"
+		plainPod := "plain-" + base
+		renamedPlainPod := "plain-" + base + "-renamed"
+		leaseName := fmt.Sprintf("subnet-ip-default--networkinterface--%s--vmi-%s-eth0--status-address", namespace, vmName)
+
+		DeferCleanup(func() {
+			for _, pod := range []string{firstPod, secondPod, plainPod, renamedPlainPod} {
+				runBestEffort(repoRoot, "kubectl", "delete", "-n", namespace, "pod", pod, "--ignore-not-found=true", "--wait=true")
+			}
+			runBestEffort(repoRoot, "kubectl", "delete", "allocationlease", leaseName, "--ignore-not-found=true")
+			for _, pod := range []string{plainPod, renamedPlainPod} {
+				runBestEffort(repoRoot, "kubectl", "delete", "allocationlease",
+					fmt.Sprintf("subnet-ip-default--networkinterface--%s--%s-eth0--status-address", namespace, pod),
+					"--ignore-not-found=true")
+			}
+		})
+
+		Expect(applyManifest(virtLauncherPodManifest(namespace, firstPod, vmName))).To(Succeed())
+		waitPodsReady(namespace, firstPod)
+		firstAddress := podAddress(namespace, firstPod)
+
+		Eventually(func(g Gomega) {
+			holder, err := kubectlJSONPath(repoRoot, `{.spec.claimRef.name}`, "get", "allocationlease", leaseName)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(holder)).To(ContainSubstring(firstPod))
+		}).Should(Succeed(), "the lease must be named after the virtual machine, not the pod")
+
+		Expect(run(repoRoot, "kubectl", "delete", "-n", namespace, "pod", firstPod, "--wait=true")).To(Succeed())
+
+		// The replacement pod may only take the lease once the first claim
+		// has let go of it, so wait for the hand-back before creating it.
+		Eventually(func(g Gomega) {
+			phase, err := kubectlJSONPath(repoRoot, `{.status.phase}`, "get", "allocationlease", leaseName)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(phase)).To(Equal("Released"))
+		}).Should(Succeed())
+
+		Expect(applyManifest(virtLauncherPodManifest(namespace, secondPod, vmName))).To(Succeed())
+		waitPodsReady(namespace, secondPod)
+		Expect(podAddress(namespace, secondPod)).To(Equal(firstAddress), "a renamed virt-launcher pod must keep the address of its virtual machine")
+
+		// A pod KubeVirt does not manage keeps the old, pod-name based behaviour.
+		Expect(applyManifest(virtLauncherPodManifest(namespace, plainPod, ""))).To(Succeed())
+		waitPodsReady(namespace, plainPod)
+		plainAddress := podAddress(namespace, plainPod)
+		Expect(run(repoRoot, "kubectl", "delete", "-n", namespace, "pod", plainPod, "--wait=true")).To(Succeed())
+
+		Expect(applyManifest(virtLauncherPodManifest(namespace, renamedPlainPod, ""))).To(Succeed())
+		waitPodsReady(namespace, renamedPlainPod)
+		Expect(podAddress(namespace, renamedPlainPod)).NotTo(Equal(plainAddress), "a renamed plain pod must not inherit another pod's address")
+	})
 })
+
+// virtLauncherPodManifest renders a pod that carries the labels KubeVirt puts
+// on a virt-launcher pod. An empty vmName renders a plain pod instead, which
+// is the control case for the identity logic.
+func virtLauncherPodManifest(namespace, name, vmName string) string {
+	labels := ""
+	if vmName != "" {
+		labels = fmt.Sprintf("\n    kubevirt.io: virt-launcher\n    vm.kubevirt.io/name: %s", vmName)
+	}
+	return fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  name: %s
+  namespace: %s
+  labels:
+    app: %s%s
+spec:
+  terminationGracePeriodSeconds: 0
+  containers:
+  - name: compute
+    image: nginx:1.27
+`, name, namespace, name, labels)
+}
+
+func podAddress(namespace, pod string) string {
+	var address string
+	Eventually(func(g Gomega) {
+		out, err := kubectlJSONPath(repoRoot, `{.status.podIP}`, "-n", namespace, "get", "pod", pod)
+		g.Expect(err).NotTo(HaveOccurred())
+		address = strings.TrimSpace(out)
+		g.Expect(address).NotTo(BeEmpty())
+	}).Should(Succeed())
+	return address
+}
 
 func uniqueAllocationBase() string {
 	return fmt.Sprintf("alloc-%d", GinkgoRandomSeed())

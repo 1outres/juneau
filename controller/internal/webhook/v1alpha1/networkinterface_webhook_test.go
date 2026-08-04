@@ -72,6 +72,29 @@ var _ = Describe("NetworkInterface webhook", func() {
 		Expect(err.Error()).To(ContainSubstring("spec.podRef.name is immutable"))
 		Expect(err.Error()).To(ContainSubstring("spec.podRef.interface is immutable"))
 	})
+
+	It("rejects an immutable spec.allocationIdentity update", func() {
+		networkInterface := newValidNetworkInterface(webhookUniqueTestName("networkinterface"), "default", "10.16.0.12")
+		networkInterface.Spec.AllocationIdentity = "vmi.web-0"
+		Expect(webhookK8sClient.Create(context.Background(), networkInterface)).To(Succeed())
+
+		var current juneauv1alpha1.NetworkInterface
+		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKeyFromObject(networkInterface), &current)).To(Succeed())
+		current.Spec.AllocationIdentity = "vmi.web-1"
+
+		err := webhookK8sClient.Update(context.Background(), &current)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.allocationIdentity is immutable"))
+	})
+
+	It("rejects a spec.allocationIdentity that is not a DNS-1123 subdomain", func() {
+		networkInterface := newValidNetworkInterface(webhookUniqueTestName("networkinterface"), "default", "10.16.0.13")
+		networkInterface.Spec.AllocationIdentity = "Not A Valid Identity"
+
+		err := webhookK8sClient.Create(context.Background(), networkInterface)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.allocationIdentity"))
+	})
 })
 
 func newValidNetworkInterface(name, subnet, address string) *juneauv1alpha1.NetworkInterface {

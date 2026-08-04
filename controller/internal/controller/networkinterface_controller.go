@@ -53,9 +53,10 @@ const (
 	networkInterfaceFinalizer = "networkinterface.juneau.loutres.me/allocation-claim"
 
 	// networkInterfaceReleaseAfter is the grace period applied to the
-	// backing AllocationClaim. Matches the legacy IPLease behaviour so
-	// that a pod deleted and re-created with the same name keeps its IP.
-	networkInterfaceReleaseAfter = time.Hour
+	// backing AllocationClaim, so that a pod deleted and re-created with
+	// the same identity keeps its IP. It also covers a virtual machine
+	// that stays stopped overnight.
+	networkInterfaceReleaseAfter = 24 * time.Hour
 )
 
 // NetworkInterfaceReconciler reconciles a NetworkInterface object.
@@ -258,6 +259,7 @@ func (r *NetworkInterfaceReconciler) ensureClaim(ctx context.Context, resource *
 		},
 		Attribute:    "status.address",
 		ReleaseAfter: &metav1.Duration{Duration: networkInterfaceReleaseAfter},
+		ReuseKey:     leaseNameForNetworkInterface(resource),
 	}
 	if resource.Spec.Address != "" {
 		ip := resource.Spec.Address
@@ -302,11 +304,26 @@ func (r *NetworkInterfaceReconciler) ensureClaim(ctx context.Context, resource *
 // name for a NetworkInterface. Reusing the helper keeps name generation
 // consistent with other consumers (vpc, subnet, route table, elastic IP).
 func claimNameForNetworkInterface(resource *juneauv1alpha1.NetworkInterface) string {
+	return allocationNameForNetworkInterface(resource, resource.Name)
+}
+
+// leaseNameForNetworkInterface composes the AllocationLease name that holds
+// this interface's address. Interfaces that declare the same allocation
+// identity share the lease, which is what keeps the address attached to the
+// workload when its pod comes back under a new name.
+func leaseNameForNetworkInterface(resource *juneauv1alpha1.NetworkInterface) string {
+	if resource.Spec.AllocationIdentity == "" {
+		return claimNameForNetworkInterface(resource)
+	}
+	return allocationNameForNetworkInterface(resource, resource.Spec.AllocationIdentity+"."+resource.Spec.PodRef.Interface)
+}
+
+func allocationNameForNetworkInterface(resource *juneauv1alpha1.NetworkInterface, identity string) string {
 	return allocationClaimName(
 		SubnetIPAllocationPoolName(resource.Spec.Subnet),
 		schema.GroupVersionKind{Group: juneauv1alpha1.GroupVersion.Group, Version: juneauv1alpha1.GroupVersion.Version, Kind: "NetworkInterface"},
 		resource.Namespace,
-		resource.Name,
+		identity,
 		"status.address",
 	)
 }
