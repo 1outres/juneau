@@ -12,6 +12,8 @@ PUBLISH_PLATFORMS ?= linux/amd64,linux/arm64
 PUBLISH_TAG ?= dev
 GHCR_NAMESPACE ?= ghcr.io/1outres/juneau
 
+TILT_GOARCH ?= $(shell go env GOARCH)
+
 CONTROLLER_IMAGE ?= controller:latest
 WEBHOOKCERTJOB_IMAGE ?= webhookcertjob:latest
 DAEMON_IMAGE ?= daemon:latest
@@ -71,23 +73,23 @@ docs-api-reference: crddoc ## Generate API reference documentation.
 
 .PHONY: build-webhookcertjob-bin
 build-webhookcertjob-bin: ## Build the webhook cert job binary for Tilt.
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -C controller -o bin/webhookcertjob ./cmd/webhookcertjob/main.go
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(TILT_GOARCH) go build -C controller -o bin/webhookcertjob ./cmd/webhookcertjob/main.go
 
 .PHONY: build-controller-bin
 build-controller-bin: controller-generate ## Build the controller manager binary for Tilt.
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -C controller -o bin/manager ./cmd/main.go
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(TILT_GOARCH) go build -C controller -o bin/manager ./cmd/main.go
 
 .PHONY: build-cni-bin
 build-cni-bin: ## Build the CNI binary for Tilt.
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -C daemon -o bin/cni ./cmd/cni
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(TILT_GOARCH) go build -C daemon -o bin/cni ./cmd/cni
 
 .PHONY: build-daemon-bin
 build-daemon-bin: build-cni-bin ## Build the daemon binary for Tilt.
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -C daemon -o bin/daemon ./cmd/juneaud
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(TILT_GOARCH) go build -C daemon -o bin/daemon ./cmd/juneaud
 
 .PHONY: build-bgp-speaker-bin
 build-bgp-speaker-bin: ## Build the BGP speaker binary for Tilt.
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -C bgp-speaker -o bin/bgpspeaker ./cmd/bgpspeaker/main.go
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(TILT_GOARCH) go build -C bgp-speaker -o bin/bgpspeaker ./cmd/bgpspeaker/main.go
 
 .PHONY: build-kubectl-juneau-bin
 build-kubectl-juneau-bin: ## Build the kubectl-juneau plugin binary.
