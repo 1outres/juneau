@@ -25,6 +25,7 @@ const (
 	fibRouteTypeInternetGateway = 3
 	fibRouteTypeService         = 4
 	fibRouteTypeNAPT            = 6
+	fibRouteTypePeering         = 7
 )
 
 // Fib keeps podEgress.FibMap in sync with RouteTable objects. Each
@@ -174,6 +175,14 @@ func (r *Fib) buildFibVal(ctx context.Context, route *juneauv1alpha1.Route) (bpf
 		val, err := buildConnectedFibVal(&subnet)
 		return val, false, err
 
+	case juneauv1alpha1.ViaVpcPeering:
+		var subnet juneauv1alpha1.Subnet
+		if err := r.client.Get(ctx, client.ObjectKey{Name: route.Subnet}, &subnet); err != nil {
+			return bpf.PodEgressFibVal{}, false, err
+		}
+		val, err := buildPeeringFibVal(&subnet)
+		return val, false, err
+
 	case juneauv1alpha1.ViaEndpoint:
 		var subnet juneauv1alpha1.Subnet
 		if err := r.client.Get(ctx, client.ObjectKey{Name: route.Subnet}, &subnet); err != nil {
@@ -209,6 +218,19 @@ func (r *Fib) buildFibVal(ctx context.Context, route *juneauv1alpha1.Route) (bpf
 }
 
 func buildConnectedFibVal(subnet *juneauv1alpha1.Subnet) (bpf.PodEgressFibVal, error) {
+	return buildSubnetFibVal(subnet, fibRouteTypeConnected)
+}
+
+// buildPeeringFibVal builds a FIB value for a route that leaves the Vpc
+// through a VpcPeering. Route.Subnet already names the peer Vpc's
+// Subnet, so the data plane forwards exactly like a connected route. The
+// separate type only keeps map dumps and traces honest about why the
+// route is there.
+func buildPeeringFibVal(subnet *juneauv1alpha1.Subnet) (bpf.PodEgressFibVal, error) {
+	return buildSubnetFibVal(subnet, fibRouteTypePeering)
+}
+
+func buildSubnetFibVal(subnet *juneauv1alpha1.Subnet, routeType uint8) (bpf.PodEgressFibVal, error) {
 	netmac, err := net.ParseMAC(subnet.Status.GatewayMAC)
 	if err != nil {
 		return bpf.PodEgressFibVal{}, err
@@ -218,7 +240,7 @@ func buildConnectedFibVal(subnet *juneauv1alpha1.Subnet) (bpf.PodEgressFibVal, e
 		return bpf.PodEgressFibVal{}, err
 	}
 	return bpf.PodEgressFibVal{
-		Type:     fibRouteTypeConnected,
+		Type:     routeType,
 		Smac:     mac,
 		SubnetId: subnet.Status.VNI,
 	}, nil
