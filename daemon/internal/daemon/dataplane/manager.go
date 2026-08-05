@@ -44,6 +44,7 @@ type Manager struct {
 	bgpAdvertisementInformer          cache.Informer
 	subnetInformer                    cache.Informer
 	rtInformer                        cache.Informer
+	tgwRouteTableInformer             cache.Informer
 	vpcInformer                       cache.Informer
 	serviceInformer                   cache.Informer
 	endpointSliceInformer             cache.Informer
@@ -61,6 +62,7 @@ type Manager struct {
 	podIfaceRunner     *runner.Runner
 	podAttacherRunner  *runner.Runner
 	fibRunner          *runner.Runner
+	tgwFibRunner       *runner.Runner
 	natRunner          *runner.Runner
 	bgpPoolRunner      *runner.Runner
 	serviceRunner      *runner.Runner
@@ -99,6 +101,7 @@ type Manager struct {
 
 	podAttacher *link.PodAttacher
 	fib         *reconciler.Fib
+	tgwFib      *reconciler.TgwFib
 
 	nodeName           string
 	vxlanIfindex       int
@@ -237,7 +240,27 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	if err := m.fibRunner.WatchFanOut(m.nwepInformer, m.fib.FanOutAllRouteTables); err != nil {
 		return fmt.Errorf("watch NWEP (fib fan-out): %w", err)
 	}
+	// TransitGatewayRouteTable.status.tableID is what a transitGateway
+	// route programs into the FIB, so its allocation must re-fire the
+	// RouteTables that point at it.
+	if m.tgwRouteTableInformer != nil {
+		if err := m.fibRunner.WatchFanOut(m.tgwRouteTableInformer, m.fib.FanOutAllRouteTables); err != nil {
+			return fmt.Errorf("watch TransitGatewayRouteTable (fib fan-out): %w", err)
+		}
+	}
 	m.fibRunner.Start(ctx, 1)
+
+	if m.tgwRouteTableInformer != nil {
+		m.tgwFib = reconciler.NewTgwFib(m.client, m.podEgress)
+		m.tgwFibRunner = runner.New(m.tgwFib)
+		if err := m.tgwFibRunner.Watch(m.tgwRouteTableInformer, runner.MetaNamespaceKey); err != nil {
+			return fmt.Errorf("watch TransitGatewayRouteTable: %w", err)
+		}
+		if err := m.tgwFibRunner.WatchFanOut(m.subnetInformer, m.tgwFib.FanOutAllTransitGatewayRouteTables); err != nil {
+			return fmt.Errorf("watch Subnet (tgw-fib fan-out): %w", err)
+		}
+		m.tgwFibRunner.Start(ctx, 1)
+	}
 
 	m.natRunner = runner.New(reconciler.NewNat(m.client, m.podEgress, m.nodeName))
 	if err := m.natRunner.Watch(m.eipaInformer, runner.MetaNamespaceKey); err != nil {
@@ -573,6 +596,11 @@ func (m *Manager) Stop() error {
 			return err
 		}
 	}
+	if m.tgwFib != nil {
+		if err := m.tgwFib.CloseAll(); err != nil {
+			return err
+		}
+	}
 
 	if m.podEgress != nil {
 		if err := m.podEgress.Close(); err != nil {
@@ -609,6 +637,7 @@ func (m *Manager) Stop() error {
 		m.podIfaceRunner,
 		m.podAttacherRunner,
 		m.fibRunner,
+		m.tgwFibRunner,
 		m.natRunner,
 		m.bgpPoolRunner,
 		m.serviceRunner,
@@ -674,6 +703,7 @@ func NewManager(
 	addressPoolInformer cache.Informer,
 	bgpAdvertisementInformer cache.Informer,
 	rtInformer cache.Informer,
+	tgwRouteTableInformer cache.Informer,
 	subnetInformer cache.Informer,
 	vpcInformer cache.Informer,
 	serviceInformer cache.Informer,
@@ -702,6 +732,7 @@ func NewManager(
 		addressPoolInformer:               addressPoolInformer,
 		bgpAdvertisementInformer:          bgpAdvertisementInformer,
 		rtInformer:                        rtInformer,
+		tgwRouteTableInformer:             tgwRouteTableInformer,
 		subnetInformer:                    subnetInformer,
 		vpcInformer:                       vpcInformer,
 		serviceInformer:                   serviceInformer,

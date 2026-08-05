@@ -26,6 +26,8 @@ const (
 	fibRouteTypeService         = 4
 	fibRouteTypeNAPT            = 6
 	fibRouteTypePeering         = 7
+	fibRouteTypeTransit         = 8
+	fibRouteTypeBlackhole       = 9
 )
 
 // Fib keeps podEgress.FibMap in sync with RouteTable objects. Each
@@ -212,6 +214,16 @@ func (r *Fib) buildFibVal(ctx context.Context, route *juneauv1alpha1.Route) (bpf
 		}
 		return buildNATGatewayFibVal(&natGateway), false, nil
 
+	case juneauv1alpha1.ViaTransitGateway:
+		var routeTable juneauv1alpha1.TransitGatewayRouteTable
+		if err := r.client.Get(ctx, client.ObjectKey{Name: route.TransitGatewayRouteTable}, &routeTable); err != nil {
+			return bpf.PodEgressFibVal{}, false, err
+		}
+		if routeTable.Status.TableID == 0 {
+			return bpf.PodEgressFibVal{}, true, nil
+		}
+		return buildTransitGatewayFibVal(&routeTable), false, nil
+
 	default:
 		return bpf.PodEgressFibVal{}, true, fmt.Errorf("unsupported route type %q", route.Via.Type)
 	}
@@ -297,6 +309,18 @@ func buildNATGatewayFibVal(natGateway *juneauv1alpha1.NATGateway) bpf.PodEgressF
 	return bpf.PodEgressFibVal{
 		Type:     fibRouteTypeNAPT,
 		SubnetId: natGateway.Status.GatewayID,
+	}
+}
+
+// buildTransitGatewayFibVal builds a FIB value for a route that leaves
+// the Vpc through a TransitGateway. The destination is not known here:
+// it lives in the transit route table, which the BPF side looks up in a
+// second pass. The table id is overloaded into the subnet_id field, the
+// same reuse buildNATGatewayFibVal makes for its gateway id.
+func buildTransitGatewayFibVal(routeTable *juneauv1alpha1.TransitGatewayRouteTable) bpf.PodEgressFibVal {
+	return bpf.PodEgressFibVal{
+		Type:     fibRouteTypeTransit,
+		SubnetId: routeTable.Status.TableID,
 	}
 }
 

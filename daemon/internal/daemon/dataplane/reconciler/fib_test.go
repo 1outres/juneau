@@ -105,3 +105,64 @@ func TestBuildFibValVpcPeeringMissingSubnetFails(t *testing.T) {
 		t.Fatal("buildFibVal accepted a vpcPeering route with no peer Subnet")
 	}
 }
+
+func transitRouteTable(tableID uint32) *juneauv1alpha1.TransitGatewayRouteTable {
+	return &juneauv1alpha1.TransitGatewayRouteTable{
+		ObjectMeta: metav1.ObjectMeta{Name: "hub"},
+		Spec:       juneauv1alpha1.TransitGatewayRouteTableSpec{TransitGateway: "tgw"},
+		Status:     juneauv1alpha1.TransitGatewayRouteTableStatus{TableID: tableID},
+	}
+}
+
+func transitRoute() *juneauv1alpha1.Route {
+	return &juneauv1alpha1.Route{
+		Dst:                      "10.2.0.0/16",
+		TransitGatewayRouteTable: "hub",
+		Via: juneauv1alpha1.RouteVia{
+			Type:           juneauv1alpha1.ViaTransitGateway,
+			TransitGateway: "tgw",
+		},
+	}
+}
+
+func TestBuildFibValTransitGatewayCarriesTableID(t *testing.T) {
+	r := newFibFixture(t, transitRouteTable(42))
+
+	val, skip, err := r.buildFibVal(context.Background(), transitRoute())
+	if err != nil {
+		t.Fatalf("buildFibVal: %v", err)
+	}
+	if skip {
+		t.Fatal("buildFibVal skipped a transitGateway route with an allocated table ID")
+	}
+	if val.Type != fibRouteTypeTransit {
+		t.Errorf("type = %d, want %d", val.Type, fibRouteTypeTransit)
+	}
+	if val.SubnetId != 42 {
+		t.Errorf("subnet ID = %d, want the table ID 42", val.SubnetId)
+	}
+	if val.Smac != [6]uint8{} || val.Dmac != [6]uint8{} {
+		t.Errorf("value carries MACs %v/%v, want both zero", val.Smac, val.Dmac)
+	}
+}
+
+func TestBuildFibValTransitGatewaySkipsUnallocatedTableID(t *testing.T) {
+	r := newFibFixture(t, transitRouteTable(0))
+
+	_, skip, err := r.buildFibVal(context.Background(), transitRoute())
+	if err != nil {
+		t.Fatalf("buildFibVal: %v", err)
+	}
+	if !skip {
+		t.Fatal("buildFibVal programmed a transitGateway route whose table ID is not allocated yet")
+	}
+}
+
+func TestBuildFibValTransitGatewayMissingRouteTableFails(t *testing.T) {
+	r := newFibFixture(t)
+
+	_, _, err := r.buildFibVal(context.Background(), transitRoute())
+	if err == nil {
+		t.Fatal("buildFibVal accepted a transitGateway route with no TransitGatewayRouteTable")
+	}
+}

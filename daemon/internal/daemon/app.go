@@ -145,6 +145,7 @@ func NewApp() *cli.Command {
 					&juneauv1alpha1.Subnet{}:                    {},
 					&juneauv1alpha1.Vpc{}:                       {},
 					&juneauv1alpha1.RouteTable{}:                {},
+					&juneauv1alpha1.TransitGatewayRouteTable{}:  {},
 					&juneauv1alpha1.NATGateway{}:                {},
 					&juneauv1alpha1.ExternalNetworkAttachment{}: {},
 					&juneauv1alpha1.ServiceNATAttachment{}:      {},
@@ -184,6 +185,11 @@ func NewApp() *cli.Command {
 			rtInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.RouteTable{})
 			if err != nil {
 				return fmt.Errorf("get RouteTable informer: %w", err)
+			}
+
+			tgwRouteTableInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.TransitGatewayRouteTable{})
+			if err != nil {
+				return fmt.Errorf("get TransitGatewayRouteTable informer: %w", err)
 			}
 
 			subnetInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.Subnet{})
@@ -441,7 +447,7 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("lookup node ingress iface %q: %w", nodeIngressIfaceName, err)
 			}
 
-			bpfManager := dataplane.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, subnetInformer, vpcInformer, serviceInformer, endpointSliceInformer, externalNetworkAttachmentInformer, natGatewayInformer, serviceNATAttachmentInformer, networkInterfaceInformer, securityGroupInformer, networkACLInformer, serviceLoadBalancerInformer, traceSessionInformer, nodeInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, bpfPinPath, hostIfaceInfo.MAC, nodeUnderlayIP)
+			bpfManager := dataplane.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, tgwRouteTableInformer, subnetInformer, vpcInformer, serviceInformer, endpointSliceInformer, externalNetworkAttachmentInformer, natGatewayInformer, serviceNATAttachmentInformer, networkInterfaceInformer, securityGroupInformer, networkACLInformer, serviceLoadBalancerInformer, traceSessionInformer, nodeInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, bpfPinPath, hostIfaceInfo.MAC, nodeUnderlayIP)
 			if err := bpfManager.Start(ctx); err != nil {
 				return fmt.Errorf("initialize BPF manager: %w", err)
 			}
