@@ -62,11 +62,13 @@ const (
 	allocationLeaseReasonReleased = "Released"
 	allocationLeaseReasonExpired  = "Expired"
 
-	// allocationLeaseRetainResyncInterval is how often a Retained lease
-	// re-reads the object it waits for. The watch on that object covers
-	// the common case, but the kind may be absent when the manager starts
-	// and appear later, so the controller also compares the two states on
-	// a slow, level-triggered cycle.
+	allocationLeaseReasonRetainCheckFailed = "RetainCheckFailed"
+
+	// allocationLeaseRetainResyncInterval is how often a lease with a
+	// retain reference re-reads the object it waits for. The watch on that
+	// object covers the common case, but the kind may be absent when the
+	// manager starts and appear later, so the controller also compares the
+	// two states on a slow, level-triggered cycle.
 	allocationLeaseRetainResyncInterval = 5 * time.Minute
 
 	// leaseRetainWhileIndex indexes leases by the object they wait for, so
@@ -119,7 +121,21 @@ func (r *AllocationLeaseReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		if err != nil {
 			// Keep the reservation rather than risk handing the value to
 			// somebody else because of a read that could not be answered.
+			// The status has to say so, otherwise the lease looks healthy
+			// while it holds a value nobody can account for.
 			logger.Error(err, "unable to read the object an AllocationLease waits for", "name", req.Name, "retainWhile", retainReferenceKey(ref))
+			if statusErr := r.updateStatus(ctx, &resource, allocationLeaseStatus{
+				phase: juneauloutresmev1alpha1.AllocationLeasePhaseRetained,
+				// The read told us nothing, so the timing the lease
+				// already recorded is still the best answer there is.
+				expiresAt:        resource.Status.ExpiresAt,
+				retainReleasedAt: resource.Status.RetainReleasedAt,
+				ready:            metav1.ConditionFalse,
+				reason:           allocationLeaseReasonRetainCheckFailed,
+				message:          fmt.Sprintf("cannot read %s, so the value stays reserved: %v", retainReferenceKey(ref), err),
+			}); statusErr != nil {
+				logger.Error(statusErr, "unable to update AllocationLease status", "name", req.Name)
+			}
 			return ctrl.Result{}, err
 		}
 		if exists {
@@ -184,8 +200,21 @@ func (r *AllocationLeaseReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	// Schedule a re-queue for when the lease will expire.
-	return ctrl.Result{RequeueAfter: expiresAt.Sub(now) + time.Second}, nil
+	return ctrl.Result{RequeueAfter: releasedRequeueAfter(&resource, now, expiresAt)}, nil
+}
+
+// releasedRequeueAfter says when a released lease should be looked at again.
+// The expiry is the deadline that matters, but a lease with a retain
+// reference also has to notice the object coming back, and the watch on that
+// object does not cover a kind the cluster started serving later. Such a
+// lease therefore wakes up at least once per resync interval instead of
+// sleeping through the whole TTL.
+func releasedRequeueAfter(resource *juneauloutresmev1alpha1.AllocationLease, now, expiresAt time.Time) time.Duration {
+	untilExpiry := expiresAt.Sub(now) + time.Second
+	if resource.Spec.RetainWhile != nil && untilExpiry > allocationLeaseRetainResyncInterval {
+		return allocationLeaseRetainResyncInterval
+	}
+	return untilExpiry
 }
 
 // retainedObjectExists reports whether the object a lease waits for is still
