@@ -20,6 +20,12 @@ Vpc内のPodをTransitGateway経由で他のVpcへ出すには、対象VpcのRou
 
 詳しくは[RouteTable](routetable.md)を参照してください。
 
+## Serviceのバックエンドの制約
+
+ClusterIP宛の通信は、バックエンドPodがTransitGateway経由でつながる他のVpcにいると届きません。バックエンドがServiceの所属Vpcの中にある場合と、[VpcPeering](vpcpeering.md)でつないだVpcにある場合だけ到達することができます。RouteTableは`Ready=True`のままなので、Podから届かないことでしか気付けません。
+
+データプレーンは宛先をバックエンドのIPに書き換えた後、もう一度ルートを引き直します。この2回目の解決は`via.type: transitGateway`のルートを扱いません。TransitGatewayの転送はTransitGatewayRouteTableをもう1段引く必要があり、BPFプログラムのスタック上限に収まらないためです。
+
 ## SecurityGroupの制約
 
 VpcPeeringと同じく、SecurityGroupの`securityGroupRef`は同じVpcのSecurityGroupしか参照できません。TransitGateway経由で届く他VpcのPodからの通信を許可するには、`cidr`のルールを書いてください。

@@ -355,6 +355,7 @@ spec:
     - 送信元Vpcのアタッチメントが`association`しているルートテーブルに、宛先のエントリがあるか
     - そのエントリが`blackhole: true`になっていないか
     - 宛先PodのSecurityGroupが`cidr`のルールで送信元Subnetを許可しているか
+    - ClusterIP宛なら、バックエンドPodがTransitGateway越しの他のVpcにいないか
 5. **TransitGatewayRouteTableを削除できない**
     - `spec.association`または`spec.propagations`で参照しているTransitGatewayAttachmentが残っています
     - TransitGatewayと同じ名前のdefault route tableは単独では削除できません
