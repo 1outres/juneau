@@ -63,11 +63,14 @@ func summariseRouteTable(rt *juneauv1alpha1.RouteTable, isMain bool) *RouteTable
 	}
 	for _, r := range src {
 		out.Routes = append(out.Routes, RouteSummary{
-			Dst:        r.Dst,
-			Type:       string(r.Via.Type),
-			Subnet:     r.Subnet,
-			Endpoint:   r.Via.Endpoint,
-			NATGateway: r.Via.NATGateway,
+			Dst:                      r.Dst,
+			Type:                     string(r.Via.Type),
+			Subnet:                   r.Subnet,
+			Endpoint:                 r.Via.Endpoint,
+			NATGateway:               r.Via.NATGateway,
+			VpcPeering:               r.Via.VpcPeering,
+			TransitGateway:           r.Via.TransitGateway,
+			TransitGatewayRouteTable: r.TransitGatewayRouteTable,
 		})
 	}
 	return out

@@ -112,6 +112,13 @@ type RouteSummary struct {
 	Subnet     string `json:"subnet,omitempty"`
 	Endpoint   string `json:"endpoint,omitempty"`
 	NATGateway string `json:"natGateway,omitempty"`
+	VpcPeering string `json:"vpcPeering,omitempty"`
+	// TransitGateway is the gateway the route hands the packet to, and
+	// TransitGatewayRouteTable is the table the data plane looks the
+	// destination up in. The controller resolves the second one, so a
+	// route can name a gateway while the table is still empty.
+	TransitGateway           string `json:"transitGateway,omitempty"`
+	TransitGatewayRouteTable string `json:"transitGatewayRouteTable,omitempty"`
 }
 
 // NetworkACLSummary mirrors the per-ACL fields a tree presenter needs.

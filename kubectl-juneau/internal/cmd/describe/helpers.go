@@ -32,6 +32,19 @@ func formatRouteVia(r topology.RouteSummary) string {
 		return "internetGateway"
 	case "natGateway":
 		return fmt.Sprintf("natGateway (%s)", displayOrDash(r.NATGateway))
+	case "vpcPeering":
+		// The peering names the path and the peer Subnet names where the
+		// packet actually lands, so show both once the controller has
+		// resolved the second one.
+		if r.Subnet != "" {
+			return fmt.Sprintf("vpcPeering (%s -> %s)", displayOrDash(r.VpcPeering), r.Subnet)
+		}
+		return fmt.Sprintf("vpcPeering (%s)", displayOrDash(r.VpcPeering))
+	case "transitGateway":
+		if r.TransitGatewayRouteTable != "" {
+			return fmt.Sprintf("transitGateway (%s -> %s)", displayOrDash(r.TransitGateway), r.TransitGatewayRouteTable)
+		}
+		return fmt.Sprintf("transitGateway (%s)", displayOrDash(r.TransitGateway))
 	case "service":
 		return "service"
 	}

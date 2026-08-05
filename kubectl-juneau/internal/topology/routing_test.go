@@ -202,6 +202,34 @@ func TestSummariseRouteTablePrefersStatus(t *testing.T) {
 	}
 }
 
+func TestSummariseRouteTableCarriesGatewayRefs(t *testing.T) {
+	rt := &juneauv1alpha1.RouteTable{
+		Status: juneauv1alpha1.RouteTableStatus{
+			Routes: []juneauv1alpha1.Route{{
+				Dst:    "10.1.0.0/24",
+				Subnet: "peer-subnet",
+				Via:    juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaVpcPeering, VpcPeering: "link"},
+			}, {
+				Dst:                      "10.2.0.0/24",
+				Via:                      juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaTransitGateway, TransitGateway: "hub"},
+				TransitGatewayRouteTable: "hub-spokes",
+			}},
+		},
+	}
+	rt.Name = "vpc-rt"
+
+	got := summariseRouteTable(rt, false)
+	if got == nil {
+		t.Fatal("got nil summary")
+	}
+	if got.Routes[0].VpcPeering != "link" || got.Routes[0].Subnet != "peer-subnet" {
+		t.Fatalf("peering route: got %+v", got.Routes[0])
+	}
+	if got.Routes[1].TransitGateway != "hub" || got.Routes[1].TransitGatewayRouteTable != "hub-spokes" {
+		t.Fatalf("transit route: got %+v", got.Routes[1])
+	}
+}
+
 // stubViewError tests that resolver errors propagate.
 type stubViewError struct{ stubView }
 
