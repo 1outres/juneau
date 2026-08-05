@@ -108,6 +108,9 @@ var _ = BeforeSuite(func() {
 	Expect(SetupSecurityGroupWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupNetworkACLWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupVpcPeeringWebhookWithManager(mgr)).To(Succeed())
+	Expect(SetupTransitGatewayWebhookWithManager(mgr)).To(Succeed())
+	Expect(SetupTransitGatewayRouteTableWebhookWithManager(mgr)).To(Succeed())
+	Expect(SetupTransitGatewayAttachmentWebhookWithManager(mgr)).To(Succeed())
 
 	webhookMgrDone = make(chan error, 1)
 	go func() {

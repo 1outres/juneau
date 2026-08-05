@@ -112,6 +112,11 @@ func (v *SubnetCustomValidator) ValidateCreate(ctx context.Context, obj runtime.
 		return nil, err
 	}
 	errs = append(errs, peeredErrs...)
+	transitErrs, err := validateSubnetTransitGatewayCIDROverlap(ctx, v.Reader, subnet, errPath.Child("cidr"))
+	if err != nil {
+		return nil, err
+	}
+	errs = append(errs, transitErrs...)
 	serviceErrs, err := validateSubnetServiceCIDROverlap(ctx, v.Reader, subnet, v.ServiceCIDR, errPath.Child("cidr"))
 	if err != nil {
 		return nil, err
@@ -327,6 +332,65 @@ func validateSubnetPeeredCIDROverlap(ctx context.Context, c client.Reader, subne
 			errs = append(errs, field.Invalid(path, subnet.Spec.CIDR,
 				fmt.Sprintf("overlaps with Subnet %q CIDR %q in Vpc %q, which is peered by VpcPeering %q",
 					existingSubnet.Name, existingSubnet.Spec.CIDR, existingSubnet.Spec.Vpc, peeringName)))
+		}
+	}
+
+	return errs, nil
+}
+
+// validateSubnetTransitGatewayCIDROverlap rejects a Subnet whose CIDR
+// overlaps a Subnet of a Vpc that shares a TransitGatewayRouteTable
+// with this Subnet's Vpc. The transit lookup resolves a destination to
+// a single Subnet VNI, so the same address behind two attachments has
+// no single correct answer.
+func validateSubnetTransitGatewayCIDROverlap(ctx context.Context, c client.Reader, subnet *juneauv1alpha1.Subnet, path *field.Path) (field.ErrorList, error) {
+	_, subnetCIDR, err := net.ParseCIDR(subnet.Spec.CIDR)
+	if err != nil {
+		return nil, nil
+	}
+
+	var attachmentList juneauv1alpha1.TransitGatewayAttachmentList
+	if err := c.List(ctx, &attachmentList); err != nil {
+		return nil, err
+	}
+
+	var routeTables []string
+	for i := range attachmentList.Items {
+		if attachmentList.Items[i].Spec.Vpc != subnet.Spec.Vpc {
+			continue
+		}
+		routeTables = append(routeTables, attachmentList.Items[i].Spec.RouteTables()...)
+	}
+	if len(routeTables) == 0 {
+		return nil, nil
+	}
+
+	reachable := transitGatewayReachableVpcs("", subnet.Spec.Vpc, routeTables, attachmentList.Items)
+	if len(reachable) == 0 {
+		return nil, nil
+	}
+
+	var subnetList juneauv1alpha1.SubnetList
+	if err := c.List(ctx, &subnetList); err != nil {
+		return nil, err
+	}
+
+	var errs field.ErrorList
+	for _, existingSubnet := range subnetList.Items {
+		routeTable, ok := reachable[existingSubnet.Spec.Vpc]
+		if !ok {
+			continue
+		}
+
+		_, existingCIDR, err := net.ParseCIDR(existingSubnet.Spec.CIDR)
+		if err != nil {
+			continue
+		}
+
+		if cidrsOverlap(subnetCIDR, existingCIDR) {
+			errs = append(errs, field.Invalid(path, subnet.Spec.CIDR,
+				fmt.Sprintf("overlaps with Subnet %q CIDR %q in Vpc %q, which is reachable through TransitGatewayRouteTable %q",
+					existingSubnet.Name, existingSubnet.Spec.CIDR, existingSubnet.Spec.Vpc, routeTable)))
 		}
 	}
 

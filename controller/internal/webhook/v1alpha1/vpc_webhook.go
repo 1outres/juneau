@@ -245,5 +245,26 @@ func (v *VpcCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Obj
 		)
 	}
 
+	// Same reasoning for transit gateways: an attachment that lost its
+	// Vpc can never become Ready again, and the route tables it fed
+	// would keep advertising prefixes nobody owns.
+	var attachmentList juneauv1alpha1.TransitGatewayAttachmentList
+	if err := v.List(ctx, &attachmentList); err != nil {
+		return nil, fmt.Errorf("list TransitGatewayAttachments: %w", err)
+	}
+	var attachmentRefs []string
+	for i := range attachmentList.Items {
+		if attachmentList.Items[i].Spec.Vpc == vpc.Name {
+			attachmentRefs = append(attachmentRefs, attachmentList.Items[i].Name)
+		}
+	}
+	if len(attachmentRefs) > 0 {
+		return nil, errors.NewForbidden(
+			schema.GroupResource{Group: juneauv1alpha1.GroupVersion.Group, Resource: "vpcs"},
+			vpc.Name,
+			fmt.Errorf("TransitGatewayAttachment(s) %v still attach this Vpc; delete them first", attachmentRefs),
+		)
+	}
+
 	return nil, nil
 }
