@@ -233,6 +233,148 @@ var _ = Describe("RouteTable controller", func() {
 		}).Should(Succeed())
 	})
 
+	Context("vpcPeering routes", func() {
+		It("resolves a vpcPeering route to the peer Vpc Subnet", func() {
+			vpcA := createControllerVpc()
+			vpcB := createControllerVpc()
+			peerSubnet := createControllerSubnet(vpcB, uniqueTestName("subnet"), uniqueSubnetCIDR())
+			peeringName := createControllerVpcPeering(vpcA, vpcB)
+
+			routeTableName := uniqueTestName("routetable")
+			Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
+				ObjectMeta: metav1.ObjectMeta{Name: routeTableName},
+				Spec: juneauv1alpha1.RouteTableSpec{
+					Vpc: vpcA,
+					Routes: []juneauv1alpha1.Route{{
+						Dst: peerSubnet.Spec.CIDR,
+						Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaVpcPeering, VpcPeering: peeringName},
+					}},
+				},
+			})).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				routeTable := getControllerRouteTable(routeTableName)
+				ready := meta.FindStatusCondition(routeTable.Status.Conditions, juneauv1alpha1.RouteTableStatusReady)
+				g.Expect(ready).NotTo(BeNil())
+				g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+				g.Expect(routeTable.Status.Routes).To(ContainElement(juneauv1alpha1.Route{
+					Dst:    peerSubnet.Spec.CIDR,
+					Subnet: peerSubnet.Name,
+					Via:    juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaVpcPeering, VpcPeering: peeringName},
+				}))
+			}).Should(Succeed())
+		})
+
+		It("marks a RouteTable not ready when the VpcPeering does not exist", func() {
+			vpcName := createControllerVpc()
+			missing := uniqueTestName("peering")
+
+			routeTableName := uniqueTestName("routetable")
+			Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
+				ObjectMeta: metav1.ObjectMeta{Name: routeTableName},
+				Spec: juneauv1alpha1.RouteTableSpec{
+					Vpc: vpcName,
+					Routes: []juneauv1alpha1.Route{{
+						Dst: uniqueSubnetCIDR(),
+						Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaVpcPeering, VpcPeering: missing},
+					}},
+				},
+			})).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				routeTable := getControllerRouteTable(routeTableName)
+				ready := meta.FindStatusCondition(routeTable.Status.Conditions, juneauv1alpha1.RouteTableStatusReady)
+				g.Expect(ready).NotTo(BeNil())
+				g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(ready.Message).To(ContainSubstring(fmt.Sprintf("VpcPeering %q not found", missing)))
+			}).Should(Succeed())
+		})
+
+		It("marks a RouteTable not ready when its Vpc is not part of the VpcPeering", func() {
+			vpcA := createControllerVpc()
+			vpcB := createControllerVpc()
+			vpcC := createControllerVpc()
+			peeringName := createControllerVpcPeering(vpcA, vpcB)
+
+			routeTableName := uniqueTestName("routetable")
+			Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
+				ObjectMeta: metav1.ObjectMeta{Name: routeTableName},
+				Spec: juneauv1alpha1.RouteTableSpec{
+					Vpc: vpcC,
+					Routes: []juneauv1alpha1.Route{{
+						Dst: uniqueSubnetCIDR(),
+						Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaVpcPeering, VpcPeering: peeringName},
+					}},
+				},
+			})).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				routeTable := getControllerRouteTable(routeTableName)
+				ready := meta.FindStatusCondition(routeTable.Status.Conditions, juneauv1alpha1.RouteTableStatusReady)
+				g.Expect(ready).NotTo(BeNil())
+				g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(ready.Message).To(ContainSubstring("is not part of VpcPeering"))
+			}).Should(Succeed())
+		})
+
+		It("marks a RouteTable not ready when no peer Subnet matches dst exactly", func() {
+			vpcA := createControllerVpc()
+			vpcB := createControllerVpc()
+			createControllerSubnet(vpcB, uniqueTestName("subnet"), "172.29.10.0/24")
+			peeringName := createControllerVpcPeering(vpcA, vpcB)
+
+			routeTableName := uniqueTestName("routetable")
+			Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
+				ObjectMeta: metav1.ObjectMeta{Name: routeTableName},
+				Spec: juneauv1alpha1.RouteTableSpec{
+					Vpc: vpcA,
+					Routes: []juneauv1alpha1.Route{{
+						Dst: "172.29.10.0/25",
+						Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaVpcPeering, VpcPeering: peeringName},
+					}},
+				},
+			})).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				routeTable := getControllerRouteTable(routeTableName)
+				ready := meta.FindStatusCondition(routeTable.Status.Conditions, juneauv1alpha1.RouteTableStatusReady)
+				g.Expect(ready).NotTo(BeNil())
+				g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(ready.Message).To(ContainSubstring(fmt.Sprintf("no Subnet in Vpc %q has CIDR", vpcB)))
+			}).Should(Succeed())
+		})
+
+		It("resolves a vpcPeering route once the peer Subnet is created", func() {
+			vpcA := createControllerVpc()
+			vpcB := createControllerVpc()
+			peeringName := createControllerVpcPeering(vpcA, vpcB)
+			peerCIDR := uniqueSubnetCIDR()
+
+			routeTableName := uniqueTestName("routetable")
+			Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
+				ObjectMeta: metav1.ObjectMeta{Name: routeTableName},
+				Spec: juneauv1alpha1.RouteTableSpec{
+					Vpc: vpcA,
+					Routes: []juneauv1alpha1.Route{{
+						Dst: peerCIDR,
+						Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaVpcPeering, VpcPeering: peeringName},
+					}},
+				},
+			})).To(Succeed())
+
+			peerSubnet := createControllerSubnet(vpcB, uniqueTestName("subnet"), peerCIDR)
+
+			Eventually(func(g Gomega) {
+				routeTable := getControllerRouteTable(routeTableName)
+				g.Expect(routeTable.Status.Routes).To(ContainElement(juneauv1alpha1.Route{
+					Dst:    peerCIDR,
+					Subnet: peerSubnet.Name,
+					Via:    juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaVpcPeering, VpcPeering: peeringName},
+				}))
+			}).Should(Succeed())
+		})
+	})
+
 	Context("Service.spec.externalIPs injection", func() {
 		It("injects /32 SERVICE routes for each owner-Vpc Service externalIP", func() {
 			vpcName := createControllerVpc()

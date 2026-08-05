@@ -235,6 +235,47 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 					}
 					return ctrl.Result{}, nil
 				}
+			} else if route.Via.Type == juneauloutresmev1alpha1.ViaVpcPeering {
+				var peering juneauloutresmev1alpha1.VpcPeering
+				if err := r.Get(ctx, client.ObjectKey{Name: route.Via.VpcPeering}, &peering); err != nil {
+					if errors.IsNotFound(err) {
+						if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("VpcPeering %q not found", route.Via.VpcPeering)); err != nil {
+							return ctrl.Result{}, err
+						}
+						return ctrl.Result{}, nil
+					}
+					if updateErr := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, fmt.Sprintf("failed to get VpcPeering %q", route.Via.VpcPeering)); updateErr != nil {
+						return ctrl.Result{}, updateErr
+					}
+					return ctrl.Result{}, err
+				}
+				if !meta.IsStatusConditionTrue(peering.Status.Conditions, juneauloutresmev1alpha1.VpcPeeringStatusReady) {
+					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("VpcPeering %q is not ready", peering.Name)); err != nil {
+						return ctrl.Result{}, err
+					}
+					return ctrl.Result{}, nil
+				}
+				peerVpc, ok := peering.Spec.PeerOf(resource.Spec.Vpc)
+				if !ok {
+					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("RouteTable belongs to Vpc %q which is not part of VpcPeering %q", resource.Spec.Vpc, peering.Name)); err != nil {
+						return ctrl.Result{}, err
+					}
+					return ctrl.Result{}, nil
+				}
+				peerSubnet, err := r.findSubnetByCIDR(ctx, peerVpc, route.Dst)
+				if err != nil {
+					if updateErr := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, fmt.Sprintf("failed to list subnets for VPC %q", peerVpc)); updateErr != nil {
+						return ctrl.Result{}, updateErr
+					}
+					return ctrl.Result{}, err
+				}
+				if peerSubnet == "" {
+					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("no Subnet in Vpc %q has CIDR %q", peerVpc, route.Dst)); err != nil {
+						return ctrl.Result{}, err
+					}
+					return ctrl.Result{}, nil
+				}
+				subnet = peerSubnet
 			}
 			route.Subnet = subnet
 			statusRoutes = append(statusRoutes, route)
@@ -305,6 +346,25 @@ func getRoute(routes []juneauloutresmev1alpha1.Route, dst string) *juneauloutres
 	return nil
 }
 
+// findSubnetByCIDR returns the Subnet of vpcName whose CIDR is exactly
+// cidr, or "" when no Subnet matches. A peering route resolves to one
+// destination Subnet VNI, so a supernet spanning several Subnets has no
+// single answer and is reported as unresolved instead.
+func (r *RouteTableReconciler) findSubnetByCIDR(ctx context.Context, vpcName, cidr string) (string, error) {
+	var subnets juneauloutresmev1alpha1.SubnetList
+	if err := r.List(ctx, &subnets, client.MatchingFields{"spec.vpc": vpcName}); err != nil {
+		return "", err
+	}
+
+	for i := range subnets.Items {
+		if subnets.Items[i].Spec.CIDR == cidr {
+			return subnets.Items[i].Name, nil
+		}
+	}
+
+	return "", nil
+}
+
 func (r *RouteTableReconciler) getNetworkEndpoint(ctx context.Context, name string) (*juneauloutresmev1alpha1.NetworkEndpoint, error) {
 	var networkEndpointList juneauloutresmev1alpha1.NetworkEndpointList
 	if err := r.List(ctx, &networkEndpointList); err != nil {
@@ -338,6 +398,7 @@ func (r *RouteTableReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&juneauloutresmev1alpha1.Vpc{}, handler.EnqueueRequestsFromMapFunc(r.mapVpcToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.AllocationClaim{}, handler.EnqueueRequestsFromMapFunc(r.mapClaimToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.NATGateway{}, handler.EnqueueRequestsFromMapFunc(r.mapNATGatewayToRouteTables)).
+		Watches(&juneauloutresmev1alpha1.VpcPeering{}, handler.EnqueueRequestsFromMapFunc(r.mapVpcPeeringToRouteTables)).
 		Watches(&corev1.Service{}, handler.EnqueueRequestsFromMapFunc(r.mapServiceToRouteTables)).
 		Named("routetable").
 		Complete(r)
@@ -363,7 +424,21 @@ func (r *RouteTableReconciler) mapSubnetToRouteTables(ctx context.Context, obj c
 
 	// CONNECTED routes for every Subnet are injected into every
 	// RouteTable in the same Vpc. A Subnet event therefore must wake
-	// every Vpc-local RouteTable, not just the main one.
+	// every Vpc-local RouteTable, not just the main one. RouteTables in
+	// a peered Vpc also care: their vpcPeering routes resolve against
+	// this Subnet's CIDR, so its arrival or removal flips them between
+	// Ready and NotReady.
+	vpcs := map[string]struct{}{subnet.Spec.Vpc: {}}
+	var peeringList juneauloutresmev1alpha1.VpcPeeringList
+	if err := r.List(ctx, &peeringList); err != nil {
+		return nil
+	}
+	for i := range peeringList.Items {
+		if peer, ok := peeringList.Items[i].Spec.PeerOf(subnet.Spec.Vpc); ok {
+			vpcs[peer] = struct{}{}
+		}
+	}
+
 	var routeTableList juneauloutresmev1alpha1.RouteTableList
 	if err := r.List(ctx, &routeTableList); err != nil {
 		return nil
@@ -372,10 +447,34 @@ func (r *RouteTableReconciler) mapSubnetToRouteTables(ctx context.Context, obj c
 	requests := make([]reconcile.Request, 0, len(routeTableList.Items))
 	for i := range routeTableList.Items {
 		rt := &routeTableList.Items[i]
-		if rt.Spec.Vpc != subnet.Spec.Vpc {
+		if _, ok := vpcs[rt.Spec.Vpc]; !ok {
 			continue
 		}
 		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: rt.Name}})
+	}
+	return requests
+}
+
+func (r *RouteTableReconciler) mapVpcPeeringToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
+	peering, ok := obj.(*juneauloutresmev1alpha1.VpcPeering)
+	if !ok {
+		return nil
+	}
+
+	var routeTableList juneauloutresmev1alpha1.RouteTableList
+	if err := r.List(ctx, &routeTableList); err != nil {
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0)
+	for i := range routeTableList.Items {
+		rt := &routeTableList.Items[i]
+		for _, route := range rt.Spec.Routes {
+			if route.Via.Type == juneauloutresmev1alpha1.ViaVpcPeering && route.Via.VpcPeering == peering.Name {
+				requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: rt.Name}})
+				break
+			}
+		}
 	}
 	return requests
 }

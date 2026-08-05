@@ -64,6 +64,7 @@ rules:
   - serviceloadbalancers
   - servicenatattachments
   - subnets
+  - vpcpeerings
   - vpcs
   verbs:
   - create
@@ -95,6 +96,7 @@ rules:
   - serviceloadbalancers/finalizers
   - servicenatattachments/finalizers
   - subnets/finalizers
+  - vpcpeerings/finalizers
   - vpcs/finalizers
   verbs:
   - update
@@ -120,6 +122,7 @@ rules:
   - serviceloadbalancers/status
   - servicenatattachments/status
   - subnets/status
+  - vpcpeerings/status
   - vpcs/status
   verbs:
   - get
