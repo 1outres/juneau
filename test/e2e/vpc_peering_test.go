@@ -155,12 +155,7 @@ spec:
 }
 
 func (f *peeringFixture) WaitPeeringReady() {
-	Eventually(func(g Gomega) {
-		ready, err := kubectlJSONPath(repoRoot, `{.status.conditions[?(@.type=="Ready")].status}`,
-			"get", "vpcpeering", f.peering)
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(strings.TrimSpace(ready)).To(Equal("True"))
-	}).Should(Succeed())
+	waitResourceReady("vpcpeering", f.peering)
 }
 
 // SetPeeringRoute replaces the routes of a Vpc's main RouteTable (which

@@ -309,6 +309,16 @@ func waitSubnetReady(name string) {
 	}).Should(Succeed())
 }
 
+// waitResourceReady waits for the Ready condition of any cluster-scoped
+// Juneau resource.
+func waitResourceReady(resource string, name string) {
+	Eventually(func(g Gomega) {
+		ready, err := kubectlJSONPath(repoRoot, `{.status.conditions[?(@.type=="Ready")].status}`, "get", resource, name)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(strings.TrimSpace(ready)).To(Equal("True"))
+	}).Should(Succeed())
+}
+
 func waitServiceEndpoints(namespace string, serviceName string) {
 	Eventually(func(g Gomega) {
 		addresses, err := kubectlJSONPath(repoRoot, `{.subsets[*].addresses[*].ip}`, "-n", namespace, "get", "endpoints", serviceName)
