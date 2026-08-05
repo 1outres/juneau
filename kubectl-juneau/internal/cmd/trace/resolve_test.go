@@ -12,6 +12,8 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -239,6 +241,127 @@ func TestAppendReverseTuplesRespectsMaxCap(t *testing.T) {
 	got := appendReverseTuples(fwd)
 	if len(got) != maxInitialTuples {
 		t.Fatalf("must stay within the admission cap of %d, got %d", maxInitialTuples, len(got))
+	}
+}
+
+func TestCrossVPCTuplesRescopesEachForward(t *testing.T) {
+	fwd := []juneauv1alpha1.TraceTuple{
+		{Scope: juneauv1alpha1.TraceTupleScopeVPC, VPCID: 7, SrcIP: "10.0.1.5", DstIP: "10.1.2.10", DstPort: 443, Protocol: juneauv1alpha1.TraceProtocolTCP, Direction: juneauv1alpha1.TraceTupleDirectionRequest},
+		{Scope: juneauv1alpha1.TraceTupleScopeVPC, VPCID: 7, SrcIP: "10.0.1.5", DstIP: "10.1.2.11", DstPort: 8443, Protocol: juneauv1alpha1.TraceProtocolTCP, Direction: juneauv1alpha1.TraceTupleDirectionRequest},
+	}
+
+	got := crossVPCTuples(fwd, 9)
+	if len(got) != 2 {
+		t.Fatalf("expected one rescoped copy per forward tuple, got %d: %+v", len(got), got)
+	}
+	for i, tuple := range got {
+		want := fwd[i]
+		want.VPCID = 9
+		if tuple != want {
+			t.Errorf("copy %d = %+v, want %+v", i, tuple, want)
+		}
+	}
+}
+
+func TestCrossVPCTuplesSkipsSameVPC(t *testing.T) {
+	fwd := []juneauv1alpha1.TraceTuple{
+		{Scope: juneauv1alpha1.TraceTupleScopeVPC, VPCID: 7, SrcIP: "10.0.1.5", DstIP: "10.0.2.10", DstPort: 443, Protocol: juneauv1alpha1.TraceProtocolTCP},
+	}
+
+	if got := crossVPCTuples(fwd, 7); len(got) != 0 {
+		t.Fatalf("a tuple already scoped to the Vpc must not be duplicated, got %+v", got)
+	}
+	if got := crossVPCTuples(fwd, 0); len(got) != 0 {
+		t.Fatalf("an unresolved Vpc id must add nothing, got %+v", got)
+	}
+}
+
+func TestCrossVPCTuplesRespectsMaxCap(t *testing.T) {
+	fwd := make([]juneauv1alpha1.TraceTuple, maxInitialTuples)
+	for i := range fwd {
+		fwd[i] = juneauv1alpha1.TraceTuple{
+			Scope:    juneauv1alpha1.TraceTupleScopeVPC,
+			VPCID:    7,
+			SrcIP:    "10.0.1.5",
+			DstIP:    fmt.Sprintf("10.1.2.%d", i+1),
+			DstPort:  443,
+			Protocol: juneauv1alpha1.TraceProtocolTCP,
+		}
+	}
+
+	if got := crossVPCTuples(fwd, 9); len(got) != 0 {
+		t.Fatalf("must stay within the admission cap of %d, got %d extra tuples", maxInitialTuples, len(got))
+	}
+}
+
+func TestResolveSessionScopesTuplesToBothVPCs(t *testing.T) {
+	objects := []client.Object{
+		crossVPCPod("client", "10.0.1.5", "uid-client", "worker-1"),
+		crossVPCPod("server", "10.1.2.10", "uid-server", "worker-2"),
+	}
+	objects = append(objects, crossVPCNetwork("client", "uid-client", "subnet-a", "vpc-a", 7)...)
+	objects = append(objects, crossVPCNetwork("server", "uid-server", "subnet-b", "vpc-b", 9)...)
+
+	cl := fake.NewClientBuilder().WithScheme(newSchemeForTest(t)).WithObjects(objects...).Build()
+
+	o := &Options{
+		SourcePod:       "client",
+		DestPod:         "server",
+		sourceNamespace: "default",
+		destNamespace:   "default",
+		Port:            443,
+		Protocol:        "tcp",
+		traceID:         0x2345,
+	}
+
+	r, err := o.resolveSession(context.Background(), cl)
+	if err != nil {
+		t.Fatalf("resolveSession: %v", err)
+	}
+
+	requests := map[uint32]bool{}
+	replies := map[uint32]bool{}
+	for _, tuple := range r.initialTuples {
+		switch tuple.Direction {
+		case juneauv1alpha1.TraceTupleDirectionRequest:
+			requests[tuple.VPCID] = true
+		case juneauv1alpha1.TraceTupleDirectionReply:
+			replies[tuple.VPCID] = true
+		}
+	}
+	if !requests[7] || !requests[9] {
+		t.Errorf("request tuples must cover both VPCs, got %+v", r.initialTuples)
+	}
+	if !replies[7] || !replies[9] {
+		t.Errorf("reply mirrors must cover both VPCs, got %+v", r.initialTuples)
+	}
+}
+
+func crossVPCPod(name, ip, uid, node string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: name, UID: types.UID(uid)},
+		Spec:       corev1.PodSpec{NodeName: node},
+		Status:     corev1.PodStatus{PodIP: ip},
+	}
+}
+
+func crossVPCNetwork(name, uid, subnet, vpc string, vpcID uint32) []client.Object {
+	return []client.Object{
+		&juneauv1alpha1.NetworkInterface{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: name},
+			Spec: juneauv1alpha1.NetworkInterfaceSpec{
+				PodRef: juneauv1alpha1.NetworkInterfacePodReference{UID: uid, Name: name, Interface: "eth0"},
+				Subnet: subnet,
+			},
+		},
+		&juneauv1alpha1.Subnet{
+			ObjectMeta: metav1.ObjectMeta{Name: subnet},
+			Spec:       juneauv1alpha1.SubnetSpec{Vpc: vpc},
+		},
+		&juneauv1alpha1.Vpc{
+			ObjectMeta: metav1.ObjectMeta{Name: vpc},
+			Status:     juneauv1alpha1.VpcStatus{VpcID: vpcID},
+		},
 	}
 }
 

@@ -132,6 +132,15 @@ func (o *Options) resolveSession(ctx context.Context, cl client.Client) (*resolv
 		out.nodes = dedupeNonEmpty(append(out.nodes, extraNodes...)...)
 	}
 
+	// A flow that leaves its Vpc — through a VpcPeering or a
+	// TransitGateway — is seen on the far side under the destination
+	// Vpc's id, because every hook resolves trace_tuple_map with the
+	// vpc_id of the Subnet the packet is in. Without a copy scoped to
+	// that id the receiving node's vxlan_ingress / pod_ingress hooks
+	// never match and the timeline stops at the sending node.
+	out.initialTuples = append(out.initialTuples,
+		crossVPCTuples(out.initialTuples, out.destination.vpcID)...)
+
 	// Append the Reply mirror of every Request tuple so the dataplane
 	// resolves the same trace_id for reply packets from session start —
 	// even for flows whose request leg is never observed during the
@@ -141,6 +150,33 @@ func (o *Options) resolveSession(ctx context.Context, cl client.Client) (*resolv
 	out.initialTuples = appendReverseTuples(out.initialTuples)
 
 	return out, nil
+}
+
+// crossVPCTuples returns a copy of every tuple in forward rescoped to
+// vpcID, so the same flow also resolves on nodes that see it under the
+// destination Vpc's identity. Tuples already scoped to vpcID are left
+// alone, and an unresolved id (0) adds nothing.
+//
+// The whole batch is dropped when it would push the session past
+// maxInitialTuples, because the reply mirrors appended afterwards still
+// need room and a partial set of scopes is more confusing than none.
+func crossVPCTuples(forward []juneauv1alpha1.TraceTuple, vpcID uint32) []juneauv1alpha1.TraceTuple {
+	if vpcID == 0 {
+		return nil
+	}
+	var out []juneauv1alpha1.TraceTuple
+	for _, t := range forward {
+		if t.VPCID == vpcID {
+			continue
+		}
+		t.Scope = juneauv1alpha1.TraceTupleScopeVPC
+		t.VPCID = vpcID
+		out = append(out, t)
+	}
+	if len(forward)+len(out) > maxInitialTuples {
+		return nil
+	}
+	return out
 }
 
 // appendReverseTuples returns the Request tuples followed by their
