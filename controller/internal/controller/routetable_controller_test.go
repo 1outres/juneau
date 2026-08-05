@@ -375,6 +375,116 @@ var _ = Describe("RouteTable controller", func() {
 		})
 	})
 
+	Context("transitGateway routes", func() {
+		It("resolves a transitGateway route to the association route table", func() {
+			tgw := createControllerTransitGateway()
+			vpc := createControllerVpc()
+			createControllerTransitGatewayAttachment(tgw, vpc, tgw, []string{tgw})
+
+			routeTableName := uniqueTestName("routetable")
+			Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
+				ObjectMeta: metav1.ObjectMeta{Name: routeTableName},
+				Spec: juneauv1alpha1.RouteTableSpec{
+					Vpc: vpc,
+					Routes: []juneauv1alpha1.Route{{
+						Dst: "172.23.0.0/16",
+						Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaTransitGateway, TransitGateway: tgw},
+					}},
+				},
+			})).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				routeTable := getControllerRouteTable(routeTableName)
+				ready := meta.FindStatusCondition(routeTable.Status.Conditions, juneauv1alpha1.RouteTableStatusReady)
+				g.Expect(ready).NotTo(BeNil())
+				g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+				g.Expect(routeTable.Status.Routes).To(ContainElement(juneauv1alpha1.Route{
+					Dst:                      "172.23.0.0/16",
+					TransitGatewayRouteTable: tgw,
+					Via:                      juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaTransitGateway, TransitGateway: tgw},
+				}))
+			}).Should(Succeed())
+		})
+
+		It("marks a RouteTable not ready when the TransitGateway does not exist", func() {
+			vpc := createControllerVpc()
+			missing := uniqueTestName("tgw")
+
+			routeTableName := uniqueTestName("routetable")
+			Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
+				ObjectMeta: metav1.ObjectMeta{Name: routeTableName},
+				Spec: juneauv1alpha1.RouteTableSpec{
+					Vpc: vpc,
+					Routes: []juneauv1alpha1.Route{{
+						Dst: "172.24.0.0/16",
+						Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaTransitGateway, TransitGateway: missing},
+					}},
+				},
+			})).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				routeTable := getControllerRouteTable(routeTableName)
+				ready := meta.FindStatusCondition(routeTable.Status.Conditions, juneauv1alpha1.RouteTableStatusReady)
+				g.Expect(ready).NotTo(BeNil())
+				g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(ready.Message).To(ContainSubstring(fmt.Sprintf("TransitGateway %q not found", missing)))
+			}).Should(Succeed())
+		})
+
+		It("marks a RouteTable not ready when its Vpc has no attachment", func() {
+			tgw := createControllerTransitGateway()
+			vpc := createControllerVpc()
+
+			routeTableName := uniqueTestName("routetable")
+			Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
+				ObjectMeta: metav1.ObjectMeta{Name: routeTableName},
+				Spec: juneauv1alpha1.RouteTableSpec{
+					Vpc: vpc,
+					Routes: []juneauv1alpha1.Route{{
+						Dst: "172.25.0.0/16",
+						Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaTransitGateway, TransitGateway: tgw},
+					}},
+				},
+			})).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				routeTable := getControllerRouteTable(routeTableName)
+				ready := meta.FindStatusCondition(routeTable.Status.Conditions, juneauv1alpha1.RouteTableStatusReady)
+				g.Expect(ready).NotTo(BeNil())
+				g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(ready.Message).To(ContainSubstring(fmt.Sprintf("Vpc %q has no attachment to TransitGateway %q", vpc, tgw)))
+			}).Should(Succeed())
+		})
+
+		It("resolves a transitGateway route once the attachment is created", func() {
+			tgw := createControllerTransitGateway()
+			vpc := createControllerVpc()
+
+			routeTableName := uniqueTestName("routetable")
+			Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
+				ObjectMeta: metav1.ObjectMeta{Name: routeTableName},
+				Spec: juneauv1alpha1.RouteTableSpec{
+					Vpc: vpc,
+					Routes: []juneauv1alpha1.Route{{
+						Dst: "172.26.0.0/16",
+						Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaTransitGateway, TransitGateway: tgw},
+					}},
+				},
+			})).To(Succeed())
+
+			createControllerTransitGatewayAttachment(tgw, vpc, tgw, nil)
+
+			Eventually(func(g Gomega) {
+				routeTable := getControllerRouteTable(routeTableName)
+				g.Expect(routeTable.Status.Routes).To(ContainElement(juneauv1alpha1.Route{
+					Dst:                      "172.26.0.0/16",
+					TransitGatewayRouteTable: tgw,
+					Via:                      juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaTransitGateway, TransitGateway: tgw},
+				}))
+			}).Should(Succeed())
+		})
+	})
+
 	Context("Service.spec.externalIPs injection", func() {
 		It("injects /32 SERVICE routes for each owner-Vpc Service externalIP", func() {
 			vpcName := createControllerVpc()

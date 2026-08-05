@@ -185,6 +185,7 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	for _, route := range resource.Spec.Routes {
 		if rt := getRoute(statusRoutes, route.Dst); rt == nil {
 			var subnet string
+			var transitGatewayRouteTable string
 			if route.Via.Type == juneauloutresmev1alpha1.ViaConnected ||
 				route.Via.Type == juneauloutresmev1alpha1.ViaService {
 				continue
@@ -276,8 +277,62 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 					return ctrl.Result{}, nil
 				}
 				subnet = peerSubnet
+			} else if route.Via.Type == juneauloutresmev1alpha1.ViaTransitGateway {
+				var transitGateway juneauloutresmev1alpha1.TransitGateway
+				if err := r.Get(ctx, client.ObjectKey{Name: route.Via.TransitGateway}, &transitGateway); err != nil {
+					if errors.IsNotFound(err) {
+						if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("TransitGateway %q not found", route.Via.TransitGateway)); err != nil {
+							return ctrl.Result{}, err
+						}
+						return ctrl.Result{}, nil
+					}
+					if updateErr := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, fmt.Sprintf("failed to get TransitGateway %q", route.Via.TransitGateway)); updateErr != nil {
+						return ctrl.Result{}, updateErr
+					}
+					return ctrl.Result{}, err
+				}
+				if !meta.IsStatusConditionTrue(transitGateway.Status.Conditions, juneauloutresmev1alpha1.TransitGatewayStatusReady) {
+					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("TransitGateway %q is not ready", transitGateway.Name)); err != nil {
+						return ctrl.Result{}, err
+					}
+					return ctrl.Result{}, nil
+				}
+				attachment, err := r.findTransitGatewayAttachment(ctx, transitGateway.Name, resource.Spec.Vpc)
+				if err != nil {
+					if updateErr := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, "failed to list transit gateway attachments"); updateErr != nil {
+						return ctrl.Result{}, updateErr
+					}
+					return ctrl.Result{}, err
+				}
+				if attachment == nil {
+					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("Vpc %q has no attachment to TransitGateway %q", resource.Spec.Vpc, transitGateway.Name)); err != nil {
+						return ctrl.Result{}, err
+					}
+					return ctrl.Result{}, nil
+				}
+				var association juneauloutresmev1alpha1.TransitGatewayRouteTable
+				if err := r.Get(ctx, client.ObjectKey{Name: attachment.Spec.Association}, &association); err != nil {
+					if errors.IsNotFound(err) {
+						if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("TransitGatewayRouteTable %q not found", attachment.Spec.Association)); err != nil {
+							return ctrl.Result{}, err
+						}
+						return ctrl.Result{}, nil
+					}
+					if updateErr := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, fmt.Sprintf("failed to get TransitGatewayRouteTable %q", attachment.Spec.Association)); updateErr != nil {
+						return ctrl.Result{}, updateErr
+					}
+					return ctrl.Result{}, err
+				}
+				if association.Status.TableID == 0 {
+					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("TransitGatewayRouteTable %q has not yet been assigned a tableID", association.Name)); err != nil {
+						return ctrl.Result{}, err
+					}
+					return ctrl.Result{}, nil
+				}
+				transitGatewayRouteTable = association.Name
 			}
 			route.Subnet = subnet
+			route.TransitGatewayRouteTable = transitGatewayRouteTable
 			statusRoutes = append(statusRoutes, route)
 		}
 	}
@@ -365,6 +420,25 @@ func (r *RouteTableReconciler) findSubnetByCIDR(ctx context.Context, vpcName, ci
 	return "", nil
 }
 
+// findTransitGatewayAttachment returns the attachment that connects
+// vpcName to transitGateway, or nil when the Vpc is not attached. The
+// webhook keeps the pair unique, so the first match is the only match.
+func (r *RouteTableReconciler) findTransitGatewayAttachment(ctx context.Context, transitGateway, vpcName string) (*juneauloutresmev1alpha1.TransitGatewayAttachment, error) {
+	var attachmentList juneauloutresmev1alpha1.TransitGatewayAttachmentList
+	if err := r.List(ctx, &attachmentList); err != nil {
+		return nil, err
+	}
+
+	for i := range attachmentList.Items {
+		attachment := &attachmentList.Items[i]
+		if attachment.Spec.TransitGateway == transitGateway && attachment.Spec.Vpc == vpcName {
+			return attachment, nil
+		}
+	}
+
+	return nil, nil
+}
+
 func (r *RouteTableReconciler) getNetworkEndpoint(ctx context.Context, name string) (*juneauloutresmev1alpha1.NetworkEndpoint, error) {
 	var networkEndpointList juneauloutresmev1alpha1.NetworkEndpointList
 	if err := r.List(ctx, &networkEndpointList); err != nil {
@@ -399,6 +473,9 @@ func (r *RouteTableReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&juneauloutresmev1alpha1.AllocationClaim{}, handler.EnqueueRequestsFromMapFunc(r.mapClaimToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.NATGateway{}, handler.EnqueueRequestsFromMapFunc(r.mapNATGatewayToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.VpcPeering{}, handler.EnqueueRequestsFromMapFunc(r.mapVpcPeeringToRouteTables)).
+		Watches(&juneauloutresmev1alpha1.TransitGateway{}, handler.EnqueueRequestsFromMapFunc(r.mapTransitGatewayToRouteTables)).
+		Watches(&juneauloutresmev1alpha1.TransitGatewayAttachment{}, handler.EnqueueRequestsFromMapFunc(r.mapTransitGatewayAttachmentToRouteTables)).
+		Watches(&juneauloutresmev1alpha1.TransitGatewayRouteTable{}, handler.EnqueueRequestsFromMapFunc(r.mapTransitGatewayRouteTableToRouteTables)).
 		Watches(&corev1.Service{}, handler.EnqueueRequestsFromMapFunc(r.mapServiceToRouteTables)).
 		Named("routetable").
 		Complete(r)
@@ -471,6 +548,49 @@ func (r *RouteTableReconciler) mapVpcPeeringToRouteTables(ctx context.Context, o
 		rt := &routeTableList.Items[i]
 		for _, route := range rt.Spec.Routes {
 			if route.Via.Type == juneauloutresmev1alpha1.ViaVpcPeering && route.Via.VpcPeering == peering.Name {
+				requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: rt.Name}})
+				break
+			}
+		}
+	}
+	return requests
+}
+
+func (r *RouteTableReconciler) mapTransitGatewayToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
+	transitGateway, ok := obj.(*juneauloutresmev1alpha1.TransitGateway)
+	if !ok {
+		return nil
+	}
+	return r.routeTablesUsingTransitGateway(ctx, transitGateway.Name)
+}
+
+func (r *RouteTableReconciler) mapTransitGatewayAttachmentToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
+	attachment, ok := obj.(*juneauloutresmev1alpha1.TransitGatewayAttachment)
+	if !ok || attachment.Spec.TransitGateway == "" {
+		return nil
+	}
+	return r.routeTablesUsingTransitGateway(ctx, attachment.Spec.TransitGateway)
+}
+
+func (r *RouteTableReconciler) mapTransitGatewayRouteTableToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
+	routeTable, ok := obj.(*juneauloutresmev1alpha1.TransitGatewayRouteTable)
+	if !ok || routeTable.Spec.TransitGateway == "" {
+		return nil
+	}
+	return r.routeTablesUsingTransitGateway(ctx, routeTable.Spec.TransitGateway)
+}
+
+func (r *RouteTableReconciler) routeTablesUsingTransitGateway(ctx context.Context, transitGateway string) []reconcile.Request {
+	var routeTableList juneauloutresmev1alpha1.RouteTableList
+	if err := r.List(ctx, &routeTableList); err != nil {
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0)
+	for i := range routeTableList.Items {
+		rt := &routeTableList.Items[i]
+		for _, route := range rt.Spec.Routes {
+			if route.Via.Type == juneauloutresmev1alpha1.ViaTransitGateway && route.Via.TransitGateway == transitGateway {
 				requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: rt.Name}})
 				break
 			}
