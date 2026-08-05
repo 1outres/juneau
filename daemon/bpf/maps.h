@@ -142,6 +142,10 @@
 #define FIB_ROUTE_TYPE_INTERNET_GATEWAY 3
 #define FIB_ROUTE_TYPE_SERVICE 4
 #define FIB_ROUTE_TYPE_NAPT 6
+// PEERING forwards exactly like CONNECTED: fib_val.subnet_id already
+// holds the peer Vpc's Subnet VNI. The type is kept apart so map dumps
+// show why the route is there.
+#define FIB_ROUTE_TYPE_PEERING 7
 
 #define CT_ACTION_DNAT 1
 #define CT_ACTION_SNAT 2

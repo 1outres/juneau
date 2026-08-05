@@ -482,7 +482,8 @@ static __always_inline int dispatch_after_dnat(struct __sk_buff *skb,
     return TC_ACT_SHOT;
   }
 
-  if (fv->type == FIB_ROUTE_TYPE_CONNECTED) {
+  if (fv->type == FIB_ROUTE_TYPE_CONNECTED ||
+      fv->type == FIB_ROUTE_TYPE_PEERING) {
     struct arp_table_key ak = {
         .subnet_id = fv->subnet_id,
         .ipaddr = bpf_ntohl(dst_be),
@@ -2054,7 +2055,8 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
     return TC_ACT_SHOT;
   }
 
-  if (fv->type == FIB_ROUTE_TYPE_CONNECTED) {
+  if (fv->type == FIB_ROUTE_TYPE_CONNECTED ||
+      fv->type == FIB_ROUTE_TYPE_PEERING) {
     struct arp_table_key ak = {
         .subnet_id = fv->subnet_id,
         .ipaddr = bpf_ntohl(dst_be),
