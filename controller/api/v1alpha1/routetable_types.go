@@ -42,10 +42,15 @@ type Route struct {
 	Dst    string   `json:"dst"`
 	Via    RouteVia `json:"via"`
 	Subnet string   `json:"subnet,omitempty"`
+	// TransitGatewayRouteTable names the TransitGatewayRouteTable the
+	// data plane consults for this route. The controller resolves it
+	// from the attachment's association, so it is only ever set in
+	// status.
+	TransitGatewayRouteTable string `json:"transitGatewayRouteTable,omitempty"`
 }
 
 type RouteVia struct {
-	// +kubebuilder:validation:Enum=connected;endpoint;internetGateway;service;natGateway;vpcPeering
+	// +kubebuilder:validation:Enum=connected;endpoint;internetGateway;service;natGateway;vpcPeering;transitGateway
 	Type RouteViaType `json:"type"`
 	// Endpoint is required when type=endpoint. Refers to a
 	// NetworkEndpoint by name.
@@ -56,6 +61,9 @@ type RouteVia struct {
 	// VpcPeering is required when type=vpcPeering. Refers to a
 	// VpcPeering by name (cluster-scoped).
 	VpcPeering string `json:"vpcPeering,omitempty"`
+	// TransitGateway is required when type=transitGateway. Refers to a
+	// TransitGateway by name (cluster-scoped).
+	TransitGateway string `json:"transitGateway,omitempty"`
 }
 
 type RouteViaType string
@@ -74,6 +82,12 @@ const (
 	// resolves Route.Subnet to that peer Subnet, so the data plane
 	// forwards exactly like a connected route.
 	ViaVpcPeering RouteViaType = "vpcPeering"
+	// ViaTransitGateway hands the matching destination to a
+	// TransitGateway. The controller resolves
+	// Route.TransitGatewayRouteTable from the association of the
+	// attachment that connects this Vpc, and the data plane does a
+	// second lookup in that table to find the target Subnet.
+	ViaTransitGateway RouteViaType = "transitGateway"
 )
 
 // +kubebuilder:object:root=true

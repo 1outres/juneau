@@ -4,24 +4,35 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.2
-  name: routetables.juneau.loutres.me
+  name: transitgatewayattachments.juneau.loutres.me
 spec:
   group: juneau.loutres.me
   names:
-    kind: RouteTable
-    listKind: RouteTableList
-    plural: routetables
-    singular: routetable
+    kind: TransitGatewayAttachment
+    listKind: TransitGatewayAttachmentList
+    plural: transitgatewayattachments
+    singular: transitgatewayattachment
   scope: Cluster
   versions:
   - additionalPrinterColumns:
+    - jsonPath: .spec.transitGateway
+      name: TransitGateway
+      type: string
+    - jsonPath: .spec.vpc
+      name: Vpc
+      type: string
+    - jsonPath: .spec.association
+      name: Association
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: RouteTable is the Schema for the routetables API.
+        description: |-
+          TransitGatewayAttachment is the Schema for the
+          transitgatewayattachments API.
         properties:
           apiVersion:
             description: |-
@@ -41,71 +52,47 @@ spec:
           metadata:
             type: object
           spec:
-            description: RouteTableSpec defines the desired state of RouteTable.
+            description: |-
+              TransitGatewayAttachmentSpec defines the desired state of
+              TransitGatewayAttachment.
+
+              AWS models association and propagation as their own API objects. An
+              attachment has exactly one association and any number of
+              propagations, so both fit naturally into the attachment spec and
+              Kubernetes users get one object to reason about instead of three.
             properties:
-              routes:
+              association:
+                description: |-
+                  Association names the TransitGatewayRouteTable that traffic
+                  arriving from this attachment is looked up in.
+                minLength: 1
+                type: string
+              propagations:
+                description: |-
+                  Propagations lists the TransitGatewayRouteTables this
+                  attachment's Vpc prefixes are advertised into.
                 items:
-                  properties:
-                    dst:
-                      minLength: 1
-                      type: string
-                    subnet:
-                      type: string
-                    transitGatewayRouteTable:
-                      description: |-
-                        TransitGatewayRouteTable names the TransitGatewayRouteTable the
-                        data plane consults for this route. The controller resolves it
-                        from the attachment's association, so it is only ever set in
-                        status.
-                      type: string
-                    via:
-                      properties:
-                        endpointName:
-                          description: |-
-                            Endpoint is required when type=endpoint. Refers to a
-                            NetworkEndpoint by name.
-                          type: string
-                        natGateway:
-                          description: |-
-                            NATGateway is required when type=natGateway. Refers to a
-                            NATGateway by name (cluster-scoped).
-                          type: string
-                        transitGateway:
-                          description: |-
-                            TransitGateway is required when type=transitGateway. Refers to a
-                            TransitGateway by name (cluster-scoped).
-                          type: string
-                        type:
-                          enum:
-                          - connected
-                          - endpoint
-                          - internetGateway
-                          - service
-                          - natGateway
-                          - vpcPeering
-                          - transitGateway
-                          type: string
-                        vpcPeering:
-                          description: |-
-                            VpcPeering is required when type=vpcPeering. Refers to a
-                            VpcPeering by name (cluster-scoped).
-                          type: string
-                      required:
-                      - type
-                      type: object
-                  required:
-                  - dst
-                  - via
-                  type: object
+                  type: string
                 type: array
+              transitGateway:
+                description: |-
+                  TransitGateway names the TransitGateway this attachment connects
+                  to. Immutable.
+                minLength: 1
+                type: string
               vpc:
+                description: Vpc names the Vpc this attachment connects. Immutable.
                 minLength: 1
                 type: string
             required:
+            - association
+            - transitGateway
             - vpc
             type: object
           status:
-            description: RouteTableStatus defines the observed state of RouteTable.
+            description: |-
+              TransitGatewayAttachmentStatus defines the observed state of
+              TransitGatewayAttachment.
             properties:
               conditions:
                 items:
@@ -166,64 +153,23 @@ spec:
               observedGeneration:
                 format: int64
                 type: integer
-              routes:
+              prefixes:
+                description: |-
+                  Prefixes enumerates the Subnets this attachment advertises into
+                  the route tables listed in spec.propagations. Sorted by cidr.
                 items:
+                  description: TransitGatewayAttachmentPrefix is one Subnet of the
+                    attached Vpc.
                   properties:
-                    dst:
-                      minLength: 1
+                    cidr:
                       type: string
                     subnet:
                       type: string
-                    transitGatewayRouteTable:
-                      description: |-
-                        TransitGatewayRouteTable names the TransitGatewayRouteTable the
-                        data plane consults for this route. The controller resolves it
-                        from the attachment's association, so it is only ever set in
-                        status.
-                      type: string
-                    via:
-                      properties:
-                        endpointName:
-                          description: |-
-                            Endpoint is required when type=endpoint. Refers to a
-                            NetworkEndpoint by name.
-                          type: string
-                        natGateway:
-                          description: |-
-                            NATGateway is required when type=natGateway. Refers to a
-                            NATGateway by name (cluster-scoped).
-                          type: string
-                        transitGateway:
-                          description: |-
-                            TransitGateway is required when type=transitGateway. Refers to a
-                            TransitGateway by name (cluster-scoped).
-                          type: string
-                        type:
-                          enum:
-                          - connected
-                          - endpoint
-                          - internetGateway
-                          - service
-                          - natGateway
-                          - vpcPeering
-                          - transitGateway
-                          type: string
-                        vpcPeering:
-                          description: |-
-                            VpcPeering is required when type=vpcPeering. Refers to a
-                            VpcPeering by name (cluster-scoped).
-                          type: string
-                      required:
-                      - type
-                      type: object
                   required:
-                  - dst
-                  - via
+                  - cidr
+                  - subnet
                   type: object
                 type: array
-              tableID:
-                format: int32
-                type: integer
             type: object
         type: object
     served: true

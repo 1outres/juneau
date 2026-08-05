@@ -1,0 +1,12 @@
+apiVersion: juneau.loutres.me/v1alpha1
+kind: TransitGatewayRouteTable
+metadata:
+  labels:
+    app.kubernetes.io/name: controller
+    app.kubernetes.io/managed-by: kustomize
+  name: transitgatewayroutetable-sample
+spec:
+  transitGateway: transitgateway-sample
+  routes:
+  - dst: 10.90.0.0/16
+    blackhole: true
