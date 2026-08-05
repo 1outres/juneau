@@ -224,5 +224,26 @@ func (v *VpcCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Obj
 		)
 	}
 
+	// Block deletion while a VpcPeering still names this Vpc. A peering
+	// that lost one side can never become Ready again, and the routes
+	// pointing at it would stay broken with no object left to fix.
+	var peeringList juneauv1alpha1.VpcPeeringList
+	if err := v.List(ctx, &peeringList); err != nil {
+		return nil, fmt.Errorf("list VpcPeerings: %w", err)
+	}
+	var peeringRefs []string
+	for i := range peeringList.Items {
+		if peeringList.Items[i].Spec.Connects(vpc.Name) {
+			peeringRefs = append(peeringRefs, peeringList.Items[i].Name)
+		}
+	}
+	if len(peeringRefs) > 0 {
+		return nil, errors.NewForbidden(
+			schema.GroupResource{Group: juneauv1alpha1.GroupVersion.Group, Resource: "vpcs"},
+			vpc.Name,
+			fmt.Errorf("VpcPeering(s) %v still peer this Vpc; delete them first", peeringRefs),
+		)
+	}
+
 	return nil, nil
 }

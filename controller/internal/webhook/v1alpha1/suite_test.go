@@ -107,6 +107,7 @@ var _ = BeforeSuite(func() {
 	Expect(SetupBGPPeerWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupSecurityGroupWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupNetworkACLWebhookWithManager(mgr)).To(Succeed())
+	Expect(SetupVpcPeeringWebhookWithManager(mgr)).To(Succeed())
 
 	webhookMgrDone = make(chan error, 1)
 	go func() {
