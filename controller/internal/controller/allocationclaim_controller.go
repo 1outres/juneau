@@ -234,9 +234,10 @@ func (r *AllocationClaimReconciler) ensureLease(ctx context.Context, claim *june
 		lease := &juneauloutresmev1alpha1.AllocationLease{
 			ObjectMeta: metav1.ObjectMeta{Name: leaseName},
 			Spec: juneauloutresmev1alpha1.AllocationLeaseSpec{
-				PoolRef:  juneauloutresmev1alpha1.AllocationPoolReference{Name: pool.Name},
-				Value:    juneauloutresmev1alpha1.AllocationValue{Number: result.number, IP: result.ip},
-				ClaimRef: claimRef,
+				PoolRef:     juneauloutresmev1alpha1.AllocationPoolReference{Name: pool.Name},
+				Value:       juneauloutresmev1alpha1.AllocationValue{Number: result.number, IP: result.ip},
+				ClaimRef:    claimRef,
+				RetainWhile: claim.Spec.RetainWhile.DeepCopy(),
 			},
 		}
 		if err := controllerutil.SetControllerReference(pool, lease, r.Scheme); err != nil {
@@ -267,6 +268,7 @@ func (r *AllocationClaimReconciler) ensureLease(ctx context.Context, claim *june
 	desired.Spec.ClaimRef = claimRef
 	desired.Spec.OwnerDeletionTimestamp = nil
 	desired.Spec.TTLSeconds = nil
+	desired.Spec.RetainWhile = claim.Spec.RetainWhile.DeepCopy()
 	if reflect.DeepEqual(existing.Spec, desired.Spec) {
 		return nil
 	}

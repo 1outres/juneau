@@ -84,6 +84,31 @@ var _ = Describe("Pod controller", func() {
 		Expect(interfaceOf(pod).Spec.AllocationIdentity).To(BeEmpty())
 	})
 
+	It("points the NetworkInterface at the virtual machine that must keep the address", func() {
+		pod := newPod("vl-pod-retain", virtLauncherLabels("pod-retain-vm"))
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		DeferCleanup(func() { cleanupPodTestArtifacts(ctx, pod) })
+
+		reconcilePod(pod)
+		retain := interfaceOf(pod).Spec.RetainWhile
+		Expect(retain).NotTo(BeNil())
+		Expect(*retain).To(Equal(juneauv1alpha1.RetainReference{
+			APIVersion: "kubevirt.io/v1",
+			Kind:       "VirtualMachine",
+			Namespace:  pod.Namespace,
+			Name:       "pod-retain-vm",
+		}))
+	})
+
+	It("leaves the retain reference unset for a pod KubeVirt does not manage", func() {
+		pod := newPod("plain-pod-retain", map[string]string{"app": "web"})
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		DeferCleanup(func() { cleanupPodTestArtifacts(ctx, pod) })
+
+		reconcilePod(pod)
+		Expect(interfaceOf(pod).Spec.RetainWhile).To(BeNil())
+	})
+
 	It("keeps the address when a virt-launcher pod comes back under a new name", func() {
 		first := newPod("vl-fake-vm-aaaaa", virtLauncherLabels("fake-vm"))
 		Expect(k8sClient.Create(ctx, first)).To(Succeed())

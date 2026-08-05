@@ -95,6 +95,61 @@ var _ = Describe("NetworkInterface webhook", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("spec.allocationIdentity"))
 	})
+
+	It("accepts a well formed spec.retainWhile", func() {
+		networkInterface := newValidNetworkInterface(webhookUniqueTestName("networkinterface"), "default", "10.16.0.14")
+		networkInterface.Spec.RetainWhile = &juneauv1alpha1.RetainReference{
+			APIVersion: "kubevirt.io/v1",
+			Kind:       "VirtualMachine",
+			Namespace:  "default",
+			Name:       "web-0",
+		}
+
+		Expect(webhookK8sClient.Create(context.Background(), networkInterface)).To(Succeed())
+	})
+
+	It("rejects a spec.retainWhile without apiVersion and kind", func() {
+		networkInterface := newValidNetworkInterface(webhookUniqueTestName("networkinterface"), "default", "10.16.0.15")
+		networkInterface.Spec.RetainWhile = &juneauv1alpha1.RetainReference{Namespace: "default", Name: "web-0"}
+
+		err := webhookK8sClient.Create(context.Background(), networkInterface)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.retainWhile.apiVersion"))
+		Expect(err.Error()).To(ContainSubstring("spec.retainWhile.kind"))
+	})
+
+	It("rejects a spec.retainWhile whose name is not a DNS-1123 subdomain", func() {
+		networkInterface := newValidNetworkInterface(webhookUniqueTestName("networkinterface"), "default", "10.16.0.17")
+		networkInterface.Spec.RetainWhile = &juneauv1alpha1.RetainReference{
+			APIVersion: "kubevirt.io/v1",
+			Kind:       "VirtualMachine",
+			Namespace:  "default",
+			Name:       "Not A Valid Name",
+		}
+
+		err := webhookK8sClient.Create(context.Background(), networkInterface)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.retainWhile.name"))
+	})
+
+	It("rejects an immutable spec.retainWhile update", func() {
+		networkInterface := newValidNetworkInterface(webhookUniqueTestName("networkinterface"), "default", "10.16.0.16")
+		networkInterface.Spec.RetainWhile = &juneauv1alpha1.RetainReference{
+			APIVersion: "kubevirt.io/v1",
+			Kind:       "VirtualMachine",
+			Namespace:  "default",
+			Name:       "web-0",
+		}
+		Expect(webhookK8sClient.Create(context.Background(), networkInterface)).To(Succeed())
+
+		var current juneauv1alpha1.NetworkInterface
+		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKeyFromObject(networkInterface), &current)).To(Succeed())
+		current.Spec.RetainWhile.Name = "web-1"
+
+		err := webhookK8sClient.Update(context.Background(), &current)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.retainWhile is immutable"))
+	})
 })
 
 func newValidNetworkInterface(name, subnet, address string) *juneauv1alpha1.NetworkInterface {

@@ -177,6 +177,52 @@ var _ = Describe("NetworkInterface controller", func() {
 		Expect(second.Status.AllocationClaim).NotTo(Equal(firstClaimName))
 	})
 
+	It("copies spec.retainWhile onto the backing AllocationClaim", func() {
+		retain := juneauv1alpha1.RetainReference{
+			APIVersion: "v1",
+			Kind:       "ConfigMap",
+			Namespace:  "default",
+			Name:       "ni-retain-owner",
+		}
+		ni := &juneauv1alpha1.NetworkInterface{
+			ObjectMeta: metav1.ObjectMeta{Name: "ni-retain.eth0", Namespace: "default"},
+			Spec: juneauv1alpha1.NetworkInterfaceSpec{
+				PodRef:      juneauv1alpha1.NetworkInterfacePodReference{UID: "uid-retain", Name: "pod-retain", Interface: "eth0"},
+				NodeName:    "node-a",
+				Subnet:      "default",
+				RetainWhile: retain.DeepCopy(),
+			},
+		}
+		Expect(k8sClient.Create(ctx, ni)).To(Succeed())
+		DeferCleanup(func() { cleanupNetworkInterface(ctx, ni) })
+
+		allocateNetworkInterface(ni)
+
+		var claim juneauv1alpha1.AllocationClaim
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: ni.Status.AllocationClaim}, &claim)).To(Succeed())
+		Expect(claim.Spec.RetainWhile).NotTo(BeNil())
+		Expect(*claim.Spec.RetainWhile).To(Equal(retain))
+	})
+
+	It("leaves the backing AllocationClaim without a retain reference when the interface has none", func() {
+		ni := &juneauv1alpha1.NetworkInterface{
+			ObjectMeta: metav1.ObjectMeta{Name: "ni-no-retain.eth0", Namespace: "default"},
+			Spec: juneauv1alpha1.NetworkInterfaceSpec{
+				PodRef:   juneauv1alpha1.NetworkInterfacePodReference{UID: "uid-no-retain", Name: "pod-no-retain", Interface: "eth0"},
+				NodeName: "node-a",
+				Subnet:   "default",
+			},
+		}
+		Expect(k8sClient.Create(ctx, ni)).To(Succeed())
+		DeferCleanup(func() { cleanupNetworkInterface(ctx, ni) })
+
+		allocateNetworkInterface(ni)
+
+		var claim juneauv1alpha1.AllocationClaim
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: ni.Status.AllocationClaim}, &claim)).To(Succeed())
+		Expect(claim.Spec.RetainWhile).To(BeNil())
+	})
+
 	It("auto-generates a per-subnet AllocationPool with the gateway excluded", func() {
 		var pool juneauv1alpha1.AllocationPool
 		Eventually(func(g Gomega) {

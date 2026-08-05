@@ -64,6 +64,13 @@ type AllocationClaimSpec struct {
 	// setting it. Must be a DNS-1123 subdomain because it names the lease.
 	// +optional
 	ReuseKey string `json:"reuseKey,omitempty"`
+
+	// RetainWhile keeps the AllocationLease alive for as long as the
+	// referenced object exists. ReleaseAfter is then counted from the
+	// moment that object disappears rather than from the deletion of this
+	// claim. The value is copied onto the lease.
+	// +optional
+	RetainWhile *RetainReference `json:"retainWhile,omitempty"`
 }
 
 type AllocationFilter struct {

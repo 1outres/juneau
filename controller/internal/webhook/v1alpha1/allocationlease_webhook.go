@@ -122,5 +122,9 @@ func validateAllocationLeaseSpec(lease *juneauloutresmev1alpha1.AllocationLease)
 	if lease.Spec.ClaimRef.UID == "" {
 		errs = append(errs, field.Required(specPath.Child("claimRef", "uid"), "spec.claimRef.uid is required"))
 	}
+
+	// spec.retainWhile is not immutable: a later claim generation may point
+	// the same lease at a different object, so only its shape is checked.
+	errs = append(errs, validateRetainReference(lease.Spec.RetainWhile, specPath.Child("retainWhile"))...)
 	return errs
 }
