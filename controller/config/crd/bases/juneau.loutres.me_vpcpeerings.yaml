@@ -4,24 +4,30 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.2
-  name: routetables.juneau.loutres.me
+  name: vpcpeerings.juneau.loutres.me
 spec:
   group: juneau.loutres.me
   names:
-    kind: RouteTable
-    listKind: RouteTableList
-    plural: routetables
-    singular: routetable
+    kind: VpcPeering
+    listKind: VpcPeeringList
+    plural: vpcpeerings
+    singular: vpcpeering
   scope: Cluster
   versions:
   - additionalPrinterColumns:
+    - jsonPath: .spec.requester.vpc
+      name: Requester
+      type: string
+    - jsonPath: .spec.accepter.vpc
+      name: Accepter
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: RouteTable is the Schema for the routetables API.
+        description: VpcPeering is the Schema for the vpcpeerings API.
         properties:
           apiVersion:
             description: |-
@@ -41,58 +47,45 @@ spec:
           metadata:
             type: object
           spec:
-            description: RouteTableSpec defines the desired state of RouteTable.
+            description: |-
+              VpcPeeringSpec defines the desired state of VpcPeering.
+
+              A VpcPeering connects two Vpcs so that a RouteTable in either one may
+              carry a route with via.type=vpcPeering towards a Subnet of the other.
+              The peering itself installs no route: every prefix that should be
+              reachable has to be written into a RouteTable explicitly.
+
+              Requester and Accepter name the two sides. Juneau has no accept
+              workflow — both Vpcs live in the same cluster under one administrator
+              — so the two fields only fix a stable order for status messages and
+              keep the vocabulary close to AWS VPC peering.
             properties:
-              routes:
-                items:
-                  properties:
-                    dst:
-                      minLength: 1
-                      type: string
-                    subnet:
-                      type: string
-                    via:
-                      properties:
-                        endpointName:
-                          description: |-
-                            Endpoint is required when type=endpoint. Refers to a
-                            NetworkEndpoint by name.
-                          type: string
-                        natGateway:
-                          description: |-
-                            NATGateway is required when type=natGateway. Refers to a
-                            NATGateway by name (cluster-scoped).
-                          type: string
-                        type:
-                          enum:
-                          - connected
-                          - endpoint
-                          - internetGateway
-                          - service
-                          - natGateway
-                          - vpcPeering
-                          type: string
-                        vpcPeering:
-                          description: |-
-                            VpcPeering is required when type=vpcPeering. Refers to a
-                            VpcPeering by name (cluster-scoped).
-                          type: string
-                      required:
-                      - type
-                      type: object
-                  required:
-                  - dst
-                  - via
-                  type: object
-                type: array
-              vpc:
-                minLength: 1
-                type: string
+              accepter:
+                description: Accepter is the other side of the peering. Immutable.
+                properties:
+                  vpc:
+                    description: Vpc names the Vpc on this side of the peering.
+                    minLength: 1
+                    type: string
+                required:
+                - vpc
+                type: object
+              requester:
+                description: Requester is one side of the peering. Immutable.
+                properties:
+                  vpc:
+                    description: Vpc names the Vpc on this side of the peering.
+                    minLength: 1
+                    type: string
+                required:
+                - vpc
+                type: object
             required:
-            - vpc
+            - accepter
+            - requester
             type: object
           status:
-            description: RouteTableStatus defines the observed state of RouteTable.
+            description: VpcPeeringStatus defines the observed state of VpcPeering.
             properties:
               conditions:
                 items:
@@ -152,51 +145,6 @@ spec:
                 type: array
               observedGeneration:
                 format: int64
-                type: integer
-              routes:
-                items:
-                  properties:
-                    dst:
-                      minLength: 1
-                      type: string
-                    subnet:
-                      type: string
-                    via:
-                      properties:
-                        endpointName:
-                          description: |-
-                            Endpoint is required when type=endpoint. Refers to a
-                            NetworkEndpoint by name.
-                          type: string
-                        natGateway:
-                          description: |-
-                            NATGateway is required when type=natGateway. Refers to a
-                            NATGateway by name (cluster-scoped).
-                          type: string
-                        type:
-                          enum:
-                          - connected
-                          - endpoint
-                          - internetGateway
-                          - service
-                          - natGateway
-                          - vpcPeering
-                          type: string
-                        vpcPeering:
-                          description: |-
-                            VpcPeering is required when type=vpcPeering. Refers to a
-                            VpcPeering by name (cluster-scoped).
-                          type: string
-                      required:
-                      - type
-                      type: object
-                  required:
-                  - dst
-                  - via
-                  type: object
-                type: array
-              tableID:
-                format: int32
                 type: integer
             type: object
         type: object

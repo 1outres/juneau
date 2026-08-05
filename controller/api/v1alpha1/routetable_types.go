@@ -45,7 +45,7 @@ type Route struct {
 }
 
 type RouteVia struct {
-	// +kubebuilder:validation:Enum=connected;endpoint;internetGateway;service;natGateway
+	// +kubebuilder:validation:Enum=connected;endpoint;internetGateway;service;natGateway;vpcPeering
 	Type RouteViaType `json:"type"`
 	// Endpoint is required when type=endpoint. Refers to a
 	// NetworkEndpoint by name.
@@ -53,6 +53,9 @@ type RouteVia struct {
 	// NATGateway is required when type=natGateway. Refers to a
 	// NATGateway by name (cluster-scoped).
 	NATGateway string `json:"natGateway,omitempty"`
+	// VpcPeering is required when type=vpcPeering. Refers to a
+	// VpcPeering by name (cluster-scoped).
+	VpcPeering string `json:"vpcPeering,omitempty"`
 }
 
 type RouteViaType string
@@ -66,6 +69,11 @@ const (
 	// NATGateway resource that performs N:1 NAPT towards the
 	// associated ExternalNetwork.
 	ViaNATGateway RouteViaType = "natGateway"
+	// ViaVpcPeering sends the matching destination to a Subnet of the
+	// Vpc on the other side of the named VpcPeering. The controller
+	// resolves Route.Subnet to that peer Subnet, so the data plane
+	// forwards exactly like a connected route.
+	ViaVpcPeering RouteViaType = "vpcPeering"
 )
 
 // +kubebuilder:object:root=true

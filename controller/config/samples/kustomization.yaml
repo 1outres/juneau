@@ -14,4 +14,5 @@ resources:
 - v1alpha1_natgateway.yaml
 - v1alpha1_externalnetworkattachment.yaml
 - v1alpha1_servicenatattachment.yaml
+- v1alpha1_vpcpeering.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples
