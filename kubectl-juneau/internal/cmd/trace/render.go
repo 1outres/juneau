@@ -202,6 +202,10 @@ func reasonString(r debugpb.TraceEventReason) string {
 		return "backend miss"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_CONNTRACK:
 		return "conntrack miss"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_TGW_TABLE:
+		return "transit gateway table miss"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_TGW_ROUTE:
+		return "transit gateway route miss"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_POLICY_ACL_PASS:
 		return "acl pass"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_POLICY_ACL_DROP:
@@ -230,6 +234,8 @@ func reasonString(r debugpb.TraceEventReason) string {
 		return "pass to kernel"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_DROP_SHOT:
 		return "drop"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_DROP_BLACKHOLE:
+		return "drop (blackhole route)"
 	}
 	return r.String()
 }

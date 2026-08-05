@@ -58,6 +58,8 @@
 #define TRACE_REASON_MISS_SERVICE        206
 #define TRACE_REASON_MISS_BACKEND        207
 #define TRACE_REASON_MISS_CONNTRACK      208
+#define TRACE_REASON_MISS_TGW_TABLE      209
+#define TRACE_REASON_MISS_TGW_ROUTE      210
 
 #define TRACE_REASON_POLICY_ACL_PASS 300
 #define TRACE_REASON_POLICY_ACL_DROP 301
@@ -75,6 +77,7 @@
 #define TRACE_REASON_REDIRECT_VXLAN   501
 #define TRACE_REASON_PASS_KERNEL      502
 #define TRACE_REASON_DROP_SHOT        503
+#define TRACE_REASON_DROP_BLACKHOLE   504
 
 // Hook identifiers. Embedded into trace_event.hook so the userspace
 // renderer can attribute events to a specific BPF program without

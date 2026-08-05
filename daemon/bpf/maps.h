@@ -29,6 +29,14 @@
 #define MAX_FIB_MAP 32768
 #endif
 
+#ifndef MAX_TGW_FIB_MAP
+// MAX_TGW_FIB_MAP bounds tgw_fib_map: one entry per
+// TransitGatewayRouteTable in the cluster. Transit gateways are an
+// administrative grouping, so their route tables are counted in the
+// hundreds at most, not per Subnet like fib_map.
+#define MAX_TGW_FIB_MAP 4096
+#endif
+
 #ifndef MAX_ADDRESS_POOLS_MAP
 #define MAX_ADDRESS_POOLS_MAP 512
 #endif
@@ -146,6 +154,13 @@
 // holds the peer Vpc's Subnet VNI. The type is kept apart so map dumps
 // show why the route is there.
 #define FIB_ROUTE_TYPE_PEERING 7
+// TRANSIT overloads fib_val.subnet_id with a TransitGatewayRouteTable
+// id, the same field reuse FIB_ROUTE_TYPE_NAPT does for its gateway
+// id. A second lookup in tgw_fib_map resolves the real destination.
+#define FIB_ROUTE_TYPE_TRANSIT 8
+// BLACKHOLE only shows up inside tgw_fib_map: the route exists but the
+// operator asked for its traffic to be dropped.
+#define FIB_ROUTE_TYPE_BLACKHOLE 9
 
 #define CT_ACTION_DNAT 1
 #define CT_ACTION_SNAT 2
@@ -396,6 +411,38 @@ struct {
   __uint(pinning, LIBBPF_PIN_BY_NAME);
   __array(values, struct fib_inner_map);
 } fib_map SEC(".maps");
+
+// tgw_fib_map is the transit-gateway routing layer: one inner LPM trie
+// per TransitGatewayRouteTable, keyed by its status.tableID. A VPC route
+// of type FIB_ROUTE_TYPE_TRANSIT carries that id in fib_val.subnet_id,
+// and the second lookup here resolves the destination to a target
+// Subnet VNI or to a blackhole. The inner maps keep the fib_key /
+// fib_val layout so the daemon-side writer and the bpfmap dump tooling
+// stay the same as for fib_map.
+//
+// The inner map gets its own struct instead of sharing
+// struct fib_inner_map: when one map-def struct is named by two
+// __array(values, ...) members, clang emits its key and value types as
+// BTF forward declarations, and loading then fails with "can't get size
+// of BTF key: type is unsized".
+struct tgw_fib_inner_map {
+  __uint(type, BPF_MAP_TYPE_LPM_TRIE);
+  __uint(max_entries, MAX_FIB);
+  __uint(map_flags, BPF_F_NO_PREALLOC);
+  __type(key, struct fib_key);
+  __type(value, struct fib_val);
+};
+
+struct tgw_fib_inner_map tgw_fib_inner SEC(".maps");
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
+  __uint(max_entries, MAX_TGW_FIB_MAP);
+  __type(key, __u32); // TransitGatewayRouteTable status.tableID
+  __type(value, __u32);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+  __array(values, struct tgw_fib_inner_map);
+} tgw_fib_map SEC(".maps");
 
 struct bgp_address_pools_key {
   __u32 prefixlen;

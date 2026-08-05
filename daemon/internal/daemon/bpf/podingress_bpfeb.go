@@ -439,6 +439,8 @@ type PodIngressMapSpecs struct {
 	SgRuleTable           *ebpf.MapSpec `ebpf:"sg_rule_table"`
 	SgRulesInnerProto     *ebpf.MapSpec `ebpf:"sg_rules_inner_proto"`
 	SubnetMap             *ebpf.MapSpec `ebpf:"subnet_map"`
+	TgwFibInner           *ebpf.MapSpec `ebpf:"tgw_fib_inner"`
+	TgwFibMap             *ebpf.MapSpec `ebpf:"tgw_fib_map"`
 	TraceActive           *ebpf.MapSpec `ebpf:"trace_active"`
 	TraceConfigMap        *ebpf.MapSpec `ebpf:"trace_config_map"`
 	TraceEvents           *ebpf.MapSpec `ebpf:"trace_events"`
@@ -504,6 +506,8 @@ type PodIngressMaps struct {
 	SgRuleTable           *ebpf.Map `ebpf:"sg_rule_table"`
 	SgRulesInnerProto     *ebpf.Map `ebpf:"sg_rules_inner_proto"`
 	SubnetMap             *ebpf.Map `ebpf:"subnet_map"`
+	TgwFibInner           *ebpf.Map `ebpf:"tgw_fib_inner"`
+	TgwFibMap             *ebpf.Map `ebpf:"tgw_fib_map"`
 	TraceActive           *ebpf.Map `ebpf:"trace_active"`
 	TraceConfigMap        *ebpf.Map `ebpf:"trace_config_map"`
 	TraceEvents           *ebpf.Map `ebpf:"trace_events"`
@@ -543,6 +547,8 @@ func (m *PodIngressMaps) Close() error {
 		m.SgRuleTable,
 		m.SgRulesInnerProto,
 		m.SubnetMap,
+		m.TgwFibInner,
+		m.TgwFibMap,
 		m.TraceActive,
 		m.TraceConfigMap,
 		m.TraceEvents,
