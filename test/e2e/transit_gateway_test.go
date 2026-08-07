@@ -17,6 +17,9 @@ import (
 //  3. Giving the spokes their own association keeps them apart: their
 //     table only carries the hub prefix, so a spoke destination never
 //     resolves even though the Vpc RouteTable points at the gateway.
+//  4. Deleting an attachment withdraws its prefixes: the destination
+//     leaves the shared route table, the traffic that used it stops,
+//     and the rest of the gateway keeps forwarding.
 //
 // The transit lookup ends in a normal Subnet VNI, so every spec puts the
 // client and the servers on different nodes to exercise the VXLAN path.
@@ -118,6 +121,41 @@ var _ = Describe("Juneau TransitGateway", func() {
 
 		By("checking a spoke cannot reach the other spoke")
 		assertNoPodConnectivity(fix.namespace, "client-a", "server-b")
+	})
+
+	It("withdraws the routes of a deleted attachment and stops its traffic", func() {
+		fix := newTransitGatewayFixture(sanitizeName("tgw-detach"))
+		DeferCleanup(fix.Cleanup)
+		fix.CreateNetwork()
+		fix.AttachAllToDefaultTable()
+		fix.RouteEveryVpcThroughTheGateway()
+
+		By("checking the spoke prefix is propagated into the default route table")
+		fix.ExpectTransitGatewayRoute(fix.defaultTable, fix.spokeBCIDR, fix.spokeBSubnet, "propagated")
+		fix.ExpectTransitRoute(fix.spokeAVpc, fix.spokeBCIDR, fix.defaultTable)
+
+		fix.CreatePod("server-hub", fix.hubSubnet, workerNodes[1], true)
+		fix.CreatePod("server-b", fix.spokeBSubnet, workerNodes[1], true)
+		fix.CreatePod("client-a", fix.spokeASubnet, workerNodes[0], false)
+		waitPodsReady(fix.namespace, "server-hub", "server-b", "client-a")
+
+		// Open the path first. Without this the assertion after the delete
+		// could pass because the transit path was never programmed, rather
+		// than because the attachment took its prefix away.
+		By("checking one spoke reaches the other while both are attached")
+		assertPodConnectivity(fix.namespace, "client-a", "server-b")
+
+		By("deleting the attachment of the destination spoke")
+		fix.DeleteAttachment(fix.spokeBAttachment)
+
+		By("checking the spoke prefix left the default route table")
+		fix.ExpectTransitGatewayRouteWithdrawn(fix.defaultTable, fix.spokeBCIDR)
+
+		By("checking traffic to the detached spoke stops")
+		assertPodConnectivityStops(fix.namespace, "client-a", "server-b")
+
+		By("checking the gateway still carries traffic to the hub")
+		assertPodConnectivity(fix.namespace, "client-a", "server-hub")
 	})
 })
 
@@ -277,6 +315,10 @@ func (f *transitGatewayFixture) AttachAllToDefaultTable() {
 	f.WaitAttachmentsReady()
 }
 
+func (f *transitGatewayFixture) DeleteAttachment(name string) {
+	Expect(run(repoRoot, "kubectl", "delete", "transitgatewayattachment", name)).To(Succeed())
+}
+
 func (f *transitGatewayFixture) WaitAttachmentsReady() {
 	for _, name := range []string{f.hubAttachment, f.spokeAAttachment, f.spokeBAttachment} {
 		waitResourceReady("transitgatewayattachment", name)
@@ -370,6 +412,20 @@ func (f *transitGatewayFixture) ExpectNoTransitGatewayRoute(table string, dst st
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(strings.TrimSpace(got)).To(BeEmpty())
 	}, "5s", "1s").Should(Succeed())
+}
+
+// ExpectTransitGatewayRouteWithdrawn waits for a destination to leave
+// the table. ExpectNoTransitGatewayRoute cannot be used here: the route
+// is present when the caller starts waiting, so a consistently check
+// would fail on its first poll.
+func (f *transitGatewayFixture) ExpectTransitGatewayRouteWithdrawn(table string, dst string) {
+	Eventually(func(g Gomega) {
+		got, err := kubectlJSONPath(repoRoot,
+			fmt.Sprintf(`{.status.routes[?(@.dst=="%s")].dst}`, dst),
+			"get", "transitgatewayroutetable", table)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(strings.TrimSpace(got)).To(BeEmpty())
+	}).Should(Succeed())
 }
 
 func (f *transitGatewayFixture) Cleanup() {
