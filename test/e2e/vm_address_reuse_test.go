@@ -87,14 +87,14 @@ var _ = Describe("Juneau virtual machine address reuse", func() {
 	It("holds the address while the object the lease waits for still exists", func() {
 		const namespace = "e2e-vm-reuse-retain"
 		const vmName = "vm-reuse-retain"
-		const retainTarget = "retain-target"
 		firstPod := "virt-launcher-" + vmName + "-aaaaa"
 		secondPod := "virt-launcher-" + vmName + "-bbbbb"
 		leaseName := identityLeaseName(namespace, vmName)
 
 		setupVMReuseNamespace(namespace, vmName, firstPod, secondPod)
 
-		By("running a virt-launcher pod")
+		By("running a virt-launcher pod of a virtual machine that exists")
+		Expect(applyManifest(virtualMachineManifest(namespace, vmName))).To(Succeed())
 		Expect(applyManifest(vmReusePodManifest(namespace, firstPod, workerNodes[0], vmName))).To(Succeed())
 		waitPodsReady(namespace, firstPod)
 		vmAddress := podAddress(namespace, firstPod)
@@ -102,18 +102,11 @@ var _ = Describe("Juneau virtual machine address reuse", func() {
 		By("checking the lease waits for the virtual machine of that pod")
 		assertLeaseRetainReference(leaseName, "kubevirt.io/v1", "VirtualMachine", namespace, vmName)
 
-		// KubeVirt may not be installed here, so the spec points the lease
-		// at a ConfigMap instead. The controller resolves the reference
-		// generically, so this exercises the same code path.
-		By("pointing the lease at an object this cluster serves")
-		Expect(applyManifest(retainTargetManifest(namespace, retainTarget))).To(Succeed())
-		Expect(patchLeaseRetainReference(leaseName, "v1", "ConfigMap", namespace, retainTarget)).To(Succeed())
-
 		By("stopping the virtual machine")
 		Expect(run(repoRoot, "kubectl", "delete", "-n", namespace, "pod", firstPod, "--wait=true")).To(Succeed())
 		waitLeasePhase(leaseName, "Retained")
 
-		By("checking the TTL has not started while the object is there")
+		By("checking the TTL has not started while the virtual machine is there")
 		released, err := kubectlJSONPath(repoRoot, `{.status.retainReleasedAt}`, "get", "allocationlease", leaseName)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(strings.TrimSpace(released)).To(BeEmpty())
@@ -130,27 +123,26 @@ var _ = Describe("Juneau virtual machine address reuse", func() {
 	It("starts the TTL only once the object the lease waits for is deleted", func() {
 		const namespace = "e2e-vm-reuse-release"
 		const vmName = "vm-reuse-release"
-		const retainTarget = "retain-target"
 		pod := "virt-launcher-" + vmName + "-aaaaa"
 		leaseName := identityLeaseName(namespace, vmName)
 
 		setupVMReuseNamespace(namespace, vmName, pod)
 
-		By("running a virt-launcher pod that waits for an object of its own")
+		By("running a virt-launcher pod of a virtual machine that exists")
+		Expect(applyManifest(virtualMachineManifest(namespace, vmName))).To(Succeed())
 		Expect(applyManifest(vmReusePodManifest(namespace, pod, workerNodes[0], vmName))).To(Succeed())
 		waitPodsReady(namespace, pod)
-		Expect(applyManifest(retainTargetManifest(namespace, retainTarget))).To(Succeed())
-		Expect(patchLeaseRetainReference(leaseName, "v1", "ConfigMap", namespace, retainTarget)).To(Succeed())
+		assertLeaseRetainReference(leaseName, "kubevirt.io/v1", "VirtualMachine", namespace, vmName)
 
 		By("stopping the virtual machine")
 		Expect(run(repoRoot, "kubectl", "delete", "-n", namespace, "pod", pod, "--wait=true")).To(Succeed())
 		waitLeasePhase(leaseName, "Retained")
 
-		By("deleting the object the lease waits for")
-		Expect(run(repoRoot, "kubectl", "delete", "-n", namespace, "configmap", retainTarget, "--wait=true")).To(Succeed())
+		By("deleting the virtual machine")
+		Expect(run(repoRoot, "kubectl", "delete", "-n", namespace, "virtualmachines.kubevirt.io", vmName, "--wait=true")).To(Succeed())
 		waitLeasePhase(leaseName, "Released")
 
-		By("checking the TTL runs from the deletion of that object")
+		By("checking the TTL runs from the deletion of the virtual machine")
 		releasedAt := leaseTime(leaseName, `{.status.retainReleasedAt}`)
 		expiresAt := leaseTime(leaseName, `{.status.expiresAt}`)
 		ttl, err := kubectlJSONPath(repoRoot, `{.spec.ttlSeconds}`, "get", "allocationlease", leaseName)
@@ -264,22 +256,16 @@ func waitLeasePhase(leaseName, phase string) {
 	}).Should(Succeed())
 }
 
-// retainTargetManifest renders the object a lease can be told to wait for.
-// A ConfigMap stands in for a KubeVirt VirtualMachine so the spec runs on a
-// cluster that has no KubeVirt.
-func retainTargetManifest(namespace, name string) string {
-	return fmt.Sprintf(`apiVersion: v1
-kind: ConfigMap
+// virtualMachineManifest renders the KubeVirt VirtualMachine a virt-launcher
+// pod belongs to. The suite installs a stub CRD for the kind, so the object
+// only has to exist: nothing reads a field of it.
+func virtualMachineManifest(namespace, name string) string {
+	return fmt.Sprintf(`apiVersion: kubevirt.io/v1
+kind: VirtualMachine
 metadata:
   namespace: %s
   name: %s
 `, namespace, name)
-}
-
-func patchLeaseRetainReference(leaseName, apiVersion, kind, namespace, name string) error {
-	patch := fmt.Sprintf(`{"spec":{"retainWhile":{"apiVersion":%q,"kind":%q,"namespace":%q,"name":%q}}}`,
-		apiVersion, kind, namespace, name)
-	return run(repoRoot, "kubectl", "patch", "allocationlease", leaseName, "--type=merge", "-p", patch)
 }
 
 func assertLeaseRetainReference(leaseName, apiVersion, kind, namespace, name string) {
