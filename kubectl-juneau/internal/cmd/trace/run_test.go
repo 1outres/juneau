@@ -66,3 +66,23 @@ func TestAuxContinuationTuple(t *testing.T) {
 		t.Errorf("continuation must carry the event's leg: got %v want %v", tuple.Direction, ev.Direction)
 	}
 }
+
+// An ICMP error translation rewrites the tuple the next hook sees, so
+// peer daemons need the aux tuple just like any other NAT event.
+func TestIsNATEventCoversNATReasons(t *testing.T) {
+	nat := []debugpb.TraceEventReason{
+		debugpb.TraceEventReason_TRACE_EVENT_REASON_DNAT_APPLIED,
+		debugpb.TraceEventReason_TRACE_EVENT_REASON_SNAT_APPLIED,
+		debugpb.TraceEventReason_TRACE_EVENT_REASON_NAPT_ALLOCATED,
+		debugpb.TraceEventReason_TRACE_EVENT_REASON_REVERSE_NAT_APPLIED,
+		debugpb.TraceEventReason_TRACE_EVENT_REASON_ICMP_ERROR_TRANSLATED,
+	}
+	for _, r := range nat {
+		if !isNATEvent(r) {
+			t.Errorf("isNATEvent(%v) = false, want true", r)
+		}
+	}
+	if isNATEvent(debugpb.TraceEventReason_TRACE_EVENT_REASON_POLICY_ACL_PASS) {
+		t.Error("policy events must not propagate an aux tuple")
+	}
+}

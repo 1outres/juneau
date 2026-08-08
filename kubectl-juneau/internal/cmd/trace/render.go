@@ -226,6 +226,8 @@ func reasonString(r debugpb.TraceEventReason) string {
 		return "napt allocated"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_REVERSE_NAT_APPLIED:
 		return "reverse nat applied"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_ICMP_ERROR_TRANSLATED:
+		return "icmp error translated"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_REDIRECT_IFINDEX:
 		return "redirect ifindex"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_REDIRECT_VXLAN:

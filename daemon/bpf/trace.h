@@ -72,6 +72,7 @@
 #define TRACE_REASON_SNAT_APPLIED             403
 #define TRACE_REASON_NAPT_ALLOCATED           404
 #define TRACE_REASON_REVERSE_NAT_APPLIED      405
+#define TRACE_REASON_ICMP_ERROR_TRANSLATED    406
 
 #define TRACE_REASON_REDIRECT_IFINDEX 500
 #define TRACE_REASON_REDIRECT_VXLAN   501
@@ -686,6 +687,15 @@ trace_make_key(__u8 scope, __u32 vpc_id, __u8 proto, __be32 saddr,
 #ifndef IPPROTO_UDP_BPF
 #define IPPROTO_UDP_BPF 17
 #endif
+#ifndef IPPROTO_ICMP_BPF
+#define IPPROTO_ICMP_BPF 1
+#endif
+#ifndef ICMP_ECHOREPLY_BPF
+#define ICMP_ECHOREPLY_BPF 0
+#endif
+#ifndef ICMP_ECHO_BPF
+#define ICMP_ECHO_BPF 8
+#endif
 
 static __always_inline __u32
 trace_read_l4_ports(const struct iphdr *iph, void *data_end, __be16 *sport,
@@ -708,6 +718,16 @@ trace_read_l4_ports(const struct iphdr *iph, void *data_end, __be16 *sport,
       return 0;
     *sport = u->source;
     *dport = u->dest;
+  } else if (iph->protocol == IPPROTO_ICMP_BPF) {
+    // The NAPT path keys ICMP Echo on its Identifier, so report it in
+    // both columns and a trace shows the same value the ct_key holds.
+    struct icmphdr *ic = l4;
+    if ((void *)(ic + 1) > data_end)
+      return 0;
+    if (ic->type != ICMP_ECHO_BPF && ic->type != ICMP_ECHOREPLY_BPF)
+      return 1;
+    *sport = ic->un.echo.id;
+    *dport = ic->un.echo.id;
   }
   return 1;
 }

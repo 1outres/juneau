@@ -85,6 +85,8 @@ static __always_inline __u8 ct_initial_state_for_syn(__u8 flags) {
 //   Rewrites saddr / sport (SNAT, NAPT_OUT):
 //     opp.saddr = self.daddr;    opp.daddr = val.new_saddr;
 //     opp.sport = self.dport;    opp.dport = val.new_sport;
+//
+// ICMP needs no branch here: only ct_observe_tcp calls this function.
 static __always_inline void ct_build_opposite_key(const struct ct_key *self,
                                                   const struct ct_val *cv,
                                                   struct ct_key *opp) {

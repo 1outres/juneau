@@ -17,6 +17,7 @@ const (
 	natSubnetName   = "e2e-nat-subnet"
 	natSubnetCIDR   = "10.220.0.0/24"
 	natBGPPeer      = "e2e-nat-peer"
+	natICMPPodName  = "icmp-client"
 )
 
 // Phase 4b-1/2/3/5 introduced the NATGateway + ExternalNetworkAttachment
@@ -244,20 +245,7 @@ spec:
 			node := workerNodes[workerIndex]
 
 			By(fmt.Sprintf("locating the ExternalNetworkAttachment for %s", node))
-			var assignedIP string
-			Eventually(func(g Gomega) {
-				attachments, err := listExternalNetworkAttachments()
-				g.Expect(err).NotTo(HaveOccurred())
-				for _, att := range attachments {
-					if att.Spec.ExternalNetwork == natExternalNet && att.Spec.NodeName == node {
-						assignedIP = strings.TrimSpace(att.Status.AssignedIP)
-						g.Expect(assignedIP).NotTo(BeEmpty())
-						return
-					}
-				}
-				g.Expect(false).To(BeTrue(), "no attachment found for node %s on %s", node, natExternalNet)
-			}).Should(Succeed())
-
+			assignedIP := attachmentIPForNode(natExternalNet, node)
 			prefix := assignedIP + "/32"
 
 			By(fmt.Sprintf("verifying %s is advertised only by %s in BGPNodeState", prefix, node))
@@ -332,7 +320,89 @@ spec:
 		Entry("worker[0]", 0),
 		Entry("worker[1]", 1),
 	)
+
+	// N5 covers ICMP over the same NAPT chain N3 exercises for TCP. A
+	// NATGateway has one address per node and many Pods behind it, so
+	// ping cannot pass through unchanged: the Echo Identifier is
+	// allocated the way a source port is, and the Echo Reply carries the
+	// allocated Identifier back in the same field. A reply reaching the
+	// Pod therefore proves both the forward and the reverse rewrite.
+	It("N5: ICMP echo from a Pod reaches an external host through the NATGateway", func() {
+		node := workerNodes[0]
+
+		By(fmt.Sprintf("locating the ExternalNetworkAttachment for %s", node))
+		assignedIP := attachmentIPForNode(natExternalNet, node)
+
+		By(fmt.Sprintf("waiting for the opposing router to learn %s/32 via %s", assignedIP, node))
+		waitRouterLearnsNAPTPrefix(bgpRouter, node, assignedIP+"/32")
+
+		namespace := startNATClientPod("e2e-nat-icmp", node)
+
+		By(fmt.Sprintf("pinging %s from the Pod", bgpRouter.ip))
+		assertPodPing(namespace, natICMPPodName, bgpRouter.ip)
+	})
+
+	// N6 and N7 cover ICMP error messages, which carry no tuple of their
+	// own: the flow they belong to is only visible in the copy of the
+	// original packet they quote. A NATGateway therefore has to rewrite
+	// that copy as well as the outer header, or the Pod's socket rejects
+	// the message and traceroute and Path MTU Discovery both go silent.
+	//
+	// Both specs use the same shape: aim past the opposing router at a
+	// network nothing answers on, and read the router's complaint.
+	Describe("ICMP error messages through the NATGateway", Ordered, func() {
+		var node string
+
+		BeforeAll(func() {
+			node = workerNodes[0]
+
+			By(fmt.Sprintf("locating the ExternalNetworkAttachment for %s", node))
+			assignedIP := attachmentIPForNode(natExternalNet, node)
+
+			By(fmt.Sprintf("waiting for the opposing router to learn %s/32 via %s", assignedIP, node))
+			waitRouterLearnsNAPTPrefix(bgpRouter, node, assignedIP+"/32")
+
+			setupRouterBeyondNetwork(bgpRouter, workerNodes)
+			DeferCleanup(func() {
+				teardownRouterBeyondNetwork(bgpRouter, workerNodes)
+			})
+		})
+
+		// The first hop of a traceroute is the router itself, reporting
+		// ICMP Time Exceeded about a packet that left the Node with the
+		// NATGateway's address and an allocated port. Seeing the hop at
+		// all means node_ingress rewrote the quoted header back to the
+		// Pod's own address and port.
+		It("N6: traceroute from a Pod sees the first hop", func() {
+			namespace := startNATClientPod("e2e-nat-traceroute", node)
+			assertPodTraceroute(namespace, natICMPPodName, natBeyondHost, bgpRouter.ip)
+		})
+
+		// The Pod's route cache is the assertion that matters: the kernel
+		// files the route exception against the source address the quoted
+		// header names, so a reduced MTU only lands there when the quote
+		// came back holding the Pod's own address.
+		It("N7: Path MTU Discovery from a Pod learns the reduced MTU", func() {
+			namespace := startNATClientPod("e2e-nat-pmtud", node)
+			assertPodLearnsPathMTU(namespace, natICMPPodName, natBeyondHost, natPMTUDPayload, natBeyondMTU)
+		})
+	})
 })
+
+// startNATClientPod creates a netshoot Pod on the NATGateway's Subnet in
+// its own namespace and waits for it to be ready. The namespace is
+// removed when the spec ends. Returns the namespace.
+func startNATClientPod(namespace string, node string) string {
+	createNamespace(namespace)
+	DeferCleanup(func() {
+		runBestEffort(repoRoot, "kubectl", "delete", "namespace", namespace, "--ignore-not-found=true", "--timeout=60s")
+	})
+
+	By(fmt.Sprintf("creating a netshoot Pod on %s in subnet %s", node, natSubnetName))
+	Expect(applyManifest(netshootPodManifest(namespace, natICMPPodName, node, natSubnetName))).To(Succeed())
+	waitPodsReady(namespace, natICMPPodName)
+	return namespace
+}
 
 func filterAttachmentsByExternalNetwork(items []externalNetworkAttachmentObject, extNet string) []externalNetworkAttachmentObject {
 	out := []externalNetworkAttachmentObject{}
