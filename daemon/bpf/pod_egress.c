@@ -360,6 +360,7 @@ static __always_inline int forward_l2(struct __sk_buff *skb, struct ethhdr *eth,
 // short.
 #define load_iph nat_load_iph
 #define read_l4_ports nat_read_l4_ports
+#define read_napt_ports nat_read_napt_ports
 #define rewrite_ipv4_addr nat_rewrite_ipv4_addr
 #define rewrite_l4_port nat_rewrite_l4_port
 #define skb_data_end nat_skb_data_end
@@ -1698,13 +1699,13 @@ static __juneau_bpf_subprog int apply_conntrack_lb_rev_nat(struct __sk_buff *skb
   return 1;
 }
 
-// route_lb_reply_underlay sends a reverse-NATed LoadBalancer reply directly
-// through the host FIB. The flow entered through a Service VIP and has already
-// passed the backend Pod's ingress policy; treating its reply as a new VPC
-// egress flow would incorrectly apply the VPC default route (and potentially a
-// NATGateway) a second time.
+// forward_via_host_fib hands the packet to the host network stack: it
+// resolves the next hop with a kernel FIB lookup, writes the resolved
+// MAC pair, and redirects to the egress interface. Callers that already
+// finished their rewrite and target something outside every VPC end
+// here.
 static __juneau_bpf_subprog int
-route_lb_reply_underlay(struct __sk_buff *skb) {
+forward_via_host_fib(struct __sk_buff *skb) {
   struct iphdr *iph = load_iph(skb);
   if (!iph)
     return TC_ACT_SHOT;
@@ -1731,22 +1732,154 @@ route_lb_reply_underlay(struct __sk_buff *skb) {
   return bpf_redirect(fib_params.ifindex, 0);
 }
 
+// napt_icmp_target carries the source address and port an ICMP error
+// message has to leave with, from the lookup subprogram to the rewrite
+// subprogram.
+struct napt_icmp_target {
+  __be32 addr;
+  __be16 port;
+  __u16 _pad;
+};
+
+// napt_icmp_error_match finds the flow an ICMP error message a Pod sends
+// towards the internet reports on. The message carries a copy of the
+// packet the Pod refused, which is the inbound half of a NAPT flow, so
+// inverting that copy names the CT_ACTION_NAPT_OUT entry holding the
+// allocation. The error has to leave with the same source address and
+// port the flow itself uses, or the peer cannot match it to its own
+// socket.
+//
+// Returns 1 on a match (target is filled and the trace event is staged),
+// 0 when the packet is not an ICMP error message, and -1 when it is one
+// but no flow claims it.
+//
+// noinline subprogram: the copy parser is large and tc_pod_egress is the
+// program closest to both verifier limits.
+static __juneau_bpf_subprog int
+napt_icmp_error_match(struct __sk_buff *skb, __u32 vpc_id,
+                      struct napt_icmp_target *target) {
+  struct iphdr *iph = load_iph(skb);
+  if (!iph)
+    return -1;
+  void *data_end = skb_data_end(skb);
+
+  struct nat_icmp_quote q;
+  if (nat_read_icmp_quote(iph, data_end, &q) < 0)
+    return 0;
+
+  struct ct_key ck = {
+      .scope = vpc_id,
+      .saddr = q.daddr,
+      .daddr = q.saddr,
+      .sport = q.dport,
+      .dport = q.sport,
+      .proto = q.proto,
+  };
+  struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &ck);
+  if (!cv || cv->action != CT_ACTION_NAPT_OUT)
+    return -1;
+
+  cv->last_seen_ns = bpf_ktime_get_ns();
+  target->addr = cv->new_saddr;
+  target->port = cv->new_sport;
+  target->_pad = 0;
+
+  // Fill the trace event here so the before-tuple can be read from ck.
+  // The emit happens at the call site; see apply_conntrack_lb_rev_nat
+  // for the frame-depth reason. proto names the flow the message reports
+  // on, not the ICMP message itself, so the tuple resolves against the
+  // entry the forward NAPT event left behind.
+  __u32 zero = 0;
+  struct trace_nat_event *ne =
+      bpf_map_lookup_elem(&pod_egress_nat_scratch, &zero);
+  if (ne) {
+    ne->vpc_id = vpc_id;
+    ne->subnet_id = 0;
+    ne->hook = TRACE_HOOK_POD_EGRESS;
+    ne->reason = TRACE_REASON_ICMP_ERROR_TRANSLATED;
+    ne->scope = TRACE_SCOPE_VPC;
+    ne->proto = ck.proto;
+    ne->before_saddr = ck.saddr;
+    ne->before_daddr = ck.daddr;
+    ne->before_sport = ck.sport;
+    ne->before_dport = ck.dport;
+    ne->after_saddr = target->addr;
+    ne->after_daddr = ck.daddr;
+    ne->after_sport = target->port;
+    ne->after_dport = ck.dport;
+  }
+  return 1;
+}
+
+// napt_icmp_error_apply performs the rewrite napt_icmp_error_match
+// resolved. It reads the copied packet again instead of reusing that
+// parse: the two run as sibling subprograms, so sharing a parse would
+// mean nesting one frame inside the other, and tc_pod_egress has no room
+// for that.
+static __juneau_bpf_subprog int napt_icmp_error_apply(struct __sk_buff *skb,
+                                                      __be32 new_saddr,
+                                                      __be16 new_sport) {
+  struct iphdr *iph = load_iph(skb);
+  if (!iph)
+    return -1;
+  void *data_end = skb_data_end(skb);
+
+  struct nat_icmp_quote q;
+  if (nat_read_icmp_quote(iph, data_end, &q) < 0)
+    return -1;
+
+  return nat_icmp_quote_rewrite(skb, &q, /*outer_is_source=*/true, new_saddr,
+                                new_sport);
+}
+
 // handle_napt is the forward NAPT path: it rewrites src IP/port to the
 // node's host_napt_ip and an allocated source port, installs both
 // forward (NAPT_OUT) and reverse (NAPT_IN) ct_map entries, and then
 // hands the packet to the host network stack via a kernel FIB lookup,
 // mirroring handle_snat's tail. nat_gateway_id is fib_val.subnet_id
 // reinterpreted (FIB_ROUTE_TYPE_NAPT overload).
+//
+// ICMP Echo takes the same path with the Identifier standing in for the
+// port pair. An ICMP error message has no tuple of its own and goes
+// through napt_icmp_error_match; every other ICMP type is dropped.
 static __always_inline int handle_napt(struct __sk_buff *skb,
                                        struct ethhdr *eth, struct iphdr *iph,
                                        const struct subnet_val *subnet,
                                        __u32 nat_gateway_id) {
   void *data_end = skb_data_end(skb);
-  if (iph->protocol != IPPROTO_TCP && iph->protocol != IPPROTO_UDP)
+  bool is_icmp = iph->protocol == IPPROTO_ICMP;
+  if (iph->protocol != IPPROTO_TCP && iph->protocol != IPPROTO_UDP && !is_icmp)
     return TC_ACT_SHOT;
 
+  __u32 caller_vpc_id = subnet->vpc_id;
+
+  if (is_icmp) {
+    struct napt_icmp_target icmp_target = {};
+    int icmp_rc = napt_icmp_error_match(skb, caller_vpc_id, &icmp_target);
+    if (icmp_rc < 0)
+      return TC_ACT_SHOT;
+    if (icmp_rc > 0) {
+      if (napt_icmp_error_apply(skb, icmp_target.addr, icmp_target.port) < 0)
+        return TC_ACT_SHOT;
+      if (rewrite_ipv4_addr(skb, /*is_source=*/true, icmp_target.addr) < 0)
+        return TC_ACT_SHOT;
+      __u32 icmp_zero = 0;
+      struct trace_nat_event *icmp_ne =
+          bpf_map_lookup_elem(&pod_egress_nat_scratch, &icmp_zero);
+      if (icmp_ne)
+        trace_observe_nat(skb, icmp_ne);
+      return forward_via_host_fib(skb);
+    }
+    // The call scrubbed the packet pointers; the Echo path below needs
+    // them again.
+    iph = load_iph(skb);
+    if (!iph)
+      return TC_ACT_SHOT;
+    data_end = skb_data_end(skb);
+  }
+
   __be16 sport, dport;
-  if (read_l4_ports(iph, data_end, &sport, &dport) < 0)
+  if (read_napt_ports(iph, data_end, &sport, &dport) < 0)
     return TC_ACT_SHOT;
 
   // Resolve this node's NAPT source IP for the requested gateway.
@@ -1767,7 +1900,6 @@ static __always_inline int handle_napt(struct __sk_buff *skb,
   }
 
   __u64 now = bpf_ktime_get_ns();
-  __u32 caller_vpc_id = subnet->vpc_id;
 
   // Forward CT key (scope=caller VPC, saddr=pod, daddr=internet, sport=sp, dport=dp)
   struct ct_key fwd_key = {
@@ -1797,11 +1929,14 @@ static __always_inline int handle_napt(struct __sk_buff *skb,
       __u32 candidate_host = 1024 + ((seed + i) % (65536 - 1024));
       __be16 candidate = bpf_htons((__u16)candidate_host);
 
+      // The Echo Reply repeats the Identifier we allocated, so both
+      // slots of the reverse key hold the candidate instead of the
+      // swapped port pair a TCP or UDP flow produces.
       struct ct_key rev_key = {
           .scope = CT_SCOPE_HOST,
           .saddr = iph->daddr,
           .daddr = host_napt_ip,
-          .sport = dport,
+          .sport = is_icmp ? candidate : dport,
           .dport = candidate,
           .proto = iph->protocol,
       };
@@ -2442,7 +2577,7 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
       // This is the reply leg of an externally-originated LB flow, not a
       // new VPC egress flow. Send it directly through the host FIB so a
       // VPC default route cannot apply NATGateway NAPT to the VIP.
-      return route_lb_reply_underlay(skb);
+      return forward_via_host_fib(skb);
     }
 
     // Unified policy stage: NetworkACL → SecurityGroup → CT install.

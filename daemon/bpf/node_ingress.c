@@ -247,11 +247,18 @@ static __always_inline int handle_dnat(struct __sk_buff *skb, struct ethhdr *eth
 // also rewrites saddr/sport so the Pod sees the original ClusterIP as
 // the response source. The cv->new_saddr / cv->new_sport fields are
 // 0 for NAPT_IN to make the rewrite a no-op there.
+//
+// A non-NULL quote marks a packet that is not part of the flow itself
+// but an ICMP error message about it. The tuple to repair then lives in
+// the copy of the original packet the message carries, so the rewrite
+// goes through nat_icmp_quote_rewrite instead.
 static __always_inline int handle_napt_in(struct __sk_buff *skb,
                                           struct ethhdr *eth, struct iphdr *iph,
                                           struct ct_val *cv,
                                           struct ct_key *ck,
-                                          __u32 trace_id) {
+                                          __u32 trace_id,
+                                          const struct nat_icmp_quote *quote) {
+  bool icmp_error = quote != NULL;
   void *data_end = nat_skb_data_end(skb);
 
   struct subnet_key sk = {.subnet_id = cv->next_subnet_id};
@@ -300,14 +307,24 @@ static __always_inline int handle_napt_in(struct __sk_buff *skb,
   __be32 before_daddr = iph->daddr;
   __be16 before_sport = ck->sport;
   __be16 before_dport = ck->dport;
-  __u8   nat_proto    = iph->protocol;
+  // An ICMP error message carries protocol 1, but the flow it reports on
+  // is the one in ck. Naming that flow lets the trace tuple resolve
+  // against the entry the forward NAPT event installed.
+  __u8   nat_proto    = icmp_error ? ck->proto : iph->protocol;
   __be32 after_saddr  = cv->new_saddr ? cv->new_saddr : before_saddr;
   __be32 after_daddr  = cv->new_daddr;
   __be16 after_sport  = cv->new_sport ? cv->new_sport : before_sport;
   __be16 after_dport  = cv->new_dport ? cv->new_dport : before_dport;
 
-  if (nat_apply_napt_in_rewrite(skb, cv) < 0)
+  if (icmp_error) {
+    if (nat_icmp_quote_rewrite(skb, quote, /*outer_is_source=*/false,
+                               cv->new_daddr, cv->new_dport) < 0)
+      return TC_ACT_SHOT;
+    if (nat_rewrite_ipv4_addr(skb, /*is_source=*/false, cv->new_daddr) < 0)
+      return TC_ACT_SHOT;
+  } else if (nat_apply_napt_in_rewrite(skb, cv) < 0) {
     return TC_ACT_SHOT;
+  }
 
   // Trace: NAPT_IN reverse rewrite (or SVC_NAPT_IN).
   if (trace_id != 0) {
@@ -315,7 +332,8 @@ static __always_inline int handle_napt_in(struct __sk_buff *skb,
         .vpc_id = subnet->vpc_id,
         .subnet_id = cv->next_subnet_id,
         .hook = TRACE_HOOK_NODE_INGRESS,
-        .reason = TRACE_REASON_REVERSE_NAT_APPLIED,
+        .reason = icmp_error ? TRACE_REASON_ICMP_ERROR_TRANSLATED
+                             : TRACE_REASON_REVERSE_NAT_APPLIED,
         .scope = TRACE_SCOPE_HOST,
         .proto = nat_proto,
         .before_saddr = before_saddr,
@@ -600,7 +618,8 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
         };
         struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &ck);
         if (cv && cv->action == CT_ACTION_SVC_NAPT_IN)
-          return handle_napt_in(skb, eth, iph, cv, &ck, trace_id);
+          return handle_napt_in(skb, eth, iph, cv, &ck, trace_id,
+                                /*quote=*/NULL);
       }
     }
     // Fall through to bgp_address_pools below.
@@ -615,11 +634,13 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
     return TC_ACT_OK;
 
   // First try NAPT reverse: ct_map keyed on (HOST, src=internet,
-  // dst=host_napt_ip, sport=remote, dport=alloc_port). Fall through to
+  // dst=host_napt_ip, sport=remote, dport=alloc_port), or on the
+  // allocated Echo Identifier in both slots for ICMP. Fall through to
   // ElasticIP 1:1 NAT (nat_dnat_map) if no NAPT entry exists.
-  if (iph->protocol == IPPROTO_TCP || iph->protocol == IPPROTO_UDP) {
+  if (iph->protocol == IPPROTO_TCP || iph->protocol == IPPROTO_UDP ||
+      iph->protocol == IPPROTO_ICMP) {
     __be16 sport, dport;
-    if (nat_read_l4_ports(iph, data_end, &sport, &dport) == 0) {
+    if (nat_read_napt_ports(iph, data_end, &sport, &dport) == 0) {
       struct ct_key ck = {
           .scope = CT_SCOPE_HOST,
           .saddr = iph->saddr,
@@ -630,7 +651,29 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
       };
       struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &ck);
       if (cv && cv->action == CT_ACTION_NAPT_IN)
-        return handle_napt_in(skb, eth, iph, cv, &ck, trace_id);
+        return handle_napt_in(skb, eth, iph, cv, &ck, trace_id,
+                              /*quote=*/NULL);
+    }
+  }
+
+  // An ICMP error message reports on a different packet than the one it
+  // is, so the lookup above cannot match: the outer tuple belongs to the
+  // router that raised the error. Invert the copy the message carries to
+  // find the flow instead. A miss falls through to ElasticIP below.
+  if (iph->protocol == IPPROTO_ICMP) {
+    struct nat_icmp_quote q;
+    if (nat_read_icmp_quote(iph, data_end, &q) == 0) {
+      struct ct_key ck = {
+          .scope = CT_SCOPE_HOST,
+          .saddr = q.daddr,
+          .daddr = q.saddr,
+          .sport = q.dport,
+          .dport = q.sport,
+          .proto = q.proto,
+      };
+      struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &ck);
+      if (cv && cv->action == CT_ACTION_NAPT_IN)
+        return handle_napt_in(skb, eth, iph, cv, &ck, trace_id, &q);
     }
   }
 
