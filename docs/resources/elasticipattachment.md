@@ -26,17 +26,20 @@ ElasticIPAttachmentは、ElasticIPをNetworkInterfaceへ関連付けるリソー
 - Attached:ElasticIPが1つのNetworkInterfaceへ正常に関連付けられている状態
 - Error:参照先不整合や複数NetworkEndpoint一致などで正常に扱えない状態
 
-## 制限事項
+## ICMPの扱い
 
-ElasticIPの1:1 NATは、パケットの外側のIPヘッダしか書き換えません。ICMPエラーメッセージ (Destination UnreachableやTime Exceededなど) が内包している元パケットのヘッダは、ElasticIPのまま残ります。
+ElasticIPの1:1 NATは、外側のIPヘッダに加えて、ICMPエラーメッセージが内包している元パケットのヘッダも書き換えます。
 
-Linuxは受信したICMPエラーを、内包されたヘッダのタプルだけで対応するソケットに結び付けます。内包の送信元がElasticIPになっていると、Pod内のカーネルはソケットを見つけられず、そのエラーを捨てます。影響が最も出るのはTCPです。
+Linuxは受信したICMPエラーを、内包されたヘッダのタプルだけで対応するソケットに結び付けます。内包の送信元がElasticIPのまま届くと、Pod内のカーネルはソケットを見つけられず、そのエラーを黙って捨てます。内包ヘッダを書き換えることで、次のものが成立します。
 
-- Path MTU Discoveryがブラックホール化します。`tcp_v4_err`は内包の`(送信元アドレス, 送信元ポート)`でソケットを探すため、Fragmentation Neededが届いても該当ソケットに渡らず、経路MTUが学習されません。ハンドシェイクは成功するのに最初の大きなレスポンスで固まる、という形で出ます
-- Destination Unreachableが`connect()`を中断させません。到達不能な相手への接続がタイムアウトまで待たされます
+- Path MTU Discovery。`tcp_v4_err`は内包の`(送信元アドレス, 送信元ポート)`でソケットを探すので、内包がPod自身のアドレスであればFragmentation Neededが該当ソケットに渡り、経路MTUがキャッシュされます
+- `traceroute`。UDPモードとICMPモードのどちらでも途中のホップが表示されます
+- 到達不能な相手に対する`connect()`の中断
 
-厄介なのは、`ping`と`traceroute`では気付けないことです。`ping`と`traceroute -I`はIdentifierで応答を照合し、1:1 NATはIdentifierを保存するので期待通りに動きます。UDPの`traceroute`もソケットが通常ワイルドカードでbindされているため、`__udp4_lib_err`が内包のアドレスに関係なく見つけてしまいます。見つからないのは、Pod IPを明示してbindしたUDPソケットだけです。
+内包ヘッダの書き換えの対象になるのは、Destination Unreachable、Time Exceeded、Source Quench、Redirect、Parameter Problemの5種類です。それ以外のICMPタイプは外側のIPヘッダだけが書き換わります。ICMPのIdentifierを持つEcho Request/Replyもこちらで、1:1 NATはIdentifierを変換しません。
 
-Path MTU Discoveryも、ツールの上では成功しているように見えます。ElasticIPを付けたPodで`ping -M do`を打つと`Frag needed and DF set (mtu = 1280)`と表示されます。しかし`ipv4_update_pmtu`が例外経路を入れる先は内包の送信元、つまりElasticIPです。Podはそのアドレスから送信しないため、実際の送信元に対する経路MTUはキャッシュされません。
+1:1 NATがポートを変換しないのは内包ヘッダでも同じで、変わるのはアドレスだけです。内包しているパケットのプロトコルがTCP、UDP、ICMP Echoのいずれでもないエラーメッセージと、内包ヘッダが関連付けたElasticIP以外のアドレスを指しているエラーメッセージは、書き換えようがないので破棄されます。
 
-つまり`ping`と`traceroute`で確認した限りでは正常に見え、大きなTCP転送だけが失敗します。egressだけが必要な用途であれば、ICMPエラーメッセージを内包ヘッダごと書き換える[NATGateway](natgateway.md)を使うことができます。
+書き換えは`kubectl juneau trace`で`icmp error translated`として記録されます。
+
+Podが持つのが1つのアドレスだけで、外向きの通信しか必要ないのであれば、[NATGateway](natgateway.md)でも同じことができます。

@@ -9,7 +9,7 @@ ElasticIPで利用されるAddressPoolは`spec.advertiseMode=bgp`である必要
 指定するアドレスは、`spec.externalNetwork`で参照したExternalNetworkに紐づくAddressPoolのいずれかに含まれている必要があります。
 省略した場合は、利用可能なアドレスから1つが自動的に選ばれます。
 
-ElasticIPによる1:1 NATは、ICMPエラーメッセージの扱いに制限があります。Path MTU Discoveryが効かず、大きなTCP転送が固まることがあります。[ElasticIPAttachment](elasticipattachment.md)の制限事項を参照してください。
+ElasticIPによる1:1 NATは、ICMPエラーメッセージが内包する元パケットのヘッダも書き換えます。Path MTU Discoveryや`traceroute`がどう成立するかは[ElasticIPAttachment](elasticipattachment.md)のICMPの扱いを参照してください。
 
 ## Phase
 
