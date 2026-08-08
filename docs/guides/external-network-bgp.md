@@ -263,6 +263,8 @@ $ curl -sS http://10.225.51.5/
     - 対象Podが**default以外のSubnet**に属しているか。default SubnetのPodはElasticIPの対象にできません
     - Podが属するVpcのRouteTableに`type: internetGateway`のルートがあるか。無いと外部疎通が成立しません
     - NodeとPodの間はクラスター内通信と同じ経路なので、通常のPod到達性テストで切り分け可能
+5. **接続は張れるのに大きなレスポンスで固まる**
+    - ElasticIPの1:1 NATはICMPエラーメッセージが内包する元ヘッダを書き換えないため、Path MTU Discoveryが効きません。`ping`や`traceroute`は成功して見えるので切り分けを誤りやすいところです。[ElasticIPAttachment](../resources/elasticipattachment.md)の制限事項を確認してください
 
 ## 参照
 

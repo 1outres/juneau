@@ -21,6 +21,20 @@ NATGatewayをVpc外への経路として利用するには、対象VpcのRouteTa
 NATGatewayを作成すると、対象ExternalNetworkに紐づくNodeごとの[ExternalNetworkAttachment](externalnetworkattachment.md)が自動的に作成され、Nodeごとに1つずつNAPTソースIPアドレスが払い出されます。
 Pod がVpc外へ出るとき、そのPodが配置されているNodeに対応するソースIPアドレスが利用されます。
 
+## 対応プロトコル
+
+NAPTの対象はTCP、UDP、ICMPの3つです。それ以外のプロトコルはNATGateway経由で外部に出ることができません。
+
+ICMPで扱うのはEcho Requestとその応答であるEcho Replyです。ICMPにはポートが無いため、ICMPヘッダのIdentifierをポート相当として払い出します。Echo ReplyはRequestと同じIdentifierを返すので、払い出した値から元のPodを引き当てることができます。これによりNATGateway配下のPodやVMから`ping`が通ります。
+
+Echo以外では、Destination Unreachable、Time Exceeded、Source Quench、Redirect、Parameter Problemの5種類のICMPエラーメッセージを扱います。これらは経路上のルータが送るものなので、外側のIPヘッダを見てもどのフローに対する応答なのか分かりません。ICMPエラーメッセージが内包している元パケットのヘッダからconntrackのエントリを引き当て、外側と内包の両方を書き換えます。Podのカーネルは内包されたヘッダを見て対応するソケットを探すため、この書き換えが無いとエラーメッセージは捨てられます。NATGateway配下で`traceroute`とPath MTU Discoveryが動くのはこの仕組みによります。Pod側から外部に向けて送るICMPエラーメッセージも、同じように内包ヘッダごと書き換えます。
+
+EchoとICMPエラーメッセージ以外のICMPタイプ (Timestampなど) は破棄されます。IPフラグメントも対象外です。
+
+ICMPのconntrackエントリは、最後にパケットが通ってから30秒でGCの対象になります。TCPのように終了を示すものが無いためです。
+
+ICMPエラーメッセージの書き換えは`kubectl juneau trace`で`icmp error translated`として記録されます。表示されるタプルは、ICMPエラーメッセージ自体ではなく、そのエラーが報告している元のフローです。
+
 ## default NATGateway
 
 `default`という名前のNATGatewayが存在し、Readyになっている場合、`default` Vpcのメインルートテーブルには`0.0.0.0/0`へのルートが`via.type: natGateway`として自動的に追加されます。

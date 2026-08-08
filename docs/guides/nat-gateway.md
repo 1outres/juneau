@@ -13,6 +13,7 @@ Juneauでは、NATGatewayを使うことでVpc内のPodがVpc外（クラスタ�
 - NATGateway (`egress-natgw`)
 - VpcのRouteTableに`0.0.0.0/0`を`via.type: natGateway`で追加
 - Podから`curl https://1.1.1.1/cdn-cgi/trace`で外部に到達し、戻ってきた`ip=`行がNATGatewayの払い出したNAPTソースIPと一致
+- Podから`ping`と`traceroute`が外部まで到達
 
 ## 前提条件
 
@@ -197,6 +198,57 @@ uag=curl/8.7.1
 
 応答の`ip=`行が、Podが動作しているNodeに対応するExternalNetworkAttachmentの`status.assignedIP`と一致していれば、NATGateway経由のN:1 NAPTで外部に出ている状態です。
 
+### 11. ICMPの疎通を確認
+
+NATGatewayはTCPとUDPに加えてICMPもNAPTします。`ping`と`traceroute`を持つイメージでPodをもう1つ用意します。
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nettools
+  annotations:
+    juneau.loutres.me/subnet: egress-subnet
+spec:
+  containers:
+    - name: nettools
+      image: nicolaka/netshoot:v0.16
+      command: ["sleep", "infinity"]
+```
+
+まずEcho Requestを外部に送ります。
+
+```console
+$ kubectl exec nettools -- ping -c 3 1.1.1.1
+PING 1.1.1.1 (1.1.1.1) 56(84) bytes of data.
+64 bytes from 1.1.1.1: icmp_seq=1 ttl=57 time=8.21 ms
+64 bytes from 1.1.1.1: icmp_seq=2 ttl=57 time=7.94 ms
+64 bytes from 1.1.1.1: icmp_seq=3 ttl=57 time=8.02 ms
+```
+
+ICMPにはポートが無いので、NATGatewayはICMPヘッダのIdentifierをポート相当として払い出します。Echo Replyは同じIdentifierを返すため、応答がPodまで戻ってきていればNAPTの往復が成立しています。
+
+経路上のルータが返すICMPエラーメッセージも書き換えるので、`traceroute`が使えます。
+
+```console
+$ kubectl exec nettools -- traceroute -n 1.1.1.1
+traceroute to 1.1.1.1 (1.1.1.1), 30 hops max, 46 byte packets
+ 1  10.225.32.1  0.512 ms  0.418 ms  0.399 ms
+ 2  ...
+```
+
+1ホップ目の`10.225.32.1`は上流ルータがTime Exceededを返したものです。このメッセージが内包しているのはNAPT後のパケット、つまりソースがNAPTソースIPになったヘッダです。ホップが表示されたということは、内包されたヘッダがPod自身のアドレスに戻された状態でPodに届いていることを意味します。
+
+Path MTU Discoveryも同じ仕組みで動きます。経路の途中に小さいMTUのリンクがある場合、DFを立てた大きなパケットに対してFragmentation Neededが返り、Podはそれを受け取ることができます。
+
+```console
+$ kubectl exec nettools -- ping -M do -s 1300 -c 1 198.18.0.2
+PING 198.18.0.2 (198.18.0.2) 1300(1328) bytes of data.
+From 10.225.32.1 icmp_seq=1 Frag needed and DF set (mtu = 1280)
+```
+
+Podのカーネルはこの報告を受けて、宛先に対する経路MTUをキャッシュします。以降のTCP通信もこのMTUに収まるように分割されます。
+
 ## うまくいかないとき
 
 1. **NATGatewayが`Ready=False`のまま**
@@ -216,6 +268,13 @@ uag=curl/8.7.1
 5. **送信元IPが期待値と違う**
     - Pod が動作しているNodeに対応するExternalNetworkAttachmentの`assignedIP`を改めて確認
     - 上流ルータで、該当`/32`がそのNodeを次ホップに学習しているか
+6. **`curl`は通るのに`ping`が返ってこない**
+    - PodにSecurityGroupを付けている場合、`spec.egress`を明示的に書いていると`protocol: icmp`か`all`のルールが無い限りEcho Requestは出られません。SecurityGroupのegressは省略時のみdefault-allowです
+    - SubnetにNetworkACLを付けている場合も同様に、ICMPを許可するルールがあるか確認
+    - 宛先がEcho Replyを返す設定になっているか。ICMPを落とすホストは珍しくありません
+7. **`traceroute`の途中のホップが`* * *`のまま**
+    - そのホップのルータがICMPを返していない可能性があります。TCPやUDPが通っているなら経路自体は成立しています
+    - NATGatewayが書き換えるのはEchoと5種類のICMPエラーメッセージだけです。それ以外のICMPタイプは破棄されます。詳細は[NATGateway](../resources/natgateway.md)の対応プロトコルを参照してください
 
 ## 参照
 
