@@ -102,9 +102,36 @@ spec:
                 required:
                 - name
                 type: object
+              retainWhile:
+                description: |-
+                  RetainWhile holds the reservation for as long as the referenced
+                  object exists. While it is there the lease stays Retained and the
+                  TTL does not run; the countdown starts from
+                  Status.RetainReleasedAt instead of OwnerDeletionTimestamp. Unlike
+                  the rest of the identity fields this one is mutable, because a new
+                  claim generation may point the same lease at a different object.
+                properties:
+                  apiVersion:
+                    minLength: 1
+                    type: string
+                  kind:
+                    minLength: 1
+                    type: string
+                  name:
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: Namespace of the referenced object. Empty for cluster
+                      scoped kinds.
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                type: object
               ttlSeconds:
                 description: |-
-                  TTLSeconds is the grace period applied after OwnerDeletionTimestamp.
+                  TTLSeconds is the grace period applied after the lease is released.
                   Copied from the originating AllocationClaim.spec.releaseAfter.
                 format: int32
                 minimum: 0
@@ -188,6 +215,14 @@ spec:
                 format: int64
                 type: integer
               phase:
+                type: string
+              retainReleasedAt:
+                description: |-
+                  RetainReleasedAt records when the controller first observed that
+                  the object named by Spec.RetainWhile was gone. It is the start of
+                  the TTL for a lease that has a retain reference, and it is cleared
+                  again when the object comes back.
+                format: date-time
                 type: string
             type: object
         type: object

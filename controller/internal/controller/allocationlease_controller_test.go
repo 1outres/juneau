@@ -18,14 +18,22 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
@@ -488,6 +496,339 @@ var _ = Describe("Allocation lease", func() {
 			g.Expect(claimB.Status.Phase).To(Equal(juneauv1alpha1.AllocationClaimPhaseAllocated))
 			g.Expect(claimB.Status.Value.Number).NotTo(Equal(valueA))
 		}).Should(Succeed())
+	})
+})
+
+var _ = Describe("Allocation lease retention", func() {
+	ctx := context.Background()
+
+	// A ConfigMap stands in for the workload object a lease waits for.
+	// The reference is generic, so the specs need no KubeVirt CRD.
+	retainReferenceTo := func(name string) *juneauv1alpha1.RetainReference {
+		return &juneauv1alpha1.RetainReference{
+			APIVersion: "v1",
+			Kind:       "ConfigMap",
+			Namespace:  "default",
+			Name:       name,
+		}
+	}
+
+	newRetainTarget := func(name string) *corev1.ConfigMap {
+		return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: name}}
+	}
+
+	newRetainedLease := func(name string, retain *juneauv1alpha1.RetainReference, ttlSeconds int32, number uint64) *juneauv1alpha1.AllocationLease {
+		past := metav1.NewTime(time.Now().Add(-time.Minute))
+		return &juneauv1alpha1.AllocationLease{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: juneauv1alpha1.AllocationLeaseSpec{
+				PoolRef:                juneauv1alpha1.AllocationPoolReference{Name: allocationPoolSubnetVNI},
+				Value:                  juneauv1alpha1.AllocationValue{Number: number},
+				ClaimRef:               juneauv1alpha1.AllocationLeaseClaimReference{Name: "ghost", UID: "ghost-uid"},
+				OwnerDeletionTimestamp: &past,
+				TTLSeconds:             &ttlSeconds,
+				RetainWhile:            retain,
+			},
+		}
+	}
+
+	reconcileLease := func(name string) reconcile.Result {
+		r := &AllocationLeaseReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		result, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: name}})
+		Expect(err).NotTo(HaveOccurred())
+		return result
+	}
+
+	It("holds the reservation past the TTL while the retained object exists", func() {
+		target := newRetainTarget("retain-alive")
+		Expect(k8sClient.Create(ctx, target)).To(Succeed())
+		lease := newRetainedLease("lease-retain-alive", retainReferenceTo(target.Name), 0, 900)
+		Expect(k8sClient.Create(ctx, lease)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, lease)
+			_ = k8sClient.Delete(ctx, target)
+		})
+
+		result := reconcileLease(lease.Name)
+		Expect(result.RequeueAfter).To(Equal(allocationLeaseRetainResyncInterval))
+
+		Consistently(func(g Gomega) {
+			var current juneauv1alpha1.AllocationLease
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: lease.Name}, &current)).To(Succeed())
+			g.Expect(current.Status.Phase).To(Equal(juneauv1alpha1.AllocationLeasePhaseRetained))
+			g.Expect(current.Status.RetainReleasedAt).To(BeNil())
+			g.Expect(current.Status.ExpiresAt).To(BeNil())
+		}, "2s", "200ms").Should(Succeed())
+	})
+
+	It("starts the TTL when the retained object goes away", func() {
+		target := newRetainTarget("retain-gone")
+		Expect(k8sClient.Create(ctx, target)).To(Succeed())
+		lease := newRetainedLease("lease-retain-gone", retainReferenceTo(target.Name), 3600, 901)
+		Expect(k8sClient.Create(ctx, lease)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, lease)
+			_ = k8sClient.Delete(ctx, target)
+		})
+
+		reconcileLease(lease.Name)
+		var current juneauv1alpha1.AllocationLease
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: lease.Name}, &current)).To(Succeed())
+		Expect(current.Status.Phase).To(Equal(juneauv1alpha1.AllocationLeasePhaseRetained))
+
+		Expect(k8sClient.Delete(ctx, target)).To(Succeed())
+		Eventually(func(g Gomega) {
+			reconcileLease(lease.Name)
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: lease.Name}, &current)).To(Succeed())
+			g.Expect(current.Status.Phase).To(Equal(juneauv1alpha1.AllocationLeasePhaseReleased))
+			g.Expect(current.Status.RetainReleasedAt).NotTo(BeNil())
+		}).Should(Succeed())
+
+		// The TTL runs from the moment the object went away, not from the
+		// moment the claim was deleted a minute earlier.
+		Expect(current.Status.ExpiresAt).NotTo(BeNil())
+		Expect(current.Status.ExpiresAt.Time).To(Equal(current.Status.RetainReleasedAt.Add(time.Hour)))
+
+		// Move the recorded release into the past so the TTL elapses
+		// without the spec having to wait for it.
+		elapsed := metav1.NewTime(time.Now().Add(-2 * time.Hour))
+		current.Status.RetainReleasedAt = &elapsed
+		Expect(k8sClient.Status().Update(ctx, &current)).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			reconcileLease(lease.Name)
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: lease.Name}, &juneauv1alpha1.AllocationLease{})
+			g.Expect(errors.IsNotFound(err)).To(BeTrue(), "the lease should be reaped once the TTL after the release elapsed")
+		}).Should(Succeed())
+	})
+
+	It("takes the lease back out of the TTL window when the retained object comes back", func() {
+		target := newRetainTarget("retain-recreated")
+		Expect(k8sClient.Create(ctx, target)).To(Succeed())
+		lease := newRetainedLease("lease-retain-recreated", retainReferenceTo(target.Name), 3600, 902)
+		Expect(k8sClient.Create(ctx, lease)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, lease)
+			_ = k8sClient.Delete(ctx, target)
+		})
+
+		Expect(k8sClient.Delete(ctx, target)).To(Succeed())
+		var current juneauv1alpha1.AllocationLease
+		Eventually(func(g Gomega) {
+			reconcileLease(lease.Name)
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: lease.Name}, &current)).To(Succeed())
+			g.Expect(current.Status.RetainReleasedAt).NotTo(BeNil())
+		}).Should(Succeed())
+
+		Expect(k8sClient.Create(ctx, newRetainTarget(target.Name))).To(Succeed())
+		Eventually(func(g Gomega) {
+			reconcileLease(lease.Name)
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: lease.Name}, &current)).To(Succeed())
+			g.Expect(current.Status.Phase).To(Equal(juneauv1alpha1.AllocationLeasePhaseRetained))
+			g.Expect(current.Status.RetainReleasedAt).To(BeNil())
+			g.Expect(current.Status.ExpiresAt).To(BeNil())
+		}).Should(Succeed())
+	})
+
+	It("keeps checking for the retained object while a released lease waits out its TTL", func() {
+		target := newRetainTarget("retain-resync")
+		Expect(k8sClient.Create(ctx, target)).To(Succeed())
+		lease := newRetainedLease("lease-retain-resync", retainReferenceTo(target.Name), 3600, 904)
+		Expect(k8sClient.Create(ctx, lease)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, lease)
+			_ = k8sClient.Delete(ctx, target)
+		})
+
+		Expect(k8sClient.Delete(ctx, target)).To(Succeed())
+		var result reconcile.Result
+		var current juneauv1alpha1.AllocationLease
+		Eventually(func(g Gomega) {
+			result = reconcileLease(lease.Name)
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: lease.Name}, &current)).To(Succeed())
+			g.Expect(current.Status.Phase).To(Equal(juneauv1alpha1.AllocationLeasePhaseReleased))
+		}).Should(Succeed())
+
+		// The TTL is an hour away, but the object may come back at any
+		// moment, so the lease must be looked at much sooner than that.
+		Expect(result.RequeueAfter).To(BeNumerically(">", 0))
+		Expect(result.RequeueAfter).To(BeNumerically("<=", allocationLeaseRetainResyncInterval))
+	})
+
+	It("waits for the expiry itself when a released lease has no retain reference", func() {
+		lease := newRetainedLease("lease-retain-absent-requeue", nil, 3600, 905)
+		Expect(k8sClient.Create(ctx, lease)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, lease)
+		})
+
+		var result reconcile.Result
+		var current juneauv1alpha1.AllocationLease
+		Eventually(func(g Gomega) {
+			result = reconcileLease(lease.Name)
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: lease.Name}, &current)).To(Succeed())
+			g.Expect(current.Status.Phase).To(Equal(juneauv1alpha1.AllocationLeasePhaseReleased))
+		}).Should(Succeed())
+
+		Expect(result.RequeueAfter).To(BeNumerically(">", allocationLeaseRetainResyncInterval))
+		Expect(result.RequeueAfter).To(BeNumerically("~", time.Until(current.Status.ExpiresAt.Time), 5*time.Second))
+	})
+
+	It("expires from the owner deletion timestamp when no retain reference is set", func() {
+		lease := newRetainedLease("lease-retain-absent", nil, 3600, 903)
+		Expect(k8sClient.Create(ctx, lease)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, lease)
+		})
+
+		var current juneauv1alpha1.AllocationLease
+		Eventually(func(g Gomega) {
+			reconcileLease(lease.Name)
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: lease.Name}, &current)).To(Succeed())
+			g.Expect(current.Status.Phase).To(Equal(juneauv1alpha1.AllocationLeasePhaseReleased))
+		}).Should(Succeed())
+		Expect(current.Status.RetainReleasedAt).To(BeNil())
+		Expect(current.Status.ExpiresAt).NotTo(BeNil())
+		Expect(current.Status.ExpiresAt.Time).To(Equal(lease.Spec.OwnerDeletionTimestamp.Add(time.Hour)))
+	})
+
+	It("copies spec.retainWhile from the claim onto the lease it creates", func() {
+		retain := retainReferenceTo("claim-retain-owner")
+		pool := &juneauv1alpha1.AllocationPool{
+			ObjectMeta: metav1.ObjectMeta{Name: "pool-lease-retain"},
+			Spec: juneauv1alpha1.AllocationPoolSpec{
+				Type:     juneauv1alpha1.AllocationTypeNumber,
+				Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+				Number:   &juneauv1alpha1.AllocationPoolNumberSpec{Min: 700, Max: 800},
+			},
+		}
+		owner := &juneauv1alpha1.Vpc{ObjectMeta: metav1.ObjectMeta{Name: "lease-retain-owner"}}
+		claim := &juneauv1alpha1.AllocationClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "lease-retain-claim"},
+			Spec: juneauv1alpha1.AllocationClaimSpec{
+				PoolRefs:     []juneauv1alpha1.AllocationPoolReference{{Name: pool.Name}},
+				ResourceRef:  juneauv1alpha1.AllocationResourceReference{APIVersion: juneauv1alpha1.GroupVersion.String(), Kind: "Vpc", Name: owner.Name},
+				Attribute:    "status.vni",
+				ReleaseAfter: &metav1.Duration{Duration: time.Hour},
+				RetainWhile:  retain.DeepCopy(),
+			},
+		}
+
+		Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+		Expect(k8sClient.Create(ctx, owner)).To(Succeed())
+		Expect(k8sClient.Create(ctx, claim)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupLeaseTestArtifacts(ctx, claim.Name, owner, pool)
+		})
+
+		reconciler := &AllocationClaimReconciler{Client: k8sClient, APIReader: k8sClient, Scheme: k8sClient.Scheme()}
+		var lease juneauv1alpha1.AllocationLease
+		Eventually(func(g Gomega) {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: claim.Name}})
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: claim.Name}, &lease)).To(Succeed())
+		}).Should(Succeed())
+		Expect(lease.Spec.RetainWhile).NotTo(BeNil())
+		Expect(*lease.Spec.RetainWhile).To(Equal(*retain))
+	})
+})
+
+// The reservation stays put when the object a lease waits for cannot be
+// read, so these specs drive the reconciler with a client that fails that
+// read on purpose. envtest cannot produce such a failure, because the test
+// client is bound to the admin user.
+var _ = Describe("Allocation lease with an unreadable retain reference", func() {
+	ctx := context.Background()
+
+	retainRef := &juneauv1alpha1.RetainReference{
+		APIVersion: "v1",
+		Kind:       "ConfigMap",
+		Namespace:  "default",
+		Name:       "retain-unreadable",
+	}
+
+	newLease := func(status juneauv1alpha1.AllocationLeaseStatus) *juneauv1alpha1.AllocationLease {
+		ownerDeleted := metav1.NewTime(time.Now().Add(-time.Hour))
+		ttl := int32(3600)
+		return &juneauv1alpha1.AllocationLease{
+			ObjectMeta: metav1.ObjectMeta{Name: "lease-retain-unreadable"},
+			Spec: juneauv1alpha1.AllocationLeaseSpec{
+				PoolRef:                juneauv1alpha1.AllocationPoolReference{Name: allocationPoolSubnetVNI},
+				Value:                  juneauv1alpha1.AllocationValue{Number: 906},
+				ClaimRef:               juneauv1alpha1.AllocationLeaseClaimReference{Name: "ghost", UID: "ghost-uid"},
+				OwnerDeletionTimestamp: &ownerDeleted,
+				TTLSeconds:             &ttl,
+				RetainWhile:            retainRef.DeepCopy(),
+			},
+			Status: status,
+		}
+	}
+
+	newReconciler := func(lease *juneauv1alpha1.AllocationLease) (*AllocationLeaseReconciler, client.Client) {
+		testScheme := runtime.NewScheme()
+		Expect(juneauv1alpha1.AddToScheme(testScheme)).To(Succeed())
+
+		forbidden := errors.NewForbidden(
+			schema.GroupResource{Resource: "configmaps"},
+			retainRef.Name,
+			fmt.Errorf("user cannot get resource configmaps"),
+		)
+		c := fake.NewClientBuilder().
+			WithScheme(testScheme).
+			WithObjects(lease).
+			WithStatusSubresource(&juneauv1alpha1.AllocationLease{}).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(ctx context.Context, inner client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if _, ok := obj.(*unstructured.Unstructured); ok {
+						return forbidden
+					}
+					return inner.Get(ctx, key, obj, opts...)
+				},
+			}).
+			Build()
+
+		return &AllocationLeaseReconciler{Client: c, Scheme: testScheme}, c
+	}
+
+	It("reports the failed read in the status and keeps the recorded release time", func() {
+		released := metav1.NewTime(time.Now().Add(-30 * time.Minute))
+		lease := newLease(juneauv1alpha1.AllocationLeaseStatus{
+			Phase:            juneauv1alpha1.AllocationLeasePhaseActive,
+			RetainReleasedAt: &released,
+		})
+		r, c := newReconciler(lease)
+
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: lease.Name}})
+		Expect(err).To(HaveOccurred())
+
+		var current juneauv1alpha1.AllocationLease
+		Expect(c.Get(ctx, client.ObjectKey{Name: lease.Name}, &current)).To(Succeed())
+		Expect(current.Status.Phase).To(Equal(juneauv1alpha1.AllocationLeasePhaseRetained))
+		Expect(current.Status.RetainReleasedAt).NotTo(BeNil())
+		Expect(current.Status.RetainReleasedAt.Unix()).To(Equal(released.Unix()))
+
+		ready := meta.FindStatusCondition(current.Status.Conditions, juneauv1alpha1.AllocationLeaseStatusReady)
+		Expect(ready).NotTo(BeNil())
+		Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+		Expect(ready.Reason).To(Equal(allocationLeaseReasonRetainCheckFailed))
+		Expect(ready.Message).To(ContainSubstring(retainReferenceKey(retainRef)))
+		Expect(ready.Message).To(ContainSubstring("forbidden"))
+	})
+
+	It("does not invent a release time for a lease that never had one", func() {
+		lease := newLease(juneauv1alpha1.AllocationLeaseStatus{
+			Phase: juneauv1alpha1.AllocationLeasePhaseActive,
+		})
+		r, c := newReconciler(lease)
+
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: lease.Name}})
+		Expect(err).To(HaveOccurred())
+
+		var current juneauv1alpha1.AllocationLease
+		Expect(c.Get(ctx, client.ObjectKey{Name: lease.Name}, &current)).To(Succeed())
+		Expect(current.Status.Phase).To(Equal(juneauv1alpha1.AllocationLeasePhaseRetained))
+		Expect(current.Status.RetainReleasedAt).To(BeNil())
+		Expect(current.Status.ExpiresAt).To(BeNil())
 	})
 })
 

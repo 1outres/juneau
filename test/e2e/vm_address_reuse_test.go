@@ -2,7 +2,9 @@ package e2e
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -80,6 +82,74 @@ var _ = Describe("Juneau virtual machine address reuse", func() {
 		By("checking both pods can carry traffic at the same time")
 		assertBidirectionalConnectivity(namespace, firstPod, vmReusePeerPodName)
 		assertBidirectionalConnectivity(namespace, secondPod, vmReusePeerPodName)
+	})
+
+	It("holds the address while the object the lease waits for still exists", func() {
+		const namespace = "e2e-vm-reuse-retain"
+		const vmName = "vm-reuse-retain"
+		firstPod := "virt-launcher-" + vmName + "-aaaaa"
+		secondPod := "virt-launcher-" + vmName + "-bbbbb"
+		leaseName := identityLeaseName(namespace, vmName)
+
+		setupVMReuseNamespace(namespace, vmName, firstPod, secondPod)
+
+		By("running a virt-launcher pod of a virtual machine that exists")
+		Expect(applyManifest(virtualMachineManifest(namespace, vmName))).To(Succeed())
+		Expect(applyManifest(vmReusePodManifest(namespace, firstPod, workerNodes[0], vmName))).To(Succeed())
+		waitPodsReady(namespace, firstPod)
+		vmAddress := podAddress(namespace, firstPod)
+
+		By("checking the lease waits for the virtual machine of that pod")
+		assertLeaseRetainReference(leaseName, "kubevirt.io/v1", "VirtualMachine", namespace, vmName)
+
+		By("stopping the virtual machine")
+		Expect(run(repoRoot, "kubectl", "delete", "-n", namespace, "pod", firstPod, "--wait=true")).To(Succeed())
+		waitLeasePhase(leaseName, "Retained")
+
+		By("checking the TTL has not started while the virtual machine is there")
+		released, err := kubectlJSONPath(repoRoot, `{.status.retainReleasedAt}`, "get", "allocationlease", leaseName)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.TrimSpace(released)).To(BeEmpty())
+		expires, err := kubectlJSONPath(repoRoot, `{.status.expiresAt}`, "get", "allocationlease", leaseName)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.TrimSpace(expires)).To(BeEmpty())
+
+		By("checking a replacement pod still inherits the held address")
+		Expect(applyManifest(vmReusePodManifest(namespace, secondPod, workerNodes[0], vmName))).To(Succeed())
+		waitPodsReady(namespace, secondPod)
+		Expect(podAddress(namespace, secondPod)).To(Equal(vmAddress), "a retained address must go back to the virtual machine that owns it")
+	})
+
+	It("starts the TTL only once the object the lease waits for is deleted", func() {
+		const namespace = "e2e-vm-reuse-release"
+		const vmName = "vm-reuse-release"
+		pod := "virt-launcher-" + vmName + "-aaaaa"
+		leaseName := identityLeaseName(namespace, vmName)
+
+		setupVMReuseNamespace(namespace, vmName, pod)
+
+		By("running a virt-launcher pod of a virtual machine that exists")
+		Expect(applyManifest(virtualMachineManifest(namespace, vmName))).To(Succeed())
+		Expect(applyManifest(vmReusePodManifest(namespace, pod, workerNodes[0], vmName))).To(Succeed())
+		waitPodsReady(namespace, pod)
+		assertLeaseRetainReference(leaseName, "kubevirt.io/v1", "VirtualMachine", namespace, vmName)
+
+		By("stopping the virtual machine")
+		Expect(run(repoRoot, "kubectl", "delete", "-n", namespace, "pod", pod, "--wait=true")).To(Succeed())
+		waitLeasePhase(leaseName, "Retained")
+
+		By("deleting the virtual machine")
+		Expect(run(repoRoot, "kubectl", "delete", "-n", namespace, "virtualmachines.kubevirt.io", vmName, "--wait=true")).To(Succeed())
+		waitLeasePhase(leaseName, "Released")
+
+		By("checking the TTL runs from the deletion of the virtual machine")
+		releasedAt := leaseTime(leaseName, `{.status.retainReleasedAt}`)
+		expiresAt := leaseTime(leaseName, `{.status.expiresAt}`)
+		ttl, err := kubectlJSONPath(repoRoot, `{.spec.ttlSeconds}`, "get", "allocationlease", leaseName)
+		Expect(err).NotTo(HaveOccurred())
+		ttlSeconds, err := strconv.Atoi(strings.TrimSpace(ttl))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(expiresAt).To(Equal(releasedAt.Add(time.Duration(ttlSeconds) * time.Second)))
 	})
 
 	It("keeps the re-used address reachable after the virtual machine moves to another node", func() {
@@ -175,11 +245,45 @@ func assertHTTPFromPod(namespace, fromPod, toPod string) {
 }
 
 func waitLeaseReleased(leaseName string) {
+	waitLeasePhase(leaseName, "Released")
+}
+
+func waitLeasePhase(leaseName, phase string) {
 	Eventually(func(g Gomega) {
-		phase, err := kubectlJSONPath(repoRoot, `{.status.phase}`, "get", "allocationlease", leaseName)
+		observed, err := kubectlJSONPath(repoRoot, `{.status.phase}`, "get", "allocationlease", leaseName)
 		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(strings.TrimSpace(phase)).To(Equal("Released"))
+		g.Expect(strings.TrimSpace(observed)).To(Equal(phase))
 	}).Should(Succeed())
+}
+
+// virtualMachineManifest renders the KubeVirt VirtualMachine a virt-launcher
+// pod belongs to. The suite installs a stub CRD for the kind, so the object
+// only has to exist: nothing reads a field of it.
+func virtualMachineManifest(namespace, name string) string {
+	return fmt.Sprintf(`apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  namespace: %s
+  name: %s
+`, namespace, name)
+}
+
+func assertLeaseRetainReference(leaseName, apiVersion, kind, namespace, name string) {
+	Eventually(func(g Gomega) {
+		observed, err := kubectlJSONPath(repoRoot,
+			`{.spec.retainWhile.apiVersion}/{.spec.retainWhile.kind}/{.spec.retainWhile.namespace}/{.spec.retainWhile.name}`,
+			"get", "allocationlease", leaseName)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(strings.TrimSpace(observed)).To(Equal(strings.Join([]string{apiVersion, kind, namespace, name}, "/")))
+	}).Should(Succeed())
+}
+
+func leaseTime(leaseName, jsonPath string) time.Time {
+	raw, err := kubectlJSONPath(repoRoot, jsonPath, "get", "allocationlease", leaseName)
+	Expect(err).NotTo(HaveOccurred())
+	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
+	Expect(err).NotTo(HaveOccurred(), "%s of lease %s should be a timestamp, got %q", jsonPath, leaseName, raw)
+	return parsed
 }
 
 // podInterfaceLeaseName is the AllocationLease that backs a pod's default

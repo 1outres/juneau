@@ -21,6 +21,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
 func TestAllocationIdentity(t *testing.T) {
@@ -92,5 +94,86 @@ func TestAllocationIdentity(t *testing.T) {
 func TestAllocationIdentityNilPod(t *testing.T) {
 	if got := AllocationIdentity(nil); got != "" {
 		t.Errorf("AllocationIdentity(nil) = %q, want %q", got, "")
+	}
+}
+
+func TestRetainReference(t *testing.T) {
+	tests := []struct {
+		name   string
+		labels map[string]string
+		want   *juneauv1alpha1.RetainReference
+	}{
+		{
+			name: "virt-launcher pod of a named virtual machine",
+			labels: map[string]string{
+				"kubevirt.io":         "virt-launcher",
+				"vm.kubevirt.io/name": "web-0",
+			},
+			want: &juneauv1alpha1.RetainReference{
+				APIVersion: "kubevirt.io/v1",
+				Kind:       "VirtualMachine",
+				Namespace:  "default",
+				Name:       "web-0",
+			},
+		},
+		{
+			name: "virt-launcher pod without a virtual machine name",
+			labels: map[string]string{
+				"kubevirt.io": "virt-launcher",
+			},
+			want: nil,
+		},
+		{
+			name: "virt-launcher pod with an empty virtual machine name",
+			labels: map[string]string{
+				"kubevirt.io":         "virt-launcher",
+				"vm.kubevirt.io/name": "",
+			},
+			want: nil,
+		},
+		{
+			name: "other kubevirt component",
+			labels: map[string]string{
+				"kubevirt.io":         "virt-handler",
+				"vm.kubevirt.io/name": "web-0",
+			},
+			want: nil,
+		},
+		{
+			name:   "pod that carries only the virtual machine name label",
+			labels: map[string]string{"vm.kubevirt.io/name": "web-0"},
+			want:   nil,
+		},
+		{
+			name:   "pod unrelated to kubevirt",
+			labels: map[string]string{"app": "web"},
+			want:   nil,
+		},
+		{
+			name:   "pod without labels",
+			labels: nil,
+			want:   nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "virt-launcher-web-0-abcde", Labels: tt.labels}}
+			got := RetainReference(pod)
+			switch {
+			case tt.want == nil && got != nil:
+				t.Errorf("RetainReference() = %+v, want nil", got)
+			case tt.want != nil && got == nil:
+				t.Errorf("RetainReference() = nil, want %+v", tt.want)
+			case tt.want != nil && *got != *tt.want:
+				t.Errorf("RetainReference() = %+v, want %+v", *got, *tt.want)
+			}
+		})
+	}
+}
+
+func TestRetainReferenceNilPod(t *testing.T) {
+	if got := RetainReference(nil); got != nil {
+		t.Errorf("RetainReference(nil) = %+v, want nil", got)
 	}
 }

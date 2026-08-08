@@ -32,7 +32,9 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -47,6 +49,7 @@ import (
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	"github.com/1outres/juneau/controller/internal/controller"
 	webhookjuneauv1alpha1 "github.com/1outres/juneau/controller/internal/webhook/v1alpha1"
+	"github.com/1outres/juneau/controller/internal/workload"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -435,9 +438,15 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	retainWatchGVKs, err := servedRetainWatchGVKs(mgr, workload.KubeVirtVirtualMachineGVK)
+	if err != nil {
+		setupLog.Error(err, "unable to resolve the kinds AllocationLease retention watches")
+		os.Exit(1)
+	}
 	if err = (&controller.AllocationLeaseReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		RetainWatchGVKs: retainWatchGVKs,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AllocationLease")
 		os.Exit(1)
@@ -603,4 +612,25 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// servedRetainWatchGVKs keeps the kinds that AllocationLease.spec.retainWhile
+// may name and that this cluster actually serves. A kind nobody installed
+// cannot be watched, and a lease that names it is checked by the lease
+// controller's periodic resync instead.
+func servedRetainWatchGVKs(mgr manager.Manager, candidates ...schema.GroupVersionKind) ([]schema.GroupVersionKind, error) {
+	served := make([]schema.GroupVersionKind, 0, len(candidates))
+	for _, gvk := range candidates {
+		_, err := mgr.GetRESTMapper().RESTMapping(gvk.GroupKind(), gvk.Version)
+		switch {
+		case err == nil:
+			setupLog.Info("watching retained kind for AllocationLease", "gvk", gvk.String())
+			served = append(served, gvk)
+		case meta.IsNoMatchError(err):
+			setupLog.Info("retained kind is not served by this cluster; leases naming it are only checked on resync", "gvk", gvk.String())
+		default:
+			return nil, fmt.Errorf("failed to look up %s: %w", gvk.String(), err)
+		}
+	}
+	return served, nil
 }

@@ -122,6 +122,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		nwiface.Spec.Address = annotations[podAnnAddress]
 		nwiface.Spec.SecurityGroups = ParsePodSecurityGroups(annotations[podAnnSecurityGroups])
 		nwiface.Spec.AllocationIdentity = workload.AllocationIdentity(&pod)
+		nwiface.Spec.RetainWhile = workload.RetainReference(&pod)
 
 		return ctrl.SetControllerReference(&pod, nwiface, r.Scheme)
 	})

@@ -56,10 +56,19 @@ type AllocationLeaseSpec struct {
 	// will delete it after TTLSeconds elapses.
 	OwnerDeletionTimestamp *metav1.Time `json:"ownerDeletionTimestamp,omitempty"`
 
-	// TTLSeconds is the grace period applied after OwnerDeletionTimestamp.
+	// TTLSeconds is the grace period applied after the lease is released.
 	// Copied from the originating AllocationClaim.spec.releaseAfter.
 	// +kubebuilder:validation:Minimum=0
 	TTLSeconds *int32 `json:"ttlSeconds,omitempty"`
+
+	// RetainWhile holds the reservation for as long as the referenced
+	// object exists. While it is there the lease stays Retained and the
+	// TTL does not run; the countdown starts from
+	// Status.RetainReleasedAt instead of OwnerDeletionTimestamp. Unlike
+	// the rest of the identity fields this one is mutable, because a new
+	// claim generation may point the same lease at a different object.
+	// +optional
+	RetainWhile *RetainReference `json:"retainWhile,omitempty"`
 }
 
 // AllocationLeaseClaimReference names the AllocationClaim that holds a lease.
@@ -73,7 +82,10 @@ type AllocationLeaseClaimReference struct {
 type AllocationLeasePhase string
 
 const (
-	AllocationLeasePhaseActive   AllocationLeasePhase = "Active"
+	AllocationLeasePhaseActive AllocationLeasePhase = "Active"
+	// AllocationLeasePhaseRetained means the claim is gone but the object
+	// named by Spec.RetainWhile is still there, so the TTL has not started.
+	AllocationLeasePhaseRetained AllocationLeasePhase = "Retained"
 	AllocationLeasePhaseReleased AllocationLeasePhase = "Released"
 	AllocationLeasePhaseExpired  AllocationLeasePhase = "Expired"
 )
@@ -87,7 +99,14 @@ type AllocationLeaseStatus struct {
 	ObservedGeneration int64                `json:"observedGeneration,omitempty"`
 	Phase              AllocationLeasePhase `json:"phase,omitempty"`
 	ExpiresAt          *metav1.Time         `json:"expiresAt,omitempty"`
-	Conditions         []metav1.Condition   `json:"conditions,omitempty"`
+
+	// RetainReleasedAt records when the controller first observed that
+	// the object named by Spec.RetainWhile was gone. It is the start of
+	// the TTL for a lease that has a retain reference, and it is cleared
+	// again when the object comes back.
+	// +optional
+	RetainReleasedAt *metav1.Time       `json:"retainReleasedAt,omitempty"`
+	Conditions       []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true
