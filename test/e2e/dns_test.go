@@ -224,7 +224,7 @@ spec:
 		createCustomNetwork(ctx, false, true)
 
 		createServerPod(ctx, workerNodes[0], ctx.serverSubnet)
-		Expect(applyManifest(dnsClientPodManifest(ctx.namespace, clientPodName, workerNodes[0], ctx.serverSubnet))).To(Succeed())
+		Expect(applyManifest(netshootPodManifest(ctx.namespace, clientPodName, workerNodes[0], ctx.serverSubnet))).To(Succeed())
 		createServerService(ctx, ctx.vpcName)
 		waitPodsReady(ctx.namespace, serverPodName, clientPodName)
 		waitServiceEndpoints(ctx.namespace, serverPodName)
@@ -271,8 +271,8 @@ spec:
 
 		Expect(applyManifest(podManifest(namespace, serverA, workerNodes[0], subnetA, true))).To(Succeed())
 		Expect(applyManifest(podManifest(namespace, serverB, workerNodes[0], subnetB, true))).To(Succeed())
-		Expect(applyManifest(dnsClientPodManifest(namespace, clientA, workerNodes[0], subnetA))).To(Succeed())
-		Expect(applyManifest(dnsClientPodManifest(namespace, clientB, workerNodes[0], subnetB))).To(Succeed())
+		Expect(applyManifest(netshootPodManifest(namespace, clientA, workerNodes[0], subnetA))).To(Succeed())
+		Expect(applyManifest(netshootPodManifest(namespace, clientB, workerNodes[0], subnetB))).To(Succeed())
 		Expect(applyManifest(serviceManifestWithVpc(namespace, serverA, serverA, vpcA))).To(Succeed())
 		Expect(applyManifest(serviceManifestWithVpc(namespace, serverB, serverB, vpcB))).To(Succeed())
 		waitPodsReady(namespace, serverA, serverB, clientA, clientB)
@@ -477,22 +477,4 @@ func nslookupAddress(namespace, podName, fqdn string, tcp bool) (string, error) 
 		return val, nil
 	}
 	return "", fmt.Errorf("no answer Address line in nslookup output: %s", out)
-}
-
-func dnsClientPodManifest(namespace, name, nodeName, subnet string) string {
-	return fmt.Sprintf(`apiVersion: v1
-kind: Pod
-metadata:
-  namespace: %s
-  name: %s
-  annotations:
-    juneau.loutres.me/subnet: %s
-spec:
-  nodeName: %s
-  terminationGracePeriodSeconds: 0
-  containers:
-    - name: client
-      image: nicolaka/netshoot:v0.16
-      command: ["sleep", "3600"]
-`, namespace, name, subnet, nodeName)
 }

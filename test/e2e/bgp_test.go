@@ -105,35 +105,7 @@ var _ = Describe("BGP e2e", Ordered, Serial, func() {
 			Expect(len(workerNodes)).To(BeNumerically(">=", 2), "S3 needs at least 2 worker nodes")
 			node := workerNodes[workerIndex]
 
-			By("creating ExternalNetwork referencing the BGP pool")
-			Expect(applyExternalNetwork(bgpExternalNetworkName, []string{bgpAddressPoolName})).To(Succeed())
-
-			By("creating a custom VPC+Subnet for EIP traffic (default subnet VNI==1 is dropped by node_ingress DNAT)")
-			Expect(applyManifest(fmt.Sprintf(`apiVersion: juneau.loutres.me/v1alpha1
-kind: Vpc
-metadata:
-  name: %s
----
-apiVersion: juneau.loutres.me/v1alpha1
-kind: Subnet
-metadata:
-  name: %s
-spec:
-  vpc: %s
-  cidr: %s
----
-apiVersion: juneau.loutres.me/v1alpha1
-kind: RouteTable
-metadata:
-  name: %s
-spec:
-  vpc: %s
-  routes:
-    - dst: 0.0.0.0/0
-      via:
-        type: internetGateway
-`, bgpVpcName, bgpSubnetName, bgpVpcName, bgpSubnetCIDR, bgpVpcName, bgpVpcName))).To(Succeed())
-			waitSubnetReady(bgpSubnetName)
+			ensureEIPNetwork()
 
 			suffix := sanitizeName(fmt.Sprintf("worker%d", workerIndex))
 			namespace := fmt.Sprintf("%s-%s", bgpEIPNamespacePrefixDef, suffix)
@@ -206,6 +178,66 @@ spec:
 		Entry("Pod on worker[0]", 0),
 		Entry("Pod on worker[1]", 1),
 	)
+
+	// S3.5 is the ElasticIP counterpart of the NATGateway ICMP spec (N5).
+	// A 1:1 NAT rewrites only the address, and an ICMP checksum has no
+	// pseudo-header, so neither direction may touch it. The spec guards
+	// that property: a stale ICMP checksum drops the echo silently.
+	It("S3.5: passes ICMP echo through an ElasticIP in both directions", func() {
+		node := workerNodes[0]
+		namespace := "e2e-bgp-eip-icmp"
+		const (
+			podName        = "icmp-client"
+			eipName        = "eip-icmp"
+			attachmentName = "eip-att-icmp"
+		)
+
+		By("creating ExternalNetwork referencing the BGP pool")
+		Expect(applyExternalNetwork(bgpExternalNetworkName, []string{bgpAddressPoolName})).To(Succeed())
+		ensureEIPNetwork()
+
+		createNamespace(namespace)
+		DeferCleanup(func() {
+			runBestEffort(repoRoot, "kubectl", "delete", "elasticipattachment", "-n", namespace, attachmentName, "--ignore-not-found=true")
+			runBestEffort(repoRoot, "kubectl", "delete", "elasticip", "-n", namespace, eipName, "--ignore-not-found=true")
+			runBestEffort(repoRoot, "kubectl", "delete", "namespace", namespace, "--ignore-not-found=true", "--timeout=60s")
+		})
+
+		By(fmt.Sprintf("creating a netshoot Pod on %s in subnet %s", node, bgpSubnetName))
+		Expect(applyManifest(netshootPodManifest(namespace, podName, node, bgpSubnetName))).To(Succeed())
+		waitPodsReady(namespace, podName)
+		assertPodPlacement(namespace, podName, node)
+
+		interfaceName := podName + ".eth0"
+		By(fmt.Sprintf("waiting for NetworkInterface %s to be created", interfaceName))
+		Eventually(func(g Gomega) {
+			out, err := kubectlJSONPath(repoRoot, `{.metadata.name}`, "-n", namespace, "get", "networkinterface", interfaceName)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(out)).To(Equal(interfaceName))
+		}).Should(Succeed())
+
+		By("allocating an ElasticIP and attaching it to the Pod's NetworkInterface")
+		Expect(applyElasticIP(namespace, eipName, bgpExternalNetworkName)).To(Succeed())
+		eipAddress := waitElasticIPAddress(namespace, eipName)
+		Expect(applyElasticIPAttachment(namespace, attachmentName, eipName, interfaceName)).To(Succeed())
+		waitElasticIPAttachmentReady(namespace, attachmentName)
+		waitElasticIPAttached(namespace, eipName)
+
+		ownerIP := bgpRouter.workerIPs[node]
+		eipPrefix := eipAddress + "/32"
+		By(fmt.Sprintf("pinning %s ingress to owner node %s (%s)", eipPrefix, node, ownerIP))
+		_, err := bgpRouter.Exec("ip", "route", "replace", eipPrefix, "via", ownerIP)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() {
+			_, _ = bgpRouter.Exec("ip", "route", "del", eipPrefix)
+		})
+
+		By(fmt.Sprintf("pinging the ElasticIP %s from the external router", eipAddress))
+		assertRouterPing(bgpRouter, eipAddress)
+
+		By(fmt.Sprintf("pinging the external router %s from the Pod behind the ElasticIP", bgpRouter.ip))
+		assertPodPing(namespace, podName, bgpRouter.ip)
+	})
 
 	It("S4: serves a LoadBalancer VIP to an external BGP client without losing the VIP on reply", func() {
 		node := workerNodes[0]

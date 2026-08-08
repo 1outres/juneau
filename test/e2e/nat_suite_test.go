@@ -3,7 +3,9 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
@@ -119,6 +121,80 @@ func listExternalNetworkAttachments() ([]externalNetworkAttachmentObject, error)
 		return nil, fmt.Errorf("decode externalnetworkattachments: %w", err)
 	}
 	return list.Items, nil
+}
+
+// attachmentIPForNode returns the address the ExternalNetwork assigned to
+// the given Node. That address is the NAPT source every Pod on the Node
+// egresses with.
+func attachmentIPForNode(externalNetwork string, node string) string {
+	var assignedIP string
+	Eventually(func(g Gomega) {
+		attachments, err := listExternalNetworkAttachments()
+		g.Expect(err).NotTo(HaveOccurred())
+		for _, att := range attachments {
+			if att.Spec.ExternalNetwork != externalNetwork || att.Spec.NodeName != node {
+				continue
+			}
+			assignedIP = strings.TrimSpace(att.Status.AssignedIP)
+			g.Expect(assignedIP).NotTo(BeEmpty(), "attachment %s missing AssignedIP", att.Metadata.Name)
+			return
+		}
+		g.Expect(false).To(BeTrue(), "no attachment found for node %s on %s", node, externalNetwork)
+	}).Should(Succeed())
+	return assignedIP
+}
+
+// waitRouterLearnsNAPTPrefix blocks until the opposing router has a route
+// for the Node's NAPT address with that Node as the next hop. Until it
+// does, a reply has nowhere to go and every data-plane assertion below
+// would fail for a reason that has nothing to do with the data plane.
+func waitRouterLearnsNAPTPrefix(router *bgpRouterInstance, node string, prefix string) {
+	Eventually(func(g Gomega) {
+		out, err := router.Exec("birdc", "show", "route", prefix, "all")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(out).To(ContainSubstring(router.workerIPs[node]),
+			"expected next-hop %s in birdc output: %s", router.workerIPs[node], out)
+	}).Should(Succeed())
+}
+
+// setupRouterBeyondNetwork makes the opposing router act like a router
+// rather than an endpoint: it gains an on-link route to a network where
+// nothing answers, capped at a small MTU. Traffic aimed there is
+// forwarded, so a TTL-limited probe comes back as ICMP Time Exceeded and
+// an oversized one as ICMP Fragmentation Needed. Nothing has to answer
+// on the far side — the error messages are the whole point, and an
+// unanswered ARP is what stops the packet.
+//
+// The route carries an explicit mtu because the forwarding path always
+// honours a route metric, and every interface in the container sits at
+// the host MTU.
+//
+// Every Node gets a matching route so the packet leaves the Node
+// straight at the router, which makes the router hop 1 for a traceroute
+// started inside a Pod.
+func setupRouterBeyondNetwork(router *bgpRouterInstance, nodes []string) {
+	By(fmt.Sprintf("turning the opposing router into a router towards %s (mtu %d)", natBeyondCIDR, natBeyondMTU))
+	script := fmt.Sprintf(`set -eu
+sysctl -wq net.ipv4.ip_forward=1
+uplink=$(ip -o -4 route show default | awk '{print $5; exit}')
+ip route replace %s dev "$uplink" mtu %d
+`, natBeyondCIDR, natBeyondMTU)
+	out, err := router.Exec("sh", "-c", script)
+	Expect(err).NotTo(HaveOccurred(), "router setup output: %s", out)
+
+	for _, node := range nodes {
+		out, err := dockerExecOutput(node, "ip", "route", "replace", natBeyondCIDR, "via", router.ip)
+		Expect(err).NotTo(HaveOccurred(), "node %s route output: %s", node, out)
+	}
+}
+
+func teardownRouterBeyondNetwork(router *bgpRouterInstance, nodes []string) {
+	for _, node := range nodes {
+		_, _ = dockerExecOutput(node, "ip", "route", "del", natBeyondCIDR)
+	}
+	if router != nil {
+		_, _ = router.Exec("ip", "route", "del", natBeyondCIDR)
+	}
 }
 
 func getRouteTableObject(name string) (*routeTableObject, error) {

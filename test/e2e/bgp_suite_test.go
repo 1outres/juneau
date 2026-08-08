@@ -150,6 +150,49 @@ spec:
 	return applyManifest(b.String())
 }
 
+// ensureEIPNetwork creates the network the ElasticIP specs share.
+// node_ingress drops DNAT traffic aimed at the default Subnet (VNI == 1)
+// and EIP egress needs an InternetGateway route on the Pod's VPC
+// RouteTable, so those specs cannot run on the default network.
+func ensureEIPNetwork() {
+	By("creating a custom VPC+Subnet for EIP traffic (default subnet VNI==1 is dropped by node_ingress DNAT)")
+	Expect(applyManifest(fmt.Sprintf(`apiVersion: juneau.loutres.me/v1alpha1
+kind: Vpc
+metadata:
+  name: %s
+---
+apiVersion: juneau.loutres.me/v1alpha1
+kind: Subnet
+metadata:
+  name: %s
+spec:
+  vpc: %s
+  cidr: %s
+---
+apiVersion: juneau.loutres.me/v1alpha1
+kind: RouteTable
+metadata:
+  name: %s
+spec:
+  vpc: %s
+  routes:
+    - dst: 0.0.0.0/0
+      via:
+        type: internetGateway
+`, bgpVpcName, bgpSubnetName, bgpVpcName, bgpSubnetCIDR, bgpVpcName, bgpVpcName))).To(Succeed())
+	waitSubnetReady(bgpSubnetName)
+}
+
+// assertRouterPing requires every echo request the opposing router sends
+// to be answered. See assertPodPing for why zero loss is the bar.
+func assertRouterPing(router *bgpRouterInstance, target string) {
+	Eventually(func(g Gomega) {
+		out, err := router.Exec("ping", "-c", "3", "-W", "2", target)
+		g.Expect(err).NotTo(HaveOccurred(), "ping output: %s", out)
+		g.Expect(out).To(ContainSubstring("0% packet loss"), "ping output: %s", out)
+	}).Should(Succeed())
+}
+
 func applyElasticIP(namespace string, name string, externalNetwork string) error {
 	manifest := fmt.Sprintf(`apiVersion: juneau.loutres.me/v1alpha1
 kind: ElasticIP

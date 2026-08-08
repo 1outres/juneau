@@ -266,6 +266,30 @@ metadata:
 `, namespace, name, name, annotation, nodeName, container)
 }
 
+// netshootPodManifest builds a Pod carrying the network tools some specs
+// shell out to (dig, ping). The curl fixture image cannot run ping: it
+// starts as a non-root user, so opening a raw ICMP socket fails.
+func netshootPodManifest(namespace string, name string, nodeName string, subnet string) string {
+	annotation := ""
+	if subnet != "" {
+		annotation = fmt.Sprintf("  annotations:\n    juneau.loutres.me/subnet: %s\n", subnet)
+	}
+
+	return fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  namespace: %s
+  name: %s
+%sspec:
+  nodeName: %s
+  terminationGracePeriodSeconds: 0
+  containers:
+    - name: client
+      image: nicolaka/netshoot:v0.16
+      command: ["sleep", "3600"]
+`, namespace, name, annotation, nodeName)
+}
+
 func createServerService(ctx caseContext, vpcAnnotation string) {
 	annotation := ""
 	if vpcAnnotation != "" {
@@ -354,6 +378,19 @@ func assertPodConnectivity(namespace string, clientPod string, serverPod string)
 		out, err := kubectlOutput(repoRoot, "exec", "-n", namespace, clientPod, "--", "curl", "-sS", "--max-time", "5", fmt.Sprintf("http://%s", strings.TrimSpace(serverIP)))
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(strings.ToLower(out)).To(ContainSubstring("welcome to nginx"))
+	}).Should(Succeed())
+}
+
+// assertPodPing requires every echo request the Pod sends to be
+// answered. Demanding zero loss (rather than a single reply) keeps the
+// check honest for NAPT: the identifier allocated for the first request
+// has to keep matching for the ones that follow.
+func assertPodPing(namespace string, podName string, target string) {
+	Eventually(func(g Gomega) {
+		out, err := kubectlOutput(repoRoot, "exec", "-n", namespace, podName, "--",
+			"ping", "-c", "3", "-W", "2", target)
+		g.Expect(err).NotTo(HaveOccurred(), "ping output: %s", out)
+		g.Expect(out).To(ContainSubstring("0% packet loss"), "ping output: %s", out)
 	}).Should(Succeed())
 }
 
