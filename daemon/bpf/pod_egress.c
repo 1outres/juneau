@@ -110,6 +110,17 @@ static __always_inline int update_l4_csum(struct __sk_buff *skb,
   return TC_ACT_OK;
 }
 
+// snat_icmp_quote_fixup repairs the copy an outbound ICMP error message
+// carries. The outer source is what a 1:1 SNAT translates, so the copy
+// needs its destination repaired. See nat_icmp_quote_fixup_1to1 for the
+// return values and for why this is a subprogram.
+static __juneau_bpf_subprog int snat_icmp_quote_fixup(struct __sk_buff *skb,
+                                                      __be32 old_addr,
+                                                      __be32 new_addr) {
+  return nat_icmp_quote_fixup_1to1(skb, /*outer_is_source=*/true, old_addr,
+                                   new_addr);
+}
+
 static __always_inline int handle_snat(struct __sk_buff *skb,
                                        struct ethhdr *eth, struct iphdr *iph) {
   void *data;
@@ -133,6 +144,15 @@ static __always_inline int handle_snat(struct __sk_buff *skb,
 
   __be32 old_addr = iph->saddr;
   __be32 new_addr = bpf_htonl(nv->addr);
+
+  // An ICMP error message the Pod raises quotes the packet the peer
+  // sent, so the Pod's address sits in the quoted destination. The peer
+  // finds the socket to report to from that quoted tuple alone, which is
+  // why the outer rewrite below is not enough.
+  int icmp_rc = snat_icmp_quote_fixup(skb, old_addr, new_addr);
+  if (icmp_rc < 0)
+    return TC_ACT_SHOT;
+  bool icmp_error = icmp_rc > 0;
 
   if (bpf_l3_csum_replace(skb,
                           sizeof(struct ethhdr) +
@@ -192,7 +212,8 @@ static __always_inline int handle_snat(struct __sk_buff *skb,
         .vpc_id = isv->subnet_id ? 0 : 0,  // unknown; lookup uses subnet_id below
         .subnet_id = isv->subnet_id,
         .hook = TRACE_HOOK_POD_EGRESS,
-        .reason = TRACE_REASON_SNAT_APPLIED,
+        .reason = icmp_error ? TRACE_REASON_ICMP_ERROR_TRANSLATED
+                             : TRACE_REASON_SNAT_APPLIED,
         .scope = TRACE_SCOPE_HOST,
         .proto = iph->protocol,
         .before_saddr = old_addr,

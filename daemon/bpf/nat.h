@@ -206,6 +206,27 @@ static __always_inline bool nat_icmp_is_error(__u8 type) {
          type == NAT_ICMP_PARAMETERPROB;
 }
 
+// nat_icmp_carries_quote reports whether the packet is an ICMP error
+// message, so a caller can tell "no copy to repair" apart from "a copy
+// that cannot be repaired". Anything else reads as false: another
+// protocol, an Echo, a later fragment, a header the frame is too short
+// for.
+static __always_inline bool nat_icmp_carries_quote(const struct iphdr *iph,
+                                                   void *data_end) {
+  __u32 ihl = iph->ihl;
+  if (ihl < 5)
+    return false;
+  if (iph->protocol != IPPROTO_ICMP)
+    return false;
+  if ((bpf_ntohs(iph->frag_off) & IP_OFFSET) != 0)
+    return false;
+
+  const struct icmphdr *icmp = (void *)iph + ihl * 4;
+  if ((void *)(icmp + 1) > data_end)
+    return false;
+  return nat_icmp_is_error(icmp->type);
+}
+
 // nat_icmp_quote describes the packet copied inside an ICMP error
 // message. The offsets are counted from the start of the frame, so the
 // rewrite can reach every field with bpf_skb_store_bytes after the
@@ -550,6 +571,57 @@ static __always_inline int nat_icmp_quote_rewrite(struct __sk_buff *skb,
   }
 
   return 0;
+}
+
+// nat_icmp_quote_fixup_1to1 is the ICMP-error half of a 1:1 NAT
+// (ElasticIP). The caller already knows both addresses, because a 1:1
+// NAT maps one address onto one address and translates no port. So
+// there is no conntrack lookup here, and the port the rewrite writes
+// back is the port the copy already carries.
+//
+// Return values let the caller keep the three cases apart:
+//   1  the packet was an ICMP error message and its copy was repaired
+//   0  the packet carries no copy, so the caller rewrites only the
+//      outer header, exactly as before
+//  -1  the packet is an ICMP error message this NAT cannot repair
+//
+// -1 covers a copy the parser rejects and a copy naming an address other
+// than the one being translated. Such a message either belongs to
+// another flow or is forged, and delivering it with an address the
+// receiver never used would be a lie the receiver cannot detect, so the
+// caller drops it.
+//
+// Each program wraps this in its own noinline subprogram with
+// outer_is_source fixed, rather than calling it inline. Two reasons.
+// struct nat_icmp_quote is 32 bytes, and both callers sit close enough
+// to the verifier's 512-byte combined-stack ceiling that holding it in
+// their own frame breaks the load; a subprogram gives it a frame that
+// only exists while the fixup runs. And a constant direction lets every
+// branch it selects fold away, which is worth 16 bytes of that frame.
+static __always_inline int
+nat_icmp_quote_fixup_1to1(struct __sk_buff *skb, bool outer_is_source,
+                          __be32 old_addr, __be32 new_addr) {
+  struct iphdr *iph = nat_load_iph(skb);
+  if (!iph)
+    return -1;
+  void *data_end = nat_skb_data_end(skb);
+
+  if (!nat_icmp_carries_quote(iph, data_end))
+    return 0;
+
+  struct nat_icmp_quote q;
+  if (nat_read_icmp_quote(iph, data_end, &q) < 0)
+    return -1;
+
+  // The copied packet travelled the other way, so the address this NAT
+  // moves sits in the mirrored field.
+  if ((outer_is_source ? q.daddr : q.saddr) != old_addr)
+    return -1;
+
+  if (nat_icmp_quote_rewrite(skb, &q, outer_is_source, new_addr,
+                             outer_is_source ? q.dport : q.sport) < 0)
+    return -1;
+  return 1;
 }
 
 // nat_apply_napt_in_rewrite performs the reverse rewrite for the inbound

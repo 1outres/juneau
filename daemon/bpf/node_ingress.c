@@ -115,6 +115,17 @@ static __always_inline int update_l4_csum(struct __sk_buff *skb, struct iphdr *i
   return TC_ACT_OK;
 }
 
+// dnat_icmp_quote_fixup repairs the copy an inbound ICMP error message
+// carries. The outer destination is what a 1:1 DNAT translates, so the
+// copy needs its source repaired. See nat_icmp_quote_fixup_1to1 for the
+// return values and for why this is a subprogram.
+static __juneau_bpf_subprog int dnat_icmp_quote_fixup(struct __sk_buff *skb,
+                                                      __be32 old_addr,
+                                                      __be32 new_addr) {
+  return nat_icmp_quote_fixup_1to1(skb, /*outer_is_source=*/false, old_addr,
+                                   new_addr);
+}
+
 static __always_inline int handle_dnat(struct __sk_buff *skb, struct ethhdr *eth,
                                        struct iphdr *iph,
                                        const struct nat_inside *nat,
@@ -143,6 +154,19 @@ static __always_inline int handle_dnat(struct __sk_buff *skb, struct ethhdr *eth
   __be16 sport = 0, dport = 0;
   data_end = nat_skb_data_end(skb);
   trace_read_l4_ports(iph, data_end, &sport, &dport);
+
+  // An ICMP error message aimed at the ElasticIP quotes the packet the
+  // Pod sent, so the ElasticIP sits in the quoted source address. The
+  // Pod's kernel finds the socket to report to from that quoted tuple
+  // alone, which is why the outer rewrite below is not enough.
+  int icmp_rc = dnat_icmp_quote_fixup(skb, old_addr, new_addr);
+  if (icmp_rc < 0) {
+    trace_emit_drop_l3(skb, trace_id, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_NODE_INGRESS, TRACE_SCOPE_HOST, 0,
+                       nat->subnet_id);
+    return TC_ACT_SHOT;
+  }
+  bool icmp_error = icmp_rc > 0;
 
   struct arp_table_key ak = {
       .subnet_id = nat->subnet_id,
@@ -206,7 +230,8 @@ static __always_inline int handle_dnat(struct __sk_buff *skb, struct ethhdr *eth
   if (trace_id != 0) {
     struct trace_emit_args a = {0};
     a.trace_id = trace_id;
-    a.reason = TRACE_REASON_DNAT_APPLIED;
+    a.reason = icmp_error ? TRACE_REASON_ICMP_ERROR_TRANSLATED
+                          : TRACE_REASON_DNAT_APPLIED;
     a.hook = TRACE_HOOK_NODE_INGRESS;
     a.ifindex = skb->ifindex;
     a.subnet_id = nat->subnet_id;
