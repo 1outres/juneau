@@ -482,7 +482,8 @@ static __always_inline int dispatch_after_dnat(struct __sk_buff *skb,
     return TC_ACT_SHOT;
   }
 
-  if (fv->type == FIB_ROUTE_TYPE_CONNECTED) {
+  if (fv->type == FIB_ROUTE_TYPE_CONNECTED ||
+      fv->type == FIB_ROUTE_TYPE_PEERING) {
     struct arp_table_key ak = {
         .subnet_id = fv->subnet_id,
         .ipaddr = bpf_ntohl(dst_be),
@@ -1934,6 +1935,103 @@ static __always_inline int handle_napt(struct __sk_buff *skb,
   return bpf_redirect(fib_params.ifindex, 0);
 }
 
+// handle_transit resolves a destination the VPC route table handed to a
+// TransitGateway. That route only carried the transit route table id
+// (overloaded into fib_val.subnet_id, the same field reuse
+// FIB_ROUTE_TYPE_NAPT does for its gateway id), so a second LPM lookup
+// in the transit table picks the target Subnet. A transit table never
+// points at another transit table, so the lookup stops at two levels.
+//
+// noinline: the transit path is cold and its second lookup is big
+// enough that expanding it into the main dispatch would spend verifier
+// budget on every packet.
+//
+// It takes scalars instead of the caller's eth pointer so no packet
+// pointer crosses the BPF-to-BPF call boundary; the header is re-derived
+// here right before it is written, the way nat_load_iph callers do it.
+//
+// It returns the destination Subnet VNI and leaves the forward_l2 to the
+// caller. Calling forward_l2 here would inline its bpf_tunnel_key into
+// this frame, and tc_pod_egress already uses 408 of the kernel's
+// 512-byte combined call-stack budget. Subnet VNIs start at 1 (see
+// BACKEND_SUBNET_ID_UNDERLAY in maps.h), so 0 means "drop the packet";
+// the drop trace is already emitted by then.
+static __juneau_bpf_subprog __u32 handle_transit(struct __sk_buff *skb,
+                                                 __u32 vpc_id,
+                                                 __u32 tgw_table_id,
+                                                 __be32 dst_be) {
+  void *tgw_inner = bpf_map_lookup_elem(&tgw_fib_map, &tgw_table_id);
+  if (!tgw_inner) {
+    __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, vpc_id);
+    trace_emit_map_miss_l3(skb, __tid, TRACE_REASON_MISS_TGW_TABLE,
+                           TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, vpc_id, 0,
+                           tgw_table_id);
+    trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, vpc_id, 0);
+    return 0;
+  }
+
+  struct fib_key tkey = {
+      .prefixlen = 32,
+      .dst = dst_be,
+  };
+  const struct fib_val *tfv = bpf_map_lookup_elem(tgw_inner, &tkey);
+  if (!tfv) {
+    __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, vpc_id);
+    trace_emit_map_miss_l3(skb, __tid, TRACE_REASON_MISS_TGW_ROUTE,
+                           TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, vpc_id, 0,
+                           bpf_ntohl(dst_be));
+    trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, vpc_id, 0);
+    return 0;
+  }
+
+  if (tfv->type == FIB_ROUTE_TYPE_BLACKHOLE) {
+    __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, vpc_id);
+    trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_BLACKHOLE,
+                       TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, vpc_id, 0);
+    return 0;
+  }
+
+  if (tfv->type != FIB_ROUTE_TYPE_CONNECTED) {
+    __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, vpc_id);
+    trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, vpc_id, 0);
+    return 0;
+  }
+
+  __u32 next_subnet_id = tfv->subnet_id;
+  __u8 next_smac[ETH_ALEN];
+  __builtin_memcpy(next_smac, tfv->smac, ETH_ALEN);
+
+  struct arp_table_key ak = {
+      .subnet_id = next_subnet_id,
+      .ipaddr = bpf_ntohl(dst_be),
+  };
+  const struct arp_table_val *av = bpf_map_lookup_elem(&arp_table, &ak);
+  if (!av) {
+    __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, vpc_id);
+    trace_emit_map_miss_l3(skb, __tid, TRACE_REASON_MISS_ARP,
+                           TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, vpc_id,
+                           next_subnet_id, bpf_ntohl(dst_be));
+    trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, vpc_id,
+                       next_subnet_id);
+    return 0;
+  }
+
+  void *data = nat_skb_data(skb);
+  void *data_end = skb_data_end(skb);
+  struct ethhdr *eth = data;
+  if ((void *)(eth + 1) > data_end)
+    return 0;
+
+  __builtin_memcpy(eth->h_dest, av->mac, ETH_ALEN);
+  __builtin_memcpy(eth->h_source, next_smac, ETH_ALEN);
+
+  return next_subnet_id;
+}
+
 static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
                                      const struct subnet_val *subnet) {
   void *data_end = skb_data_end(skb);
@@ -2054,7 +2152,8 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
     return TC_ACT_SHOT;
   }
 
-  if (fv->type == FIB_ROUTE_TYPE_CONNECTED) {
+  if (fv->type == FIB_ROUTE_TYPE_CONNECTED ||
+      fv->type == FIB_ROUTE_TYPE_PEERING) {
     struct arp_table_key ak = {
         .subnet_id = fv->subnet_id,
         .ipaddr = bpf_ntohl(dst_be),
@@ -2084,6 +2183,14 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
 
   if (fv->type == FIB_ROUTE_TYPE_NAPT)
     return handle_napt(skb, eth, iph, subnet, fv->subnet_id);
+
+  if (fv->type == FIB_ROUTE_TYPE_TRANSIT) {
+    __u32 transit_subnet_id =
+        handle_transit(skb, subnet->vpc_id, fv->subnet_id, dst_be);
+    if (transit_subnet_id == 0)
+      return TC_ACT_SHOT;
+    return forward_l2(skb, eth, subnet->vpc_id, transit_subnet_id);
+  }
 
   return TC_ACT_SHOT;
 }

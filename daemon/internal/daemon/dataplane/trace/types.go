@@ -48,6 +48,8 @@ const (
 	ReasonMissService       Reason = 206
 	ReasonMissBackend       Reason = 207
 	ReasonMissConntrack     Reason = 208
+	ReasonMissTGWTable      Reason = 209
+	ReasonMissTGWRoute      Reason = 210
 
 	ReasonPolicyACLPass Reason = 300
 	ReasonPolicyACLDrop Reason = 301
@@ -65,6 +67,7 @@ const (
 	ReasonRedirectVxlan   Reason = 501
 	ReasonPassKernel      Reason = 502
 	ReasonDropShot        Reason = 503
+	ReasonDropBlackhole   Reason = 504
 )
 
 // Hook mirrors TRACE_HOOK_* in trace.h.

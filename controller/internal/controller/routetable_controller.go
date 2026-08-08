@@ -185,6 +185,7 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	for _, route := range resource.Spec.Routes {
 		if rt := getRoute(statusRoutes, route.Dst); rt == nil {
 			var subnet string
+			var transitGatewayRouteTable string
 			if route.Via.Type == juneauloutresmev1alpha1.ViaConnected ||
 				route.Via.Type == juneauloutresmev1alpha1.ViaService {
 				continue
@@ -235,8 +236,103 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 					}
 					return ctrl.Result{}, nil
 				}
+			} else if route.Via.Type == juneauloutresmev1alpha1.ViaVpcPeering {
+				var peering juneauloutresmev1alpha1.VpcPeering
+				if err := r.Get(ctx, client.ObjectKey{Name: route.Via.VpcPeering}, &peering); err != nil {
+					if errors.IsNotFound(err) {
+						if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("VpcPeering %q not found", route.Via.VpcPeering)); err != nil {
+							return ctrl.Result{}, err
+						}
+						return ctrl.Result{}, nil
+					}
+					if updateErr := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, fmt.Sprintf("failed to get VpcPeering %q", route.Via.VpcPeering)); updateErr != nil {
+						return ctrl.Result{}, updateErr
+					}
+					return ctrl.Result{}, err
+				}
+				if !meta.IsStatusConditionTrue(peering.Status.Conditions, juneauloutresmev1alpha1.VpcPeeringStatusReady) {
+					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("VpcPeering %q is not ready", peering.Name)); err != nil {
+						return ctrl.Result{}, err
+					}
+					return ctrl.Result{}, nil
+				}
+				peerVpc, ok := peering.Spec.PeerOf(resource.Spec.Vpc)
+				if !ok {
+					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("RouteTable belongs to Vpc %q which is not part of VpcPeering %q", resource.Spec.Vpc, peering.Name)); err != nil {
+						return ctrl.Result{}, err
+					}
+					return ctrl.Result{}, nil
+				}
+				peerSubnet, err := r.findSubnetByCIDR(ctx, peerVpc, route.Dst)
+				if err != nil {
+					if updateErr := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, fmt.Sprintf("failed to list subnets for VPC %q", peerVpc)); updateErr != nil {
+						return ctrl.Result{}, updateErr
+					}
+					return ctrl.Result{}, err
+				}
+				if peerSubnet == "" {
+					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("no Subnet in Vpc %q has CIDR %q", peerVpc, route.Dst)); err != nil {
+						return ctrl.Result{}, err
+					}
+					return ctrl.Result{}, nil
+				}
+				subnet = peerSubnet
+			} else if route.Via.Type == juneauloutresmev1alpha1.ViaTransitGateway {
+				var transitGateway juneauloutresmev1alpha1.TransitGateway
+				if err := r.Get(ctx, client.ObjectKey{Name: route.Via.TransitGateway}, &transitGateway); err != nil {
+					if errors.IsNotFound(err) {
+						if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("TransitGateway %q not found", route.Via.TransitGateway)); err != nil {
+							return ctrl.Result{}, err
+						}
+						return ctrl.Result{}, nil
+					}
+					if updateErr := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, fmt.Sprintf("failed to get TransitGateway %q", route.Via.TransitGateway)); updateErr != nil {
+						return ctrl.Result{}, updateErr
+					}
+					return ctrl.Result{}, err
+				}
+				if !meta.IsStatusConditionTrue(transitGateway.Status.Conditions, juneauloutresmev1alpha1.TransitGatewayStatusReady) {
+					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("TransitGateway %q is not ready", transitGateway.Name)); err != nil {
+						return ctrl.Result{}, err
+					}
+					return ctrl.Result{}, nil
+				}
+				attachment, err := r.findTransitGatewayAttachment(ctx, transitGateway.Name, resource.Spec.Vpc)
+				if err != nil {
+					if updateErr := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, "failed to list transit gateway attachments"); updateErr != nil {
+						return ctrl.Result{}, updateErr
+					}
+					return ctrl.Result{}, err
+				}
+				if attachment == nil {
+					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("Vpc %q has no attachment to TransitGateway %q", resource.Spec.Vpc, transitGateway.Name)); err != nil {
+						return ctrl.Result{}, err
+					}
+					return ctrl.Result{}, nil
+				}
+				var association juneauloutresmev1alpha1.TransitGatewayRouteTable
+				if err := r.Get(ctx, client.ObjectKey{Name: attachment.Spec.Association}, &association); err != nil {
+					if errors.IsNotFound(err) {
+						if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("TransitGatewayRouteTable %q not found", attachment.Spec.Association)); err != nil {
+							return ctrl.Result{}, err
+						}
+						return ctrl.Result{}, nil
+					}
+					if updateErr := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, fmt.Sprintf("failed to get TransitGatewayRouteTable %q", attachment.Spec.Association)); updateErr != nil {
+						return ctrl.Result{}, updateErr
+					}
+					return ctrl.Result{}, err
+				}
+				if association.Status.TableID == 0 {
+					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("TransitGatewayRouteTable %q has not yet been assigned a tableID", association.Name)); err != nil {
+						return ctrl.Result{}, err
+					}
+					return ctrl.Result{}, nil
+				}
+				transitGatewayRouteTable = association.Name
 			}
 			route.Subnet = subnet
+			route.TransitGatewayRouteTable = transitGatewayRouteTable
 			statusRoutes = append(statusRoutes, route)
 		}
 	}
@@ -305,6 +401,44 @@ func getRoute(routes []juneauloutresmev1alpha1.Route, dst string) *juneauloutres
 	return nil
 }
 
+// findSubnetByCIDR returns the Subnet of vpcName whose CIDR is exactly
+// cidr, or "" when no Subnet matches. A peering route resolves to one
+// destination Subnet VNI, so a supernet spanning several Subnets has no
+// single answer and is reported as unresolved instead.
+func (r *RouteTableReconciler) findSubnetByCIDR(ctx context.Context, vpcName, cidr string) (string, error) {
+	var subnets juneauloutresmev1alpha1.SubnetList
+	if err := r.List(ctx, &subnets, client.MatchingFields{"spec.vpc": vpcName}); err != nil {
+		return "", err
+	}
+
+	for i := range subnets.Items {
+		if subnets.Items[i].Spec.CIDR == cidr {
+			return subnets.Items[i].Name, nil
+		}
+	}
+
+	return "", nil
+}
+
+// findTransitGatewayAttachment returns the attachment that connects
+// vpcName to transitGateway, or nil when the Vpc is not attached. The
+// webhook keeps the pair unique, so the first match is the only match.
+func (r *RouteTableReconciler) findTransitGatewayAttachment(ctx context.Context, transitGateway, vpcName string) (*juneauloutresmev1alpha1.TransitGatewayAttachment, error) {
+	var attachmentList juneauloutresmev1alpha1.TransitGatewayAttachmentList
+	if err := r.List(ctx, &attachmentList); err != nil {
+		return nil, err
+	}
+
+	for i := range attachmentList.Items {
+		attachment := &attachmentList.Items[i]
+		if attachment.Spec.TransitGateway == transitGateway && attachment.Spec.Vpc == vpcName {
+			return attachment, nil
+		}
+	}
+
+	return nil, nil
+}
+
 func (r *RouteTableReconciler) getNetworkEndpoint(ctx context.Context, name string) (*juneauloutresmev1alpha1.NetworkEndpoint, error) {
 	var networkEndpointList juneauloutresmev1alpha1.NetworkEndpointList
 	if err := r.List(ctx, &networkEndpointList); err != nil {
@@ -338,6 +472,10 @@ func (r *RouteTableReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&juneauloutresmev1alpha1.Vpc{}, handler.EnqueueRequestsFromMapFunc(r.mapVpcToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.AllocationClaim{}, handler.EnqueueRequestsFromMapFunc(r.mapClaimToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.NATGateway{}, handler.EnqueueRequestsFromMapFunc(r.mapNATGatewayToRouteTables)).
+		Watches(&juneauloutresmev1alpha1.VpcPeering{}, handler.EnqueueRequestsFromMapFunc(r.mapVpcPeeringToRouteTables)).
+		Watches(&juneauloutresmev1alpha1.TransitGateway{}, handler.EnqueueRequestsFromMapFunc(r.mapTransitGatewayToRouteTables)).
+		Watches(&juneauloutresmev1alpha1.TransitGatewayAttachment{}, handler.EnqueueRequestsFromMapFunc(r.mapTransitGatewayAttachmentToRouteTables)).
+		Watches(&juneauloutresmev1alpha1.TransitGatewayRouteTable{}, handler.EnqueueRequestsFromMapFunc(r.mapTransitGatewayRouteTableToRouteTables)).
 		Watches(&corev1.Service{}, handler.EnqueueRequestsFromMapFunc(r.mapServiceToRouteTables)).
 		Named("routetable").
 		Complete(r)
@@ -363,7 +501,21 @@ func (r *RouteTableReconciler) mapSubnetToRouteTables(ctx context.Context, obj c
 
 	// CONNECTED routes for every Subnet are injected into every
 	// RouteTable in the same Vpc. A Subnet event therefore must wake
-	// every Vpc-local RouteTable, not just the main one.
+	// every Vpc-local RouteTable, not just the main one. RouteTables in
+	// a peered Vpc also care: their vpcPeering routes resolve against
+	// this Subnet's CIDR, so its arrival or removal flips them between
+	// Ready and NotReady.
+	vpcs := map[string]struct{}{subnet.Spec.Vpc: {}}
+	var peeringList juneauloutresmev1alpha1.VpcPeeringList
+	if err := r.List(ctx, &peeringList); err != nil {
+		return nil
+	}
+	for i := range peeringList.Items {
+		if peer, ok := peeringList.Items[i].Spec.PeerOf(subnet.Spec.Vpc); ok {
+			vpcs[peer] = struct{}{}
+		}
+	}
+
 	var routeTableList juneauloutresmev1alpha1.RouteTableList
 	if err := r.List(ctx, &routeTableList); err != nil {
 		return nil
@@ -372,10 +524,77 @@ func (r *RouteTableReconciler) mapSubnetToRouteTables(ctx context.Context, obj c
 	requests := make([]reconcile.Request, 0, len(routeTableList.Items))
 	for i := range routeTableList.Items {
 		rt := &routeTableList.Items[i]
-		if rt.Spec.Vpc != subnet.Spec.Vpc {
+		if _, ok := vpcs[rt.Spec.Vpc]; !ok {
 			continue
 		}
 		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: rt.Name}})
+	}
+	return requests
+}
+
+func (r *RouteTableReconciler) mapVpcPeeringToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
+	peering, ok := obj.(*juneauloutresmev1alpha1.VpcPeering)
+	if !ok {
+		return nil
+	}
+
+	var routeTableList juneauloutresmev1alpha1.RouteTableList
+	if err := r.List(ctx, &routeTableList); err != nil {
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0)
+	for i := range routeTableList.Items {
+		rt := &routeTableList.Items[i]
+		for _, route := range rt.Spec.Routes {
+			if route.Via.Type == juneauloutresmev1alpha1.ViaVpcPeering && route.Via.VpcPeering == peering.Name {
+				requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: rt.Name}})
+				break
+			}
+		}
+	}
+	return requests
+}
+
+func (r *RouteTableReconciler) mapTransitGatewayToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
+	transitGateway, ok := obj.(*juneauloutresmev1alpha1.TransitGateway)
+	if !ok {
+		return nil
+	}
+	return r.routeTablesUsingTransitGateway(ctx, transitGateway.Name)
+}
+
+func (r *RouteTableReconciler) mapTransitGatewayAttachmentToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
+	attachment, ok := obj.(*juneauloutresmev1alpha1.TransitGatewayAttachment)
+	if !ok || attachment.Spec.TransitGateway == "" {
+		return nil
+	}
+	return r.routeTablesUsingTransitGateway(ctx, attachment.Spec.TransitGateway)
+}
+
+func (r *RouteTableReconciler) mapTransitGatewayRouteTableToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
+	routeTable, ok := obj.(*juneauloutresmev1alpha1.TransitGatewayRouteTable)
+	if !ok || routeTable.Spec.TransitGateway == "" {
+		return nil
+	}
+	return r.routeTablesUsingTransitGateway(ctx, routeTable.Spec.TransitGateway)
+}
+
+func (r *RouteTableReconciler) routeTablesUsingTransitGateway(ctx context.Context, transitGateway string) []reconcile.Request {
+	var routeTableList juneauloutresmev1alpha1.RouteTableList
+	if err := r.List(ctx, &routeTableList); err != nil {
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0)
+	for i := range routeTableList.Items {
+		rt := &routeTableList.Items[i]
+		for _, route := range rt.Spec.Routes {
+			if route.Via.Type == juneauloutresmev1alpha1.ViaTransitGateway && route.Via.TransitGateway == transitGateway {
+				requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: rt.Name}})
+				break
+			}
+		}
 	}
 	return requests
 }

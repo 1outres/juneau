@@ -135,6 +135,9 @@ var FIBRouteTypeEnum = NewEnumDict("fib_route_type", map[uint64]string{
 	3: "FIB_ROUTE_TYPE_INTERNET_GATEWAY",
 	4: "FIB_ROUTE_TYPE_SERVICE",
 	6: "FIB_ROUTE_TYPE_NAPT",
+	7: "FIB_ROUTE_TYPE_PEERING",
+	8: "FIB_ROUTE_TYPE_TRANSIT",
+	9: "FIB_ROUTE_TYPE_BLACKHOLE",
 })
 
 // BackendKindEnum maps backend_val.kind → label.

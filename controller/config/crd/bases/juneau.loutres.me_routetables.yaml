@@ -51,6 +51,13 @@ spec:
                       type: string
                     subnet:
                       type: string
+                    transitGatewayRouteTable:
+                      description: |-
+                        TransitGatewayRouteTable names the TransitGatewayRouteTable the
+                        data plane consults for this route. The controller resolves it
+                        from the attachment's association, so it is only ever set in
+                        status.
+                      type: string
                     via:
                       properties:
                         endpointName:
@@ -63,6 +70,11 @@ spec:
                             NATGateway is required when type=natGateway. Refers to a
                             NATGateway by name (cluster-scoped).
                           type: string
+                        transitGateway:
+                          description: |-
+                            TransitGateway is required when type=transitGateway. Refers to a
+                            TransitGateway by name (cluster-scoped).
+                          type: string
                         type:
                           enum:
                           - connected
@@ -70,6 +82,13 @@ spec:
                           - internetGateway
                           - service
                           - natGateway
+                          - vpcPeering
+                          - transitGateway
+                          type: string
+                        vpcPeering:
+                          description: |-
+                            VpcPeering is required when type=vpcPeering. Refers to a
+                            VpcPeering by name (cluster-scoped).
                           type: string
                       required:
                       - type
@@ -155,6 +174,13 @@ spec:
                       type: string
                     subnet:
                       type: string
+                    transitGatewayRouteTable:
+                      description: |-
+                        TransitGatewayRouteTable names the TransitGatewayRouteTable the
+                        data plane consults for this route. The controller resolves it
+                        from the attachment's association, so it is only ever set in
+                        status.
+                      type: string
                     via:
                       properties:
                         endpointName:
@@ -167,6 +193,11 @@ spec:
                             NATGateway is required when type=natGateway. Refers to a
                             NATGateway by name (cluster-scoped).
                           type: string
+                        transitGateway:
+                          description: |-
+                            TransitGateway is required when type=transitGateway. Refers to a
+                            TransitGateway by name (cluster-scoped).
+                          type: string
                         type:
                           enum:
                           - connected
@@ -174,6 +205,13 @@ spec:
                           - internetGateway
                           - service
                           - natGateway
+                          - vpcPeering
+                          - transitGateway
+                          type: string
+                        vpcPeering:
+                          description: |-
+                            VpcPeering is required when type=vpcPeering. Refers to a
+                            VpcPeering by name (cluster-scoped).
                           type: string
                       required:
                       - type

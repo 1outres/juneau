@@ -217,4 +217,44 @@ resources:
   webhooks:
     validation: true
     webhookVersion: v1
+- api:
+    crdVersion: v1
+  controller: true
+  domain: juneau.loutres.me
+  kind: VpcPeering
+  path: github.com/1outres/juneau/controller/api/v1alpha1
+  version: v1alpha1
+  webhooks:
+    validation: true
+    webhookVersion: v1
+- api:
+    crdVersion: v1
+  controller: true
+  domain: juneau.loutres.me
+  kind: TransitGateway
+  path: github.com/1outres/juneau/controller/api/v1alpha1
+  version: v1alpha1
+  webhooks:
+    validation: true
+    webhookVersion: v1
+- api:
+    crdVersion: v1
+  controller: true
+  domain: juneau.loutres.me
+  kind: TransitGatewayRouteTable
+  path: github.com/1outres/juneau/controller/api/v1alpha1
+  version: v1alpha1
+  webhooks:
+    validation: true
+    webhookVersion: v1
+- api:
+    crdVersion: v1
+  controller: true
+  domain: juneau.loutres.me
+  kind: TransitGatewayAttachment
+  path: github.com/1outres/juneau/controller/api/v1alpha1
+  version: v1alpha1
+  webhooks:
+    validation: true
+    webhookVersion: v1
 version: "3"

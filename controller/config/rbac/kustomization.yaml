@@ -22,6 +22,18 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the {{ .ProjectName }} itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
+- transitgatewayattachment_admin_role.yaml
+- transitgatewayattachment_editor_role.yaml
+- transitgatewayattachment_viewer_role.yaml
+- transitgatewayroutetable_admin_role.yaml
+- transitgatewayroutetable_editor_role.yaml
+- transitgatewayroutetable_viewer_role.yaml
+- transitgateway_admin_role.yaml
+- transitgateway_editor_role.yaml
+- transitgateway_viewer_role.yaml
+- vpcpeering_admin_role.yaml
+- vpcpeering_editor_role.yaml
+- vpcpeering_viewer_role.yaml
 - serviceloadbalancer_admin_role.yaml
 - serviceloadbalancer_editor_role.yaml
 - serviceloadbalancer_viewer_role.yaml

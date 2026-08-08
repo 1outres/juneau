@@ -55,6 +55,22 @@ roleRef:
   name: juneau-routetable-viewer-role
   apiGroup: rbac.authorization.k8s.io
 ---
+# TransitGatewayRouteTable drives the transit-gateway FIB layer: the
+# daemon reads status.tableID and status.routes to build the second
+# lookup level.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cni-daemon-transitgatewayroutetable-viewer-binding
+subjects:
+  - kind: ServiceAccount
+    name: cni-daemon
+    namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: juneau-transitgatewayroutetable-viewer-role
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:

@@ -224,5 +224,47 @@ func (v *VpcCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Obj
 		)
 	}
 
+	// Block deletion while a VpcPeering still names this Vpc. A peering
+	// that lost one side can never become Ready again, and the routes
+	// pointing at it would stay broken with no object left to fix.
+	var peeringList juneauv1alpha1.VpcPeeringList
+	if err := v.List(ctx, &peeringList); err != nil {
+		return nil, fmt.Errorf("list VpcPeerings: %w", err)
+	}
+	var peeringRefs []string
+	for i := range peeringList.Items {
+		if peeringList.Items[i].Spec.Connects(vpc.Name) {
+			peeringRefs = append(peeringRefs, peeringList.Items[i].Name)
+		}
+	}
+	if len(peeringRefs) > 0 {
+		return nil, errors.NewForbidden(
+			schema.GroupResource{Group: juneauv1alpha1.GroupVersion.Group, Resource: "vpcs"},
+			vpc.Name,
+			fmt.Errorf("VpcPeering(s) %v still peer this Vpc; delete them first", peeringRefs),
+		)
+	}
+
+	// Same reasoning for transit gateways: an attachment that lost its
+	// Vpc can never become Ready again, and the route tables it fed
+	// would keep advertising prefixes nobody owns.
+	var attachmentList juneauv1alpha1.TransitGatewayAttachmentList
+	if err := v.List(ctx, &attachmentList); err != nil {
+		return nil, fmt.Errorf("list TransitGatewayAttachments: %w", err)
+	}
+	var attachmentRefs []string
+	for i := range attachmentList.Items {
+		if attachmentList.Items[i].Spec.Vpc == vpc.Name {
+			attachmentRefs = append(attachmentRefs, attachmentList.Items[i].Name)
+		}
+	}
+	if len(attachmentRefs) > 0 {
+		return nil, errors.NewForbidden(
+			schema.GroupResource{Group: juneauv1alpha1.GroupVersion.Group, Resource: "vpcs"},
+			vpc.Name,
+			fmt.Errorf("TransitGatewayAttachment(s) %v still attach this Vpc; delete them first", attachmentRefs),
+		)
+	}
+
 	return nil, nil
 }

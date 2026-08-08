@@ -1,0 +1,12 @@
+apiVersion: juneau.loutres.me/v1alpha1
+kind: VpcPeering
+metadata:
+  labels:
+    app.kubernetes.io/name: controller
+    app.kubernetes.io/managed-by: kustomize
+  name: vpcpeering-sample
+spec:
+  requester:
+    vpc: vpc-a
+  accepter:
+    vpc: vpc-b

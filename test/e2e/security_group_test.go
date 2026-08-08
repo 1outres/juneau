@@ -432,3 +432,20 @@ func assertNoPodConnectivity(namespace, clientPod, serverPod string) {
 		"curl", "-sS", "--max-time", "3", fmt.Sprintf("http://%s", strings.TrimSpace(serverIP)))
 	Expect(curlErr).To(HaveOccurred(), "curl should fail per SG policy, got: %s", out)
 }
+
+// assertPodConnectivityStops asserts a HTTP probe from clientPod to
+// serverPod starts failing. It retries, unlike assertNoPodConnectivity:
+// the caller has just taken a route away from a path that was working,
+// and the daemon needs a moment to reprogram the data plane, so a
+// single probe would race that update.
+func assertPodConnectivityStops(namespace, clientPod, serverPod string) {
+	serverIP, err := kubectlJSONPath(repoRoot, `{.status.podIP}`, "-n", namespace, "get", "pod", serverPod)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(strings.TrimSpace(serverIP)).NotTo(BeEmpty())
+
+	Eventually(func(g Gomega) {
+		out, curlErr := kubectlOutput(repoRoot, "exec", "-n", namespace, clientPod, "--",
+			"curl", "-sS", "--max-time", "3", fmt.Sprintf("http://%s", strings.TrimSpace(serverIP)))
+		g.Expect(curlErr).To(HaveOccurred(), "curl should fail once the route is withdrawn, got: %s", out)
+	}).Should(Succeed())
+}

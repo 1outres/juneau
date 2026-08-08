@@ -365,6 +365,8 @@ const (
 	TraceEventReason_TRACE_EVENT_REASON_MISS_SERVICE             TraceEventReason = 206
 	TraceEventReason_TRACE_EVENT_REASON_MISS_BACKEND             TraceEventReason = 207
 	TraceEventReason_TRACE_EVENT_REASON_MISS_CONNTRACK           TraceEventReason = 208
+	TraceEventReason_TRACE_EVENT_REASON_MISS_TGW_TABLE           TraceEventReason = 209
+	TraceEventReason_TRACE_EVENT_REASON_MISS_TGW_ROUTE           TraceEventReason = 210
 	TraceEventReason_TRACE_EVENT_REASON_POLICY_ACL_PASS          TraceEventReason = 300
 	TraceEventReason_TRACE_EVENT_REASON_POLICY_ACL_DROP          TraceEventReason = 301
 	TraceEventReason_TRACE_EVENT_REASON_POLICY_SG_PASS           TraceEventReason = 302
@@ -379,6 +381,7 @@ const (
 	TraceEventReason_TRACE_EVENT_REASON_REDIRECT_VXLAN           TraceEventReason = 501
 	TraceEventReason_TRACE_EVENT_REASON_PASS_KERNEL              TraceEventReason = 502
 	TraceEventReason_TRACE_EVENT_REASON_DROP_SHOT                TraceEventReason = 503
+	TraceEventReason_TRACE_EVENT_REASON_DROP_BLACKHOLE           TraceEventReason = 504
 )
 
 // Enum value maps for TraceEventReason.
@@ -398,6 +401,8 @@ var (
 		206: "TRACE_EVENT_REASON_MISS_SERVICE",
 		207: "TRACE_EVENT_REASON_MISS_BACKEND",
 		208: "TRACE_EVENT_REASON_MISS_CONNTRACK",
+		209: "TRACE_EVENT_REASON_MISS_TGW_TABLE",
+		210: "TRACE_EVENT_REASON_MISS_TGW_ROUTE",
 		300: "TRACE_EVENT_REASON_POLICY_ACL_PASS",
 		301: "TRACE_EVENT_REASON_POLICY_ACL_DROP",
 		302: "TRACE_EVENT_REASON_POLICY_SG_PASS",
@@ -412,6 +417,7 @@ var (
 		501: "TRACE_EVENT_REASON_REDIRECT_VXLAN",
 		502: "TRACE_EVENT_REASON_PASS_KERNEL",
 		503: "TRACE_EVENT_REASON_DROP_SHOT",
+		504: "TRACE_EVENT_REASON_DROP_BLACKHOLE",
 	}
 	TraceEventReason_value = map[string]int32{
 		"TRACE_EVENT_REASON_UNSPECIFIED":              0,
@@ -428,6 +434,8 @@ var (
 		"TRACE_EVENT_REASON_MISS_SERVICE":             206,
 		"TRACE_EVENT_REASON_MISS_BACKEND":             207,
 		"TRACE_EVENT_REASON_MISS_CONNTRACK":           208,
+		"TRACE_EVENT_REASON_MISS_TGW_TABLE":           209,
+		"TRACE_EVENT_REASON_MISS_TGW_ROUTE":           210,
 		"TRACE_EVENT_REASON_POLICY_ACL_PASS":          300,
 		"TRACE_EVENT_REASON_POLICY_ACL_DROP":          301,
 		"TRACE_EVENT_REASON_POLICY_SG_PASS":           302,
@@ -442,6 +450,7 @@ var (
 		"TRACE_EVENT_REASON_REDIRECT_VXLAN":           501,
 		"TRACE_EVENT_REASON_PASS_KERNEL":              502,
 		"TRACE_EVENT_REASON_DROP_SHOT":                503,
+		"TRACE_EVENT_REASON_DROP_BLACKHOLE":           504,
 	}
 )
 
@@ -1838,7 +1847,7 @@ const file_pkg_debugpb_debug_proto_rawDesc = "" +
 	"\x19TRACE_VERDICT_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10TRACE_VERDICT_OK\x10\x01\x12\x16\n" +
 	"\x12TRACE_VERDICT_DROP\x10\x02\x12\x1a\n" +
-	"\x16TRACE_VERDICT_REDIRECT\x10\x03*\xf5\b\n" +
+	"\x16TRACE_VERDICT_REDIRECT\x10\x03*\xed\t\n" +
 	"\x10TraceEventReason\x12\"\n" +
 	"\x1eTRACE_EVENT_REASON_UNSPECIFIED\x10\x00\x12'\n" +
 	"#TRACE_EVENT_REASON_ENTER_POD_EGRESS\x10d\x12(\n" +
@@ -1853,7 +1862,9 @@ const file_pkg_debugpb_debug_proto_rawDesc = "" +
 	"\x1bTRACE_EVENT_REASON_MISS_FDB\x10\xcd\x01\x12$\n" +
 	"\x1fTRACE_EVENT_REASON_MISS_SERVICE\x10\xce\x01\x12$\n" +
 	"\x1fTRACE_EVENT_REASON_MISS_BACKEND\x10\xcf\x01\x12&\n" +
-	"!TRACE_EVENT_REASON_MISS_CONNTRACK\x10\xd0\x01\x12'\n" +
+	"!TRACE_EVENT_REASON_MISS_CONNTRACK\x10\xd0\x01\x12&\n" +
+	"!TRACE_EVENT_REASON_MISS_TGW_TABLE\x10\xd1\x01\x12&\n" +
+	"!TRACE_EVENT_REASON_MISS_TGW_ROUTE\x10\xd2\x01\x12'\n" +
 	"\"TRACE_EVENT_REASON_POLICY_ACL_PASS\x10\xac\x02\x12'\n" +
 	"\"TRACE_EVENT_REASON_POLICY_ACL_DROP\x10\xad\x02\x12&\n" +
 	"!TRACE_EVENT_REASON_POLICY_SG_PASS\x10\xae\x02\x12&\n" +
@@ -1867,7 +1878,8 @@ const file_pkg_debugpb_debug_proto_rawDesc = "" +
 	"#TRACE_EVENT_REASON_REDIRECT_IFINDEX\x10\xf4\x03\x12&\n" +
 	"!TRACE_EVENT_REASON_REDIRECT_VXLAN\x10\xf5\x03\x12#\n" +
 	"\x1eTRACE_EVENT_REASON_PASS_KERNEL\x10\xf6\x03\x12!\n" +
-	"\x1cTRACE_EVENT_REASON_DROP_SHOT\x10\xf7\x032\xb9\x03\n" +
+	"\x1cTRACE_EVENT_REASON_DROP_SHOT\x10\xf7\x03\x12&\n" +
+	"!TRACE_EVENT_REASON_DROP_BLACKHOLE\x10\xf8\x032\xb9\x03\n" +
 	"\x05Debug\x12A\n" +
 	"\n" +
 	"WatchTrace\x12\x1b.debug.v1.WatchTraceRequest\x1a\x14.debug.v1.TraceEvent0\x01\x12N\n" +

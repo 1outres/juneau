@@ -47,10 +47,16 @@ nav:
     - NATGatewayでVPC外への通信を成立させる: guides/nat-gateway.md
     - SecurityGroupでPodの通信を制限する: guides/security-group.md
     - NetworkACLでSubnet境界を制御する: guides/network-acl.md
+    - VpcPeeringで2つのVPCを接続する: guides/vpc-peering.md
+    - TransitGatewayでハブ&スポーク構成を作る: guides/transit-gateway.md
   - Resources:
     - VPC: resources/vpc.md
     - Subnet: resources/subnet.md
     - RouteTable: resources/routetable.md
+    - VpcPeering: resources/vpcpeering.md
+    - TransitGateway: resources/transitgateway.md
+    - TransitGatewayRouteTable: resources/transitgatewayroutetable.md
+    - TransitGatewayAttachment: resources/transitgatewayattachment.md
     - ExternalNetwork: resources/externalnetwork.md
     - ExternalNetworkAttachment: resources/externalnetworkattachment.md
     - AddressPool: resources/addresspool.md

@@ -13,14 +13,15 @@ import (
 )
 
 const (
-	defaultVpcName                 = "default"
-	defaultSubnetName              = "default"
-	defaultSubnetVNIPoolName       = "subnet-vni"
-	defaultRouteTablePoolName      = "route-table-id"
-	defaultVpcIDPoolName           = "vpc-id"
-	defaultNATGatewayIDPoolName    = "nat-gateway-id"
-	defaultSecurityGroupIDPoolName = "security-group-id"
-	defaultNetworkACLIDPoolName    = "network-acl-id"
+	defaultVpcName                            = "default"
+	defaultSubnetName                         = "default"
+	defaultSubnetVNIPoolName                  = "subnet-vni"
+	defaultRouteTablePoolName                 = "route-table-id"
+	defaultVpcIDPoolName                      = "vpc-id"
+	defaultNATGatewayIDPoolName               = "nat-gateway-id"
+	defaultSecurityGroupIDPoolName            = "security-group-id"
+	defaultNetworkACLIDPoolName               = "network-acl-id"
+	defaultTransitGatewayRouteTableIDPoolName = "transit-gateway-route-table-id"
 )
 
 // EnsureDefaults creates default VPC and Subnet if they don't already exist.
@@ -128,6 +129,21 @@ func ensureDefaultAllocationPools(ctx context.Context, c client.Client, logger l
 				Number: &juneauv1alpha1.AllocationPoolNumberSpec{
 					Min: 1,
 					Max: 65535,
+				},
+			},
+		},
+		{
+			// transit-gateway-route-table-id hands out the cluster-wide
+			// identifiers the data plane keys its transit-gateway
+			// routing layer by. Min=1 keeps 0 as the "not yet
+			// allocated" sentinel, the same rule RouteTable IDs follow.
+			ObjectMeta: metav1.ObjectMeta{Name: defaultTransitGatewayRouteTableIDPoolName},
+			Spec: juneauv1alpha1.AllocationPoolSpec{
+				Type:     juneauv1alpha1.AllocationTypeNumber,
+				Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+				Number: &juneauv1alpha1.AllocationPoolNumberSpec{
+					Min: 1,
+					Max: uint64(^uint32(0)),
 				},
 			},
 		},

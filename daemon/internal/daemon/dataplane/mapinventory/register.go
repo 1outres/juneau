@@ -27,6 +27,7 @@ func RegisterPodEgress(inv *Inventory, p *program.PodEgress) error {
 		registerNodeUnderlays,
 		registerServiceNATIP,
 		registerFib,
+		registerTgwFib,
 		registerBGPAddressPools,
 		registerNATSnat,
 		registerNATDnat,
@@ -203,6 +204,31 @@ func registerFib(inv *Inventory, p *program.PodEgress) error {
 			// padding so the schema-mismatch check on the outer is
 			// skipped for HASH_OF_MAPS.
 		}},
+		InnerKey: Schema{Fields: []Field{
+			FieldU32Named("prefixlen"),
+			FieldIPv4BENamed("dst"),
+		}},
+		InnerValue: Schema{Fields: []Field{
+			FieldEnumNamed("type", 1, FIBRouteTypeEnum),
+			FieldMACNamed("dmac"),
+			FieldMACNamed("smac"),
+			FieldPadOf(3),
+			FieldU32Named("subnet_id"),
+			FieldU32Named("oif"),
+		}},
+	})
+}
+
+func registerTgwFib(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name:       "tgw_fib_map",
+		Map:        p.Objs.TgwFibMap,
+		HashOfMaps: true,
+		InnerProto: p.MapSpecs.TgwFibInner,
+		Key: Schema{Fields: []Field{
+			FieldU32Named("tgw_route_table_id"),
+		}},
+		Value: Schema{Fields: []Field{}},
 		InnerKey: Schema{Fields: []Field{
 			FieldU32Named("prefixlen"),
 			FieldIPv4BENamed("dst"),

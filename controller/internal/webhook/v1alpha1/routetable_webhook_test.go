@@ -110,6 +110,78 @@ var _ = Describe("RouteTable webhook", func() {
 		Expect(err.Error()).To(ContainSubstring("Duplicate value"))
 	})
 
+	It("requires vpcPeering for vpcPeering routes", func() {
+		vpcName := createWebhookVpc()
+
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("routetable")},
+			Spec: juneauv1alpha1.RouteTableSpec{
+				Vpc: vpcName,
+				Routes: []juneauv1alpha1.Route{{
+					Dst: "10.84.0.0/24",
+					Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaVpcPeering},
+				}},
+			},
+		})
+
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.routes[0].via.vpcPeering"))
+	})
+
+	It("forbids endpointName and natGateway on vpcPeering routes", func() {
+		vpcName := createWebhookVpc()
+
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("routetable")},
+			Spec: juneauv1alpha1.RouteTableSpec{
+				Vpc: vpcName,
+				Routes: []juneauv1alpha1.Route{{
+					Dst: "10.85.0.0/24",
+					Via: juneauv1alpha1.RouteVia{
+						Type:       juneauv1alpha1.ViaVpcPeering,
+						VpcPeering: "peering-a",
+						Endpoint:   "nwep-a",
+						NATGateway: "natgw-a",
+					},
+				}},
+			},
+		})
+
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.routes[0].via.endpointName"))
+		Expect(err.Error()).To(ContainSubstring("spec.routes[0].via.natGateway"))
+	})
+
+	It("forbids vpcPeering on routes that are not vpcPeering routes", func() {
+		vpcName := createWebhookVpc()
+
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("routetable")},
+			Spec: juneauv1alpha1.RouteTableSpec{
+				Vpc: vpcName,
+				Routes: []juneauv1alpha1.Route{
+					{
+						Dst: "10.86.0.0/24",
+						Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaInternetGateway, VpcPeering: "peering-a"},
+					},
+					{
+						Dst: "10.87.0.0/24",
+						Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaEndpoint, Endpoint: "nwep-a", VpcPeering: "peering-a"},
+					},
+					{
+						Dst: "10.88.0.0/24",
+						Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaNATGateway, NATGateway: "natgw-a", VpcPeering: "peering-a"},
+					},
+				},
+			},
+		})
+
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.routes[0].via.vpcPeering"))
+		Expect(err.Error()).To(ContainSubstring("spec.routes[1].via.vpcPeering"))
+		Expect(err.Error()).To(ContainSubstring("spec.routes[2].via.vpcPeering"))
+	})
+
 	It("rejects routes that duplicate connected routes from subnets in the same VPC", func() {
 		vpcName := createWebhookVpc()
 		subnetCIDR := webhookUniqueSubnetCIDR()

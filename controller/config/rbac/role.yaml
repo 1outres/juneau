@@ -64,6 +64,10 @@ rules:
   - serviceloadbalancers
   - servicenatattachments
   - subnets
+  - transitgatewayattachments
+  - transitgatewayroutetables
+  - transitgateways
+  - vpcpeerings
   - vpcs
   verbs:
   - create
@@ -95,6 +99,10 @@ rules:
   - serviceloadbalancers/finalizers
   - servicenatattachments/finalizers
   - subnets/finalizers
+  - transitgatewayattachments/finalizers
+  - transitgatewayroutetables/finalizers
+  - transitgateways/finalizers
+  - vpcpeerings/finalizers
   - vpcs/finalizers
   verbs:
   - update
@@ -120,6 +128,10 @@ rules:
   - serviceloadbalancers/status
   - servicenatattachments/status
   - subnets/status
+  - transitgatewayattachments/status
+  - transitgatewayroutetables/status
+  - transitgateways/status
+  - vpcpeerings/status
   - vpcs/status
   verbs:
   - get

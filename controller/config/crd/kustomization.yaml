@@ -24,6 +24,10 @@ resources:
 - bases/juneau.loutres.me_securitygroups.yaml
 - bases/juneau.loutres.me_networkacls.yaml
 - bases/juneau.loutres.me_tracesessions.yaml
+- bases/juneau.loutres.me_vpcpeerings.yaml
+- bases/juneau.loutres.me_transitgateways.yaml
+- bases/juneau.loutres.me_transitgatewayroutetables.yaml
+- bases/juneau.loutres.me_transitgatewayattachments.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
