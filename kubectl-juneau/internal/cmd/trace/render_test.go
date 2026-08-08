@@ -90,6 +90,28 @@ func TestReasonStringFallback(t *testing.T) {
 	}
 }
 
+// A reason with no case in reasonString falls back to the raw enum name,
+// which reads badly in a timeline. Adding a reason to the proto without
+// a label here should fail this test rather than ship.
+func TestReasonStringLabelsEveryReason(t *testing.T) {
+	for value, name := range debugpb.TraceEventReason_name {
+		reason := debugpb.TraceEventReason(value)
+		if reason == debugpb.TraceEventReason_TRACE_EVENT_REASON_UNSPECIFIED {
+			continue
+		}
+		if got := reasonString(reason); got == name {
+			t.Errorf("reason %s has no human label", name)
+		}
+	}
+}
+
+func TestReasonStringICMPErrorTranslated(t *testing.T) {
+	got := reasonString(debugpb.TraceEventReason_TRACE_EVENT_REASON_ICMP_ERROR_TRANSLATED)
+	if got != "icmp error translated" {
+		t.Fatalf("reasonString = %q", got)
+	}
+}
+
 func sampleEvent() *debugpb.TraceEvent {
 	return &debugpb.TraceEvent{
 		TraceId:  0xdeadbeef,

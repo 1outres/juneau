@@ -89,6 +89,24 @@ func TestReverseMirrorFromEvent(t *testing.T) {
 			wantDir: DirRequest,
 		},
 		{
+			// An ICMP error message reports on a flow. Its aux tuple is
+			// the post-translation outer tuple, so it seeds a mirror the
+			// same way every other NAT event does.
+			name: "icmp error translation mirrors the aux tuple",
+			mutate: func(e Event) Event {
+				e.Reason = ReasonICMPErrorTranslated
+				e.Direction = DirReply
+				e.HasAux = true
+				e.AuxSrc = ip("198.51.100.9")
+				e.AuxDst = ip("10.0.1.5")
+				return e
+			},
+			wantOK: true,
+			wantKey: TupleKey{Scope: ScopeVPC, Protocol: 6, VPCID: 42,
+				SrcIP: [4]byte{10, 0, 1, 5}, DstIP: [4]byte{198, 51, 100, 9}},
+			wantDir: DirRequest,
+		},
+		{
 			name: "policy event seeds nothing",
 			mutate: func(e Event) Event {
 				e.Reason = ReasonPolicyACLPass

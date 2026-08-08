@@ -62,6 +62,11 @@ const (
 	ReasonSNATApplied            Reason = 403
 	ReasonNAPTAllocated          Reason = 404
 	ReasonReverseNATApplied      Reason = 405
+	// ReasonICMPErrorTranslated marks an ICMP error message whose
+	// embedded copy of the original packet was rewritten alongside the
+	// outer header. The tuple it reports is the flow the message is
+	// about, not the ICMP message itself.
+	ReasonICMPErrorTranslated Reason = 406
 
 	ReasonRedirectIfindex Reason = 500
 	ReasonRedirectVxlan   Reason = 501

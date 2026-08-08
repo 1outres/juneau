@@ -228,7 +228,8 @@ func isNATEvent(r debugpb.TraceEventReason) bool {
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_DNAT_APPLIED,
 		debugpb.TraceEventReason_TRACE_EVENT_REASON_SNAT_APPLIED,
 		debugpb.TraceEventReason_TRACE_EVENT_REASON_NAPT_ALLOCATED,
-		debugpb.TraceEventReason_TRACE_EVENT_REASON_REVERSE_NAT_APPLIED:
+		debugpb.TraceEventReason_TRACE_EVENT_REASON_REVERSE_NAT_APPLIED,
+		debugpb.TraceEventReason_TRACE_EVENT_REASON_ICMP_ERROR_TRANSLATED:
 		return true
 	}
 	return false
