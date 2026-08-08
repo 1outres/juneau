@@ -150,11 +150,16 @@ spec:
 	return applyManifest(b.String())
 }
 
-// ensureEIPNetwork creates the network the ElasticIP specs share.
-// node_ingress drops DNAT traffic aimed at the default Subnet (VNI == 1)
-// and EIP egress needs an InternetGateway route on the Pod's VPC
-// RouteTable, so those specs cannot run on the default network.
+// ensureEIPNetwork creates the network the ElasticIP specs share: the
+// ExternalNetwork an ElasticIP is allocated from, plus the VPC the Pod
+// behind it lives in. node_ingress drops DNAT traffic aimed at the
+// default Subnet (VNI == 1) and EIP egress needs an InternetGateway
+// route on the Pod's VPC RouteTable, so those specs cannot run on the
+// default network.
 func ensureEIPNetwork() {
+	By("creating ExternalNetwork referencing the BGP pool")
+	Expect(applyExternalNetwork(bgpExternalNetworkName, []string{bgpAddressPoolName})).To(Succeed())
+
 	By("creating a custom VPC+Subnet for EIP traffic (default subnet VNI==1 is dropped by node_ingress DNAT)")
 	Expect(applyManifest(fmt.Sprintf(`apiVersion: juneau.loutres.me/v1alpha1
 kind: Vpc

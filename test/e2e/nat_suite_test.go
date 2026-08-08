@@ -185,10 +185,17 @@ const (
 // Every Node gets a matching route so the packet leaves the Node
 // straight at the router, which makes the router hop 1 for a traceroute
 // started inside a Pod.
+//
+// ip_forward is only written when it is off, because some container
+// runtimes mount /proc/sys read-only while already having forwarding
+// enabled. A write that is not needed must not fail the setup; a write
+// that is needed still does.
 func setupRouterBeyondNetwork(router *bgpRouterInstance, nodes []string) {
 	By(fmt.Sprintf("turning the opposing router into a router towards %s (mtu %d)", natBeyondCIDR, natBeyondMTU))
 	script := fmt.Sprintf(`set -eu
-sysctl -wq net.ipv4.ip_forward=1
+if [ "$(cat /proc/sys/net/ipv4/ip_forward)" != 1 ]; then
+  sysctl -wq net.ipv4.ip_forward=1
+fi
 uplink=$(ip -o -4 route show default | awk '{print $5; exit}')
 ip route replace %s dev "$uplink" mtu %d
 `, natBeyondCIDR, natBeyondMTU)

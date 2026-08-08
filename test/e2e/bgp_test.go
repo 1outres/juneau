@@ -200,8 +200,6 @@ var _ = Describe("BGP e2e", Ordered, Serial, func() {
 		BeforeAll(func() {
 			node := workerNodes[0]
 
-			By("creating ExternalNetwork referencing the BGP pool")
-			Expect(applyExternalNetwork(bgpExternalNetworkName, []string{bgpAddressPoolName})).To(Succeed())
 			ensureEIPNetwork()
 
 			createNamespace(icmpNamespace)
