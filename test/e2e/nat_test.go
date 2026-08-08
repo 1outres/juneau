@@ -18,16 +18,6 @@ const (
 	natSubnetCIDR   = "10.220.0.0/24"
 	natBGPPeer      = "e2e-nat-peer"
 	natICMPPodName  = "icmp-client"
-
-	// The network the ICMP-error specs aim at. Nothing lives there; it
-	// exists so the opposing router has something to forward towards and
-	// therefore something to raise ICMP errors about.
-	natBeyondCIDR = "198.18.0.0/30"
-	natBeyondHost = "198.18.0.2"
-	natBeyondMTU  = 1280
-	// Payload size for the PMTUD probe. 1300 + 8 (ICMP) + 20 (IP) is over
-	// natBeyondMTU but still under the VXLAN-reduced Pod MTU.
-	natPMTUDPayload = "1300"
 )
 
 // Phase 4b-1/2/3/5 introduced the NATGateway + ExternalNetworkAttachment
@@ -385,45 +375,16 @@ spec:
 		// Pod's own address and port.
 		It("N6: traceroute from a Pod sees the first hop", func() {
 			namespace := startNATClientPod("e2e-nat-traceroute", node)
-
-			By(fmt.Sprintf("running a UDP traceroute towards %s", natBeyondHost))
-			Eventually(func(g Gomega) {
-				out, _ := kubectlOutput(repoRoot, "exec", "-n", namespace, natICMPPodName, "--",
-					"traceroute", "-n", "-m", "2", "-q", "1", "-w", "2", natBeyondHost)
-				g.Expect(out).To(ContainSubstring(bgpRouter.ip),
-					"expected %s as the first hop; traceroute output: %s", bgpRouter.ip, out)
-			}).Should(Succeed())
-
-			// The same message, but the quoted packet is an ICMP Echo
-			// Request, so the rewrite has to restore an Identifier rather
-			// than a port.
-			By(fmt.Sprintf("running an ICMP traceroute towards %s", natBeyondHost))
-			Eventually(func(g Gomega) {
-				out, _ := kubectlOutput(repoRoot, "exec", "-n", namespace, natICMPPodName, "--",
-					"traceroute", "-I", "-n", "-m", "2", "-q", "1", "-w", "2", natBeyondHost)
-				g.Expect(out).To(ContainSubstring(bgpRouter.ip),
-					"expected %s as the first hop; traceroute output: %s", bgpRouter.ip, out)
-			}).Should(Succeed())
+			assertPodTraceroute(namespace, natICMPPodName, natBeyondHost, bgpRouter.ip)
 		})
 
-		// ping reports the next-hop MTU it was told, so the exact number
-		// proves the message survived translation intact: the MTU lives
-		// in the outer ICMP header, whose checksum has to absorb every
-		// byte the rewrite changed inside the quoted packet.
+		// The Pod's route cache is the assertion that matters: the kernel
+		// files the route exception against the source address the quoted
+		// header names, so a reduced MTU only lands there when the quote
+		// came back holding the Pod's own address.
 		It("N7: Path MTU Discovery from a Pod learns the reduced MTU", func() {
 			namespace := startNATClientPod("e2e-nat-pmtud", node)
-
-			By(fmt.Sprintf("sending a %s-byte DF-set echo towards %s", natPMTUDPayload, natBeyondHost))
-			Eventually(func(g Gomega) {
-				// A refused oversized ping exits non-zero by design, so
-				// the output is the assertion, not the exit status.
-				out, _ := kubectlOutput(repoRoot, "exec", "-n", namespace, natICMPPodName, "--",
-					"ping", "-M", "do", "-s", natPMTUDPayload, "-c", "2", "-W", "2", natBeyondHost)
-				g.Expect(out).To(ContainSubstring("Frag needed"),
-					"expected a Fragmentation Needed report; ping output: %s", out)
-				g.Expect(out).To(ContainSubstring(fmt.Sprintf("mtu = %d", natBeyondMTU)),
-					"expected the router's next-hop MTU; ping output: %s", out)
-			}).Should(Succeed())
+			assertPodLearnsPathMTU(namespace, natICMPPodName, natBeyondHost, natPMTUDPayload, natBeyondMTU)
 		})
 	})
 })

@@ -157,6 +157,19 @@ func waitRouterLearnsNAPTPrefix(router *bgpRouterInstance, node string, prefix s
 	}).Should(Succeed())
 }
 
+// The network every ICMP-error spec aims at, whether the Pod sits behind
+// a NATGateway or an ElasticIP. Nothing lives there; it exists so the
+// opposing router has something to forward towards and therefore
+// something to raise ICMP errors about.
+const (
+	natBeyondCIDR = "198.18.0.0/30"
+	natBeyondHost = "198.18.0.2"
+	natBeyondMTU  = 1280
+	// Payload size for the PMTUD probe. 1300 + 8 (ICMP) + 20 (IP) is over
+	// natBeyondMTU but still under the VXLAN-reduced Pod MTU.
+	natPMTUDPayload = "1300"
+)
+
 // setupRouterBeyondNetwork makes the opposing router act like a router
 // rather than an endpoint: it gains an on-link route to a network where
 // nothing answers, capped at a small MTU. Traffic aimed there is

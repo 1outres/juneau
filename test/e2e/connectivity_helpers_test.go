@@ -394,6 +394,59 @@ func assertPodPing(namespace string, podName string, target string) {
 	}).Should(Succeed())
 }
 
+// assertPodTraceroute requires the first hop of a traceroute started
+// inside the Pod to be the given router. Both modes are probed: a UDP
+// traceroute quotes a UDP header inside the router's Time Exceeded
+// message, an ICMP one quotes an Echo Request, and a NAT has to repair
+// either kind.
+func assertPodTraceroute(namespace string, podName string, target string, firstHop string) {
+	for _, mode := range []struct {
+		name string
+		args []string
+	}{
+		{name: "UDP", args: []string{"traceroute", "-n", "-m", "2", "-q", "1", "-w", "2", target}},
+		{name: "ICMP", args: []string{"traceroute", "-I", "-n", "-m", "2", "-q", "1", "-w", "2", target}},
+	} {
+		By(fmt.Sprintf("running a %s traceroute towards %s", mode.name, target))
+		args := append([]string{"exec", "-n", namespace, podName, "--"}, mode.args...)
+		Eventually(func(g Gomega) {
+			out, _ := kubectlOutput(repoRoot, args...)
+			g.Expect(out).To(ContainSubstring(firstHop),
+				"expected %s as the first hop; traceroute output: %s", firstHop, out)
+		}).Should(Succeed())
+	}
+}
+
+// assertPodLearnsPathMTU sends an oversized DF-set echo and then requires
+// the Pod's own route cache to hold the reduced MTU.
+//
+// The printed report is checked too, because the MTU sits in the outer
+// ICMP header whose checksum has to absorb every byte a NAT changed
+// inside the quoted packet. But it is not enough on its own: iputils
+// matches the report by Echo Identifier, which a 1:1 NAT preserves, so
+// the line prints even when the kernel filed the route exception under
+// an address the Pod never sends from. Only the route cache shows that
+// the quoted header reached the Pod naming the Pod itself.
+func assertPodLearnsPathMTU(namespace string, podName string, target string, payload string, mtu int) {
+	By(fmt.Sprintf("sending a %s-byte DF-set echo towards %s", payload, target))
+	Eventually(func(g Gomega) {
+		// A refused oversized ping exits non-zero by design, so the
+		// output is the assertion, not the exit status.
+		out, _ := kubectlOutput(repoRoot, "exec", "-n", namespace, podName, "--",
+			"ping", "-M", "do", "-s", payload, "-c", "2", "-W", "2", target)
+		g.Expect(out).To(ContainSubstring("Frag needed"),
+			"expected a Fragmentation Needed report; ping output: %s", out)
+		g.Expect(out).To(ContainSubstring(fmt.Sprintf("mtu = %d", mtu)),
+			"expected the router's next-hop MTU; ping output: %s", out)
+
+		route, err := kubectlOutput(repoRoot, "exec", "-n", namespace, podName, "--",
+			"ip", "route", "get", target)
+		g.Expect(err).NotTo(HaveOccurred(), "ip route get output: %s", route)
+		g.Expect(route).To(ContainSubstring(fmt.Sprintf("mtu %d", mtu)),
+			"expected the Pod route cache to hold the learned MTU; ip route get output: %s", route)
+	}).Should(Succeed())
+}
+
 func assertServiceConnectivity(namespace string, clientPod string, serviceName string) {
 	clusterIP, err := kubectlJSONPath(repoRoot, `{.spec.clusterIP}`, "-n", namespace, "get", "service", serviceName)
 	Expect(err).NotTo(HaveOccurred())
