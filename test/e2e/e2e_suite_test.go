@@ -123,6 +123,10 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	}
 
 	mustRun(filepath.Join(root, "controller"), "make", "install")
+	// The manager resolves the kinds it watches for lease retention once, at
+	// startup, so a VirtualMachine CRD installed after the deployment would
+	// never be watched. Install it first.
+	mustRun(root, "kubectl", "apply", "-f", filepath.Join(root, "test", "e2e", "testdata", "kubevirt-virtualmachine-crd.yaml"))
 	mustRun(filepath.Join(root, "controller"), "make", "deploy", fmt.Sprintf("IMG=%s", controllerImage))
 	mustRun(root, "kubectl", "label", "--overwrite", "namespace", controllerNamespace, "pod-security.kubernetes.io/enforce=privileged")
 	mustRun(root, "kubectl", "label", "--overwrite", "namespace", daemonNamespace, "pod-security.kubernetes.io/enforce=privileged")

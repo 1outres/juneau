@@ -86,6 +86,14 @@ func leaseHeldByOtherClaim(lease *juneauv1alpha1.AllocationLease, claim *juneauv
 	return !leaseOwnedByClaim(lease, claim) && lease.Spec.OwnerDeletionTimestamp.IsZero()
 }
 
+// retainReferenceKey renders a retain reference as a single string that
+// identifies one object. The field index on AllocationLease and the watch
+// on the retained object both build the key this way, so a change to the
+// object always finds the leases that wait for it.
+func retainReferenceKey(ref *juneauv1alpha1.RetainReference) string {
+	return strings.Join([]string{ref.APIVersion, ref.Kind, ref.Namespace, ref.Name}, "/")
+}
+
 // claimReferencesPool reports whether the claim lists the given pool among
 // its candidates.
 func claimReferencesPool(claim *juneauv1alpha1.AllocationClaim, poolName string) bool {

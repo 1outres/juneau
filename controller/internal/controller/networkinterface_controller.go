@@ -54,8 +54,10 @@ const (
 
 	// networkInterfaceReleaseAfter is the grace period applied to the
 	// backing AllocationClaim, so that a pod deleted and re-created with
-	// the same identity keeps its IP. It also covers a virtual machine
-	// that stays stopped overnight.
+	// the same identity keeps its IP. A workload without spec.retainWhile
+	// has only this window; one with it gets the window after the object
+	// it waits for is deleted, so a virtual machine deleted and made again
+	// keeps its address.
 	networkInterfaceReleaseAfter = 24 * time.Hour
 )
 
@@ -260,6 +262,7 @@ func (r *NetworkInterfaceReconciler) ensureClaim(ctx context.Context, resource *
 		Attribute:    "status.address",
 		ReleaseAfter: &metav1.Duration{Duration: networkInterfaceReleaseAfter},
 		ReuseKey:     leaseNameForNetworkInterface(resource),
+		RetainWhile:  resource.Spec.RetainWhile.DeepCopy(),
 	}
 	if resource.Spec.Address != "" {
 		ip := resource.Spec.Address

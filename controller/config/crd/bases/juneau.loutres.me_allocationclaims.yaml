@@ -127,6 +127,31 @@ spec:
                 - kind
                 - name
                 type: object
+              retainWhile:
+                description: |-
+                  RetainWhile keeps the AllocationLease alive for as long as the
+                  referenced object exists. ReleaseAfter is then counted from the
+                  moment that object disappears rather than from the deletion of this
+                  claim. The value is copied onto the lease.
+                properties:
+                  apiVersion:
+                    minLength: 1
+                    type: string
+                  kind:
+                    minLength: 1
+                    type: string
+                  name:
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: Namespace of the referenced object. Empty for cluster
+                      scoped kinds.
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                type: object
               reuseKey:
                 description: |-
                   ReuseKey is the stable identity used to find an existing

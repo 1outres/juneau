@@ -20,6 +20,9 @@ package workload
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
 const (
@@ -35,21 +38,53 @@ const (
 	identityPrefixKubeVirt = "vmi."
 )
 
+// KubeVirtVirtualMachineGVK is the object that owns a virtual machine's
+// address. The manager also uses it to decide whether the cluster serves
+// the kind before it watches it.
+var KubeVirtVirtualMachineGVK = schema.GroupVersionKind{
+	Group:   "kubevirt.io",
+	Version: "v1",
+	Kind:    "VirtualMachine",
+}
+
 // AllocationIdentity returns the stable identity of the virtual machine
 // behind a virt-launcher pod. KubeVirt gives the pod a new name on every
 // restart, so the address has to follow the virtual machine instead. It
 // returns an empty string for pods KubeVirt does not manage, and the caller
 // keeps using the pod name.
 func AllocationIdentity(pod *corev1.Pod) string {
+	name := virtualMachineName(pod)
+	if name == "" {
+		return ""
+	}
+	return identityPrefixKubeVirt + name
+}
+
+// RetainReference returns the VirtualMachine that must keep the address of
+// a virt-launcher pod. A stopped virtual machine has no pod at all, so the
+// reservation has to hang off the machine itself. It returns nil for pods
+// KubeVirt does not manage, whose address is released with the pod.
+func RetainReference(pod *corev1.Pod) *juneauv1alpha1.RetainReference {
+	name := virtualMachineName(pod)
+	if name == "" {
+		return nil
+	}
+	return &juneauv1alpha1.RetainReference{
+		APIVersion: KubeVirtVirtualMachineGVK.GroupVersion().String(),
+		Kind:       KubeVirtVirtualMachineGVK.Kind,
+		Namespace:  pod.Namespace,
+		Name:       name,
+	}
+}
+
+// virtualMachineName reads the VirtualMachine name off a virt-launcher pod,
+// returning an empty string for every other pod.
+func virtualMachineName(pod *corev1.Pod) string {
 	if pod == nil {
 		return ""
 	}
 	if pod.Labels[labelKubeVirtComponent] != valueVirtLauncher {
 		return ""
 	}
-	name := pod.Labels[labelVirtualMachineName]
-	if name == "" {
-		return ""
-	}
-	return identityPrefixKubeVirt + name
+	return pod.Labels[labelVirtualMachineName]
 }

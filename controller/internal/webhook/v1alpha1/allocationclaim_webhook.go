@@ -137,6 +137,9 @@ func (v *AllocationClaimCustomValidator) ValidateUpdate(ctx context.Context, old
 	if allocationclaim.Spec.ReuseKey != oldClaim.Spec.ReuseKey {
 		errs = append(errs, field.Invalid(specPath.Child("reuseKey"), allocationclaim.Spec.ReuseKey, "spec.reuseKey is immutable"))
 	}
+	if !retainReferenceEqual(allocationclaim.Spec.RetainWhile, oldClaim.Spec.RetainWhile) {
+		errs = append(errs, field.Invalid(specPath.Child("retainWhile"), allocationclaim.Spec.RetainWhile, "spec.retainWhile is immutable"))
+	}
 	errs = append(errs, validateAllocationClaimSpec(allocationclaim)...)
 	if len(errs) > 0 {
 		err := apierrors.NewInvalid(schema.GroupKind{Group: juneauloutresmev1alpha1.GroupVersion.Group, Kind: "AllocationClaim"}, allocationclaim.Name, errs)
@@ -150,13 +153,16 @@ func (v *AllocationClaimCustomValidator) ValidateUpdate(ctx context.Context, old
 // validateAllocationClaimSpec checks the fields that markers cannot express.
 func validateAllocationClaimSpec(claim *juneauloutresmev1alpha1.AllocationClaim) field.ErrorList {
 	var errs field.ErrorList
-	if claim.Spec.ReuseKey == "" {
-		return errs
-	}
+	specPath := field.NewPath("spec")
+
 	// The reuse key names the backing AllocationLease object.
-	for _, msg := range validation.IsDNS1123Subdomain(claim.Spec.ReuseKey) {
-		errs = append(errs, field.Invalid(field.NewPath("spec").Child("reuseKey"), claim.Spec.ReuseKey, msg))
+	if claim.Spec.ReuseKey != "" {
+		for _, msg := range validation.IsDNS1123Subdomain(claim.Spec.ReuseKey) {
+			errs = append(errs, field.Invalid(specPath.Child("reuseKey"), claim.Spec.ReuseKey, msg))
+		}
 	}
+
+	errs = append(errs, validateRetainReference(claim.Spec.RetainWhile, specPath.Child("retainWhile"))...)
 	return errs
 }
 

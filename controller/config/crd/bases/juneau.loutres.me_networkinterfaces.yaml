@@ -87,6 +87,33 @@ spec:
                 - name
                 - uid
                 type: object
+              retainWhile:
+                description: |-
+                  RetainWhile keeps the allocated address reserved for as long as the
+                  referenced object exists, even after this interface is gone. A
+                  virt-launcher pod points at its VirtualMachine, so a stopped virtual
+                  machine keeps its address until the machine itself is deleted. When
+                  unset, the reservation starts expiring as soon as the interface is
+                  deleted.
+                properties:
+                  apiVersion:
+                    minLength: 1
+                    type: string
+                  kind:
+                    minLength: 1
+                    type: string
+                  name:
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: Namespace of the referenced object. Empty for cluster
+                      scoped kinds.
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                type: object
               securityGroups:
                 description: |-
                   SecurityGroups lists SecurityGroup resources whose rules apply

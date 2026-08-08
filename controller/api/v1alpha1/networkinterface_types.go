@@ -56,6 +56,15 @@ type NetworkInterfaceSpec struct {
 	// DNS-1123 subdomain.
 	// +optional
 	AllocationIdentity string `json:"allocationIdentity,omitempty"`
+
+	// RetainWhile keeps the allocated address reserved for as long as the
+	// referenced object exists, even after this interface is gone. A
+	// virt-launcher pod points at its VirtualMachine, so a stopped virtual
+	// machine keeps its address until the machine itself is deleted. When
+	// unset, the reservation starts expiring as soon as the interface is
+	// deleted.
+	// +optional
+	RetainWhile *RetainReference `json:"retainWhile,omitempty"`
 }
 
 // NetworkInterfaceStatus defines the observed state of NetworkInterface.

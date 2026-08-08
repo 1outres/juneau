@@ -218,6 +218,40 @@ spec:
 		waitPodsReady(namespace, renamedPlainPod)
 		Expect(podAddress(namespace, renamedPlainPod)).NotTo(Equal(plainAddress), "a renamed plain pod must not inherit another pod's address")
 	})
+
+	It("hands the address of a virt-launcher Pod to its virtual machine", func() {
+		const namespace = "default"
+		base := sanitizeName(uniqueAllocationBase())
+		vmName := "vm-retain-" + base
+		vmPod := "virt-launcher-" + vmName + "-aaaaa"
+		plainPod := "plain-retain-" + base
+		leaseName := identityLeaseName(namespace, vmName)
+
+		DeferCleanup(func() {
+			for _, pod := range []string{vmPod, plainPod} {
+				runBestEffort(repoRoot, "kubectl", "delete", "-n", namespace, "pod", pod, "--ignore-not-found=true", "--wait=true")
+			}
+			runBestEffort(repoRoot, "kubectl", "delete", "allocationlease", leaseName, "--ignore-not-found=true")
+			runBestEffort(repoRoot, "kubectl", "delete", "allocationlease", podInterfaceLeaseName(namespace, plainPod), "--ignore-not-found=true")
+		})
+
+		Expect(applyManifest(virtLauncherPodManifest(namespace, vmPod, vmName))).To(Succeed())
+		waitPodsReady(namespace, vmPod)
+
+		// The reservation has to outlive a stopped virtual machine, which
+		// has no pod at all, so it hangs off the machine instead.
+		assertLeaseRetainReference(leaseName, "kubevirt.io/v1", "VirtualMachine", namespace, vmName)
+
+		// A pod KubeVirt does not manage has nothing to wait for, so its
+		// address is released on the plain TTL.
+		Expect(applyManifest(virtLauncherPodManifest(namespace, plainPod, ""))).To(Succeed())
+		waitPodsReady(namespace, plainPod)
+		Eventually(func(g Gomega) {
+			retain, err := kubectlJSONPath(repoRoot, `{.spec.retainWhile}`, "get", "allocationlease", podInterfaceLeaseName(namespace, plainPod))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(retain)).To(BeEmpty())
+		}).Should(Succeed())
+	})
 })
 
 // virtLauncherPodManifest renders a pod that carries the labels KubeVirt puts
