@@ -119,19 +119,21 @@ func (v *BGPAdvertisementCustomValidator) validate(ctx context.Context, obj *jun
 	var errs field.ErrorList
 
 	pools := make([]*juneauloutresmev1alpha1.AddressPool, 0, len(obj.Spec.AddressPools))
-	for i, pool := range obj.Spec.AddressPools {
-		var ap juneauloutresmev1alpha1.AddressPool
-		if err := v.Get(ctx, client.ObjectKey{Name: pool}, &ap); err != nil {
-			if errors.IsNotFound(err) {
-				errs = append(errs, field.Invalid(field.NewPath("spec", "addressPools").Index(i), pool, "referenced AddressPool does not exist"))
-				continue
+	if shouldCheckReferences(obj) {
+		for i, pool := range obj.Spec.AddressPools {
+			var ap juneauloutresmev1alpha1.AddressPool
+			if err := v.Get(ctx, client.ObjectKey{Name: pool}, &ap); err != nil {
+				if errors.IsNotFound(err) {
+					errs = append(errs, field.Invalid(field.NewPath("spec", "addressPools").Index(i), pool, "referenced AddressPool does not exist"))
+					continue
+				}
+				return nil, err
 			}
-			return nil, err
+			if ap.Spec.AdvertiseMode != juneauloutresmev1alpha1.AddressPoolAdvertiseModeBGP {
+				errs = append(errs, field.Invalid(field.NewPath("spec", "addressPools").Index(i), pool, "AddressPool must have advertiseMode=bgp"))
+			}
+			pools = append(pools, ap.DeepCopy())
 		}
-		if ap.Spec.AdvertiseMode != juneauloutresmev1alpha1.AddressPoolAdvertiseModeBGP {
-			errs = append(errs, field.Invalid(field.NewPath("spec", "addressPools").Index(i), pool, "AddressPool must have advertiseMode=bgp"))
-		}
-		pools = append(pools, ap.DeepCopy())
 	}
 
 	if obj.Spec.Prefix != "" {

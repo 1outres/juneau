@@ -164,12 +164,14 @@ func (v *TransitGatewayRouteTableCustomValidator) ValidateDelete(ctx context.Con
 func (v *TransitGatewayRouteTableCustomValidator) validateTransitGatewayRouteTableSpec(ctx context.Context, routeTable *juneauv1alpha1.TransitGatewayRouteTable, specPath *field.Path) (field.ErrorList, error) {
 	var errs field.ErrorList
 
-	var transitGateway juneauv1alpha1.TransitGateway
-	if err := v.Get(ctx, client.ObjectKey{Name: routeTable.Spec.TransitGateway}, &transitGateway); err != nil {
-		if !errors.IsNotFound(err) {
-			return nil, err
+	if shouldCheckReferences(routeTable) {
+		var transitGateway juneauv1alpha1.TransitGateway
+		if err := v.Get(ctx, client.ObjectKey{Name: routeTable.Spec.TransitGateway}, &transitGateway); err != nil {
+			if !errors.IsNotFound(err) {
+				return nil, err
+			}
+			errs = append(errs, field.Invalid(specPath.Child("transitGateway"), routeTable.Spec.TransitGateway, "referenced TransitGateway does not exist"))
 		}
-		errs = append(errs, field.Invalid(specPath.Child("transitGateway"), routeTable.Spec.TransitGateway, "referenced TransitGateway does not exist"))
 	}
 
 	seenDst := map[string]struct{}{}

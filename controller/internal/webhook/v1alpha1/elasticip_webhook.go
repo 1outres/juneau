@@ -151,7 +151,7 @@ func (v *ElasticIPCustomValidator) validate(ctx context.Context, obj *juneaulout
 	var errs field.ErrorList
 	externalNetworkPath := field.NewPath("spec", "externalNetwork")
 
-	if len(apivalidation.NameIsDNSSubdomain(obj.Spec.ExternalNetwork, false)) == 0 {
+	if shouldCheckReferences(obj) && len(apivalidation.NameIsDNSSubdomain(obj.Spec.ExternalNetwork, false)) == 0 {
 		var externalNetwork juneauloutresmev1alpha1.ExternalNetwork
 		if err := v.Get(ctx, client.ObjectKey{Name: obj.Spec.ExternalNetwork}, &externalNetwork); err != nil {
 			if errors.IsNotFound(err) {

@@ -108,6 +108,10 @@ func (v *ServiceCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 		return nil, fmt.Errorf("expected a Service object for oldObj but got %T", oldObj)
 	}
 
+	if !shouldCheckReferences(newSvc) {
+		return nil, nil
+	}
+
 	if serviceVpc(newSvc) == serviceVpc(oldSvc) &&
 		newSvc.Annotations[ServiceAnnotationSubnet] == oldSvc.Annotations[ServiceAnnotationSubnet] &&
 		newSvc.Annotations[ServiceAnnotationShared] == oldSvc.Annotations[ServiceAnnotationShared] &&

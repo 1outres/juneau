@@ -156,23 +156,25 @@ func (v *ExternalNetworkCustomValidator) validate(ctx context.Context, obj *june
 		}
 	}
 
-	for i, pool := range obj.Spec.AddressPools {
-		var ap juneauloutresmev1alpha1.AddressPool
-		if err := v.Get(ctx, client.ObjectKey{Name: pool}, &ap); err != nil {
-			if errors.IsNotFound(err) {
-				errs = append(errs, field.Invalid(field.NewPath("spec", "addressPools").Index(i), pool, "referenced AddressPool does not exist"))
-				continue
+	if shouldCheckReferences(obj) {
+		for i, pool := range obj.Spec.AddressPools {
+			var ap juneauloutresmev1alpha1.AddressPool
+			if err := v.Get(ctx, client.ObjectKey{Name: pool}, &ap); err != nil {
+				if errors.IsNotFound(err) {
+					errs = append(errs, field.Invalid(field.NewPath("spec", "addressPools").Index(i), pool, "referenced AddressPool does not exist"))
+					continue
+				}
+				return nil, err
 			}
-			return nil, err
-		}
-		switch obj.Spec.Type {
-		case juneauloutresmev1alpha1.ExternalNetworkTypeBGP:
-			if ap.Spec.AdvertiseMode != juneauloutresmev1alpha1.AddressPoolAdvertiseModeBGP {
-				errs = append(errs, field.Invalid(field.NewPath("spec", "addressPools").Index(i), pool, "type=bgp requires AddressPool advertiseMode=bgp"))
-			}
-		case juneauloutresmev1alpha1.ExternalNetworkTypeARP:
-			if ap.Spec.AdvertiseMode != juneauloutresmev1alpha1.AddressPoolAdvertiseModeARP {
-				errs = append(errs, field.Invalid(field.NewPath("spec", "addressPools").Index(i), pool, "type=arp requires AddressPool advertiseMode=arp"))
+			switch obj.Spec.Type {
+			case juneauloutresmev1alpha1.ExternalNetworkTypeBGP:
+				if ap.Spec.AdvertiseMode != juneauloutresmev1alpha1.AddressPoolAdvertiseModeBGP {
+					errs = append(errs, field.Invalid(field.NewPath("spec", "addressPools").Index(i), pool, "type=bgp requires AddressPool advertiseMode=bgp"))
+				}
+			case juneauloutresmev1alpha1.ExternalNetworkTypeARP:
+				if ap.Spec.AdvertiseMode != juneauloutresmev1alpha1.AddressPoolAdvertiseModeARP {
+					errs = append(errs, field.Invalid(field.NewPath("spec", "addressPools").Index(i), pool, "type=arp requires AddressPool advertiseMode=arp"))
+				}
 			}
 		}
 	}

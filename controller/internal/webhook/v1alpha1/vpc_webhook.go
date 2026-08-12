@@ -146,7 +146,7 @@ func (v *VpcCustomValidator) validate(ctx context.Context, vpc, oldVpc *juneauv1
 
 	servicePath := field.NewPath("spec").Child("service")
 
-	if vpc.Spec.ServiceEnabled() {
+	if vpc.Spec.ServiceEnabled() && shouldCheckReferences(vpc) {
 		if oldVpc == nil || !oldVpc.Spec.ServiceEnabled() {
 			serviceErrs, err := v.validateServiceEnabled(ctx, vpc, servicePath)
 			if err != nil {

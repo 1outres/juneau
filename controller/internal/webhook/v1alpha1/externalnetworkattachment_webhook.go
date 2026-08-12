@@ -114,7 +114,7 @@ func (v *ExternalNetworkAttachmentCustomValidator) validate(ctx context.Context,
 		}
 	}
 
-	if obj.Spec.ExternalNetwork != "" {
+	if shouldCheckReferences(obj) && obj.Spec.ExternalNetwork != "" {
 		var externalNetwork juneauloutresmev1alpha1.ExternalNetwork
 		if err := v.Get(ctx, client.ObjectKey{Name: obj.Spec.ExternalNetwork}, &externalNetwork); err != nil {
 			if errors.IsNotFound(err) {

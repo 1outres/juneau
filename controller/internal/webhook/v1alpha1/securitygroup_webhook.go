@@ -117,8 +117,12 @@ func (v *SecurityGroupCustomValidator) ValidateDelete(ctx context.Context, obj r
 func (v *SecurityGroupCustomValidator) validate(ctx context.Context, sg, old *juneauv1alpha1.SecurityGroup) (admission.Warnings, error) {
 	var errs field.ErrorList
 
+	checkReferences := shouldCheckReferences(sg)
+
 	vpcPath := field.NewPath("spec", "vpc")
-	if len(apivalidation.NameIsDNSSubdomain(sg.Spec.Vpc, false)) == 0 {
+	if len(apivalidation.NameIsDNSSubdomain(sg.Spec.Vpc, false)) > 0 {
+		errs = append(errs, field.Invalid(vpcPath, sg.Spec.Vpc, "must be a valid DNS subdomain"))
+	} else if checkReferences {
 		var vpc juneauv1alpha1.Vpc
 		if err := v.Get(ctx, client.ObjectKey{Name: sg.Spec.Vpc}, &vpc); err != nil {
 			if errors.IsNotFound(err) {
@@ -127,8 +131,6 @@ func (v *SecurityGroupCustomValidator) validate(ctx context.Context, sg, old *ju
 				return nil, err
 			}
 		}
-	} else {
-		errs = append(errs, field.Invalid(vpcPath, sg.Spec.Vpc, "must be a valid DNS subdomain"))
 	}
 
 	if old != nil && sg.Spec.Vpc != old.Spec.Vpc {
@@ -137,12 +139,16 @@ func (v *SecurityGroupCustomValidator) validate(ctx context.Context, sg, old *ju
 
 	for i, rule := range sg.Spec.Ingress {
 		errs = append(errs, validateIngressRule(field.NewPath("spec", "ingress").Index(i), rule)...)
-		errs = append(errs, validatePeerSGsInVpc(ctx, v.Reader, field.NewPath("spec", "ingress").Index(i).Child("from"), rule.From, sg.Spec.Vpc, sg.Name)...)
+		if checkReferences {
+			errs = append(errs, validatePeerSGsInVpc(ctx, v.Reader, field.NewPath("spec", "ingress").Index(i).Child("from"), rule.From, sg.Spec.Vpc, sg.Name)...)
+		}
 	}
 	if sg.Spec.Egress != nil {
 		for i, rule := range *sg.Spec.Egress {
 			errs = append(errs, validateEgressRule(field.NewPath("spec", "egress").Index(i), rule)...)
-			errs = append(errs, validatePeerSGsInVpc(ctx, v.Reader, field.NewPath("spec", "egress").Index(i).Child("to"), rule.To, sg.Spec.Vpc, sg.Name)...)
+			if checkReferences {
+				errs = append(errs, validatePeerSGsInVpc(ctx, v.Reader, field.NewPath("spec", "egress").Index(i).Child("to"), rule.To, sg.Spec.Vpc, sg.Name)...)
+			}
 		}
 	}
 
