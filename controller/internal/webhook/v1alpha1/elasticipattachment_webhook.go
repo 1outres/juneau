@@ -170,6 +170,37 @@ func (v *ElasticIPAttachmentCustomValidator) ValidateDelete(ctx context.Context,
 func (v *ElasticIPAttachmentCustomValidator) validate(ctx context.Context, obj *juneauloutresmev1alpha1.ElasticIPAttachment, oldObj *juneauloutresmev1alpha1.ElasticIPAttachment) (admission.Warnings, error) {
 	var errs field.ErrorList
 
+	if oldObj != nil {
+		if obj.Spec.ElasticIPRef.Name != oldObj.Spec.ElasticIPRef.Name {
+			errs = append(errs, field.Invalid(field.NewPath("spec", "elasticIPRef", "name"), obj.Spec.ElasticIPRef.Name, "elasticIPRef.name is immutable"))
+		}
+		if obj.Spec.TargetRef.NetworkInterfaceName != oldObj.Spec.TargetRef.NetworkInterfaceName {
+			errs = append(errs, field.Invalid(field.NewPath("spec", "targetRef", "networkInterfaceName"), obj.Spec.TargetRef.NetworkInterfaceName, "targetRef.networkInterfaceName is immutable"))
+		}
+	}
+
+	if shouldCheckReferences(obj) {
+		refErrs, err := v.validateReferences(ctx, obj)
+		if err != nil {
+			return nil, err
+		}
+		errs = append(errs, refErrs...)
+	}
+
+	if len(errs) > 0 {
+		err := errors.NewInvalid(schema.GroupKind{Group: juneauloutresmev1alpha1.GroupVersion.Group, Kind: "ElasticIPAttachment"}, obj.Name, errs)
+		elasticipattachmentlog.Info("Validation failed for ElasticIPAttachment", "name", obj.GetName(), "error", err)
+		return nil, err
+	}
+
+	return nil, nil
+}
+
+// validateReferences checks that the ElasticIP and the NetworkInterface
+// this attachment names are both present and still free.
+func (v *ElasticIPAttachmentCustomValidator) validateReferences(ctx context.Context, obj *juneauloutresmev1alpha1.ElasticIPAttachment) (field.ErrorList, error) {
+	var errs field.ErrorList
+
 	elasticIPName := obj.Spec.ElasticIPRef.Name
 	if elasticIPName != "" {
 		var elasticIP juneauloutresmev1alpha1.ElasticIP
@@ -195,15 +226,6 @@ func (v *ElasticIPAttachmentCustomValidator) validate(ctx context.Context, obj *
 			}
 		} else if networkInterface.DeletionTimestamp != nil {
 			errs = append(errs, field.Invalid(field.NewPath("spec", "targetRef", "networkInterfaceName"), networkInterfaceName, "referenced NetworkInterface is being deleted"))
-		}
-	}
-
-	if oldObj != nil {
-		if obj.Spec.ElasticIPRef.Name != oldObj.Spec.ElasticIPRef.Name {
-			errs = append(errs, field.Invalid(field.NewPath("spec", "elasticIPRef", "name"), obj.Spec.ElasticIPRef.Name, "elasticIPRef.name is immutable"))
-		}
-		if obj.Spec.TargetRef.NetworkInterfaceName != oldObj.Spec.TargetRef.NetworkInterfaceName {
-			errs = append(errs, field.Invalid(field.NewPath("spec", "targetRef", "networkInterfaceName"), obj.Spec.TargetRef.NetworkInterfaceName, "targetRef.networkInterfaceName is immutable"))
 		}
 	}
 
@@ -247,11 +269,5 @@ func (v *ElasticIPAttachmentCustomValidator) validate(ctx context.Context, obj *
 		}
 	}
 
-	if len(errs) > 0 {
-		err := errors.NewInvalid(schema.GroupKind{Group: juneauloutresmev1alpha1.GroupVersion.Group, Kind: "ElasticIPAttachment"}, obj.Name, errs)
-		elasticipattachmentlog.Info("Validation failed for ElasticIPAttachment", "name", obj.GetName(), "error", err)
-		return nil, err
-	}
-
-	return nil, nil
+	return errs, nil
 }

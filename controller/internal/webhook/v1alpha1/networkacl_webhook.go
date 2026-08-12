@@ -117,7 +117,9 @@ func (v *NetworkACLCustomValidator) validate(ctx context.Context, acl, old *june
 	var errs field.ErrorList
 
 	vpcPath := field.NewPath("spec", "vpc")
-	if len(apivalidation.NameIsDNSSubdomain(acl.Spec.Vpc, false)) == 0 {
+	if len(apivalidation.NameIsDNSSubdomain(acl.Spec.Vpc, false)) > 0 {
+		errs = append(errs, field.Invalid(vpcPath, acl.Spec.Vpc, "must be a valid DNS subdomain"))
+	} else if shouldCheckReferences(acl) {
 		var vpc juneauv1alpha1.Vpc
 		if err := v.Get(ctx, client.ObjectKey{Name: acl.Spec.Vpc}, &vpc); err != nil {
 			if errors.IsNotFound(err) {
@@ -126,8 +128,6 @@ func (v *NetworkACLCustomValidator) validate(ctx context.Context, acl, old *june
 				return nil, err
 			}
 		}
-	} else {
-		errs = append(errs, field.Invalid(vpcPath, acl.Spec.Vpc, "must be a valid DNS subdomain"))
 	}
 
 	if old != nil && acl.Spec.Vpc != old.Spec.Vpc {

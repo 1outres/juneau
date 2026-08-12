@@ -169,21 +169,23 @@ func (v *NetworkInterfaceCustomValidator) ValidateUpdate(ctx context.Context, ol
 	//
 	// We do still need the Subnet object to check that SGs share its
 	// Vpc, so try to fetch it (best-effort: NotFound is OK).
-	var subnet *juneauv1alpha1.Subnet
-	if networkinterface.Spec.Subnet != "" {
-		var fetched juneauv1alpha1.Subnet
-		if err := v.Get(ctx, client.ObjectKey{Name: networkinterface.Spec.Subnet}, &fetched); err == nil {
-			subnet = &fetched
-		} else if !errors.IsNotFound(err) {
-			return nil, err
+	if shouldCheckReferences(networkinterface) {
+		var subnet *juneauv1alpha1.Subnet
+		if networkinterface.Spec.Subnet != "" {
+			var fetched juneauv1alpha1.Subnet
+			if err := v.Get(ctx, client.ObjectKey{Name: networkinterface.Spec.Subnet}, &fetched); err == nil {
+				subnet = &fetched
+			} else if !errors.IsNotFound(err) {
+				return nil, err
+			}
 		}
-	}
 
-	sgErrs, sgErr := validateNetworkInterfaceSecurityGroups(ctx, v.Reader, networkinterface, subnet, specPath.Child("securityGroups"))
-	if sgErr != nil {
-		return nil, sgErr
+		sgErrs, sgErr := validateNetworkInterfaceSecurityGroups(ctx, v.Reader, networkinterface, subnet, specPath.Child("securityGroups"))
+		if sgErr != nil {
+			return nil, sgErr
+		}
+		errs = append(errs, sgErrs...)
 	}
-	errs = append(errs, sgErrs...)
 
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "NetworkInterface"}, networkinterface.Name, errs)

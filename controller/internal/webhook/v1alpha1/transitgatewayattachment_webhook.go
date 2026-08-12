@@ -98,7 +98,7 @@ func (v *TransitGatewayAttachmentCustomValidator) ValidateUpdate(ctx context.Con
 	if attachment.Spec.Vpc != oldAttachment.Spec.Vpc {
 		errs = append(errs, field.Invalid(specPath.Child("vpc"), attachment.Spec.Vpc, "spec.vpc is immutable"))
 	}
-	if len(errs) == 0 {
+	if len(errs) == 0 && shouldCheckReferences(attachment) {
 		specErrs, err := v.validateTransitGatewayAttachmentSpec(ctx, attachment)
 		if err != nil {
 			return nil, err

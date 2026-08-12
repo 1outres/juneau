@@ -137,27 +137,29 @@ func (v *NATGatewayCustomValidator) validate(ctx context.Context, obj, oldObj *j
 		}
 	}
 
-	if obj.Spec.Vpc != "" {
-		var vpc juneauloutresmev1alpha1.Vpc
-		if err := v.Get(ctx, client.ObjectKey{Name: obj.Spec.Vpc}, &vpc); err != nil {
-			if errors.IsNotFound(err) {
-				errs = append(errs, field.Invalid(specPath.Child("vpc"), obj.Spec.Vpc, "referenced Vpc does not exist"))
-			} else {
-				return nil, err
+	if shouldCheckReferences(obj) {
+		if obj.Spec.Vpc != "" {
+			var vpc juneauloutresmev1alpha1.Vpc
+			if err := v.Get(ctx, client.ObjectKey{Name: obj.Spec.Vpc}, &vpc); err != nil {
+				if errors.IsNotFound(err) {
+					errs = append(errs, field.Invalid(specPath.Child("vpc"), obj.Spec.Vpc, "referenced Vpc does not exist"))
+				} else {
+					return nil, err
+				}
 			}
 		}
-	}
 
-	if obj.Spec.ExternalNetwork != "" {
-		var externalNetwork juneauloutresmev1alpha1.ExternalNetwork
-		if err := v.Get(ctx, client.ObjectKey{Name: obj.Spec.ExternalNetwork}, &externalNetwork); err != nil {
-			if errors.IsNotFound(err) {
-				errs = append(errs, field.Invalid(specPath.Child("externalNetwork"), obj.Spec.ExternalNetwork, "referenced ExternalNetwork does not exist"))
-			} else {
-				return nil, err
+		if obj.Spec.ExternalNetwork != "" {
+			var externalNetwork juneauloutresmev1alpha1.ExternalNetwork
+			if err := v.Get(ctx, client.ObjectKey{Name: obj.Spec.ExternalNetwork}, &externalNetwork); err != nil {
+				if errors.IsNotFound(err) {
+					errs = append(errs, field.Invalid(specPath.Child("externalNetwork"), obj.Spec.ExternalNetwork, "referenced ExternalNetwork does not exist"))
+				} else {
+					return nil, err
+				}
+			} else if externalNetwork.Spec.Type != juneauloutresmev1alpha1.ExternalNetworkTypeBGP {
+				errs = append(errs, field.Invalid(specPath.Child("externalNetwork"), obj.Spec.ExternalNetwork, "referenced ExternalNetwork must have type=bgp"))
 			}
-		} else if externalNetwork.Spec.Type != juneauloutresmev1alpha1.ExternalNetworkTypeBGP {
-			errs = append(errs, field.Invalid(specPath.Child("externalNetwork"), obj.Spec.ExternalNetwork, "referenced ExternalNetwork must have type=bgp"))
 		}
 	}
 

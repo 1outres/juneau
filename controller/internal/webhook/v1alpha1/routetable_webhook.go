@@ -103,7 +103,7 @@ func (v *RouteTableCustomValidator) ValidateUpdate(ctx context.Context, oldObj, 
 	if routeTable.Spec.Vpc != oldRouteTable.Spec.Vpc {
 		errs = append(errs, field.Invalid(specPath.Child("vpc"), routeTable.Spec.Vpc, "spec.vpc is immutable"))
 	}
-	errList, err := v.validateRouteTableSpec(ctx, &routeTable.Spec, specPath)
+	errList, err := v.validateRouteTableSpec(ctx, routeTable, specPath)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +173,7 @@ func (v *RouteTableCustomValidator) ValidateDelete(ctx context.Context, obj runt
 
 func (v *RouteTableCustomValidator) validateRouteTable(ctx context.Context, routeTable *juneauv1alpha1.RouteTable) error {
 	specPath := field.NewPath("spec")
-	errList, err := v.validateRouteTableSpec(ctx, &routeTable.Spec, specPath)
+	errList, err := v.validateRouteTableSpec(ctx, routeTable, specPath)
 	if err != nil {
 		return err
 	}
@@ -184,16 +184,21 @@ func (v *RouteTableCustomValidator) validateRouteTable(ctx context.Context, rout
 	return errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "RouteTable"}, routeTable.Name, errList)
 }
 
-func (v *RouteTableCustomValidator) validateRouteTableSpec(ctx context.Context, spec *juneauv1alpha1.RouteTableSpec, specPath *field.Path) (field.ErrorList, error) {
+func (v *RouteTableCustomValidator) validateRouteTableSpec(ctx context.Context, routeTable *juneauv1alpha1.RouteTable, specPath *field.Path) (field.ErrorList, error) {
 	var errs field.ErrorList
+	spec := &routeTable.Spec
 
 	if spec.Vpc == "" {
 		errs = append(errs, field.Required(specPath.Child("vpc"), "spec.vpc is required"))
 	}
 
-	connectedRoutes, err := v.listConnectedRoutes(ctx, spec.Vpc)
-	if err != nil {
-		return nil, err
+	connectedRoutes := map[string]string{}
+	if shouldCheckReferences(routeTable) {
+		var err error
+		connectedRoutes, err = v.listConnectedRoutes(ctx, spec.Vpc)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	seenDst := map[string]struct{}{}

@@ -165,23 +165,25 @@ func (v *SubnetCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newO
 		errs = append(errs, field.Invalid(errPath.Child("cidr"), subnet.Spec.CIDR, "spec.cidr is immutable"))
 	}
 
-	rtErrs, err := validateSubnetRouteTable(ctx, v.Reader, subnet, errPath.Child("routeTable"))
-	if err != nil {
-		return nil, err
-	}
-	errs = append(errs, rtErrs...)
-
-	// Re-validate spec.networkACL only when its name changed. This
-	// avoids forcing a webhook lookup on every status-driven finalizer
-	// update and prevents a delete-ordering deadlock if the referenced
-	// ACL is being torn down concurrently with an unrelated Subnet
-	// edit.
-	if subnet.Spec.NetworkACL != oldSubnet.Spec.NetworkACL {
-		aclErrs, err := validateSubnetNetworkACL(ctx, v.Reader, subnet, errPath.Child("networkACL"))
+	if shouldCheckReferences(subnet) {
+		rtErrs, err := validateSubnetRouteTable(ctx, v.Reader, subnet, errPath.Child("routeTable"))
 		if err != nil {
 			return nil, err
 		}
-		errs = append(errs, aclErrs...)
+		errs = append(errs, rtErrs...)
+
+		// Re-validate spec.networkACL only when its name changed. This
+		// avoids forcing a webhook lookup on every status-driven finalizer
+		// update and prevents a delete-ordering deadlock if the referenced
+		// ACL is being torn down concurrently with an unrelated Subnet
+		// edit.
+		if subnet.Spec.NetworkACL != oldSubnet.Spec.NetworkACL {
+			aclErrs, err := validateSubnetNetworkACL(ctx, v.Reader, subnet, errPath.Child("networkACL"))
+			if err != nil {
+				return nil, err
+			}
+			errs = append(errs, aclErrs...)
+		}
 	}
 
 	if len(errs) > 0 {
