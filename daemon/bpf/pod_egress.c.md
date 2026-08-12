@@ -88,5 +88,15 @@ forward方向(caller→ClusterIP)のDNATのみを担当する。reverse SNATはp
 1. nat_snat_mapを引く(送信元IPアドレスとsubnet_id)
 2. 見つからなかったらTC_ACT_SHOT
 3. 送信元IPアドレスをaddrで置き換える
-4. ifindex_host_macを引いて、dmacを置き換える
-5. OSに渡す(TC_ACT_OK)
+4. forward_via_host_fibに渡す
+
+## forward_via_host_fib
+
+VPCの外に出るパケットをhost network stackに渡す共通処理。handle_snat、handle_napt、handle_service_host_remote、LBフローの応答レグ、リモートNodeのunderlay IP宛の応答が使う。
+
+1. bpf_fib_lookupでnext hopを引く(BPF_FIB_LOOKUP_OUTPUTは付けない。付けるとoifがPod側のvethに固定され、そのifindexに対するルートが無いため)
+2. SUCCESS と NO_NEIGH 以外はTC_ACT_SHOT
+3. SUCCESSの場合、dmacとsmacを書き換えてegress ifindexにbpf_redirect
+4. NO_NEIGHの場合、bpf_redirect_neighでkernelのneighborサブシステムに渡す(ARPを送り、応答が来るまでパケットを保持してくれる)
+
+NO_NEIGHでTC_ACT_OKを返してはいけない。Podはフレームの宛先MACにSubnetのgw_macを入れているので、kernelはPACKET_OTHERHOSTとしてルーティング前に捨ててしまう。ARPは送られず、再送しても同じ経路を通るため通信が復旧しない。

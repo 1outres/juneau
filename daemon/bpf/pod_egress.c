@@ -65,6 +65,77 @@ struct {
   __type(value, struct trace_emit_args);
 } pod_egress_emit_scratch SEC(".maps");
 
+// Service-related helpers (load_iph, read_l4_ports, rewrite_ipv4_addr,
+// rewrite_l4_port, update_l4_csum) live in nat.h so vxlan_ingress.c can
+// share them. The aliases below keep the local call sites in this file
+// short.
+#define load_iph nat_load_iph
+#define read_l4_ports nat_read_l4_ports
+#define read_napt_ports nat_read_napt_ports
+#define rewrite_ipv4_addr nat_rewrite_ipv4_addr
+#define rewrite_l4_port nat_rewrite_l4_port
+#define skb_data_end nat_skb_data_end
+
+// forward_via_host_fib hands the packet to the host network stack: it
+// resolves the next hop with a kernel FIB lookup, writes the resolved
+// MAC pair, and redirects to the egress interface. Callers that already
+// finished their rewrite and target something outside every VPC end
+// here. On success out_ifindex receives the egress interface, so a
+// caller can name it in a trace event without repeating the lookup.
+//
+// The lookup is ingress-style (no BPF_FIB_LOOKUP_OUTPUT): the OUTPUT
+// flag would pin oif to the Pod veth ifindex, against which no route
+// exists. Ingress-style lets the kernel pick the egress interface from
+// the FIB. Resolving at runtime also keeps BGP-learned peers,
+// multi-uplink hosts and L2-adjacent peers working, which fixing the MAC
+// to the default gateway at daemon start would not.
+//
+// When the route is known but the neighbor is not resolved yet, the
+// packet leaves through bpf_redirect_neigh() instead. That hands it to
+// the kernel neighbor subsystem, which sends the ARP request and holds
+// the packet until the reply arrives. Returning TC_ACT_OK here would
+// not work: the Pod addressed the frame to the synthetic Subnet gateway
+// MAC, so skb->pkt_type is PACKET_OTHERHOST and ip_rcv_core drops the
+// packet before routing. No ARP would ever be sent and the flow would
+// never recover.
+static __juneau_bpf_subprog int forward_via_host_fib(struct __sk_buff *skb,
+                                                     __u32 *out_ifindex) {
+  struct iphdr *iph = load_iph(skb);
+  if (!iph)
+    return TC_ACT_SHOT;
+
+  struct bpf_fib_lookup fib_params = {};
+  fib_params.family = AF_INET;
+  fib_params.l4_protocol = iph->protocol;
+  fib_params.ipv4_dst = iph->daddr;
+  fib_params.ifindex = skb->ifindex;
+
+  long rc = bpf_fib_lookup(skb, &fib_params, sizeof(fib_params), 0);
+  if (rc != BPF_FIB_LKUP_RET_SUCCESS && rc != BPF_FIB_LKUP_RET_NO_NEIGH)
+    return TC_ACT_SHOT;
+
+  *out_ifindex = fib_params.ifindex;
+
+  if (rc == BPF_FIB_LKUP_RET_NO_NEIGH) {
+    // bpf_fib_lookup overwrites ipv4_dst with the next hop before it
+    // looks the neighbor up, so passing it on saves a second route
+    // lookup in the kernel.
+    struct bpf_redir_neigh nh = {
+        .nh_family = AF_INET,
+        .ipv4_nh = fib_params.ipv4_dst,
+    };
+    return bpf_redirect_neigh(fib_params.ifindex, &nh, sizeof(nh), 0);
+  }
+
+  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_dest),
+                          fib_params.dmac, ETH_ALEN, 0) < 0)
+    return TC_ACT_SHOT;
+  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_source),
+                          fib_params.smac, ETH_ALEN, 0) < 0)
+    return TC_ACT_SHOT;
+
+  return bpf_redirect(fib_params.ifindex, 0);
+}
 
 static __always_inline int update_l4_csum(struct __sk_buff *skb,
                                           struct iphdr *iph, void *data_end,
@@ -228,36 +299,8 @@ static __always_inline int handle_snat(struct __sk_buff *skb,
     trace_observe_nat(skb, &__ne);
   }
 
-  // Resolve next-hop at runtime via kernel FIB + neighbor table. Fixing the
-  // MAC to the default gateway at daemon start breaks paths where the actual
-  // next-hop differs (BGP-learned peers, multi-uplink, L2-adjacent peers).
-  //
-  // Use an ingress-style lookup (no BPF_FIB_LOOKUP_OUTPUT): the OUTPUT flag
-  // would pin oif to our pod-veth ifindex, against which no route exists.
-  // Ingress-style lets the kernel pick the right egress iface from the FIB.
-  struct bpf_fib_lookup fib_params = {};
-  fib_params.family = AF_INET;
-  fib_params.l4_protocol = iph->protocol;
-  fib_params.ipv4_dst = iph->daddr;
-  fib_params.ifindex = skb->ifindex;
-
-  long rc = bpf_fib_lookup(skb, &fib_params, sizeof(fib_params), 0);
-  if (rc == BPF_FIB_LKUP_RET_NO_NEIGH) {
-    // Neighbor not yet resolved: hand off to kernel to trigger ARP.
-    return TC_ACT_OK;
-  }
-  if (rc != BPF_FIB_LKUP_RET_SUCCESS)
-    return TC_ACT_SHOT;
-
-  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_dest),
-                          fib_params.dmac, ETH_ALEN, 0) < 0)
-    return TC_ACT_SHOT;
-
-  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_source),
-                          fib_params.smac, ETH_ALEN, 0) < 0)
-    return TC_ACT_SHOT;
-
-  return bpf_redirect(fib_params.ifindex, 0);
+  __u32 egress_ifindex = 0;
+  return forward_via_host_fib(skb, &egress_ifindex);
 }
 
 static __always_inline int handle_arp(struct __sk_buff *skb, void *data_end,
@@ -374,17 +417,6 @@ static __always_inline int forward_l2(struct __sk_buff *skb, struct ethhdr *eth,
                          subnet_id, *vx_if);
   return bpf_redirect(*vx_if, 0);
 }
-
-// Service-related helpers (load_iph, read_l4_ports, rewrite_ipv4_addr,
-// rewrite_l4_port, update_l4_csum) live in nat.h so vxlan_ingress.c can
-// share them. The aliases below keep the local call sites in this file
-// short.
-#define load_iph nat_load_iph
-#define read_l4_ports nat_read_l4_ports
-#define read_napt_ports nat_read_napt_ports
-#define rewrite_ipv4_addr nat_rewrite_ipv4_addr
-#define rewrite_l4_port nat_rewrite_l4_port
-#define skb_data_end nat_skb_data_end
 
 // hash_tuple folds a 5-tuple into a 32-bit value used to spread requests
 // evenly across backends. Mixing constants are arbitrary; the only
@@ -830,30 +862,8 @@ handle_service_host_remote(struct __sk_buff *skb, struct ethhdr *eth,
   }
 
   // Hand to kernel FIB to reach the backend host IP via the underlay.
-  struct iphdr *new_iph = load_iph(skb);
-  if (!new_iph)
-    return TC_ACT_SHOT;
-
-  struct bpf_fib_lookup fib_params = {};
-  fib_params.family = AF_INET;
-  fib_params.l4_protocol = new_iph->protocol;
-  fib_params.ipv4_dst = new_iph->daddr;
-  fib_params.ifindex = skb->ifindex;
-
-  long rc = bpf_fib_lookup(skb, &fib_params, sizeof(fib_params), 0);
-  if (rc == BPF_FIB_LKUP_RET_NO_NEIGH)
-    return TC_ACT_OK;
-  if (rc != BPF_FIB_LKUP_RET_SUCCESS)
-    return TC_ACT_SHOT;
-
-  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_dest),
-                          fib_params.dmac, ETH_ALEN, 0) < 0)
-    return TC_ACT_SHOT;
-  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_source),
-                          fib_params.smac, ETH_ALEN, 0) < 0)
-    return TC_ACT_SHOT;
-
-  return bpf_redirect(fib_params.ifindex, 0);
+  __u32 egress_ifindex = 0;
+  return forward_via_host_fib(skb, &egress_ifindex);
 }
 
 // handle_service_shared dispatches a cross-Vpc shared-Service flow.
@@ -1720,39 +1730,6 @@ static __juneau_bpf_subprog int apply_conntrack_lb_rev_nat(struct __sk_buff *skb
   return 1;
 }
 
-// forward_via_host_fib hands the packet to the host network stack: it
-// resolves the next hop with a kernel FIB lookup, writes the resolved
-// MAC pair, and redirects to the egress interface. Callers that already
-// finished their rewrite and target something outside every VPC end
-// here.
-static __juneau_bpf_subprog int
-forward_via_host_fib(struct __sk_buff *skb) {
-  struct iphdr *iph = load_iph(skb);
-  if (!iph)
-    return TC_ACT_SHOT;
-
-  struct bpf_fib_lookup fib_params = {};
-  fib_params.family = AF_INET;
-  fib_params.l4_protocol = iph->protocol;
-  fib_params.ipv4_dst = iph->daddr;
-  fib_params.ifindex = skb->ifindex;
-
-  long rc = bpf_fib_lookup(skb, &fib_params, sizeof(fib_params), 0);
-  if (rc == BPF_FIB_LKUP_RET_NO_NEIGH)
-    return TC_ACT_OK;
-  if (rc != BPF_FIB_LKUP_RET_SUCCESS)
-    return TC_ACT_SHOT;
-
-  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_dest),
-                          fib_params.dmac, ETH_ALEN, 0) < 0)
-    return TC_ACT_SHOT;
-  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_source),
-                          fib_params.smac, ETH_ALEN, 0) < 0)
-    return TC_ACT_SHOT;
-
-  return bpf_redirect(fib_params.ifindex, 0);
-}
-
 // napt_icmp_target carries the source address and port an ICMP error
 // message has to leave with, from the lookup subprogram to the rewrite
 // subprogram.
@@ -1889,7 +1866,8 @@ static __always_inline int handle_napt(struct __sk_buff *skb,
           bpf_map_lookup_elem(&pod_egress_nat_scratch, &icmp_zero);
       if (icmp_ne)
         trace_observe_nat(skb, icmp_ne);
-      return forward_via_host_fib(skb);
+      __u32 icmp_ifindex = 0;
+      return forward_via_host_fib(skb, &icmp_ifindex);
     }
     // The call scrubbed the packet pointers; the Echo path below needs
     // them again.
@@ -2063,32 +2041,10 @@ static __always_inline int handle_napt(struct __sk_buff *skb,
       ct_observe_tcp(&fwd_key, cv, tcp_flags);
   }
 
-  // Re-derive packet pointers and dispatch via kernel FIB to the host
-  // network stack (same shape as handle_snat's tail).
-  struct iphdr *new_iph = load_iph(skb);
-  if (!new_iph)
-    return TC_ACT_SHOT;
-
-  struct bpf_fib_lookup fib_params = {};
-  fib_params.family = AF_INET;
-  fib_params.l4_protocol = new_iph->protocol;
-  fib_params.ipv4_dst = new_iph->daddr;
-  fib_params.ifindex = skb->ifindex;
-
-  long rc = bpf_fib_lookup(skb, &fib_params, sizeof(fib_params), 0);
-  if (rc == BPF_FIB_LKUP_RET_NO_NEIGH)
-    return TC_ACT_OK;
-  if (rc != BPF_FIB_LKUP_RET_SUCCESS)
-    return TC_ACT_SHOT;
-
-  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_dest),
-                          fib_params.dmac, ETH_ALEN, 0) < 0)
-    return TC_ACT_SHOT;
-  if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_source),
-                          fib_params.smac, ETH_ALEN, 0) < 0)
-    return TC_ACT_SHOT;
-
-  return bpf_redirect(fib_params.ifindex, 0);
+  // Dispatch via kernel FIB to the host network stack (same shape as
+  // handle_snat's tail).
+  __u32 egress_ifindex = 0;
+  return forward_via_host_fib(skb, &egress_ifindex);
 }
 
 // handle_transit resolves a destination the VPC route table handed to a
@@ -2243,40 +2199,19 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
       return TC_ACT_OK;
     }
 
-    struct bpf_fib_lookup fib_params = {};
-    fib_params.family   = AF_INET;
-    fib_params.l4_protocol = iph->protocol;
-    fib_params.ipv4_dst = iph->daddr;
-    fib_params.ifindex  = skb->ifindex;
-
-    long rc = bpf_fib_lookup(skb, &fib_params, sizeof(fib_params), 0);
-    if (rc == BPF_FIB_LKUP_RET_NO_NEIGH) {
-      // Neighbor not resolved yet: hand back to the kernel so it can
-      // trigger an ARP. Subsequent packets will hit the SUCCESS path
-      // and be redirected. This is the same fall-through pattern
-      // handle_snat uses for its underlay path.
-      return TC_ACT_OK;
-    }
-    if (rc != BPF_FIB_LKUP_RET_SUCCESS) {
-      __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, subnet->vpc_id);
+    __u32 egress_ifindex = 0;
+    int fib_ret = forward_via_host_fib(skb, &egress_ifindex);
+    __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, subnet->vpc_id);
+    if (fib_ret == TC_ACT_SHOT) {
       trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_SHOT,
                          TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
                          subnet->vpc_id, 0);
       return TC_ACT_SHOT;
     }
-
-    if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_dest),
-                            fib_params.dmac, ETH_ALEN, 0) < 0)
-      return TC_ACT_SHOT;
-    if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_source),
-                            fib_params.smac, ETH_ALEN, 0) < 0)
-      return TC_ACT_SHOT;
-
-    __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, subnet->vpc_id);
     trace_emit_redirect_l3(skb, __tid, TRACE_REASON_REDIRECT_IFINDEX,
                            TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
-                           subnet->vpc_id, 0, fib_params.ifindex);
-    return bpf_redirect(fib_params.ifindex, 0);
+                           subnet->vpc_id, 0, egress_ifindex);
+    return fib_ret;
   }
 
   __u32 tid = subnet->table_id;
@@ -2598,7 +2533,8 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
       // This is the reply leg of an externally-originated LB flow, not a
       // new VPC egress flow. Send it directly through the host FIB so a
       // VPC default route cannot apply NATGateway NAPT to the VIP.
-      return forward_via_host_fib(skb);
+      __u32 lb_ifindex = 0;
+      return forward_via_host_fib(skb, &lb_ifindex);
     }
 
     // Unified policy stage: NetworkACL → SecurityGroup → CT install.

@@ -387,6 +387,47 @@ spec:
 			assertPodLearnsPathMTU(namespace, natICMPPodName, natBeyondHost, natPMTUDPayload, natBeyondMTU)
 		})
 	})
+
+	// N8 covers the first packet towards a next hop the Node has never
+	// spoken to. The FIB knows the route but the neighbor table holds no
+	// MAC for the next hop, so the data plane cannot write the destination
+	// MAC itself. It has to hand the packet to the kernel neighbor
+	// subsystem, which sends the ARP request and holds the packet until
+	// the reply arrives.
+	//
+	// Handing the packet back to the kernel with TC_ACT_OK does not do
+	// that: the Pod addressed the frame to the synthetic Subnet gateway
+	// MAC, so the kernel sees PACKET_OTHERHOST and drops the packet before
+	// routing. No ARP is ever sent and every retry takes the same path, so
+	// the flow never recovers.
+	It("N8: NAPT egress resolves a next hop the Node has no neighbor entry for", func() {
+		node := workerNodes[0]
+
+		By(fmt.Sprintf("locating the ExternalNetworkAttachment for %s", node))
+		assignedIP := attachmentIPForNode(natExternalNet, node)
+
+		By(fmt.Sprintf("waiting for the opposing router to learn %s/32 via %s", assignedIP, node))
+		waitRouterLearnsNAPTPrefix(bgpRouter, node, assignedIP+"/32")
+
+		secondary := addRouterSecondaryAddress(bgpRouter)
+		DeferCleanup(func() {
+			removeRouterSecondaryAddress(bgpRouter, secondary)
+		})
+
+		namespace := startNATClientPod("e2e-nat-neigh", node)
+
+		By(fmt.Sprintf("dropping any neighbor entry for %s on %s", secondary.IP, node))
+		out, err := dockerExecOutput(node, "ip", "neigh", "flush", "to", secondary.IP)
+		Expect(err).NotTo(HaveOccurred(), "ip neigh flush output: %s", out)
+
+		By(fmt.Sprintf("curling http://%s/ from the Pod (expect ok)", secondary.IP))
+		Eventually(func(g Gomega) {
+			out, err := kubectlOutput(repoRoot, "exec", "-n", namespace, natICMPPodName, "--",
+				"curl", "-sS", "--max-time", "5", fmt.Sprintf("http://%s/", secondary.IP))
+			g.Expect(err).NotTo(HaveOccurred(), "curl output: %s", out)
+			g.Expect(strings.TrimSpace(out)).To(Equal("ok"))
+		}).Should(Succeed())
+	})
 })
 
 // startNATClientPod creates a netshoot Pod on the NATGateway's Subnet in
