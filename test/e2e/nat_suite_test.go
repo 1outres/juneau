@@ -261,6 +261,8 @@ ip addr replace %s dev "$uplink"
 	return addr
 }
 
+// removeRouterSecondaryAddress drops the address again. Best effort: the
+// router container may already be gone, which takes the address with it.
 func removeRouterSecondaryAddress(router *bgpRouterInstance, addr routerSecondaryAddress) {
 	_, _ = router.Exec("sh", "-c", fmt.Sprintf(`uplink=$(ip -o -4 route show default | awk '{print $5; exit}')
 ip addr del %s dev "$uplink"

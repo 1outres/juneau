@@ -409,9 +409,13 @@ spec:
 		By(fmt.Sprintf("waiting for the opposing router to learn %s/32 via %s", assignedIP, node))
 		waitRouterLearnsNAPTPrefix(bgpRouter, node, assignedIP+"/32")
 
-		secondary := addRouterSecondaryAddress(bgpRouter)
+		// Hold the router in a local: this is the last spec in the
+		// container, and AfterAll tears the router down and clears
+		// bgpRouter before a DeferCleanup registered here gets to run.
+		router := bgpRouter
+		secondary := addRouterSecondaryAddress(router)
 		DeferCleanup(func() {
-			removeRouterSecondaryAddress(bgpRouter, secondary)
+			removeRouterSecondaryAddress(router, secondary)
 		})
 
 		namespace := startNATClientPod("e2e-nat-neigh", node)
