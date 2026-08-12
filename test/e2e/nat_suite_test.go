@@ -3,6 +3,7 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -215,6 +216,72 @@ func teardownRouterBeyondNetwork(router *bgpRouterInstance, nodes []string) {
 	if router != nil {
 		_, _ = router.Exec("ip", "route", "del", natBeyondCIDR)
 	}
+}
+
+// routerSecondaryAddress is an extra address the opposing router carries
+// on the link it shares with the Nodes.
+type routerSecondaryAddress struct {
+	IP   string
+	CIDR string
+}
+
+// addRouterSecondaryAddress gives the opposing router a second address on
+// the link it shares with the Nodes, and returns it.
+//
+// A spec about neighbor resolution needs a next hop that nothing else on
+// the Node ever talks to. The router's primary address does not qualify:
+// the BGP session keeps its neighbor entry warm, so the entry would come
+// back on its own and the spec would pass without the data plane having
+// done anything. The address is taken from the top of the docker network
+// prefix, which docker hands out from the bottom, so it does not collide
+// with a container.
+func addRouterSecondaryAddress(router *bgpRouterInstance) routerSecondaryAddress {
+	subnet := kindNetworkIPv4Subnet()
+	_, prefix, err := net.ParseCIDR(subnet)
+	Expect(err).NotTo(HaveOccurred(), "parse docker network subnet %q", subnet)
+
+	base := prefix.IP.To4()
+	secondary := make(net.IP, len(base))
+	for i := range base {
+		secondary[i] = base[i] | ^prefix.Mask[i]
+	}
+	secondary[len(secondary)-1]--
+	ones, _ := prefix.Mask.Size()
+	addr := routerSecondaryAddress{
+		IP:   secondary.String(),
+		CIDR: fmt.Sprintf("%s/%d", secondary, ones),
+	}
+
+	By(fmt.Sprintf("giving the opposing router a second address %s", addr.CIDR))
+	out, err := router.Exec("sh", "-c", fmt.Sprintf(`set -eu
+uplink=$(ip -o -4 route show default | awk '{print $5; exit}')
+ip addr replace %s dev "$uplink"
+`, addr.CIDR))
+	Expect(err).NotTo(HaveOccurred(), "router address setup output: %s", out)
+	return addr
+}
+
+// removeRouterSecondaryAddress drops the address again. Best effort: the
+// router container may already be gone, which takes the address with it.
+func removeRouterSecondaryAddress(router *bgpRouterInstance, addr routerSecondaryAddress) {
+	_, _ = router.Exec("sh", "-c", fmt.Sprintf(`uplink=$(ip -o -4 route show default | awk '{print $5; exit}')
+ip addr del %s dev "$uplink"
+`, addr.CIDR))
+}
+
+// kindNetworkIPv4Subnet returns the IPv4 prefix of the docker network the
+// Nodes and the opposing router share.
+func kindNetworkIPv4Subnet() string {
+	out, err := dockerOutput("network", "inspect", "-f",
+		"{{range .IPAM.Config}}{{.Subnet}} {{end}}", kindDockerNetwork)
+	Expect(err).NotTo(HaveOccurred(), "docker network inspect %s", kindDockerNetwork)
+	for subnet := range strings.FieldsSeq(out) {
+		if ip, _, err := net.ParseCIDR(subnet); err == nil && ip.To4() != nil {
+			return subnet
+		}
+	}
+	Fail(fmt.Sprintf("docker network %s has no IPv4 subnet: %q", kindDockerNetwork, out))
+	return ""
 }
 
 func getRouteTableObject(name string) (*routeTableObject, error) {
