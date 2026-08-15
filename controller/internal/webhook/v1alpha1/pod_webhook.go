@@ -80,8 +80,8 @@ const (
 // nolint:unused
 var podlog = logf.Log.WithName("pod-resource")
 
-// SetupPodWebhookWithManager registers the Pod webhook. Two distinct
-// concerns are layered behind a single webhook registration:
+// SetupPodWebhookWithManager registers the Pod webhooks. Three distinct
+// concerns use separate handlers and failure policies:
 //
 //   - PodDNSDefaulter (mutating): injects per-Subnet DNS config. Failure
 //     policy "Ignore" is deliberate — a misconfigured DNS plane should
@@ -91,14 +91,25 @@ var podlog = logf.Log.WithName("pod-resource")
 //     in the wrong Vpc, or violates Vpc.spec.enforceSecurityGroups.
 //     Failure policy "Fail" is deliberate — silently admitting a Pod
 //     with a non-existent SG would be a real security hole.
+//   - PodProbeDefaulter (mutating): routes kubelet network probes through
+//     the node-local Juneau probe proxy for overlapping custom VPC
+//     addresses. When enabled, it has a separate fail-closed handler scoped
+//     to custom Subnet Pods.
 //
-// Both pieces share the same client; controller-runtime treats them as
-// separate webhook handlers under the same registration.
-func SetupPodWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(&corev1.Pod{}).
+// All three use the same API reader. Probe rewriting is registered on a
+// distinct path; DNS mutation and SecurityGroup validation retain their
+// existing controller-runtime registration.
+func SetupPodWebhookWithManager(mgr ctrl.Manager, enableProbeRewrite bool, probeProxyPort int32) error {
+	if err := ctrl.NewWebhookManagedBy(mgr).For(&corev1.Pod{}).
 		WithDefaulter(&PodDNSDefaulter{Reader: mgr.GetAPIReader()}).
 		WithValidator(&PodSecurityGroupValidator{Reader: mgr.GetAPIReader()}).
-		Complete()
+		Complete(); err != nil {
+		return err
+	}
+	if !enableProbeRewrite {
+		return nil
+	}
+	return setupPodProbeWebhookWithManager(mgr, probeProxyPort)
 }
 
 // +kubebuilder:webhook:path=/mutate--v1-pod,mutating=true,failurePolicy=ignore,sideEffects=None,groups="",resources=pods,verbs=create,versions=v1,name=mpod-juneau-loutres-me.kb.io,admissionReviewVersions=v1

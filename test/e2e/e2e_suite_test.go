@@ -128,6 +128,11 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	// never be watched. Install it first.
 	mustRun(root, "kubectl", "apply", "-f", filepath.Join(root, "test", "e2e", "testdata", "kubevirt-virtualmachine-crd.yaml"))
 	mustRun(filepath.Join(root, "controller"), "make", "deploy", fmt.Sprintf("IMG=%s", controllerImage))
+	// Probe rewriting is intentionally disabled by default. The E2E suite
+	// opts the controller into the compatibility mode so the overlapping
+	// address scenarios below exercise the feature.
+	mustRun(root, "kubectl", "patch", "deployment/juneau-controller-manager", "-n", controllerNamespace,
+		"--type=json", "-p", `[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--enable-probe-rewrite"}]`)
 	mustRun(root, "kubectl", "label", "--overwrite", "namespace", controllerNamespace, "pod-security.kubernetes.io/enforce=privileged")
 	mustRun(root, "kubectl", "label", "--overwrite", "namespace", daemonNamespace, "pod-security.kubernetes.io/enforce=privileged")
 	// The daemon installs the CNI binary on each node; without it, nodes

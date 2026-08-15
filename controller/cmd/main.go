@@ -81,6 +81,8 @@ func main() {
 	var defaultSubnetCIDR string
 	var serviceClusterIPRange string
 	var enableHTTP2 bool
+	var enableProbeRewrite bool
+	var probeProxyPort int
 	var tlsOpts []func(*tls.Config)
 	var webhookCASecret string
 	var podNamespace string
@@ -105,6 +107,10 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.BoolVar(&enableProbeRewrite, "enable-probe-rewrite", false,
+		"Rewrite kubelet network probes through the node-local Juneau probe proxy for Pods on custom VPCs.")
+	flag.IntVar(&probeProxyPort, "probe-proxy-port", 9911,
+		"Node-local Juneau probe proxy port used by rewritten kubelet probes.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -278,7 +284,7 @@ func main() {
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookjuneauv1alpha1.SetupPodWebhookWithManager(mgr); err != nil {
+		if err = webhookjuneauv1alpha1.SetupPodWebhookWithManager(mgr, enableProbeRewrite, int32(probeProxyPort)); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Pod")
 			os.Exit(1)
 		}
@@ -657,7 +663,7 @@ func main() {
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
 		// Apply webhook configurations pointing to this node IP using the embedded manifests.
 		nodeName := os.Getenv("NODE_NAME")
-		if err := webhookapply.Apply(ctx, ctrl.GetConfigOrDie(), nodeName, podNamespace, webhookCASecret, "juneau-", webhookmanifests.Manifests); err != nil {
+		if err := webhookapply.Apply(ctx, ctrl.GetConfigOrDie(), nodeName, podNamespace, webhookCASecret, "juneau-", webhookmanifests.Manifests, enableProbeRewrite); err != nil {
 			setupLog.Error(err, "failed to apply webhook configurations")
 			os.Exit(1)
 		}
