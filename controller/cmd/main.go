@@ -319,6 +319,13 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "RouteTable")
 		os.Exit(1)
 	}
+	if err = (&controller.VpcEndpointReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "VpcEndpoint")
+		os.Exit(1)
+	}
 	if err = (&controller.AddressPoolReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),

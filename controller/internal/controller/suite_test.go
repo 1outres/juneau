@@ -127,6 +127,10 @@ var _ = BeforeSuite(func() {
 		Scheme:      mgr.GetScheme(),
 		ServiceCIDR: testServiceCIDR,
 	}).SetupWithManager(mgr)).To(Succeed())
+	Expect((&VpcEndpointReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr)).To(Succeed())
 	Expect((&VpcPeeringReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),

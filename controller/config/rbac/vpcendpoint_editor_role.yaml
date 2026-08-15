@@ -1,0 +1,26 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: controller
+    app.kubernetes.io/managed-by: kustomize
+  name: vpcendpoint-editor-role
+rules:
+- apiGroups:
+  - juneau.loutres.me
+  resources:
+  - vpcendpoints
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - juneau.loutres.me
+  resources:
+  - vpcendpoints/status
+  verbs:
+  - get

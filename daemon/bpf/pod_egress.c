@@ -1081,6 +1081,18 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
       .port = bpf_ntohs(dport),
       .proto = iph->protocol,
   };
+  struct vpc_endpoint_key vek = {
+      .vpc_id = subnet->vpc_id,
+      .address = sk.cluster_ip,
+      .port = sk.port,
+      .proto = sk.proto,
+  };
+  const struct vpc_endpoint_val *vev =
+      bpf_map_lookup_elem(&vpc_endpoint_map, &vek);
+  bool is_vpc_endpoint = vev != NULL;
+  if (is_vpc_endpoint)
+    sk.cluster_ip = vev->cluster_ip;
+
   const struct service_val *sv = bpf_map_lookup_elem(&service_map, &sk);
   if (!sv) {
     __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, subnet->vpc_id);
@@ -1096,14 +1108,14 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
   // the shared path. caller_vpc != owner_vpc otherwise drops, preserving
   // the strict per-Vpc isolation that ordinary Services rely on.
   bool is_shared = (sv->flags & SVC_FLAG_SHARED) != 0;
-  if (sv->owner_vpc_id != subnet->vpc_id && !is_shared)
+  if (sv->owner_vpc_id != subnet->vpc_id && !is_shared && !is_vpc_endpoint)
     return TC_ACT_SHOT;
   // Per-Service consumer ACL: when SVC_FLAG_HAS_ACL is set, only the
   // (cluster_ip, port, proto, caller_vpc_id) tuples explicitly
   // present in service_acl_map are admitted. Absent flag → every
   // consume-enabled Vpc is admitted by default. Same-Vpc callers
   // always pass; the ACL applies only to the cross-Vpc shared path.
-  if (is_shared && sv->owner_vpc_id != subnet->vpc_id &&
+  if (!is_vpc_endpoint && is_shared && sv->owner_vpc_id != subnet->vpc_id &&
       (sv->flags & SVC_FLAG_HAS_ACL)) {
     struct service_acl_key ak = {
         .cluster_ip = sk.cluster_ip,

@@ -362,6 +362,20 @@ type NodeIngressVirtualServiceVal struct {
 	Flags      uint32
 }
 
+type NodeIngressVpcEndpointKey struct {
+	_       structs.HostLayout
+	VpcId   uint32
+	Address uint32
+	Port    uint16
+	Proto   uint8
+	Pad     uint8
+}
+
+type NodeIngressVpcEndpointVal struct {
+	_         structs.HostLayout
+	ClusterIp uint32
+}
+
 // LoadNodeIngress returns the embedded CollectionSpec for NodeIngress.
 func LoadNodeIngress() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_NodeIngressBytes)
@@ -447,6 +461,7 @@ type NodeIngressMapSpecs struct {
 	TraceTupleMap         *ebpf.MapSpec `ebpf:"trace_tuple_map"`
 	VirtualServiceFlowMap *ebpf.MapSpec `ebpf:"virtual_service_flow_map"`
 	VirtualServiceMap     *ebpf.MapSpec `ebpf:"virtual_service_map"`
+	VpcEndpointMap        *ebpf.MapSpec `ebpf:"vpc_endpoint_map"`
 	VxlanIfindex          *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
 }
 
@@ -512,6 +527,7 @@ type NodeIngressMaps struct {
 	TraceTupleMap         *ebpf.Map `ebpf:"trace_tuple_map"`
 	VirtualServiceFlowMap *ebpf.Map `ebpf:"virtual_service_flow_map"`
 	VirtualServiceMap     *ebpf.Map `ebpf:"virtual_service_map"`
+	VpcEndpointMap        *ebpf.Map `ebpf:"vpc_endpoint_map"`
 	VxlanIfindex          *ebpf.Map `ebpf:"vxlan_ifindex"`
 }
 
@@ -553,6 +569,7 @@ func (m *NodeIngressMaps) Close() error {
 		m.TraceTupleMap,
 		m.VirtualServiceFlowMap,
 		m.VirtualServiceMap,
+		m.VpcEndpointMap,
 		m.VxlanIfindex,
 	)
 }
