@@ -18,9 +18,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
+const (
+	probeWebhookName = "mprobe-pod-juneau-loutres-me.kb.io"
+	probeSubnetMatch = "has(object.metadata.annotations) && " +
+		"'juneau.loutres.me/subnet' in object.metadata.annotations && " +
+		"object.metadata.annotations['juneau.loutres.me/subnet'] != '' && " +
+		"object.metadata.annotations['juneau.loutres.me/subnet'] != 'default'"
+)
+
 // Apply reads embedded webhook manifests, rewrites names and clientConfig (URL + CA),
 // and creates/updates them in the cluster.
-func Apply(ctx context.Context, cfg *rest.Config, nodeName, namespace, caSecretName, namePrefix string, manifests []byte) error {
+func Apply(ctx context.Context, cfg *rest.Config, nodeName, namespace, caSecretName, namePrefix string, manifests []byte, enableProbeRewrite bool) error {
 	logger := log.FromContext(ctx)
 
 	if nodeName == "" {
@@ -83,7 +91,7 @@ func Apply(ctx context.Context, cfg *rest.Config, nodeName, namespace, caSecretN
 
 		switch o := obj.(type) {
 		case *admv1.MutatingWebhookConfiguration:
-			prepareMutating(o, nodeIP, caBundle, namePrefix)
+			prepareMutating(o, nodeIP, caBundle, namePrefix, enableProbeRewrite)
 			if err := upsertMutating(ctx, clientset, o); err != nil {
 				return fmt.Errorf("apply mutating webhook %s: %w", o.Name, err)
 			}
@@ -116,9 +124,19 @@ func pickNodeIP(node *corev1.Node) (string, error) {
 	return "", fmt.Errorf("no usable node IP on %s", node.Name)
 }
 
-func prepareMutating(obj *admv1.MutatingWebhookConfiguration, nodeIP string, caBundle []byte, prefix string) {
+func prepareMutating(obj *admv1.MutatingWebhookConfiguration, nodeIP string, caBundle []byte, prefix string, enableProbeRewrite bool) {
 	obj.Name = prefix + obj.Name
+	webhooks := obj.Webhooks[:0]
 	for i := range obj.Webhooks {
+		if obj.Webhooks[i].Name == probeWebhookName {
+			if !enableProbeRewrite {
+				continue
+			}
+			obj.Webhooks[i].MatchConditions = []admv1.MatchCondition{{
+				Name:       "custom-subnet",
+				Expression: probeSubnetMatch,
+			}}
+		}
 		path := ""
 		if obj.Webhooks[i].ClientConfig.Service != nil {
 			path = ptr.Deref(obj.Webhooks[i].ClientConfig.Service.Path, "")
@@ -127,7 +145,9 @@ func prepareMutating(obj *admv1.MutatingWebhookConfiguration, nodeIP string, caB
 		obj.Webhooks[i].ClientConfig.Service = nil
 		obj.Webhooks[i].ClientConfig.URL = ptr.To(url)
 		obj.Webhooks[i].ClientConfig.CABundle = caBundle
+		webhooks = append(webhooks, obj.Webhooks[i])
 	}
+	obj.Webhooks = webhooks
 }
 
 func prepareValidating(obj *admv1.ValidatingWebhookConfiguration, nodeIP string, caBundle []byte, prefix string) {

@@ -10,9 +10,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	probeconfig "github.com/1outres/juneau/controller/pkg/probe"
 )
 
 func uniquePodName() string {
@@ -275,6 +277,204 @@ var _ = Describe("Pod DNS injection webhook", func() {
 		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Name: pod.Name, Namespace: "default"}, &fetched)).To(Succeed())
 		Expect(fetched.Spec.DNSPolicy).To(Equal(corev1.DNSNone))
 		Expect(fetched.Spec.DNSConfig.Searches).To(Equal([]string{"custom.example.com"}))
+	})
+})
+
+var _ = Describe("Pod network probe rewrite", func() {
+	It("rewrites startup, readiness, and liveness network probes without changing timing", func() {
+		service := "worker"
+		pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Name:  "server",
+			Image: "example/server:1",
+			Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}},
+			StartupProbe: &corev1.Probe{
+				ProbeHandler:        corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(8080)}},
+				InitialDelaySeconds: 3, PeriodSeconds: 4, FailureThreshold: 5,
+			},
+			ReadinessProbe: &corev1.Probe{
+				ProbeHandler:   corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/ready", Port: intstr.FromString("http")}},
+				TimeoutSeconds: 2, SuccessThreshold: 2,
+			},
+			LivenessProbe: &corev1.Probe{
+				ProbeHandler:  corev1.ProbeHandler{GRPC: &corev1.GRPCAction{Port: 9090, Service: &service}},
+				PeriodSeconds: 7,
+			},
+		}}}}
+
+		Expect(rewriteNetworkProbes(pod, probeconfig.DefaultProxyPort)).To(Succeed())
+		container := &pod.Spec.Containers[0]
+		for _, item := range []*corev1.Probe{container.StartupProbe, container.ReadinessProbe, container.LivenessProbe} {
+			Expect(item.HTTPGet).NotTo(BeNil())
+			Expect(item.HTTPGet.Host).To(Equal("127.0.0.1"))
+			Expect(item.HTTPGet.Port.IntVal).To(Equal(probeconfig.DefaultProxyPort))
+			Expect(item.HTTPGet.Path).To(HavePrefix(probeconfig.EndpointPathPrefix))
+			Expect(item.Exec).To(BeNil())
+			Expect(item.TCPSocket).To(BeNil())
+			Expect(item.GRPC).To(BeNil())
+		}
+		Expect(container.StartupProbe.InitialDelaySeconds).To(Equal(int32(3)))
+		Expect(container.StartupProbe.PeriodSeconds).To(Equal(int32(4)))
+		Expect(container.StartupProbe.FailureThreshold).To(Equal(int32(5)))
+		Expect(container.ReadinessProbe.TimeoutSeconds).To(Equal(int32(2)))
+		Expect(container.ReadinessProbe.SuccessThreshold).To(Equal(int32(2)))
+		Expect(container.LivenessProbe.PeriodSeconds).To(Equal(int32(7)))
+		Expect(pod.Spec.InitContainers).To(BeEmpty())
+		Expect(pod.Spec.Volumes).To(BeEmpty())
+		Expect(container.VolumeMounts).To(BeEmpty())
+		Expect(pod.Annotations).To(HaveKeyWithValue(probeconfig.AnnotationRewriteVersion, probeconfig.RewriteVersion))
+		configs, err := probeconfig.Parse(pod.Annotations[probeconfig.AnnotationConfigs])
+		Expect(err).NotTo(HaveOccurred())
+		Expect(configs).To(HaveLen(3))
+
+		// Admission retries must not allocate new tokens.
+		encoded := pod.Annotations[probeconfig.AnnotationConfigs]
+		Expect(rewriteNetworkProbes(pod, probeconfig.DefaultProxyPort)).To(Succeed())
+		Expect(pod.Annotations[probeconfig.AnnotationConfigs]).To(Equal(encoded))
+
+		// Reinvocation must also handle a sidecar added by a later webhook.
+		pod.Spec.Containers = append(pod.Spec.Containers, corev1.Container{
+			Name: "sidecar",
+			ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+				TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(15021)},
+			}},
+		})
+		Expect(rewriteNetworkProbes(pod, probeconfig.DefaultProxyPort)).To(Succeed())
+		Expect(pod.Spec.Containers[1].ReadinessProbe.HTTPGet.Host).To(Equal("127.0.0.1"))
+		configs, err = probeconfig.Parse(pod.Annotations[probeconfig.AnnotationConfigs])
+		Expect(err).NotTo(HaveOccurred())
+		Expect(configs).To(HaveLen(4))
+	})
+
+	It("leaves an explicit exec probe unchanged", func() {
+		pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Name: "server",
+			ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+				Exec: &corev1.ExecAction{Command: []string{"/bin/check"}},
+			}},
+		}}}}
+		Expect(rewriteNetworkProbes(pod, probeconfig.DefaultProxyPort)).To(Succeed())
+		Expect(pod.Spec.Containers[0].ReadinessProbe.Exec.Command).To(Equal([]string{"/bin/check"}))
+		Expect(pod.Annotations).NotTo(HaveKey(probeconfig.AnnotationRewriteVersion))
+	})
+
+	It("rewrites custom-Vpc Pod probes when the controller option is enabled", func() {
+		subnet := customSubnetFixture()
+		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
+			PodAnnotationSubnet: subnet.Name,
+		})
+		pod.Spec.Containers[0].ReadinessProbe = &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{Path: "/ready", Port: intstr.FromInt32(8080)},
+		}}
+		Expect(webhookK8sClient.Create(context.Background(), pod)).To(Succeed())
+		DeferCleanup(func() {
+			_ = webhookK8sClient.Delete(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: "default"}})
+		})
+
+		var fetched corev1.Pod
+		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKeyFromObject(pod), &fetched)).To(Succeed())
+		Expect(fetched.Spec.Containers[0].ReadinessProbe.HTTPGet.Host).To(Equal("127.0.0.1"))
+		Expect(fetched.Annotations).To(HaveKeyWithValue(probeconfig.AnnotationRewriteVersion, probeconfig.RewriteVersion))
+	})
+
+	It("leaves default-network Pod probes unchanged", func() {
+		pod := makePodWithImage(uniquePodName(), "default", nil)
+		pod.Spec.Containers[0].ReadinessProbe = &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{Path: "/ready", Port: intstr.FromInt32(8080)},
+		}}
+		Expect(webhookK8sClient.Create(context.Background(), pod)).To(Succeed())
+		DeferCleanup(func() {
+			_ = webhookK8sClient.Delete(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: "default"}})
+		})
+
+		var fetched corev1.Pod
+		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKeyFromObject(pod), &fetched)).To(Succeed())
+		Expect(fetched.Spec.Containers[0].ReadinessProbe.HTTPGet).NotTo(BeNil())
+		Expect(fetched.Annotations).NotTo(HaveKey(probeconfig.AnnotationRewriteVersion))
+	})
+
+	It("leaves explicit-host probes unchanged in compatibility mode", func() {
+		subnet := customSubnetFixture()
+		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
+			PodAnnotationSubnet: subnet.Name,
+		})
+		pod.Spec.Containers[0].ReadinessProbe = &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{Host: "example.com", Path: "/", Port: intstr.FromInt32(443)},
+		}}
+		Expect(webhookK8sClient.Create(context.Background(), pod)).To(Succeed())
+		DeferCleanup(func() {
+			_ = webhookK8sClient.Delete(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: "default"}})
+		})
+
+		var fetched corev1.Pod
+		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKeyFromObject(pod), &fetched)).To(Succeed())
+		probe := fetched.Spec.Containers[0].ReadinessProbe
+		Expect(probe.HTTPGet.Host).To(Equal("example.com"))
+		Expect(probe.HTTPGet.Port.IntVal).To(Equal(int32(443)))
+		Expect(fetched.Annotations).NotTo(HaveKey(probeconfig.AnnotationRewriteVersion))
+		Expect(fetched.Annotations).NotTo(HaveKey(probeconfig.AnnotationConfigs))
+	})
+
+	It("skips explicit-host probes but still rewrites the remaining ones", func() {
+		pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Name: "server",
+			StartupProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{Host: "example.com", Path: "/up", Port: intstr.FromInt32(443)},
+			}},
+			ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+				TCPSocket: &corev1.TCPSocketAction{Host: "10.0.0.9", Port: intstr.FromInt32(9000)},
+			}},
+			LivenessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(8080)},
+			}},
+		}}}}
+
+		Expect(rewriteNetworkProbes(pod, probeconfig.DefaultProxyPort)).To(Succeed())
+		container := &pod.Spec.Containers[0]
+		Expect(container.StartupProbe.HTTPGet.Host).To(Equal("example.com"))
+		Expect(container.StartupProbe.HTTPGet.Path).To(Equal("/up"))
+		Expect(container.ReadinessProbe.TCPSocket).NotTo(BeNil())
+		Expect(container.ReadinessProbe.TCPSocket.Host).To(Equal("10.0.0.9"))
+		Expect(container.LivenessProbe.HTTPGet.Host).To(Equal("127.0.0.1"))
+		Expect(container.LivenessProbe.HTTPGet.Path).To(HavePrefix(probeconfig.EndpointPathPrefix))
+
+		Expect(pod.Annotations).To(HaveKeyWithValue(probeconfig.AnnotationRewriteVersion, probeconfig.RewriteVersion))
+		configs, err := probeconfig.Parse(pod.Annotations[probeconfig.AnnotationConfigs])
+		Expect(err).NotTo(HaveOccurred())
+		Expect(configs).To(HaveLen(1))
+		for _, config := range configs {
+			Expect(config.Path).To(Equal("/healthz"))
+		}
+	})
+
+	It("leaves a Pod untouched when every probe has an explicit host", func() {
+		pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Name: "server",
+			ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+				TCPSocket: &corev1.TCPSocketAction{Host: "10.0.0.9", Port: intstr.FromInt32(9000)},
+			}},
+		}}}}
+		Expect(rewriteNetworkProbes(pod, probeconfig.DefaultProxyPort)).To(Succeed())
+		Expect(pod.Spec.Containers[0].ReadinessProbe.TCPSocket).NotTo(BeNil())
+		Expect(pod.Spec.Containers[0].ReadinessProbe.HTTPGet).To(BeNil())
+		Expect(pod.Annotations).NotTo(HaveKey(probeconfig.AnnotationRewriteVersion))
+		Expect(pod.Annotations).NotTo(HaveKey(probeconfig.AnnotationConfigs))
+	})
+
+	It("rewrites probes on restartable init containers", func() {
+		always := corev1.ContainerRestartPolicyAlways
+		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{}}, Spec: corev1.PodSpec{
+			InitContainers: []corev1.Container{{
+				Name:          "sidecar",
+				RestartPolicy: &always,
+				StartupProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+					TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(9090)},
+				}},
+			}},
+			Containers: []corev1.Container{{Name: "main"}},
+		}}
+		Expect(rewriteNetworkProbes(pod, probeconfig.DefaultProxyPort)).To(Succeed())
+		Expect(pod.Spec.InitContainers[0].StartupProbe.HTTPGet.Host).To(Equal("127.0.0.1"))
+		Expect(pod.Spec.InitContainers).To(HaveLen(1))
 	})
 })
 

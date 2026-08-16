@@ -228,9 +228,10 @@ func stopGraceful(srv *grpc.Server) {
 // ServerConfig bundles construction-time options for NewServer so
 // new transport knobs do not become positional-arg churn.
 type ServerConfig struct {
-	Client     client.Client
-	TraceBus   *trace.Bus
-	TraceStore *trace.Store
+	Client         client.Client
+	ProbeRegistrar ProbeRegistrar
+	TraceBus       *trace.Bus
+	TraceStore     *trace.Store
 	// MapInventory backs the ListBPFMaps / DumpBPFMap RPCs. Optional;
 	// the RPCs return FailedPrecondition when nil.
 	MapInventory *mapinventory.Inventory
@@ -248,7 +249,7 @@ type ServerConfig struct {
 func NewServer(cfg ServerConfig) *Server {
 	s := &Server{
 		cniServer: grpc.NewServer(),
-		cni:       newCNIServer(cfg.Client),
+		cni:       newCNIServer(cfg.Client, cfg.ProbeRegistrar),
 	}
 	cnipb.RegisterCNIServer(s.cniServer, s.cni)
 

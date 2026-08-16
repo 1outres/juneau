@@ -38,7 +38,13 @@ const (
 type CNIServer struct {
 	cnipb.UnimplementedCNIServer
 
-	client client.Client
+	client         client.Client
+	probeRegistrar ProbeRegistrar
+}
+
+type ProbeRegistrar interface {
+	RegisterPod(ctx context.Context, namespace, name, uid, netnsPath, address string) error
+	UnregisterPod(uid string) error
 }
 
 func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb.CNIResponse, retErr error) {
@@ -311,6 +317,12 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 		zap.L().Error("failed to serialize CNI result", zap.Error(err))
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to serialize CNI result", err.Error())
 	}
+	if c.probeRegistrar != nil && req.Ifname == "eth0" {
+		if err := c.probeRegistrar.RegisterPod(ctx, podNamespace, podName, podUID, req.Netns, nwiface.Status.Address); err != nil {
+			return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to register Pod probes", err.Error())
+		}
+		cleanups = append(cleanups, func() { _ = c.probeRegistrar.UnregisterPod(podUID) })
+	}
 
 	return &cnipb.CNIResponse{
 		ResultJson: buf.Bytes(),
@@ -420,6 +432,11 @@ func (c *CNIServer) Del(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.Em
 	podUID := req.Args[PodUIDKey]
 
 	zap.S().Infof("CNI DEL request for pod %s/%s ifname=%s", podNamespace, podName, req.Ifname)
+	if c.probeRegistrar != nil && req.Ifname == "eth0" {
+		if err := c.probeRegistrar.UnregisterPod(podUID); err != nil {
+			zap.L().Warn("failed to unregister Pod probes", zap.Error(err))
+		}
+	}
 
 	vethHostName := c.vethHostName(req.Ifname, req.ContainerId)
 
@@ -454,9 +471,10 @@ func (c *CNIServer) Del(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.Em
 	return &emptypb.Empty{}, nil
 }
 
-func newCNIServer(client client.Client) *CNIServer {
+func newCNIServer(client client.Client, probeRegistrar ProbeRegistrar) *CNIServer {
 	return &CNIServer{
-		client: client,
+		client:         client,
+		probeRegistrar: probeRegistrar,
 	}
 }
 

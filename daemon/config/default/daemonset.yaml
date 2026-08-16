@@ -33,7 +33,7 @@ spec:
               mountPath: /etc/cni/net.d
             - name: host-var-run
               mountPath: /var/run
-              mountPropagation: HostToContainer
+              mountPropagation: Bidirectional
             - name: host-run-sysctld
               mountPath: /run/sysctl.d
             - name: host-sys

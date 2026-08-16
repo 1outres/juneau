@@ -15,6 +15,7 @@ import (
 	"github.com/1outres/juneau/daemon/internal/daemon/bootstrap"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane"
 	"github.com/1outres/juneau/daemon/internal/daemon/grpc"
+	"github.com/1outres/juneau/daemon/internal/daemon/probeproxy"
 	"github.com/1outres/juneau/daemon/internal/daemon/runner"
 	"github.com/1outres/juneau/daemon/internal/daemon/virtservice"
 	"github.com/1outres/juneau/daemon/internal/daemon/virtservice/dns"
@@ -23,6 +24,7 @@ import (
 	"golang.org/x/sys/unix"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -40,6 +42,16 @@ func NewApp() *cli.Command {
 			&cli.IntFlag{
 				Name:  "cni-uds-timeout-ms",
 				Value: 5000,
+			},
+			&cli.StringFlag{
+				Name:  "probe-proxy-bind-address",
+				Value: probeproxy.DefaultBindAddress,
+				Usage: "Node-local address used by rewritten kubelet probes.",
+			},
+			&cli.StringFlag{
+				Name:  "probe-netns-dir",
+				Value: probeproxy.DefaultNetNSDir,
+				Usage: "Host-persistent directory used to pin Pod network namespaces for probes.",
 			},
 			&cli.StringFlag{
 				Name:  "cni-bin-dir",
@@ -100,6 +112,8 @@ func NewApp() *cli.Command {
 			cniUDSTimeoutMs := cmd.Int("cni-uds-timeout-ms")
 			cniBinDir := cmd.String("cni-bin-dir")
 			cniConfDir := cmd.String("cni-conf-dir")
+			probeBindAddress := cmd.String("probe-proxy-bind-address")
+			probeNetNSDir := cmd.String("probe-netns-dir")
 			nodeName := cmd.String("node-name")
 			podNamespace := cmd.String("pod-namespace")
 			vxlanParentIface := cmd.String("vxlan-parent-iface")
@@ -155,7 +169,10 @@ func NewApp() *cli.Command {
 					&juneauv1alpha1.TraceSession{}:              {},
 					&juneauv1alpha1.ServiceLoadBalancer{}:       {},
 					&corev1.Service{}:                           {},
-					&discoveryv1.EndpointSlice{}:                {},
+					&corev1.Pod{}: {
+						Field: fields.OneTermEqualSelector("spec.nodeName", nodeName),
+					},
+					&discoveryv1.EndpointSlice{}: {},
 				},
 			})
 			if err != nil {
@@ -495,13 +512,23 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("ensure juneau_node NetworkEndpoint: %w", err)
 			}
 
+			probeProxy := probeproxy.NewServer(cl, probeBindAddress, probeNetNSDir)
+			if err := probeProxy.Recover(ctx, nodeName); err != nil {
+				return fmt.Errorf("recover node-local probes: %w", err)
+			}
+			probeErrCh := make(chan error, 1)
+			go func() {
+				probeErrCh <- probeProxy.Run(ctx)
+			}()
+
 			grpcServer := grpc.NewServer(grpc.ServerConfig{
-				Client:       cl,
-				TraceBus:     bpfManager.TraceBus(),
-				TraceStore:   bpfManager.TraceStore(),
-				MapInventory: bpfManager.MapInventory(),
-				NodeName:     nodeName,
-				DebugTCPAddr: grpc.DefaultDebugTCPAddr,
+				Client:         cl,
+				ProbeRegistrar: probeProxy,
+				TraceBus:       bpfManager.TraceBus(),
+				TraceStore:     bpfManager.TraceStore(),
+				MapInventory:   bpfManager.MapInventory(),
+				NodeName:       nodeName,
+				DebugTCPAddr:   grpc.DefaultDebugTCPAddr,
 			})
 			defer grpcServer.Stop()
 			grpcServer.StartBackground(ctx)
@@ -515,15 +542,23 @@ func NewApp() *cli.Command {
 			case <-ctx.Done():
 				zap.S().Infof("shutting down...")
 				<-grpcErrCh
+				<-probeErrCh
 				<-cacheErrCh
 				return nil
 			case err := <-grpcErrCh:
 				cancel()
+				<-probeErrCh
+				<-cacheErrCh
+				return err
+			case err := <-probeErrCh:
+				cancel()
+				<-grpcErrCh
 				<-cacheErrCh
 				return err
 			case err := <-cacheErrCh:
 				cancel()
 				<-grpcErrCh
+				<-probeErrCh
 				if err == nil || errors.Is(err, context.Canceled) {
 					return nil
 				}
