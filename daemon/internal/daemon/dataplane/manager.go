@@ -55,6 +55,7 @@ type Manager struct {
 	securityGroupInformer             cache.Informer
 	networkACLInformer                cache.Informer
 	nodeInformer                      cache.Informer
+	vpcEndpointInformer               cache.Informer
 
 	subnetRunner       *runner.Runner
 	arpRunner          *runner.Runner
@@ -66,6 +67,7 @@ type Manager struct {
 	natRunner          *runner.Runner
 	bgpPoolRunner      *runner.Runner
 	serviceRunner      *runner.Runner
+	vpcEndpointRunner  *runner.Runner
 	naptRunner         *runner.Runner
 	serviceNATRunner   *runner.Runner
 	sgRunner           *runner.Runner
@@ -421,6 +423,23 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 		m.serviceRunner.Start(ctx, 1)
 	}
 
+	if m.vpcEndpointInformer != nil && m.serviceInformer != nil {
+		endpoint := reconciler.NewVpcEndpoint(m.client, m.podEgress)
+		m.vpcEndpointRunner = runner.New(endpoint)
+		if err := m.vpcEndpointRunner.Watch(m.vpcEndpointInformer, runner.MetaNamespaceKey); err != nil {
+			return fmt.Errorf("watch VpcEndpoint: %w", err)
+		}
+		if err := m.vpcEndpointRunner.WatchFanOut(m.serviceInformer, endpoint.FanOutService); err != nil {
+			return fmt.Errorf("watch Service (VpcEndpoint fan-out): %w", err)
+		}
+		if m.vpcInformer != nil {
+			if err := m.vpcEndpointRunner.WatchFanOut(m.vpcInformer, endpoint.FanOutAll); err != nil {
+				return fmt.Errorf("watch Vpc (VpcEndpoint fan-out): %w", err)
+			}
+		}
+		m.vpcEndpointRunner.Start(ctx, 1)
+	}
+
 	if m.serviceLoadBalancerInformer != nil {
 		// Phase 7 wires the BPF-backed Programmer in production. The
 		// in-memory Programmer remains useful for tests; callers that
@@ -641,6 +660,7 @@ func (m *Manager) Stop() error {
 		m.natRunner,
 		m.bgpPoolRunner,
 		m.serviceRunner,
+		m.vpcEndpointRunner,
 		m.serviceLBRunner,
 		m.naptRunner,
 		m.serviceNATRunner,
@@ -715,6 +735,7 @@ func NewManager(
 	securityGroupInformer cache.Informer,
 	networkACLInformer cache.Informer,
 	serviceLoadBalancerInformer cache.Informer,
+	vpcEndpointInformer cache.Informer,
 	traceSessionInformer cache.Informer,
 	nodeInformer cache.Informer,
 	nodeName string,
@@ -744,6 +765,7 @@ func NewManager(
 		securityGroupInformer:             securityGroupInformer,
 		networkACLInformer:                networkACLInformer,
 		serviceLoadBalancerInformer:       serviceLoadBalancerInformer,
+		vpcEndpointInformer:               vpcEndpointInformer,
 		traceSessionInformer:              traceSessionInformer,
 		nodeInformer:                      nodeInformer,
 		nodeName:                          nodeName,

@@ -157,6 +157,8 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		statusRoutes = append(statusRoutes, extRoutes...)
 	}
 
+	statusRoutes = append(statusRoutes, vpcEndpointPoolRoutes(&vpc)...)
+
 	// The default VPC's main RouteTable optionally carries a 0/0
 	// route via the default NATGateway. The route is only injected
 	// when a default NATGateway exists and is Ready. Operators that
@@ -187,7 +189,8 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			var subnet string
 			var transitGatewayRouteTable string
 			if route.Via.Type == juneauloutresmev1alpha1.ViaConnected ||
-				route.Via.Type == juneauloutresmev1alpha1.ViaService {
+				route.Via.Type == juneauloutresmev1alpha1.ViaService ||
+				route.Via.Type == juneauloutresmev1alpha1.ViaVpcEndpoint {
 				continue
 			} else if route.Via.Type == juneauloutresmev1alpha1.ViaEndpoint {
 				nwep, err := r.getNetworkEndpoint(ctx, route.Via.Endpoint)
@@ -479,6 +482,28 @@ func (r *RouteTableReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&corev1.Service{}, handler.EnqueueRequestsFromMapFunc(r.mapServiceToRouteTables)).
 		Named("routetable").
 		Complete(r)
+}
+
+// vpcEndpointPoolRoutes returns one route per endpoint pool CIDR of the Vpc.
+// The pool covers every VpcEndpoint VIP, so one route per CIDR replaces the
+// /32 per endpoint the table used to carry. Unlike the Service CIDR route
+// this is not gated on ServiceEnabled(): a VpcEndpoint exists so that a Vpc
+// which has not enabled Service routing can still reach one chosen Service.
+// The result is sorted by Dst for stable Status.Routes ordering across
+// reconciles.
+func vpcEndpointPoolRoutes(vpc *juneauloutresmev1alpha1.Vpc) []juneauloutresmev1alpha1.Route {
+	cidrs := vpc.Spec.EndpointPool.Cidrs()
+	routes := make([]juneauloutresmev1alpha1.Route, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		routes = append(routes, juneauloutresmev1alpha1.Route{
+			Dst: cidr,
+			Via: juneauloutresmev1alpha1.RouteVia{
+				Type: juneauloutresmev1alpha1.ViaVpcEndpoint,
+			},
+		})
+	}
+	sort.Slice(routes, func(i, j int) bool { return routes[i].Dst < routes[j].Dst })
+	return routes
 }
 
 func (r *RouteTableReconciler) ensureNumberClaim(ctx context.Context, resource *juneauloutresmev1alpha1.RouteTable, poolName string, gvk schema.GroupVersionKind, attribute string) (*juneauloutresmev1alpha1.AllocationClaim, error) {

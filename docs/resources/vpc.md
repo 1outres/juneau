@@ -29,6 +29,14 @@ bootstrap 時の default Vpc には Service 関連の opt-in (`spec.service.cons
 Subnetごとに個別のルートテーブルでoverrideしない場合、そのVpcのメインルートテーブルが利用されます。
 つまり、Vpcのメインルートテーブルは、そのVpcに属するSubnetに対するデフォルトの経路制御を表します。
 
+## エンドポイントプール
+
+`spec.endpointPool.cidrs` は、そのVpcのVpcEndpointがVIPを取るアドレス範囲です。ここに書いたCIDRは `via.type: vpcEndpoint` の経路として、そのVpcのルートテーブルに自動で入ります。
+
+CIDRは、そのVpcのどのSubnetとも重ならない範囲にしてください (webhookで検証されます)。Subnetの外に置くことで、VIPはPodのアドレスを消費せず、Podからはgateway経由でそのまま届くようになります。
+
+Vpc全体でServiceルーティングを有効にせずに、特定のServiceだけへ到達させたいときに使います。詳しくは[VpcEndpoint](vpcendpoint.md)を参照してください。
+
 ## Service ルーティング
 
 `spec.service` は、その Vpc が Service ルーティングにどのように関与するかを決める設定です。`spec.service` が未設定の Vpc では、その Vpc に属する Pod はいかなる ClusterIP にも到達できません (メインルートテーブルにも Service 用の経路が注入されません)。

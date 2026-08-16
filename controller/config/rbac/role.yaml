@@ -67,6 +67,7 @@ rules:
   - transitgatewayattachments
   - transitgatewayroutetables
   - transitgateways
+  - vpcendpoints
   - vpcpeerings
   - vpcs
   verbs:
@@ -102,6 +103,7 @@ rules:
   - transitgatewayattachments/finalizers
   - transitgatewayroutetables/finalizers
   - transitgateways/finalizers
+  - vpcendpoints/finalizers
   - vpcpeerings/finalizers
   - vpcs/finalizers
   verbs:
@@ -131,6 +133,7 @@ rules:
   - transitgatewayattachments/status
   - transitgatewayroutetables/status
   - transitgateways/status
+  - vpcendpoints/status
   - vpcpeerings/status
   - vpcs/status
   verbs:

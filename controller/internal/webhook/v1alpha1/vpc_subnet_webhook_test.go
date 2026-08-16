@@ -314,6 +314,22 @@ var _ = Describe("RouteTable webhook", func() {
 		Expect(err.Error()).To(ContainSubstring("managed by the controller"))
 	})
 
+	It("rejects routes with via.type=vpcEndpoint from spec", func() {
+		vpcName := createWebhookVpc()
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("routetable")},
+			Spec: juneauv1alpha1.RouteTableSpec{
+				Vpc: vpcName,
+				Routes: []juneauv1alpha1.Route{{
+					Dst: "10.240.0.0/24",
+					Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaVpcEndpoint},
+				}},
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("configure spec.endpointPool on the Vpc instead"))
+	})
+
 	It("rejects deleting a RouteTable that a Subnet still references", func() {
 		vpcName := createWebhookVpc()
 
@@ -524,6 +540,169 @@ func createWebhookServiceProviderVpc() string {
 	}
 	Expect(webhookK8sClient.Update(context.Background(), &vpc)).To(Succeed())
 	return vpcName
+}
+
+var _ = Describe("Vpc endpoint pool webhooks", func() {
+	It("normalizes pool CIDRs to their masked form", func() {
+		name := webhookUniqueTestName("vpc")
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Vpc{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: juneauv1alpha1.VpcSpec{
+				EndpointPool: &juneauv1alpha1.VpcEndpointPoolSpec{CIDRs: []string{"10.240.0.5/24"}},
+			},
+		})).To(Succeed())
+
+		var vpc juneauv1alpha1.Vpc
+		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Name: name}, &vpc)).To(Succeed())
+		Expect(vpc.Spec.EndpointPool.CIDRs).To(Equal([]string{"10.240.0.0/24"}))
+	})
+
+	It("rejects a pool CIDR that is not a valid IPv4 CIDR", func() {
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Vpc{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("vpc")},
+			Spec: juneauv1alpha1.VpcSpec{
+				EndpointPool: &juneauv1alpha1.VpcEndpointPoolSpec{CIDRs: []string{"10.240.0.0"}},
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("must be a valid IPv4 CIDR"))
+	})
+
+	It("rejects a pool CIDR wider than /16", func() {
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Vpc{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("vpc")},
+			Spec: juneauv1alpha1.VpcSpec{
+				EndpointPool: &juneauv1alpha1.VpcEndpointPoolSpec{CIDRs: []string{"10.240.0.0/15"}},
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("CIDR prefix length must be between /16 and /32"))
+	})
+
+	It("rejects pool CIDRs that overlap each other", func() {
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Vpc{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("vpc")},
+			Spec: juneauv1alpha1.VpcSpec{
+				EndpointPool: &juneauv1alpha1.VpcEndpointPoolSpec{
+					CIDRs: []string{"10.240.0.0/24", "10.240.0.128/25"},
+				},
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("overlaps with spec.endpointPool.cidrs[0]"))
+	})
+
+	It("rejects a pool that overlaps the Service CIDR", func() {
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Vpc{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("vpc")},
+			Spec: juneauv1alpha1.VpcSpec{
+				EndpointPool: &juneauv1alpha1.VpcEndpointPoolSpec{CIDRs: []string{"10.96.0.0/24"}},
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("overlaps with Service CIDR"))
+	})
+
+	It("rejects a pool that overlaps a Subnet of the same Vpc", func() {
+		vpcName := createWebhookVpc()
+		subnetName := webhookUniqueTestName("subnet")
+		createWebhookSubnet(subnetName, vpcName, "10.240.0.0/24")
+
+		err := updateWebhookVpcEndpointPool(vpcName, "10.240.0.128/25")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("overlaps with Subnet"))
+		Expect(err.Error()).To(ContainSubstring(subnetName))
+	})
+
+	It("accepts a pool that is disjoint from every Subnet of the same Vpc", func() {
+		vpcName := createWebhookVpc()
+		createWebhookSubnet(webhookUniqueTestName("subnet"), vpcName, "10.241.0.0/24")
+
+		Expect(updateWebhookVpcEndpointPool(vpcName, "10.240.0.0/24")).To(Succeed())
+	})
+
+	It("rejects a pool that overlaps a Subnet of a peered Vpc", func() {
+		vpcA := createWebhookVpc()
+		vpcB := createWebhookVpc()
+		peerSubnet := webhookUniqueTestName("subnet")
+		createWebhookSubnet(peerSubnet, vpcB, "10.242.0.0/24")
+		peeringName := webhookUniqueTestName("peering")
+		Expect(webhookK8sClient.Create(context.Background(), newWebhookVpcPeering(peeringName, vpcA, vpcB))).To(Succeed())
+
+		err := updateWebhookVpcEndpointPool(vpcA, "10.242.0.0/25")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(peerSubnet))
+		Expect(err.Error()).To(ContainSubstring(peeringName))
+	})
+
+	It("rejects creating a Subnet that overlaps the endpoint pool of its own Vpc", func() {
+		vpcName := createWebhookVpcWithEndpointPool("10.243.0.0/24")
+
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Subnet{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("subnet")},
+			Spec: juneauv1alpha1.SubnetSpec{
+				Vpc:  vpcName,
+				CIDR: "10.243.0.0/25",
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("overlaps with endpoint pool CIDR"))
+		Expect(err.Error()).To(ContainSubstring(vpcName))
+	})
+
+	It("rejects shrinking the pool below the address of a live VpcEndpoint", func() {
+		vpcName := createWebhookVpcWithEndpointPool("10.244.0.0/24", "10.245.0.0/24")
+		endpointName := webhookUniqueTestName("vpcendpoint")
+		createWebhookVpcEndpointWithAddress(endpointName, vpcName, "10.245.0.5")
+
+		err := updateWebhookVpcEndpointPool(vpcName, "10.244.0.0/24")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(endpointName))
+		Expect(err.Error()).To(ContainSubstring("10.245.0.5"))
+	})
+
+	It("accepts shrinking the pool while it still covers every live VpcEndpoint address", func() {
+		vpcName := createWebhookVpcWithEndpointPool("10.246.0.0/24", "10.247.0.0/24")
+		createWebhookVpcEndpointWithAddress(webhookUniqueTestName("vpcendpoint"), vpcName, "10.247.0.5")
+
+		Expect(updateWebhookVpcEndpointPool(vpcName, "10.247.0.0/25")).To(Succeed())
+	})
+
+	It("rejects removing the endpoint pool while a VpcEndpoint still holds an address", func() {
+		vpcName := createWebhookVpcWithEndpointPool("10.248.0.0/24")
+		endpointName := webhookUniqueTestName("vpcendpoint")
+		createWebhookVpcEndpointWithAddress(endpointName, vpcName, "10.248.0.5")
+
+		err := removeWebhookVpcEndpointPool(vpcName)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(endpointName))
+		Expect(err.Error()).To(ContainSubstring("10.248.0.5"))
+	})
+})
+
+func createWebhookVpcWithEndpointPool(cidrs ...string) string {
+	name := webhookUniqueTestName("vpc")
+	Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Vpc{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: juneauv1alpha1.VpcSpec{
+			EndpointPool: &juneauv1alpha1.VpcEndpointPoolSpec{CIDRs: cidrs},
+		},
+	})).To(Succeed())
+	return name
+}
+
+func updateWebhookVpcEndpointPool(vpcName string, cidrs ...string) error {
+	var vpc juneauv1alpha1.Vpc
+	Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Name: vpcName}, &vpc)).To(Succeed())
+	vpc.Spec.EndpointPool = &juneauv1alpha1.VpcEndpointPoolSpec{CIDRs: cidrs}
+	return webhookK8sClient.Update(context.Background(), &vpc)
+}
+
+func removeWebhookVpcEndpointPool(vpcName string) error {
+	var vpc juneauv1alpha1.Vpc
+	Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Name: vpcName}, &vpc)).To(Succeed())
+	vpc.Spec.EndpointPool = nil
+	return webhookK8sClient.Update(context.Background(), &vpc)
 }
 
 func webhookUniqueTestName(prefix string) string {

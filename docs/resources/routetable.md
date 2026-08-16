@@ -16,4 +16,5 @@ Vpcに属するSubnetの接続経路は自動的にconnected routeとして生�
 - `natGateway`: NATGateway経由でVpc外へ出る通信。`via.natGateway`で対象NATGatewayの名前を指定します。N:1のNAPTで外部へ出る経路を作るときに利用します
 - `vpcPeering`: VpcPeeringで接続した対向VpcのSubnetへ向かう通信。`via.vpcPeering`で対象VpcPeeringの名前を指定します。`dst`は対向Vpcに存在するSubnetのCIDRと完全に一致させてください (例: [VpcPeeringガイド](../guides/vpc-peering.md))
 - `transitGateway`: TransitGateway経由で他のVpcへ向かう通信。`via.transitGateway`で対象TransitGatewayの名前を指定します。宛先の解決はTransitGatewayRouteTableで行われるため、`dst`はスーパーネットでも構いません (例: [TransitGatewayガイド](../guides/transit-gateway.md))
+- `vpcEndpoint`: VpcEndpointのVIP宛の通信。所属Vpcの `spec.endpointPool.cidrs` からコントローラが1つずつ自動注入します。`spec.routes`に手で書いても無視されるため、ユーザが指定することはできません (例: [VpcEndpoint](vpcendpoint.md))
 

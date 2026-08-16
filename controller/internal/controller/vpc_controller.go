@@ -38,6 +38,19 @@ import (
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
+// vpcEndpointIPAllocationPoolPrefix prefixes the auto-generated
+// AllocationPool name that backs VpcEndpoint VIP assignment for a Vpc.
+// Distinct from the Subnet ("subnet-ip-…") namespace so the two never
+// collide.
+const vpcEndpointIPAllocationPoolPrefix = "vpc-endpoint-ip-"
+
+// VpcEndpointIPAllocationPoolName returns the AllocationPool name that backs
+// the VpcEndpoint VIPs of the given Vpc. Exported so the VpcEndpoint
+// reconciler can reference it without duplicating the naming rule.
+func VpcEndpointIPAllocationPoolName(vpcName string) string {
+	return vpcEndpointIPAllocationPoolPrefix + vpcName
+}
+
 const (
 	vpcReasonDeleting              = "Deleting"
 	vpcReasonRouteTableNotReady    = "MainRouteTableNotReady"
@@ -194,6 +207,13 @@ func (r *VpcReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 	}
 
+	if err := r.ensureEndpointIPAllocationPool(ctx, &resource); err != nil {
+		if updateErr := r.updateStatus(ctx, &resource, mainRouteTableName, vpcID, metav1.ConditionFalse, vpcReasonReconcileFailed, fmt.Sprintf("failed to reconcile endpoint IP allocation pool: %v", err)); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{}, err
+	}
+
 	// Every Vpc owns the ServiceNATAttachments rooted at it. When the
 	// Vpc opts in to the cross-Vpc provider role
 	// (spec.service.provider.natSourceSubnet), we eagerly allocate one
@@ -212,6 +232,61 @@ func (r *VpcReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// ensureEndpointIPAllocationPool maintains the per-Vpc AllocationPool that
+// AllocationClaims for VpcEndpoint VIPs target. The pool is owned by the Vpc
+// so it is GC'd automatically, and it is removed as soon as
+// spec.endpointPool is dropped. Nothing is excluded: unlike a Subnet pool an
+// endpoint pool holds no gateway and no DNS address.
+func (r *VpcReconciler) ensureEndpointIPAllocationPool(ctx context.Context, vpc *juneauv1alpha1.Vpc) error {
+	name := VpcEndpointIPAllocationPoolName(vpc.Name)
+
+	if !vpc.Spec.EndpointPool.Configured() {
+		pool := &juneauv1alpha1.AllocationPool{ObjectMeta: metav1.ObjectMeta{Name: name}}
+		if err := r.Delete(ctx, pool); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("delete AllocationPool: %w", err)
+		}
+		return nil
+	}
+
+	desiredSpec := juneauv1alpha1.AllocationPoolSpec{
+		Type:     juneauv1alpha1.AllocationTypeIP,
+		Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+		IP: &juneauv1alpha1.AllocationPoolIPSpec{
+			CIDRs: vpc.Spec.EndpointPool.Cidrs(),
+		},
+	}
+
+	var existing juneauv1alpha1.AllocationPool
+	getErr := r.Get(ctx, client.ObjectKey{Name: name}, &existing)
+	switch {
+	case errors.IsNotFound(getErr):
+		pool := &juneauv1alpha1.AllocationPool{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec:       desiredSpec,
+		}
+		if err := controllerutil.SetControllerReference(vpc, pool, r.Scheme); err != nil {
+			return fmt.Errorf("set owner reference: %w", err)
+		}
+		if err := r.Create(ctx, pool); err != nil && !errors.IsAlreadyExists(err) {
+			return fmt.Errorf("create AllocationPool: %w", err)
+		}
+		return nil
+	case getErr != nil:
+		return fmt.Errorf("get AllocationPool: %w", getErr)
+	}
+
+	updated := existing.DeepCopy()
+	if err := controllerutil.SetControllerReference(vpc, updated, r.Scheme); err != nil {
+		return fmt.Errorf("set owner reference: %w", err)
+	}
+	updated.Spec = desiredSpec
+	if reflect.DeepEqual(existing.Spec, updated.Spec) &&
+		reflect.DeepEqual(existing.OwnerReferences, updated.OwnerReferences) {
+		return nil
+	}
+	return r.Update(ctx, updated)
 }
 
 // ensureServiceNATAttachments reconciles the per-(Node, this-Vpc)

@@ -28,6 +28,7 @@ const (
 	fibRouteTypePeering         = 7
 	fibRouteTypeTransit         = 8
 	fibRouteTypeBlackhole       = 9
+	fibRouteTypeVpcEndpoint     = 10
 )
 
 // Fib keeps podEgress.FibMap in sync with RouteTable objects. Each
@@ -204,6 +205,9 @@ func (r *Fib) buildFibVal(ctx context.Context, route *juneauv1alpha1.Route) (bpf
 	case juneauv1alpha1.ViaService:
 		return buildServiceFibVal(), false, nil
 
+	case juneauv1alpha1.ViaVpcEndpoint:
+		return buildVpcEndpointFibVal(), false, nil
+
 	case juneauv1alpha1.ViaNATGateway:
 		var natGateway juneauv1alpha1.NATGateway
 		if err := r.client.Get(ctx, client.ObjectKey{Name: route.Via.NATGateway}, &natGateway); err != nil {
@@ -298,6 +302,16 @@ func buildInternetGatewayFibVal() (bpf.PodEgressFibVal, error) {
 func buildServiceFibVal() bpf.PodEgressFibVal {
 	return bpf.PodEgressFibVal{
 		Type: fibRouteTypeService,
+	}
+}
+
+// buildVpcEndpointFibVal builds a FIB value for the Vpc endpoint pool
+// route type. Only the type is meaningful — the BPF side dispatches to
+// handle_service, which first resolves the VpcEndpoint VIP to a Service
+// ClusterIP through vpc_endpoint_map.
+func buildVpcEndpointFibVal() bpf.PodEgressFibVal {
+	return bpf.PodEgressFibVal{
+		Type: fibRouteTypeVpcEndpoint,
 	}
 }
 

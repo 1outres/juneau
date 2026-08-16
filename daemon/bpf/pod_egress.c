@@ -1067,9 +1067,13 @@ handle_service_shared(struct __sk_buff *skb, struct iphdr *iph,
 // destination IP+port to the backend, and continues with a second FIB
 // lookup so the rewritten packet can find a normal CONNECTED/ENDPOINT
 // route to the backend Pod.
+//
+// via_endpoint_pool is set when the FIB matched FIB_ROUTE_TYPE_VPC_ENDPOINT,
+// i.e. the destination is a VpcEndpoint VIP and not a ClusterIP yet. Only
+// then do we pay for the vpc_endpoint_map lookup that resolves it.
 static __always_inline int
 handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
-               const struct subnet_val *subnet) {
+               const struct subnet_val *subnet, bool via_endpoint_pool) {
   void *data_end = skb_data_end(skb);
 
   __be16 sport, dport;
@@ -1081,6 +1085,28 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
       .port = bpf_ntohs(dport),
       .proto = iph->protocol,
   };
+  if (via_endpoint_pool) {
+    struct vpc_endpoint_key vek = {
+        .vpc_id = subnet->vpc_id,
+        .address = sk.cluster_ip,
+        .port = sk.port,
+        .proto = sk.proto,
+    };
+    const struct vpc_endpoint_val *vev =
+        bpf_map_lookup_elem(&vpc_endpoint_map, &vek);
+    if (!vev) {
+      __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, subnet->vpc_id);
+      trace_emit_map_miss_l3(skb, __tid, TRACE_REASON_MISS_VPC_ENDPOINT,
+                             TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                             subnet->vpc_id, 0, sk.cluster_ip);
+      trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_SHOT,
+                         TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                         subnet->vpc_id, 0);
+      return TC_ACT_SHOT;
+    }
+    sk.cluster_ip = vev->cluster_ip;
+  }
+
   const struct service_val *sv = bpf_map_lookup_elem(&service_map, &sk);
   if (!sv) {
     __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, subnet->vpc_id);
@@ -1095,15 +1121,26 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
   // Cross-Vpc access is only allowed for Services explicitly opted in to
   // the shared path. caller_vpc != owner_vpc otherwise drops, preserving
   // the strict per-Vpc isolation that ordinary Services rely on.
+  //
+  // via_endpoint_pool skips that drop because the control plane already
+  // approved this exact exposure: the daemon only writes a
+  // vpc_endpoint_map entry for a VpcEndpoint whose ServiceAccepted
+  // condition is True, and the pool route that leads here is only
+  // installed in the Vpc that owns the pool. Without both halves of that
+  // chain the skip would be an isolation hole.
   bool is_shared = (sv->flags & SVC_FLAG_SHARED) != 0;
-  if (sv->owner_vpc_id != subnet->vpc_id && !is_shared)
+  if (sv->owner_vpc_id != subnet->vpc_id && !is_shared && !via_endpoint_pool)
     return TC_ACT_SHOT;
   // Per-Service consumer ACL: when SVC_FLAG_HAS_ACL is set, only the
   // (cluster_ip, port, proto, caller_vpc_id) tuples explicitly
   // present in service_acl_map are admitted. Absent flag → every
   // consume-enabled Vpc is admitted by default. Same-Vpc callers
   // always pass; the ACL applies only to the cross-Vpc shared path.
-  if (is_shared && sv->owner_vpc_id != subnet->vpc_id &&
+  //
+  // via_endpoint_pool skips the ACL for the same reason it skips the
+  // ownership check above: the VpcEndpoint is itself the per-Vpc grant,
+  // so the caller was already named when the entry was programmed.
+  if (!via_endpoint_pool && is_shared && sv->owner_vpc_id != subnet->vpc_id &&
       (sv->flags & SVC_FLAG_HAS_ACL)) {
     struct service_acl_key ak = {
         .cluster_ip = sk.cluster_ip,
@@ -2269,8 +2306,13 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
   if (fv->type == FIB_ROUTE_TYPE_INTERNET_GATEWAY)
     return handle_snat(skb, eth, iph);
 
-  if (fv->type == FIB_ROUTE_TYPE_SERVICE)
-    return handle_service(skb, eth, iph, subnet);
+  // One call site on purpose: handle_service is __always_inline and pulls
+  // in handle_service_host_local / _host_remote / _shared, so a second
+  // call would duplicate all of that against the verifier's budget.
+  if (fv->type == FIB_ROUTE_TYPE_SERVICE ||
+      fv->type == FIB_ROUTE_TYPE_VPC_ENDPOINT)
+    return handle_service(skb, eth, iph, subnet,
+                          fv->type == FIB_ROUTE_TYPE_VPC_ENDPOINT);
 
   if (fv->type == FIB_ROUTE_TYPE_NAPT)
     return handle_napt(skb, eth, iph, subnet, fv->subnet_id);

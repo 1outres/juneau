@@ -42,6 +42,23 @@ type VpcSpec struct {
 	// Pods are not retroactively affected when this flag is toggled.
 	// +optional
 	EnforceSecurityGroups bool `json:"enforceSecurityGroups,omitempty"`
+
+	// EndpointPool declares the address space that VpcEndpoint VIPs are
+	// allocated from. The CIDRs must fall outside every Subnet of this
+	// Vpc: a VIP outside the Subnet is reached through the Vpc's
+	// gateway, so it needs no arp_table entry and consumes no Pod
+	// address.
+	// +optional
+	EndpointPool *VpcEndpointPoolSpec `json:"endpointPool,omitempty"`
+}
+
+// VpcEndpointPoolSpec configures the address space VpcEndpoint VIPs
+// are drawn from. Several CIDRs are allowed so the pool can be grown
+// later without disturbing addresses already handed out.
+type VpcEndpointPoolSpec struct {
+	// +kubebuilder:validation:MinItems=1
+	// +listType=set
+	CIDRs []string `json:"cidrs"`
 }
 
 // VpcServiceSpec configures the Service-routing behaviour of a VPC,
@@ -135,6 +152,21 @@ func (s *VpcServiceSpec) ProviderSubnet() string {
 // Services from other VPCs.
 func (s *VpcServiceSpec) Consumes() bool {
 	return s != nil && s.Consume
+}
+
+// Configured reports whether this VPC declares an endpoint pool that
+// VpcEndpoint VIPs can be allocated from.
+func (s *VpcEndpointPoolSpec) Configured() bool {
+	return s != nil && len(s.CIDRs) > 0
+}
+
+// Cidrs returns the endpoint pool CIDRs, or nil when the pool is not
+// configured.
+func (s *VpcEndpointPoolSpec) Cidrs() []string {
+	if !s.Configured() {
+		return nil
+	}
+	return s.CIDRs
 }
 
 // +kubebuilder:object:root=true

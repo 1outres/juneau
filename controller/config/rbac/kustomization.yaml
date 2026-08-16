@@ -91,6 +91,9 @@ resources:
 - vpc_admin_role.yaml
 - vpc_editor_role.yaml
 - vpc_viewer_role.yaml
+- vpcendpoint_admin_role.yaml
+- vpcendpoint_editor_role.yaml
+- vpcendpoint_viewer_role.yaml
 - securitygroup_admin_role.yaml
 - securitygroup_editor_role.yaml
 - securitygroup_viewer_role.yaml
@@ -100,4 +103,3 @@ resources:
 - tracesession_admin_role.yaml
 - tracesession_editor_role.yaml
 - tracesession_viewer_role.yaml
-

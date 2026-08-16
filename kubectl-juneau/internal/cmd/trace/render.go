@@ -206,6 +206,8 @@ func reasonString(r debugpb.TraceEventReason) string {
 		return "transit gateway table miss"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_TGW_ROUTE:
 		return "transit gateway route miss"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_VPC_ENDPOINT:
+		return "vpc endpoint miss"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_POLICY_ACL_PASS:
 		return "acl pass"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_POLICY_ACL_DROP:

@@ -84,6 +84,7 @@ spec:
                           - natGateway
                           - vpcPeering
                           - transitGateway
+                          - vpcEndpoint
                           type: string
                         vpcPeering:
                           description: |-
@@ -207,6 +208,7 @@ spec:
                           - natGateway
                           - vpcPeering
                           - transitGateway
+                          - vpcEndpoint
                           type: string
                         vpcPeering:
                           description: |-

@@ -53,6 +53,15 @@ func TestSchemaLayoutMatchesGenerated(t *testing.T) {
 			valueSize: unsafe.Sizeof(bpf.PodEgressServiceVal{}),
 		},
 		{
+			name: "vpc_endpoint_map",
+			key: Schema{Fields: []Field{
+				FieldU32Named("vpc_id"), FieldIPv4Named("address"), FieldPortNamed("port"), FieldEnumNamed("proto", 1, IPProtoEnum), FieldPadOf(1),
+			}},
+			val:       Schema{Fields: []Field{FieldIPv4Named("cluster_ip")}},
+			keySize:   unsafe.Sizeof(bpf.PodEgressVpcEndpointKey{}),
+			valueSize: unsafe.Sizeof(bpf.PodEgressVpcEndpointVal{}),
+		},
+		{
 			name:      "service_acl_map",
 			key:       schemaServiceACLKey(),
 			val:       schemaPresentVal(),

@@ -362,6 +362,20 @@ type PodIngressVirtualServiceVal struct {
 	Flags      uint32
 }
 
+type PodIngressVpcEndpointKey struct {
+	_       structs.HostLayout
+	VpcId   uint32
+	Address uint32
+	Port    uint16
+	Proto   uint8
+	Pad     uint8
+}
+
+type PodIngressVpcEndpointVal struct {
+	_         structs.HostLayout
+	ClusterIp uint32
+}
+
 // LoadPodIngress returns the embedded CollectionSpec for PodIngress.
 func LoadPodIngress() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_PodIngressBytes)
@@ -447,6 +461,7 @@ type PodIngressMapSpecs struct {
 	TraceTupleMap         *ebpf.MapSpec `ebpf:"trace_tuple_map"`
 	VirtualServiceFlowMap *ebpf.MapSpec `ebpf:"virtual_service_flow_map"`
 	VirtualServiceMap     *ebpf.MapSpec `ebpf:"virtual_service_map"`
+	VpcEndpointMap        *ebpf.MapSpec `ebpf:"vpc_endpoint_map"`
 	VxlanIfindex          *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
 }
 
@@ -514,6 +529,7 @@ type PodIngressMaps struct {
 	TraceTupleMap         *ebpf.Map `ebpf:"trace_tuple_map"`
 	VirtualServiceFlowMap *ebpf.Map `ebpf:"virtual_service_flow_map"`
 	VirtualServiceMap     *ebpf.Map `ebpf:"virtual_service_map"`
+	VpcEndpointMap        *ebpf.Map `ebpf:"vpc_endpoint_map"`
 	VxlanIfindex          *ebpf.Map `ebpf:"vxlan_ifindex"`
 }
 
@@ -555,6 +571,7 @@ func (m *PodIngressMaps) Close() error {
 		m.TraceTupleMap,
 		m.VirtualServiceFlowMap,
 		m.VirtualServiceMap,
+		m.VpcEndpointMap,
 		m.VxlanIfindex,
 	)
 }

@@ -4,24 +4,29 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.2
-  name: vpcs.juneau.loutres.me
+  name: vpcendpoints.juneau.loutres.me
 spec:
   group: juneau.loutres.me
   names:
-    kind: Vpc
-    listKind: VpcList
-    plural: vpcs
-    singular: vpc
+    kind: VpcEndpoint
+    listKind: VpcEndpointList
+    plural: vpcendpoints
+    singular: vpcendpoint
   scope: Cluster
   versions:
   - additionalPrinterColumns:
+    - jsonPath: .spec.vpc
+      name: Vpc
+      type: string
+    - jsonPath: .status.address
+      name: Address
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Vpc is the Schema for the vpcs API.
         properties:
           apiVersion:
             description: |-
@@ -41,79 +46,34 @@ spec:
           metadata:
             type: object
           spec:
-            description: VpcSpec defines the desired state of Vpc.
+            description: VpcEndpointSpec defines a Vpc-local frontend for a Kubernetes
+              Service.
             properties:
-              endpointPool:
-                description: |-
-                  EndpointPool declares the address space that VpcEndpoint VIPs are
-                  allocated from. The CIDRs must fall outside every Subnet of this
-                  Vpc: a VIP outside the Subnet is reached through the Vpc's
-                  gateway, so it needs no arp_table entry and consumes no Pod
-                  address.
-                properties:
-                  cidrs:
-                    items:
-                      type: string
-                    minItems: 1
-                    type: array
-                    x-kubernetes-list-type: set
-                required:
-                - cidrs
-                type: object
-              enforceSecurityGroups:
-                description: |-
-                  EnforceSecurityGroups makes SecurityGroup attachment mandatory for
-                  every Pod placed in a Subnet of this Vpc. Pods without the
-                  juneau.loutres.me/security-groups annotation (or with a list that
-                  resolves to zero valid SGs) are rejected at admission. Existing
-                  Pods are not retroactively affected when this flag is toggled.
-                type: boolean
               service:
-                description: |-
-                  Service configures Service routing for this VPC. When nil, the
-                  VPC has no Service routing — its Pods cannot reach any
-                  ClusterIP and the controller does not inject a Service-typed
-                  route into the VPC's main RouteTable.
-
-                  Two cross-VPC roles are independently configurable under this
-                  field: Provider (this VPC hosts Services that other VPCs may
-                  reach) and Consume (this VPC's Pods may reach shared Services
-                  hosted in other VPCs). Setting either implicitly enables
-                  Service routing for the VPC.
                 properties:
-                  consume:
-                    description: |-
-                      Consume, when true, allows Pods in this VPC to call shared
-                      Services hosted in other VPCs. The per-Service ACL annotation
-                      (juneau.loutres.me/shared-service-allowed-consumer-vpcs) may
-                      further restrict which provider Services this VPC can reach.
-                    type: boolean
-                  provider:
-                    description: |-
-                      Provider, when set, makes Services in this VPC eligible to be
-                      marked as cross-VPC shared via the
-                      juneau.loutres.me/shared-service annotation. Per-Node SNAT IPs
-                      are allocated from the configured Subnet so that backend
-                      replies flow over this VPC's fabric back to the originating
-                      caller's Node.
-                    properties:
-                      natSourceSubnet:
-                        description: |-
-                          NATSourceSubnet names a Subnet in this VPC from which per-Node
-                          SNAT source IPs are allocated for cross-VPC callers reaching
-                          shared Services owned by this VPC. The Subnet must exist and
-                          belong to this VPC. Required to mark Services in this VPC as
-                          shared.
-                        minLength: 1
-                        type: string
-                    required:
-                    - natSourceSubnet
-                    type: object
+                  name:
+                    minLength: 1
+                    type: string
+                  namespace:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                - namespace
                 type: object
+              vpc:
+                minLength: 1
+                type: string
+            required:
+            - service
+            - vpc
             type: object
           status:
-            description: VpcStatus defines the observed state of Vpc.
             properties:
+              address:
+                type: string
+              allocationClaim:
+                type: string
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current
@@ -170,13 +130,8 @@ spec:
                   - type
                   type: object
                 type: array
-              mainRouteTable:
-                type: string
               observedGeneration:
                 format: int64
-                type: integer
-              vpcID:
-                format: int32
                 type: integer
             type: object
         type: object

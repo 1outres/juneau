@@ -57,6 +57,10 @@
 #define MAX_SERVICE_MAP 16384
 #endif
 
+#ifndef MAX_VPC_ENDPOINT_MAP
+#define MAX_VPC_ENDPOINT_MAP 16384
+#endif
+
 #ifndef MAX_BACKEND_MAP
 #define MAX_BACKEND_MAP 65536
 #endif
@@ -161,6 +165,13 @@
 // BLACKHOLE only shows up inside tgw_fib_map: the route exists but the
 // operator asked for its traffic to be dropped.
 #define FIB_ROUTE_TYPE_BLACKHOLE 9
+// VPC_ENDPOINT covers the Vpc's endpoint pool: the destination is a
+// VpcEndpoint VIP that vpc_endpoint_map must first resolve to the
+// Service ClusterIP, and only then does the normal Service path run.
+// Its own type keeps ordinary Service packets from paying for that
+// extra lookup. 5 is skipped on purpose: it is a retired value and old
+// map dumps may still carry it.
+#define FIB_ROUTE_TYPE_VPC_ENDPOINT 10
 
 #define CT_ACTION_DNAT 1
 #define CT_ACTION_SNAT 2
@@ -546,6 +557,26 @@ struct {
   __type(value, struct service_val);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } service_map SEC(".maps");
+
+struct vpc_endpoint_key {
+  __u32 vpc_id;
+  __u32 address;
+  __u16 port;
+  __u8 proto;
+  __u8 _pad;
+};
+
+struct vpc_endpoint_val {
+  __u32 cluster_ip;
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_VPC_ENDPOINT_MAP);
+  __type(key, struct vpc_endpoint_key);
+  __type(value, struct vpc_endpoint_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} vpc_endpoint_map SEC(".maps");
 
 // service_acl_map encodes the per-(Service × consumer Vpc) admit list
 // used when service_val.flags & SVC_FLAG_HAS_ACL. Entries are written

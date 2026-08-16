@@ -7,6 +7,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -73,6 +74,77 @@ var _ = Describe("Vpc/Subnet controllers", func() {
 		Expect(controllerRef.Kind).To(Equal("Vpc"))
 		Expect(controllerRef.Name).To(Equal(name))
 		Expect(controllerRef.UID).To(Equal(vpc.UID))
+	})
+
+	It("backs spec.endpointPool with an ip AllocationPool owned by the Vpc", func() {
+		poolCIDR := uniqueEndpointPoolCIDR()
+		vpcName := createControllerVpcWithEndpointPool(poolCIDR)
+
+		var vpc juneauv1alpha1.Vpc
+		Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: vpcName}, &vpc)).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			var pool juneauv1alpha1.AllocationPool
+			g.Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: VpcEndpointIPAllocationPoolName(vpcName)}, &pool)).To(Succeed())
+			g.Expect(pool.Spec.Type).To(Equal(juneauv1alpha1.AllocationTypeIP))
+			g.Expect(pool.Spec.IP).NotTo(BeNil())
+			g.Expect(pool.Spec.IP.CIDRs).To(Equal([]string{poolCIDR}))
+
+			owner := metav1.GetControllerOf(&pool)
+			g.Expect(owner).NotTo(BeNil())
+			g.Expect(owner.Kind).To(Equal("Vpc"))
+			g.Expect(owner.Name).To(Equal(vpcName))
+			g.Expect(owner.UID).To(Equal(vpc.UID))
+		}).Should(Succeed())
+	})
+
+	It("rewrites the endpoint AllocationPool when the endpoint pool CIDRs change", func() {
+		first := uniqueEndpointPoolCIDR()
+		second := uniqueEndpointPoolCIDR()
+		vpcName := createControllerVpcWithEndpointPool(first)
+		poolName := VpcEndpointIPAllocationPoolName(vpcName)
+
+		Eventually(func(g Gomega) {
+			var pool juneauv1alpha1.AllocationPool
+			g.Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: poolName}, &pool)).To(Succeed())
+			g.Expect(pool.Spec.IP.CIDRs).To(Equal([]string{first}))
+		}).Should(Succeed())
+
+		Eventually(func(g Gomega) {
+			var vpc juneauv1alpha1.Vpc
+			g.Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: vpcName}, &vpc)).To(Succeed())
+			vpc.Spec.EndpointPool = &juneauv1alpha1.VpcEndpointPoolSpec{CIDRs: []string{second}}
+			g.Expect(k8sClient.Update(context.Background(), &vpc)).To(Succeed())
+		}).Should(Succeed())
+
+		Eventually(func(g Gomega) {
+			var pool juneauv1alpha1.AllocationPool
+			g.Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: poolName}, &pool)).To(Succeed())
+			g.Expect(pool.Spec.IP.CIDRs).To(Equal([]string{second}))
+		}).Should(Succeed())
+	})
+
+	It("deletes the endpoint AllocationPool when spec.endpointPool is removed", func() {
+		vpcName := createControllerVpcWithEndpointPool(uniqueEndpointPoolCIDR())
+		poolName := VpcEndpointIPAllocationPoolName(vpcName)
+
+		Eventually(func(g Gomega) {
+			var pool juneauv1alpha1.AllocationPool
+			g.Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: poolName}, &pool)).To(Succeed())
+		}).Should(Succeed())
+
+		Eventually(func(g Gomega) {
+			var vpc juneauv1alpha1.Vpc
+			g.Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: vpcName}, &vpc)).To(Succeed())
+			vpc.Spec.EndpointPool = nil
+			g.Expect(k8sClient.Update(context.Background(), &vpc)).To(Succeed())
+		}).Should(Succeed())
+
+		Eventually(func(g Gomega) {
+			var pool juneauv1alpha1.AllocationPool
+			err := k8sClient.Get(context.Background(), client.ObjectKey{Name: poolName}, &pool)
+			g.Expect(errors.IsNotFound(err)).To(BeTrue(), "endpoint AllocationPool must not outlive spec.endpointPool")
+		}).Should(Succeed())
 	})
 
 	It("auto-creates the default Subnet in the default VPC", func() {

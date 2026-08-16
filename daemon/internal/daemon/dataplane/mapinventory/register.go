@@ -32,6 +32,7 @@ func RegisterPodEgress(inv *Inventory, p *program.PodEgress) error {
 		registerNATSnat,
 		registerNATDnat,
 		registerService,
+		registerVpcEndpoint,
 		registerServiceACL,
 		registerBackend,
 		registerServiceAffinity,
@@ -306,6 +307,21 @@ func registerService(inv *Inventory, p *program.PodEgress) error {
 			FieldFlagsNamed("flags", 4, SVCFlagDict),
 			FieldU32Named("gen", "bumped on backend rebind; invalidates cached affinity entries"),
 		}},
+	})
+}
+
+func registerVpcEndpoint(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name: "vpc_endpoint_map",
+		Map:  p.Objs.VpcEndpointMap,
+		Key: Schema{Fields: []Field{
+			FieldU32Named("vpc_id"),
+			FieldIPv4Named("address"),
+			FieldPortNamed("port"),
+			FieldEnumNamed("proto", 1, IPProtoEnum),
+			FieldPadOf(1),
+		}},
+		Value: Schema{Fields: []Field{FieldIPv4Named("cluster_ip")}},
 	})
 }
 

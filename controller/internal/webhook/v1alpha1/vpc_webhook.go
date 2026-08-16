@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"slices"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -63,6 +64,17 @@ func (d *VpcCustomDefaulter) Default(ctx context.Context, obj runtime.Object) er
 		return fmt.Errorf("expected an Vpc object but got %T", obj)
 	}
 	vpclog.Info("Defaulting for Vpc", "name", vpc.GetName())
+
+	pool := vpc.Spec.EndpointPool
+	for i, entry := range pool.Cidrs() {
+		// Entries that do not parse are left alone so the validator can
+		// report them with the value the user actually wrote.
+		_, cidr, err := net.ParseCIDR(entry)
+		if err != nil {
+			continue
+		}
+		pool.CIDRs[i] = cidr.String()
+	}
 
 	return nil
 }
@@ -128,7 +140,8 @@ func (v *VpcCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj 
 
 // validate implements the create/update common validation: checks that
 // no Subnet in this VPC overlaps the cluster Service CIDR when service
-// routing is enabled.
+// routing is enabled, and that the VpcEndpoint pool CIDRs stay clear of
+// every address range this VPC can already route to.
 //
 // The provider NAT-source-Subnet reference is intentionally NOT
 // validated here. Doing so creates a chicken-and-egg admission deadlock
@@ -145,6 +158,7 @@ func (v *VpcCustomValidator) validate(ctx context.Context, vpc, oldVpc *juneauv1
 	var errs field.ErrorList
 
 	servicePath := field.NewPath("spec").Child("service")
+	poolPath := field.NewPath("spec").Child("endpointPool").Child("cidrs")
 
 	if vpc.Spec.ServiceEnabled() && shouldCheckReferences(vpc) {
 		if oldVpc == nil || !oldVpc.Spec.ServiceEnabled() {
@@ -156,7 +170,295 @@ func (v *VpcCustomValidator) validate(ctx context.Context, vpc, oldVpc *juneauv1
 		}
 	}
 
+	if vpcEndpointPoolChanged(oldVpc, vpc) {
+		errs = append(errs, validateVpcEndpointPoolCIDRs(vpc.Spec.EndpointPool, poolPath)...)
+		errs = append(errs, validateVpcEndpointPoolServiceCIDROverlap(vpc.Spec.EndpointPool, v.ServiceCIDR, poolPath)...)
+
+		if shouldCheckReferences(vpc) {
+			subnetErrs, err := v.validateVpcEndpointPoolSubnetOverlap(ctx, vpc, poolPath)
+			if err != nil {
+				return nil, err
+			}
+			errs = append(errs, subnetErrs...)
+
+			peeredErrs, err := v.validateVpcEndpointPoolPeeredSubnetOverlap(ctx, vpc, poolPath)
+			if err != nil {
+				return nil, err
+			}
+			errs = append(errs, peeredErrs...)
+
+			transitErrs, err := v.validateVpcEndpointPoolTransitGatewaySubnetOverlap(ctx, vpc, poolPath)
+			if err != nil {
+				return nil, err
+			}
+			errs = append(errs, transitErrs...)
+
+			if oldVpc != nil {
+				shrinkErrs, err := v.validateVpcEndpointPoolShrink(ctx, vpc, poolPath)
+				if err != nil {
+					return nil, err
+				}
+				errs = append(errs, shrinkErrs...)
+			}
+		}
+	}
+
 	return errs, nil
+}
+
+// vpcEndpointPoolChanged reports whether the endpoint pool differs from
+// the one already stored. The pool rules read Subnets and VpcEndpoints,
+// so they are skipped on the many updates that leave the pool alone.
+func vpcEndpointPoolChanged(oldVpc, vpc *juneauv1alpha1.Vpc) bool {
+	if oldVpc == nil {
+		return true
+	}
+	return !slices.Equal(oldVpc.Spec.EndpointPool.Cidrs(), vpc.Spec.EndpointPool.Cidrs())
+}
+
+// validateVpcEndpointPoolCIDRs checks the shape of the pool: every entry
+// must be an IPv4 block between /16 and /32, and no two entries may
+// overlap. A /32 is a legitimate single-VIP pool, while anything wider
+// than /16 would swallow the whole address space of the Vpc.
+func validateVpcEndpointPoolCIDRs(pool *juneauv1alpha1.VpcEndpointPoolSpec, path *field.Path) field.ErrorList {
+	var errs field.ErrorList
+
+	entries := pool.Cidrs()
+	parsed := make([]*net.IPNet, len(entries))
+	for i, entry := range entries {
+		_, cidr, err := net.ParseCIDR(entry)
+		if err != nil {
+			errs = append(errs, field.Invalid(path.Index(i), entry, "must be a valid IPv4 CIDR"))
+			continue
+		}
+		if cidr.IP.To4() == nil {
+			errs = append(errs, field.Invalid(path.Index(i), entry, "only IPv4 CIDR blocks are supported"))
+			continue
+		}
+		ones, _ := cidr.Mask.Size()
+		if ones < 16 || ones > 32 {
+			errs = append(errs, field.Invalid(path.Index(i), entry, "CIDR prefix length must be between /16 and /32"))
+			continue
+		}
+		parsed[i] = cidr
+	}
+
+	for i, cidr := range parsed {
+		if cidr == nil {
+			continue
+		}
+		for j := 0; j < i; j++ {
+			if parsed[j] == nil {
+				continue
+			}
+			if cidrsOverlap(cidr, parsed[j]) {
+				errs = append(errs, field.Invalid(path.Index(i), entries[i],
+					fmt.Sprintf("overlaps with spec.endpointPool.cidrs[%d] %q", j, entries[j])))
+			}
+		}
+	}
+
+	return errs
+}
+
+// validateVpcEndpointPoolServiceCIDROverlap rejects a pool that overlaps
+// the cluster Service CIDR. Both prefixes become via-routes in the same
+// FIB, so the pool would shadow every ClusterIP.
+func validateVpcEndpointPoolServiceCIDROverlap(pool *juneauv1alpha1.VpcEndpointPoolSpec, serviceCIDR *net.IPNet, path *field.Path) field.ErrorList {
+	if serviceCIDR == nil {
+		return nil
+	}
+
+	var errs field.ErrorList
+	for i, entry := range pool.Cidrs() {
+		_, poolCIDR, err := net.ParseCIDR(entry)
+		if err != nil {
+			continue
+		}
+		if cidrsOverlap(poolCIDR, serviceCIDR) {
+			errs = append(errs, field.Invalid(path.Index(i), entry,
+				fmt.Sprintf("overlaps with Service CIDR %q", serviceCIDR.String())))
+		}
+	}
+
+	return errs
+}
+
+// validateVpcEndpointPoolSubnetOverlap rejects a pool that overlaps a
+// Subnet of this Vpc. A VIP inside a Subnet would need an arp_table
+// entry and would collide with the Pod addresses of that Subnet.
+func (v *VpcCustomValidator) validateVpcEndpointPoolSubnetOverlap(ctx context.Context, vpc *juneauv1alpha1.Vpc, path *field.Path) (field.ErrorList, error) {
+	if !vpc.Spec.EndpointPool.Configured() {
+		return nil, nil
+	}
+
+	var subnetList juneauv1alpha1.SubnetList
+	if err := v.List(ctx, &subnetList); err != nil {
+		return nil, err
+	}
+
+	var errs field.ErrorList
+	for i, entry := range vpc.Spec.EndpointPool.Cidrs() {
+		_, poolCIDR, err := net.ParseCIDR(entry)
+		if err != nil {
+			continue
+		}
+		for _, subnet := range subnetList.Items {
+			if subnet.Spec.Vpc != vpc.Name {
+				continue
+			}
+			_, subnetCIDR, err := net.ParseCIDR(subnet.Spec.CIDR)
+			if err != nil {
+				continue
+			}
+			if cidrsOverlap(poolCIDR, subnetCIDR) {
+				errs = append(errs, field.Invalid(path.Index(i), entry,
+					fmt.Sprintf("overlaps with Subnet %q CIDR %q in Vpc %q", subnet.Name, subnet.Spec.CIDR, vpc.Name)))
+			}
+		}
+	}
+
+	return errs, nil
+}
+
+// validateVpcEndpointPoolPeeredSubnetOverlap rejects a pool that
+// overlaps a Subnet of a Vpc this Vpc is peered with. This Vpc's FIB
+// would hold both the pool route and the peering route for the same
+// prefix, and only one of them can win.
+func (v *VpcCustomValidator) validateVpcEndpointPoolPeeredSubnetOverlap(ctx context.Context, vpc *juneauv1alpha1.Vpc, path *field.Path) (field.ErrorList, error) {
+	if !vpc.Spec.EndpointPool.Configured() {
+		return nil, nil
+	}
+
+	peerings, err := listPeeredVpcs(ctx, v.Reader, vpc.Name)
+	if err != nil {
+		return nil, err
+	}
+	if len(peerings) == 0 {
+		return nil, nil
+	}
+
+	var subnetList juneauv1alpha1.SubnetList
+	if err := v.List(ctx, &subnetList); err != nil {
+		return nil, err
+	}
+
+	var errs field.ErrorList
+	for i, entry := range vpc.Spec.EndpointPool.Cidrs() {
+		_, poolCIDR, err := net.ParseCIDR(entry)
+		if err != nil {
+			continue
+		}
+		for _, subnet := range subnetList.Items {
+			peeringName, peered := peerings[subnet.Spec.Vpc]
+			if !peered {
+				continue
+			}
+			_, subnetCIDR, err := net.ParseCIDR(subnet.Spec.CIDR)
+			if err != nil {
+				continue
+			}
+			if cidrsOverlap(poolCIDR, subnetCIDR) {
+				errs = append(errs, field.Invalid(path.Index(i), entry,
+					fmt.Sprintf("overlaps with Subnet %q CIDR %q in Vpc %q, which is peered by VpcPeering %q",
+						subnet.Name, subnet.Spec.CIDR, subnet.Spec.Vpc, peeringName)))
+			}
+		}
+	}
+
+	return errs, nil
+}
+
+// validateVpcEndpointPoolTransitGatewaySubnetOverlap rejects a pool that
+// overlaps a Subnet of a Vpc that shares a TransitGatewayRouteTable with
+// this Vpc, for the same reason as the peering check: the FIB would hold
+// the pool route and the transit route for one prefix.
+func (v *VpcCustomValidator) validateVpcEndpointPoolTransitGatewaySubnetOverlap(ctx context.Context, vpc *juneauv1alpha1.Vpc, path *field.Path) (field.ErrorList, error) {
+	if !vpc.Spec.EndpointPool.Configured() {
+		return nil, nil
+	}
+
+	reachable, err := listTransitGatewayReachableVpcs(ctx, v.Reader, vpc.Name)
+	if err != nil {
+		return nil, err
+	}
+	if len(reachable) == 0 {
+		return nil, nil
+	}
+
+	var subnetList juneauv1alpha1.SubnetList
+	if err := v.List(ctx, &subnetList); err != nil {
+		return nil, err
+	}
+
+	var errs field.ErrorList
+	for i, entry := range vpc.Spec.EndpointPool.Cidrs() {
+		_, poolCIDR, err := net.ParseCIDR(entry)
+		if err != nil {
+			continue
+		}
+		for _, subnet := range subnetList.Items {
+			routeTable, ok := reachable[subnet.Spec.Vpc]
+			if !ok {
+				continue
+			}
+			_, subnetCIDR, err := net.ParseCIDR(subnet.Spec.CIDR)
+			if err != nil {
+				continue
+			}
+			if cidrsOverlap(poolCIDR, subnetCIDR) {
+				errs = append(errs, field.Invalid(path.Index(i), entry,
+					fmt.Sprintf("overlaps with Subnet %q CIDR %q in Vpc %q, which is reachable through TransitGatewayRouteTable %q",
+						subnet.Name, subnet.Spec.CIDR, subnet.Spec.Vpc, routeTable)))
+			}
+		}
+	}
+
+	return errs, nil
+}
+
+// validateVpcEndpointPoolShrink rejects taking address space away from
+// the pool while a VpcEndpoint still holds an address in it. The Vpc
+// controller deletes the AllocationPool as soon as the CIDR is gone, so
+// the endpoint would keep an AllocationClaim on a pool that no longer
+// exists and its VIP would stop working without any error.
+func (v *VpcCustomValidator) validateVpcEndpointPoolShrink(ctx context.Context, vpc *juneauv1alpha1.Vpc, path *field.Path) (field.ErrorList, error) {
+	var endpointList juneauv1alpha1.VpcEndpointList
+	if err := v.List(ctx, &endpointList); err != nil {
+		return nil, err
+	}
+
+	var errs field.ErrorList
+	for i := range endpointList.Items {
+		endpoint := &endpointList.Items[i]
+		if endpoint.Spec.Vpc != vpc.Name || endpoint.Status.Address == "" {
+			continue
+		}
+		address := net.ParseIP(endpoint.Status.Address)
+		if address == nil {
+			continue
+		}
+		if vpcEndpointPoolContains(vpc.Spec.EndpointPool, address) {
+			continue
+		}
+		errs = append(errs, field.Invalid(path, vpc.Spec.EndpointPool.Cidrs(),
+			fmt.Sprintf("VpcEndpoint %q still uses address %q, which no remaining CIDR covers", endpoint.Name, endpoint.Status.Address)))
+	}
+
+	return errs, nil
+}
+
+func vpcEndpointPoolContains(pool *juneauv1alpha1.VpcEndpointPoolSpec, address net.IP) bool {
+	for _, entry := range pool.Cidrs() {
+		_, cidr, err := net.ParseCIDR(entry)
+		if err != nil {
+			continue
+		}
+		if cidr.Contains(address) {
+			return true
+		}
+	}
+	return false
 }
 
 // validateServiceEnabled checks that no Subnet in this VPC has a CIDR
