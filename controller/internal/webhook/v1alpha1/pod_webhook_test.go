@@ -392,7 +392,7 @@ var _ = Describe("Pod network probe rewrite", func() {
 		Expect(fetched.Annotations).NotTo(HaveKey(probeconfig.AnnotationRewriteVersion))
 	})
 
-	It("rejects explicit-host probes in compatibility mode", func() {
+	It("leaves explicit-host probes unchanged in compatibility mode", func() {
 		subnet := customSubnetFixture()
 		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
 			PodAnnotationSubnet: subnet.Name,
@@ -400,9 +400,64 @@ var _ = Describe("Pod network probe rewrite", func() {
 		pod.Spec.Containers[0].ReadinessProbe = &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{Host: "example.com", Path: "/", Port: intstr.FromInt32(443)},
 		}}
-		err := webhookK8sClient.Create(context.Background(), pod)
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("explicit host"))
+		Expect(webhookK8sClient.Create(context.Background(), pod)).To(Succeed())
+		DeferCleanup(func() {
+			_ = webhookK8sClient.Delete(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: "default"}})
+		})
+
+		var fetched corev1.Pod
+		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKeyFromObject(pod), &fetched)).To(Succeed())
+		probe := fetched.Spec.Containers[0].ReadinessProbe
+		Expect(probe.HTTPGet.Host).To(Equal("example.com"))
+		Expect(probe.HTTPGet.Port.IntVal).To(Equal(int32(443)))
+		Expect(fetched.Annotations).NotTo(HaveKey(probeconfig.AnnotationRewriteVersion))
+		Expect(fetched.Annotations).NotTo(HaveKey(probeconfig.AnnotationConfigs))
+	})
+
+	It("skips explicit-host probes but still rewrites the remaining ones", func() {
+		pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Name: "server",
+			StartupProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{Host: "example.com", Path: "/up", Port: intstr.FromInt32(443)},
+			}},
+			ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+				TCPSocket: &corev1.TCPSocketAction{Host: "10.0.0.9", Port: intstr.FromInt32(9000)},
+			}},
+			LivenessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(8080)},
+			}},
+		}}}}
+
+		Expect(rewriteNetworkProbes(pod, probeconfig.DefaultProxyPort)).To(Succeed())
+		container := &pod.Spec.Containers[0]
+		Expect(container.StartupProbe.HTTPGet.Host).To(Equal("example.com"))
+		Expect(container.StartupProbe.HTTPGet.Path).To(Equal("/up"))
+		Expect(container.ReadinessProbe.TCPSocket).NotTo(BeNil())
+		Expect(container.ReadinessProbe.TCPSocket.Host).To(Equal("10.0.0.9"))
+		Expect(container.LivenessProbe.HTTPGet.Host).To(Equal("127.0.0.1"))
+		Expect(container.LivenessProbe.HTTPGet.Path).To(HavePrefix(probeconfig.EndpointPathPrefix))
+
+		Expect(pod.Annotations).To(HaveKeyWithValue(probeconfig.AnnotationRewriteVersion, probeconfig.RewriteVersion))
+		configs, err := probeconfig.Parse(pod.Annotations[probeconfig.AnnotationConfigs])
+		Expect(err).NotTo(HaveOccurred())
+		Expect(configs).To(HaveLen(1))
+		for _, config := range configs {
+			Expect(config.Path).To(Equal("/healthz"))
+		}
+	})
+
+	It("leaves a Pod untouched when every probe has an explicit host", func() {
+		pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Name: "server",
+			ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+				TCPSocket: &corev1.TCPSocketAction{Host: "10.0.0.9", Port: intstr.FromInt32(9000)},
+			}},
+		}}}}
+		Expect(rewriteNetworkProbes(pod, probeconfig.DefaultProxyPort)).To(Succeed())
+		Expect(pod.Spec.Containers[0].ReadinessProbe.TCPSocket).NotTo(BeNil())
+		Expect(pod.Spec.Containers[0].ReadinessProbe.HTTPGet).To(BeNil())
+		Expect(pod.Annotations).NotTo(HaveKey(probeconfig.AnnotationRewriteVersion))
+		Expect(pod.Annotations).NotTo(HaveKey(probeconfig.AnnotationConfigs))
 	})
 
 	It("rewrites probes on restartable init containers", func() {

@@ -149,15 +149,12 @@ func rewriteProbeContainers(containers []corev1.Container, configs probeconfig.C
 }
 
 func rewriteNetworkProbe(container *corev1.Container, item *corev1.Probe, configs probeconfig.Configs, agentPort int32) (bool, error) {
-	if item == nil || item.Exec != nil || isAgentProbe(item, configs, agentPort) {
+	if item == nil || item.Exec != nil || isAgentProbe(item, configs, agentPort) || hasExplicitProbeHost(item) {
 		return false, nil
 	}
 	config := probeconfig.Config{Timeout: item.TimeoutSeconds}
 	switch {
 	case item.HTTPGet != nil:
-		if item.HTTPGet.Host != "" {
-			return false, fmt.Errorf("HTTP probes with an explicit host are not compatible with node-proxy rewriting")
-		}
 		config.Type = "http"
 		config.Path = item.HTTPGet.Path
 		config.Scheme = string(item.HTTPGet.Scheme)
@@ -170,9 +167,6 @@ func rewriteNetworkProbe(container *corev1.Container, item *corev1.Probe, config
 		}
 		config.Port = port
 	case item.TCPSocket != nil:
-		if item.TCPSocket.Host != "" {
-			return false, fmt.Errorf("TCP probes with an explicit host are not compatible with node-proxy rewriting")
-		}
 		config.Type = "tcp"
 		port, err := resolveProbePort(container, item.TCPSocket.Port)
 		if err != nil {
@@ -212,6 +206,20 @@ func isAgentProbe(item *corev1.Probe, configs probeconfig.Configs, agentPort int
 	}
 	_, ok := configs[token]
 	return ok
+}
+
+// An explicit host points the probe at an address that is not the Pod itself,
+// so rewriting it would change what the probe checks. GRPCAction has no host
+// field, and kubelet keeps reaching the given host directly.
+func hasExplicitProbeHost(item *corev1.Probe) bool {
+	switch {
+	case item.HTTPGet != nil:
+		return item.HTTPGet.Host != ""
+	case item.TCPSocket != nil:
+		return item.TCPSocket.Host != ""
+	default:
+		return false
+	}
 }
 
 func newProbeToken(configs probeconfig.Configs) (string, error) {
