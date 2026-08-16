@@ -641,10 +641,19 @@ func buildExternalIPService(name, namespace, vpcName string, externalIPs []strin
 }
 
 func createControllerVpc() string {
+	return createControllerVpcWithEndpointPool()
+}
+
+// createControllerVpcWithEndpointPool creates a ready Vpc whose VpcEndpoint
+// VIPs come from the given pool CIDRs. Passing no CIDR leaves the Vpc without
+// an endpoint pool.
+func createControllerVpcWithEndpointPool(cidrs ...string) string {
 	name := uniqueTestName("vpc")
-	Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.Vpc{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-	})).To(Succeed())
+	vpc := &juneauv1alpha1.Vpc{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	if len(cidrs) > 0 {
+		vpc.Spec.EndpointPool = &juneauv1alpha1.VpcEndpointPoolSpec{CIDRs: cidrs}
+	}
+	Expect(k8sClient.Create(context.Background(), vpc)).To(Succeed())
 
 	Eventually(func(g Gomega) {
 		var vpc juneauv1alpha1.Vpc

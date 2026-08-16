@@ -50,7 +50,7 @@ type Route struct {
 }
 
 type RouteVia struct {
-	// +kubebuilder:validation:Enum=connected;endpoint;internetGateway;service;natGateway;vpcPeering;transitGateway
+	// +kubebuilder:validation:Enum=connected;endpoint;internetGateway;service;natGateway;vpcPeering;transitGateway;vpcEndpoint
 	Type RouteViaType `json:"type"`
 	// Endpoint is required when type=endpoint. Refers to a
 	// NetworkEndpoint by name.
@@ -88,6 +88,12 @@ const (
 	// attachment that connects this Vpc, and the data plane does a
 	// second lookup in that table to find the target Subnet.
 	ViaTransitGateway RouteViaType = "transitGateway"
+	// ViaVpcEndpoint covers the Vpc's endpoint pool CIDRs. The data plane
+	// resolves the destination VIP to the backing Service ClusterIP
+	// before running the ordinary Service path, so an address in the pool
+	// with no VpcEndpoint behind it is dropped instead of being looked up
+	// as a ClusterIP.
+	ViaVpcEndpoint RouteViaType = "vpcEndpoint"
 )
 
 // +kubebuilder:object:root=true

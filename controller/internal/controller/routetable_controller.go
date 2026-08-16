@@ -157,14 +157,7 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		statusRoutes = append(statusRoutes, extRoutes...)
 	}
 
-	endpointRoutes, err := r.collectVpcEndpointRoutes(ctx, resource.Spec.Vpc)
-	if err != nil {
-		if updateErr := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, fmt.Sprintf("failed to collect VpcEndpoint routes: %v", err)); updateErr != nil {
-			return ctrl.Result{}, updateErr
-		}
-		return ctrl.Result{}, err
-	}
-	statusRoutes = append(statusRoutes, endpointRoutes...)
+	statusRoutes = append(statusRoutes, vpcEndpointPoolRoutes(&vpc)...)
 
 	// The default VPC's main RouteTable optionally carries a 0/0
 	// route via the default NATGateway. The route is only injected
@@ -196,7 +189,8 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			var subnet string
 			var transitGatewayRouteTable string
 			if route.Via.Type == juneauloutresmev1alpha1.ViaConnected ||
-				route.Via.Type == juneauloutresmev1alpha1.ViaService {
+				route.Via.Type == juneauloutresmev1alpha1.ViaService ||
+				route.Via.Type == juneauloutresmev1alpha1.ViaVpcEndpoint {
 				continue
 			} else if route.Via.Type == juneauloutresmev1alpha1.ViaEndpoint {
 				nwep, err := r.getNetworkEndpoint(ctx, route.Via.Endpoint)
@@ -486,44 +480,30 @@ func (r *RouteTableReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&juneauloutresmev1alpha1.TransitGatewayAttachment{}, handler.EnqueueRequestsFromMapFunc(r.mapTransitGatewayAttachmentToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.TransitGatewayRouteTable{}, handler.EnqueueRequestsFromMapFunc(r.mapTransitGatewayRouteTableToRouteTables)).
 		Watches(&corev1.Service{}, handler.EnqueueRequestsFromMapFunc(r.mapServiceToRouteTables)).
-		Watches(&juneauloutresmev1alpha1.VpcEndpoint{}, handler.EnqueueRequestsFromMapFunc(r.mapVpcEndpointToRouteTables)).
 		Named("routetable").
 		Complete(r)
 }
 
-func (r *RouteTableReconciler) collectVpcEndpointRoutes(ctx context.Context, vpcName string) ([]juneauloutresmev1alpha1.Route, error) {
-	var endpoints juneauloutresmev1alpha1.VpcEndpointList
-	if err := r.List(ctx, &endpoints); err != nil {
-		return nil, err
-	}
-	routes := make([]juneauloutresmev1alpha1.Route, 0)
-	for i := range endpoints.Items {
-		endpoint := &endpoints.Items[i]
-		if endpoint.Spec.Vpc != vpcName || endpoint.Status.Address == "" || net.ParseIP(endpoint.Status.Address).To4() == nil {
-			continue
-		}
-		routes = append(routes, juneauloutresmev1alpha1.Route{Dst: endpoint.Status.Address + "/32", Via: juneauloutresmev1alpha1.RouteVia{Type: juneauloutresmev1alpha1.ViaService}})
+// vpcEndpointPoolRoutes returns one route per endpoint pool CIDR of the Vpc.
+// The pool covers every VpcEndpoint VIP, so one route per CIDR replaces the
+// /32 per endpoint the table used to carry. Unlike the Service CIDR route
+// this is not gated on ServiceEnabled(): a VpcEndpoint exists so that a Vpc
+// which has not enabled Service routing can still reach one chosen Service.
+// The result is sorted by Dst for stable Status.Routes ordering across
+// reconciles.
+func vpcEndpointPoolRoutes(vpc *juneauloutresmev1alpha1.Vpc) []juneauloutresmev1alpha1.Route {
+	cidrs := vpc.Spec.EndpointPool.Cidrs()
+	routes := make([]juneauloutresmev1alpha1.Route, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		routes = append(routes, juneauloutresmev1alpha1.Route{
+			Dst: cidr,
+			Via: juneauloutresmev1alpha1.RouteVia{
+				Type: juneauloutresmev1alpha1.ViaVpcEndpoint,
+			},
+		})
 	}
 	sort.Slice(routes, func(i, j int) bool { return routes[i].Dst < routes[j].Dst })
-	return routes, nil
-}
-
-func (r *RouteTableReconciler) mapVpcEndpointToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
-	endpoint, ok := obj.(*juneauloutresmev1alpha1.VpcEndpoint)
-	if !ok || endpoint.Spec.Vpc == "" {
-		return nil
-	}
-	var routeTables juneauloutresmev1alpha1.RouteTableList
-	if err := r.List(ctx, &routeTables); err != nil {
-		return nil
-	}
-	requests := make([]reconcile.Request, 0)
-	for i := range routeTables.Items {
-		if routeTables.Items[i].Spec.Vpc == endpoint.Spec.Vpc {
-			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: routeTables.Items[i].Name}})
-		}
-	}
-	return requests
+	return routes
 }
 
 func (r *RouteTableReconciler) ensureNumberClaim(ctx context.Context, resource *juneauloutresmev1alpha1.RouteTable, poolName string, gvk schema.GroupVersionKind, attribute string) (*juneauloutresmev1alpha1.AllocationClaim, error) {

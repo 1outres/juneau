@@ -50,6 +50,7 @@ const (
 	ReasonMissConntrack     Reason = 208
 	ReasonMissTGWTable      Reason = 209
 	ReasonMissTGWRoute      Reason = 210
+	ReasonMissVpcEndpoint   Reason = 211
 
 	ReasonPolicyACLPass Reason = 300
 	ReasonPolicyACLDrop Reason = 301

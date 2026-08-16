@@ -9,13 +9,14 @@ import (
 	"sync"
 
 	"github.com/cilium/ebpf"
+	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	bpf "github.com/1outres/juneau/daemon/internal/daemon/bpf"
-	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/convert"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/program"
 )
 
@@ -27,10 +28,8 @@ type VpcEndpoint struct {
 }
 
 type vpcEndpointSnapshot struct {
-	keys     []bpf.PodEgressVpcEndpointKey
-	value    bpf.PodEgressVpcEndpointVal
-	arpKey   bpf.PodEgressArpTableKey
-	arpValue bpf.PodEgressArpTableVal
+	keys  []bpf.PodEgressVpcEndpointKey
+	value bpf.PodEgressVpcEndpointVal
 }
 
 func NewVpcEndpoint(cl client.Client, podEgress *program.PodEgress) *VpcEndpoint {
@@ -51,6 +50,15 @@ func (r *VpcEndpoint) Reconcile(ctx context.Context, key string) error {
 }
 
 func (r *VpcEndpoint) upsert(ctx context.Context, key string, endpoint *juneauv1alpha1.VpcEndpoint) error {
+	// The map entry is what lets handle_service skip the cross-Vpc
+	// isolation check and the per-Service consumer ACL, so it may only
+	// exist once the controller accepted the Service. Gate on
+	// ServiceAccepted and not on Ready: Ready also tracks backend
+	// liveness, so it would flap the entry on every EndpointSlice change.
+	if !meta.IsStatusConditionTrue(endpoint.Status.Conditions, juneauv1alpha1.VpcEndpointConditionServiceAccepted) {
+		return r.delete(key)
+	}
+
 	address := net.ParseIP(endpoint.Status.Address).To4()
 	if address == nil {
 		return r.delete(key)
@@ -62,18 +70,6 @@ func (r *VpcEndpoint) upsert(ctx context.Context, key string, endpoint *juneauv1
 	}
 	if vpc.Status.VpcID == 0 {
 		return nil
-	}
-	var subnet juneauv1alpha1.Subnet
-	if err := r.client.Get(ctx, client.ObjectKey{Name: endpoint.Spec.Subnet}, &subnet); err != nil {
-		return err
-	}
-	gatewayMAC, err := net.ParseMAC(subnet.Status.GatewayMAC)
-	if err != nil {
-		return fmt.Errorf("parse Subnet gateway MAC: %w", err)
-	}
-	mac, err := convert.HardwareAddrToUint8Array(gatewayMAC)
-	if err != nil {
-		return err
 	}
 
 	ref := endpoint.Spec.Service
@@ -91,9 +87,7 @@ func (r *VpcEndpoint) upsert(ctx context.Context, key string, endpoint *juneauv1
 
 	addressHost := binary.BigEndian.Uint32(address)
 	desired := vpcEndpointSnapshot{
-		value:    bpf.PodEgressVpcEndpointVal{ClusterIp: binary.BigEndian.Uint32(clusterIP)},
-		arpKey:   bpf.PodEgressArpTableKey{SubnetId: subnet.Status.VNI, Ipaddr: addressHost},
-		arpValue: bpf.PodEgressArpTableVal{Mac: mac},
+		value: bpf.PodEgressVpcEndpointVal{ClusterIp: binary.BigEndian.Uint32(clusterIP)},
 	}
 	for _, port := range service.Spec.Ports {
 		proto := vpcEndpointProtocol(port.Protocol)
@@ -133,9 +127,6 @@ func (r *VpcEndpoint) programSnapshot(snapshot vpcEndpointSnapshot) error {
 			return fmt.Errorf("update VpcEndpointMap: %w", err)
 		}
 	}
-	if err := r.podEgress.Objs.ArpTable.Update(&snapshot.arpKey, &snapshot.arpValue, ebpf.UpdateAny); err != nil {
-		return fmt.Errorf("update endpoint proxy ARP: %w", err)
-	}
 	return nil
 }
 
@@ -146,11 +137,6 @@ func (r *VpcEndpoint) pruneSnapshot(previous, desired vpcEndpointSnapshot) error
 			continue
 		}
 		if err := r.podEgress.Objs.VpcEndpointMap.Delete(&previous.keys[i]); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-			result = errors.Join(result, err)
-		}
-	}
-	if previous.arpKey != desired.arpKey {
-		if err := r.podEgress.Objs.ArpTable.Delete(&previous.arpKey); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 			result = errors.Join(result, err)
 		}
 	}
@@ -184,9 +170,6 @@ func (r *VpcEndpoint) deleteSnapshot(snapshot vpcEndpointSnapshot) error {
 			result = errors.Join(result, err)
 		}
 	}
-	if err := r.podEgress.Objs.ArpTable.Delete(&snapshot.arpKey); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-		result = errors.Join(result, err)
-	}
 	return result
 }
 
@@ -206,6 +189,7 @@ func vpcEndpointProtocol(protocol corev1.Protocol) uint8 {
 func (r *VpcEndpoint) FanOutAll(any) []string {
 	var endpoints juneauv1alpha1.VpcEndpointList
 	if err := r.client.List(context.Background(), &endpoints); err != nil {
+		zap.S().Warnf("vpc-endpoint: list VpcEndpoints for fan-out: %v", err)
 		return nil
 	}
 	keys := make([]string, 0, len(endpoints.Items))
@@ -222,6 +206,7 @@ func (r *VpcEndpoint) FanOutService(obj any) []string {
 	}
 	var endpoints juneauv1alpha1.VpcEndpointList
 	if err := r.client.List(context.Background(), &endpoints); err != nil {
+		zap.S().Warnf("vpc-endpoint: list VpcEndpoints for Service %s/%s fan-out: %v", service.Namespace, service.Name, err)
 		return nil
 	}
 	keys := make([]string, 0)

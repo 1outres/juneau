@@ -166,3 +166,58 @@ func TestBuildFibValTransitGatewayMissingRouteTableFails(t *testing.T) {
 		t.Fatal("buildFibVal accepted a transitGateway route with no TransitGatewayRouteTable")
 	}
 }
+
+func TestBuildFibValVpcEndpointCarriesOnlyTheType(t *testing.T) {
+	r := newFibFixture(t)
+
+	route := &juneauv1alpha1.Route{
+		Dst: "10.9.0.0/24",
+		Via: juneauv1alpha1.RouteVia{
+			Type: juneauv1alpha1.ViaVpcEndpoint,
+		},
+	}
+
+	val, skip, err := r.buildFibVal(context.Background(), route)
+	if err != nil {
+		t.Fatalf("buildFibVal: %v", err)
+	}
+	if skip {
+		t.Fatal("buildFibVal skipped a vpcEndpoint route")
+	}
+	if val.Type != fibRouteTypeVpcEndpoint {
+		t.Errorf("type = %d, want %d", val.Type, fibRouteTypeVpcEndpoint)
+	}
+	if val.SubnetId != 0 {
+		t.Errorf("subnet ID = %d, want 0", val.SubnetId)
+	}
+	if val.Smac != [6]uint8{} || val.Dmac != [6]uint8{} {
+		t.Errorf("value carries MACs %v/%v, want both zero", val.Smac, val.Dmac)
+	}
+}
+
+func TestBuildFibValVpcEndpointDiffersFromServiceOnlyByType(t *testing.T) {
+	r := newFibFixture(t)
+
+	service, _, err := r.buildFibVal(context.Background(), &juneauv1alpha1.Route{
+		Dst: "10.9.0.0/24",
+		Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
+	})
+	if err != nil {
+		t.Fatalf("buildFibVal(service): %v", err)
+	}
+	endpoint, _, err := r.buildFibVal(context.Background(), &juneauv1alpha1.Route{
+		Dst: "10.9.0.0/24",
+		Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaVpcEndpoint},
+	})
+	if err != nil {
+		t.Fatalf("buildFibVal(vpcEndpoint): %v", err)
+	}
+
+	if service.Type == endpoint.Type {
+		t.Fatal("service and vpcEndpoint share a route type; the data plane cannot tell them apart")
+	}
+	service.Type = endpoint.Type
+	if service != endpoint {
+		t.Errorf("values differ beyond the type: %+v vs %+v", service, endpoint)
+	}
+}

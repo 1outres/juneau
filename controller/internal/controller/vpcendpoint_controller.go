@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -31,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
@@ -40,15 +42,71 @@ const vpcEndpointAllocationAttribute = "status.address"
 
 const vpcEndpointServiceVpcAnnotation = "juneau.loutres.me/vpc"
 
+const (
+	vpcEndpointReasonVpcUnavailable            = "VpcUnavailable"
+	vpcEndpointReasonEndpointPoolNotConfigured = "EndpointPoolNotConfigured"
+	vpcEndpointReasonAllocating                = "Allocating"
+	vpcEndpointReasonAllocated                 = "Allocated"
+
+	vpcEndpointReasonServiceNotFound        = "ServiceNotFound"
+	vpcEndpointReasonClusterIPUnavailable   = "ClusterIPUnavailable"
+	vpcEndpointReasonServiceVpcNotFound     = "ServiceVpcNotFound"
+	vpcEndpointReasonServiceRoutingDisabled = "ServiceRoutingDisabled"
+	vpcEndpointReasonNotAServiceProvider    = "NotAServiceProvider"
+	vpcEndpointReasonAccepted               = "Accepted"
+
+	vpcEndpointReasonAddressPending     = "AddressPending"
+	vpcEndpointReasonServiceNotAccepted = "ServiceNotAccepted"
+	vpcEndpointReasonBackendUnavailable = "BackendUnavailable"
+	vpcEndpointReasonReady              = "Ready"
+)
+
 type VpcEndpointReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+}
+
+// vpcEndpointCondition carries the parts of a status condition that a
+// reconcile pass decides. Type and ObservedGeneration are filled in by
+// updateStatus.
+type vpcEndpointCondition struct {
+	Status  metav1.ConditionStatus
+	Reason  string
+	Message string
+}
+
+func vpcEndpointConditionTrue(reason, message string) vpcEndpointCondition {
+	return vpcEndpointCondition{Status: metav1.ConditionTrue, Reason: reason, Message: message}
+}
+
+func vpcEndpointConditionFalse(reason, message string) vpcEndpointCondition {
+	return vpcEndpointCondition{Status: metav1.ConditionFalse, Reason: reason, Message: message}
+}
+
+// vpcEndpointDesiredStatus is the whole status one reconcile pass intends to
+// publish. Every field is mandatory, so a branch cannot decide one condition
+// and leave another one holding a stale value.
+type vpcEndpointDesiredStatus struct {
+	Address         string
+	AllocationClaim string
+
+	AddressAllocated vpcEndpointCondition
+	ServiceAccepted  vpcEndpointCondition
+	Ready            vpcEndpointCondition
+}
+
+// vpcEndpointBlocked reports the same cause on all three conditions, for
+// failures that stop the reconciler before it can judge them apart.
+func vpcEndpointBlocked(reason, message string) vpcEndpointDesiredStatus {
+	blocked := vpcEndpointConditionFalse(reason, message)
+	return vpcEndpointDesiredStatus{AddressAllocated: blocked, ServiceAccepted: blocked, Ready: blocked}
 }
 
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=vpcendpoints,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=vpcendpoints/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=vpcendpoints/finalizers,verbs=update
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=allocationclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=vpcs,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch
 // +kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get;list;watch
 
@@ -60,47 +118,70 @@ func (r *VpcEndpointReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if !endpoint.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil
 	}
-	before := endpoint.DeepCopy()
-	endpoint.Status.ObservedGeneration = endpoint.Generation
 
-	var subnet juneauv1alpha1.Subnet
-	if err := r.Get(ctx, client.ObjectKey{Name: endpoint.Spec.Subnet}, &subnet); err != nil {
-		meta.SetStatusCondition(&endpoint.Status.Conditions, metav1.Condition{Type: juneauv1alpha1.VpcEndpointConditionAddressAllocated, Status: metav1.ConditionFalse, Reason: "SubnetUnavailable", Message: fmt.Sprintf("Subnet %q is unavailable", endpoint.Spec.Subnet), ObservedGeneration: endpoint.Generation})
-		return ctrl.Result{}, r.patchStatus(ctx, before, &endpoint)
-	}
-	if subnet.Spec.Vpc != endpoint.Spec.Vpc {
-		meta.SetStatusCondition(&endpoint.Status.Conditions, metav1.Condition{Type: juneauv1alpha1.VpcEndpointConditionAddressAllocated, Status: metav1.ConditionFalse, Reason: "VpcMismatch", Message: fmt.Sprintf("Subnet %q belongs to Vpc %q", subnet.Name, subnet.Spec.Vpc), ObservedGeneration: endpoint.Generation})
-		return ctrl.Result{}, r.patchStatus(ctx, before, &endpoint)
-	}
-
-	claim, err := r.ensureClaim(ctx, &endpoint)
+	desired, err := r.buildStatus(ctx, &endpoint)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	endpoint.Status.AllocationClaim = claim.Name
+	return ctrl.Result{}, r.updateStatus(ctx, &endpoint, desired)
+}
+
+func (r *VpcEndpointReconciler) buildStatus(ctx context.Context, endpoint *juneauv1alpha1.VpcEndpoint) (vpcEndpointDesiredStatus, error) {
+	var vpc juneauv1alpha1.Vpc
+	if err := r.Get(ctx, client.ObjectKey{Name: endpoint.Spec.Vpc}, &vpc); err != nil {
+		if errors.IsNotFound(err) {
+			return vpcEndpointBlocked(vpcEndpointReasonVpcUnavailable, fmt.Sprintf("Vpc %q does not exist", endpoint.Spec.Vpc)), nil
+		}
+		return vpcEndpointDesiredStatus{}, err
+	}
+
+	accepted, err := r.serviceAccepted(ctx, endpoint)
+	if err != nil {
+		return vpcEndpointDesiredStatus{}, err
+	}
+	desired := vpcEndpointDesiredStatus{ServiceAccepted: accepted}
+
+	if !vpc.Spec.EndpointPool.Configured() {
+		message := fmt.Sprintf("Vpc %q does not declare spec.endpointPool", vpc.Name)
+		desired.AddressAllocated = vpcEndpointConditionFalse(vpcEndpointReasonEndpointPoolNotConfigured, message)
+		desired.Ready = vpcEndpointConditionFalse(vpcEndpointReasonEndpointPoolNotConfigured, message)
+		return desired, nil
+	}
+
+	claim, err := r.ensureClaim(ctx, endpoint)
+	if err != nil {
+		return vpcEndpointDesiredStatus{}, err
+	}
+	desired.AllocationClaim = claim.Name
 	if claim.Status.Phase != juneauv1alpha1.AllocationClaimPhaseAllocated || claim.Status.Value.IP == "" {
-		meta.SetStatusCondition(&endpoint.Status.Conditions, metav1.Condition{Type: juneauv1alpha1.VpcEndpointConditionAddressAllocated, Status: metav1.ConditionFalse, Reason: "Allocating", Message: "endpoint address allocation is pending", ObservedGeneration: endpoint.Generation})
-		meta.SetStatusCondition(&endpoint.Status.Conditions, metav1.Condition{Type: juneauv1alpha1.VpcEndpointConditionReady, Status: metav1.ConditionFalse, Reason: "AddressPending", Message: "endpoint address has not been allocated", ObservedGeneration: endpoint.Generation})
-		return ctrl.Result{}, r.patchStatus(ctx, before, &endpoint)
+		desired.AddressAllocated = vpcEndpointConditionFalse(vpcEndpointReasonAllocating, "endpoint address allocation is pending")
+		desired.Ready = vpcEndpointConditionFalse(vpcEndpointReasonAddressPending, "endpoint address has not been allocated")
+		return desired, nil
 	}
 
-	endpoint.Status.Address = claim.Status.Value.IP
-	meta.SetStatusCondition(&endpoint.Status.Conditions, metav1.Condition{Type: juneauv1alpha1.VpcEndpointConditionAddressAllocated, Status: metav1.ConditionTrue, Reason: "Allocated", Message: fmt.Sprintf("allocated %s from Subnet %q", endpoint.Status.Address, subnet.Name), ObservedGeneration: endpoint.Generation})
-	ready, message, err := r.backendReady(ctx, &endpoint)
+	desired.Address = claim.Status.Value.IP
+	desired.AddressAllocated = vpcEndpointConditionTrue(vpcEndpointReasonAllocated, fmt.Sprintf("allocated %s from the endpoint pool of Vpc %q", desired.Address, vpc.Name))
+
+	if accepted.Status != metav1.ConditionTrue {
+		desired.Ready = vpcEndpointConditionFalse(vpcEndpointReasonServiceNotAccepted, accepted.Message)
+		return desired, nil
+	}
+
+	ready, message, err := r.backendsReady(ctx, endpoint)
 	if err != nil {
-		return ctrl.Result{}, err
+		return vpcEndpointDesiredStatus{}, err
 	}
-	condition := metav1.Condition{Type: juneauv1alpha1.VpcEndpointConditionReady, Status: metav1.ConditionFalse, Reason: "BackendUnavailable", Message: message, ObservedGeneration: endpoint.Generation}
-	if ready {
-		condition.Status, condition.Reason = metav1.ConditionTrue, "Ready"
+	if !ready {
+		desired.Ready = vpcEndpointConditionFalse(vpcEndpointReasonBackendUnavailable, message)
+		return desired, nil
 	}
-	meta.SetStatusCondition(&endpoint.Status.Conditions, condition)
-	return ctrl.Result{}, r.patchStatus(ctx, before, &endpoint)
+	desired.Ready = vpcEndpointConditionTrue(vpcEndpointReasonReady, message)
+	return desired, nil
 }
 
 func (r *VpcEndpointReconciler) ensureClaim(ctx context.Context, endpoint *juneauv1alpha1.VpcEndpoint) (*juneauv1alpha1.AllocationClaim, error) {
 	gvk := schema.GroupVersionKind{Group: juneauv1alpha1.GroupVersion.Group, Version: juneauv1alpha1.GroupVersion.Version, Kind: "VpcEndpoint"}
-	desired := newAllocationClaim(SubnetIPAllocationPoolName(endpoint.Spec.Subnet), gvk, "", endpoint.Name, vpcEndpointAllocationAttribute)
+	desired := newAllocationClaim(VpcEndpointIPAllocationPoolName(endpoint.Spec.Vpc), gvk, "", endpoint.Name, vpcEndpointAllocationAttribute)
 	claim := &juneauv1alpha1.AllocationClaim{ObjectMeta: metav1.ObjectMeta{Name: desired.Name}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, claim, func() error {
 		claim.Spec = desired.Spec
@@ -111,17 +192,24 @@ func (r *VpcEndpointReconciler) ensureClaim(ctx context.Context, endpoint *junea
 	return claim, nil
 }
 
-func (r *VpcEndpointReconciler) backendReady(ctx context.Context, endpoint *juneauv1alpha1.VpcEndpoint) (bool, string, error) {
+// serviceAccepted judges the configuration half of the binding: the Service
+// exists, has a ClusterIP, and the Vpc that owns it lets this VpcEndpoint
+// front it. The daemon gates its BPF map write on this condition rather than
+// on Ready, because Ready also follows the backend EndpointSlices: keying the
+// map on Ready would rewrite the entry every time a backend Pod comes or
+// goes, while ServiceAccepted only moves when a user changes the Service or a
+// Vpc.
+func (r *VpcEndpointReconciler) serviceAccepted(ctx context.Context, endpoint *juneauv1alpha1.VpcEndpoint) (vpcEndpointCondition, error) {
 	ref := endpoint.Spec.Service
 	var svc corev1.Service
 	if err := r.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, &svc); err != nil {
 		if errors.IsNotFound(err) {
-			return false, fmt.Sprintf("Service %s/%s does not exist yet", ref.Namespace, ref.Name), nil
+			return vpcEndpointConditionFalse(vpcEndpointReasonServiceNotFound, fmt.Sprintf("Service %s/%s does not exist yet", ref.Namespace, ref.Name)), nil
 		}
-		return false, "", err
+		return vpcEndpointCondition{}, err
 	}
 	if svc.Spec.ClusterIP == "" || svc.Spec.ClusterIP == corev1.ClusterIPNone {
-		return false, "backend Service has no ClusterIP", nil
+		return vpcEndpointConditionFalse(vpcEndpointReasonClusterIPUnavailable, "backend Service has no ClusterIP"), nil
 	}
 	ownerVpcName := defaultVpcName
 	if value := svc.Annotations[vpcEndpointServiceVpcAnnotation]; value != "" {
@@ -130,16 +218,21 @@ func (r *VpcEndpointReconciler) backendReady(ctx context.Context, endpoint *june
 	var ownerVpc juneauv1alpha1.Vpc
 	if err := r.Get(ctx, client.ObjectKey{Name: ownerVpcName}, &ownerVpc); err != nil {
 		if errors.IsNotFound(err) {
-			return false, fmt.Sprintf("backend Service Vpc %q does not exist", ownerVpcName), nil
+			return vpcEndpointConditionFalse(vpcEndpointReasonServiceVpcNotFound, fmt.Sprintf("backend Service Vpc %q does not exist", ownerVpcName)), nil
 		}
-		return false, "", err
+		return vpcEndpointCondition{}, err
 	}
 	if !ownerVpc.Spec.ServiceEnabled() {
-		return false, fmt.Sprintf("backend Service Vpc %q does not have Service routing enabled", ownerVpcName), nil
+		return vpcEndpointConditionFalse(vpcEndpointReasonServiceRoutingDisabled, fmt.Sprintf("backend Service Vpc %q does not have Service routing enabled", ownerVpcName)), nil
 	}
-	if ownerVpcName != endpoint.Spec.Vpc && (ownerVpc.Spec.Service == nil || ownerVpc.Spec.Service.Provider == nil) {
-		return false, fmt.Sprintf("backend Service Vpc %q is not a Service provider", ownerVpcName), nil
+	if ownerVpcName != endpoint.Spec.Vpc && !ownerVpc.Spec.Service.IsProvider() {
+		return vpcEndpointConditionFalse(vpcEndpointReasonNotAServiceProvider, fmt.Sprintf("backend Service Vpc %q is not a Service provider", ownerVpcName)), nil
 	}
+	return vpcEndpointConditionTrue(vpcEndpointReasonAccepted, fmt.Sprintf("backend Service %s/%s is accepted", ref.Namespace, ref.Name)), nil
+}
+
+func (r *VpcEndpointReconciler) backendsReady(ctx context.Context, endpoint *juneauv1alpha1.VpcEndpoint) (bool, string, error) {
+	ref := endpoint.Spec.Service
 	var slices discoveryv1.EndpointSliceList
 	if err := r.List(ctx, &slices, client.InNamespace(ref.Namespace), client.MatchingLabels{discoveryv1.LabelServiceName: ref.Name}); err != nil {
 		return false, "", err
@@ -155,9 +248,36 @@ func (r *VpcEndpointReconciler) backendReady(ctx context.Context, endpoint *june
 	return false, "backend Service has no ready endpoints", nil
 }
 
-func (r *VpcEndpointReconciler) patchStatus(ctx context.Context, before, endpoint *juneauv1alpha1.VpcEndpoint) error {
-	return r.Status().Patch(ctx, endpoint, client.MergeFrom(before))
+func (r *VpcEndpointReconciler) updateStatus(ctx context.Context, endpoint *juneauv1alpha1.VpcEndpoint, desired vpcEndpointDesiredStatus) error {
+	updated := endpoint.DeepCopy()
+	updated.Status.ObservedGeneration = updated.Generation
+	updated.Status.Address = desired.Address
+	updated.Status.AllocationClaim = desired.AllocationClaim
+	setVpcEndpointCondition(&updated.Status.Conditions, juneauv1alpha1.VpcEndpointConditionAddressAllocated, desired.AddressAllocated, updated.Generation)
+	setVpcEndpointCondition(&updated.Status.Conditions, juneauv1alpha1.VpcEndpointConditionServiceAccepted, desired.ServiceAccepted, updated.Generation)
+	setVpcEndpointCondition(&updated.Status.Conditions, juneauv1alpha1.VpcEndpointConditionReady, desired.Ready, updated.Generation)
+
+	if updated.Status.ObservedGeneration == endpoint.Status.ObservedGeneration &&
+		updated.Status.Address == endpoint.Status.Address &&
+		updated.Status.AllocationClaim == endpoint.Status.AllocationClaim &&
+		reflect.DeepEqual(updated.Status.Conditions, endpoint.Status.Conditions) {
+		return nil
+	}
+
+	endpoint.Status = updated.Status
+	return r.Status().Update(ctx, endpoint)
 }
+
+func setVpcEndpointCondition(conditions *[]metav1.Condition, conditionType string, desired vpcEndpointCondition, generation int64) {
+	meta.SetStatusCondition(conditions, metav1.Condition{
+		Type:               conditionType,
+		Status:             desired.Status,
+		Reason:             desired.Reason,
+		Message:            desired.Message,
+		ObservedGeneration: generation,
+	})
+}
+
 func (r *VpcEndpointReconciler) mapService(ctx context.Context, obj client.Object) []reconcile.Request {
 	svc, ok := obj.(*corev1.Service)
 	if !ok {
@@ -165,6 +285,7 @@ func (r *VpcEndpointReconciler) mapService(ctx context.Context, obj client.Objec
 	}
 	return r.requestsForService(ctx, svc.Namespace, svc.Name)
 }
+
 func (r *VpcEndpointReconciler) mapEndpointSlice(ctx context.Context, obj client.Object) []reconcile.Request {
 	slice, ok := obj.(*discoveryv1.EndpointSlice)
 	if !ok {
@@ -172,12 +293,36 @@ func (r *VpcEndpointReconciler) mapEndpointSlice(ctx context.Context, obj client
 	}
 	return r.requestsForService(ctx, slice.Namespace, slice.Labels[discoveryv1.LabelServiceName])
 }
+
+// mapVpc wakes the VpcEndpoints of a Vpc. Both the endpoint pool and the
+// VpcID the daemon needs live on the Vpc, so an endpoint created before its
+// Vpc would otherwise wait forever with nothing to requeue it.
+func (r *VpcEndpointReconciler) mapVpc(ctx context.Context, obj client.Object) []reconcile.Request {
+	vpc, ok := obj.(*juneauv1alpha1.Vpc)
+	if !ok {
+		return nil
+	}
+	var list juneauv1alpha1.VpcEndpointList
+	if err := r.List(ctx, &list); err != nil {
+		log.FromContext(ctx).Error(err, "list VpcEndpoints for Vpc fan-out")
+		return nil
+	}
+	requests := make([]reconcile.Request, 0)
+	for i := range list.Items {
+		if list.Items[i].Spec.Vpc == vpc.Name {
+			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: list.Items[i].Name}})
+		}
+	}
+	return requests
+}
+
 func (r *VpcEndpointReconciler) requestsForService(ctx context.Context, namespace, name string) []reconcile.Request {
 	if namespace == "" || name == "" {
 		return nil
 	}
 	var list juneauv1alpha1.VpcEndpointList
 	if err := r.List(ctx, &list); err != nil {
+		log.FromContext(ctx).Error(err, "list VpcEndpoints for Service fan-out")
 		return nil
 	}
 	requests := make([]reconcile.Request, 0)
@@ -188,6 +333,14 @@ func (r *VpcEndpointReconciler) requestsForService(ctx context.Context, namespac
 	}
 	return requests
 }
+
 func (r *VpcEndpointReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).For(&juneauv1alpha1.VpcEndpoint{}).Owns(&juneauv1alpha1.AllocationClaim{}).Watches(&corev1.Service{}, handler.EnqueueRequestsFromMapFunc(r.mapService)).Watches(&discoveryv1.EndpointSlice{}, handler.EnqueueRequestsFromMapFunc(r.mapEndpointSlice)).Named("vpcendpoint").Complete(r)
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&juneauv1alpha1.VpcEndpoint{}).
+		Owns(&juneauv1alpha1.AllocationClaim{}).
+		Watches(&juneauv1alpha1.Vpc{}, handler.EnqueueRequestsFromMapFunc(r.mapVpc)).
+		Watches(&corev1.Service{}, handler.EnqueueRequestsFromMapFunc(r.mapService)).
+		Watches(&discoveryv1.EndpointSlice{}, handler.EnqueueRequestsFromMapFunc(r.mapEndpointSlice)).
+		Named("vpcendpoint").
+		Complete(r)
 }

@@ -437,11 +437,6 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 				return fmt.Errorf("watch Vpc (VpcEndpoint fan-out): %w", err)
 			}
 		}
-		if m.subnetInformer != nil {
-			if err := m.vpcEndpointRunner.WatchFanOut(m.subnetInformer, endpoint.FanOutAll); err != nil {
-				return fmt.Errorf("watch Subnet (VpcEndpoint fan-out): %w", err)
-			}
-		}
 		m.vpcEndpointRunner.Start(ctx, 1)
 	}
 

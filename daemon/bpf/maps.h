@@ -165,6 +165,13 @@
 // BLACKHOLE only shows up inside tgw_fib_map: the route exists but the
 // operator asked for its traffic to be dropped.
 #define FIB_ROUTE_TYPE_BLACKHOLE 9
+// VPC_ENDPOINT covers the Vpc's endpoint pool: the destination is a
+// VpcEndpoint VIP that vpc_endpoint_map must first resolve to the
+// Service ClusterIP, and only then does the normal Service path run.
+// Its own type keeps ordinary Service packets from paying for that
+// extra lookup. 5 is skipped on purpose: it is a retired value and old
+// map dumps may still carry it.
+#define FIB_ROUTE_TYPE_VPC_ENDPOINT 10
 
 #define CT_ACTION_DNAT 1
 #define CT_ACTION_SNAT 2

@@ -18,9 +18,6 @@ spec:
     - jsonPath: .spec.vpc
       name: Vpc
       type: string
-    - jsonPath: .spec.subnet
-      name: Subnet
-      type: string
     - jsonPath: .status.address
       name: Address
       type: string
@@ -64,15 +61,11 @@ spec:
                 - name
                 - namespace
                 type: object
-              subnet:
-                minLength: 1
-                type: string
               vpc:
                 minLength: 1
                 type: string
             required:
             - service
-            - subnet
             - vpc
             type: object
           status:

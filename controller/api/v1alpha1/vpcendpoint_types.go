@@ -33,9 +33,6 @@ type VpcEndpointSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	Vpc string `json:"vpc"`
 	// +required
-	// +kubebuilder:validation:MinLength=1
-	Subnet string `json:"subnet"`
-	// +required
 	Service VpcEndpointServiceReference `json:"service"`
 }
 
@@ -48,6 +45,7 @@ type VpcEndpointStatus struct {
 
 const (
 	VpcEndpointConditionAddressAllocated = "AddressAllocated"
+	VpcEndpointConditionServiceAccepted  = "ServiceAccepted"
 	VpcEndpointConditionReady            = "Ready"
 )
 
@@ -55,7 +53,6 @@ const (
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Vpc",type="string",JSONPath=".spec.vpc"
-// +kubebuilder:printcolumn:name="Subnet",type="string",JSONPath=".spec.subnet"
 // +kubebuilder:printcolumn:name="Address",type="string",JSONPath=".status.address"
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type==\"Ready\")].status"
 type VpcEndpoint struct {

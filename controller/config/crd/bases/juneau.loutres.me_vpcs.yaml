@@ -43,6 +43,23 @@ spec:
           spec:
             description: VpcSpec defines the desired state of Vpc.
             properties:
+              endpointPool:
+                description: |-
+                  EndpointPool declares the address space that VpcEndpoint VIPs are
+                  allocated from. The CIDRs must fall outside every Subnet of this
+                  Vpc: a VIP outside the Subnet is reached through the Vpc's
+                  gateway, so it needs no arp_table entry and consumes no Pod
+                  address.
+                properties:
+                  cidrs:
+                    items:
+                      type: string
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: set
+                required:
+                - cidrs
+                type: object
               enforceSecurityGroups:
                 description: |-
                   EnforceSecurityGroups makes SecurityGroup attachment mandatory for
