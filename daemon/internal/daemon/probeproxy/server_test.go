@@ -43,6 +43,39 @@ func TestExecuteHTTPInTargetNamespace(t *testing.T) {
 	}
 }
 
+func TestExecuteHTTPSendsProbeUserAgent(t *testing.T) {
+	for _, testCase := range []struct {
+		name    string
+		headers []probeconfig.Header
+		want    string
+	}{
+		{name: "default", want: "kube-probe/juneau"},
+		{
+			name:    "custom",
+			headers: []probeconfig.Header{{Name: "User-Agent", Value: "custom-probe/1"}},
+			want:    "custom-probe/1",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.Header.Values("User-Agent"); len(got) != 1 || got[0] != testCase.want {
+					t.Errorf("User-Agent = %v, want [%q]", got, testCase.want)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer server.Close()
+			host, port := splitServerAddress(t, server.URL)
+			err := executeWithDial(context.Background(), target{
+				host:   host,
+				config: probeconfig.Config{Type: "http", Port: port, Timeout: 1, Headers: testCase.headers},
+			}, (&net.Dialer{}).DialContext)
+			if err != nil {
+				t.Fatalf("execute HTTP probe: %v", err)
+			}
+		})
+	}
+}
+
 func TestPublishRejectsCollisionWithoutDroppingExistingTargets(t *testing.T) {
 	proxy := NewServer(nil, "", t.TempDir())
 	first := probeconfig.Configs{"shared": {Type: "tcp", Port: 80}}

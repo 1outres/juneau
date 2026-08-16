@@ -350,11 +350,11 @@ func probeHTTP(ctx context.Context, target target, dial func(context.Context, st
 			continue
 		}
 		request.Header.Add(header.Name, header.Value)
-		hasUserAgent = hasUserAgent || strings.EqualFold(header.Name, "User-Server")
+		hasUserAgent = hasUserAgent || strings.EqualFold(header.Name, "User-Agent")
 		hasAccept = hasAccept || strings.EqualFold(header.Name, "Accept")
 	}
 	if !hasUserAgent {
-		request.Header.Set("User-Server", "kube-probe/juneau")
+		request.Header.Set("User-Agent", "kube-probe/juneau")
 	}
 	if !hasAccept {
 		request.Header.Set("Accept", "*/*")
