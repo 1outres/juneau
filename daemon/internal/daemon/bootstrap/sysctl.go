@@ -29,24 +29,15 @@ func ConfigureSysctl() error {
 		return err
 	}
 
-	// Match the rename of cni_host → juneau_node_h (Phase 4b-4).
-	if err := writeSysctl("/proc/sys/net/ipv4/conf/"+JuneauNodeHostIfaceName+"/send_redirects", "0"); err != nil {
-		return fmt.Errorf("failed to set send_redirects on %s: %w", JuneauNodeHostIfaceName, err)
-	}
-
 	// HOST_LOCAL Service forwarding hands a packet to the kernel with
 	// src=PodIP on the Pod's host-side veth, but the reverse route to
 	// PodIP is via juneau_node_h — an asymmetric path that any
 	// reverse-path check (strict or loose) would drop. The kernel
 	// honours max(all/rp_filter, iface/rp_filter), so disabling on
 	// `all` is mandatory; per-Pod veths additionally get the loose
-	// setting via PodAttacher at attach time. juneau_node only needs
-	// accept_local=1 for the reply leg where src=NodeIP=local arrives.
+	// setting via PodAttacher at attach time.
 	if err := ConfigureLooseRPFilter("all"); err != nil {
 		return err
-	}
-	if err := writeSysctl("/proc/sys/net/ipv4/conf/"+JuneauNodeIfaceName+"/accept_local", "1"); err != nil {
-		return fmt.Errorf("set accept_local on %s: %w", JuneauNodeIfaceName, err)
 	}
 
 	ipForward, err := readSysctl("/proc/sys/net/ipv4/ip_forward")
@@ -58,6 +49,25 @@ func ConfigureSysctl() error {
 		zap.S().Warn("IP forwarding is disabled.")
 	}
 
+	return nil
+}
+
+// ConfigureJuneauNodeSysctl writes the per-iface settings of the
+// juneau_node veth pair. It sits with the converger that owns the pair
+// rather than in ConfigureSysctl, because a pair rebuilt while the
+// daemon runs comes back with the kernel defaults.
+//
+// juneau_node needs accept_local=1 for the reply leg of a Service flow,
+// where src=NodeIP arrives on a local address. send_redirects is off on
+// juneau_node_h so the host does not answer overlay traffic with ICMP
+// redirects.
+func ConfigureJuneauNodeSysctl() error {
+	if err := writeSysctl("/proc/sys/net/ipv4/conf/"+JuneauNodeHostIfaceName+"/send_redirects", "0"); err != nil {
+		return fmt.Errorf("set send_redirects on %s: %w", JuneauNodeHostIfaceName, err)
+	}
+	if err := writeSysctl("/proc/sys/net/ipv4/conf/"+JuneauNodeIfaceName+"/accept_local", "1"); err != nil {
+		return fmt.Errorf("set accept_local on %s: %w", JuneauNodeIfaceName, err)
+	}
 	return nil
 }
 
