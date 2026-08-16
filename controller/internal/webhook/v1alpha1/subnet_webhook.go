@@ -117,6 +117,11 @@ func (v *SubnetCustomValidator) ValidateCreate(ctx context.Context, obj runtime.
 		return nil, err
 	}
 	errs = append(errs, transitErrs...)
+	poolErrs, err := validateSubnetEndpointPoolOverlap(ctx, v.Reader, subnet, errPath.Child("cidr"))
+	if err != nil {
+		return nil, err
+	}
+	errs = append(errs, poolErrs...)
 	serviceErrs, err := validateSubnetServiceCIDROverlap(ctx, v.Reader, subnet, v.ServiceCIDR, errPath.Child("cidr"))
 	if err != nil {
 		return nil, err
@@ -293,21 +298,9 @@ func validateSubnetPeeredCIDROverlap(ctx context.Context, c client.Reader, subne
 		return nil, nil
 	}
 
-	var peeringList juneauv1alpha1.VpcPeeringList
-	if err := c.List(ctx, &peeringList); err != nil {
+	peerings, err := listPeeredVpcs(ctx, c, subnet.Spec.Vpc)
+	if err != nil {
 		return nil, err
-	}
-
-	peerings := map[string]string{}
-	for i := range peeringList.Items {
-		peering := &peeringList.Items[i]
-		peer, ok := peering.Spec.PeerOf(subnet.Spec.Vpc)
-		if !ok {
-			continue
-		}
-		if _, seen := peerings[peer]; !seen {
-			peerings[peer] = peering.Name
-		}
 	}
 	if len(peerings) == 0 {
 		return nil, nil
@@ -351,23 +344,10 @@ func validateSubnetTransitGatewayCIDROverlap(ctx context.Context, c client.Reade
 		return nil, nil
 	}
 
-	var attachmentList juneauv1alpha1.TransitGatewayAttachmentList
-	if err := c.List(ctx, &attachmentList); err != nil {
+	reachable, err := listTransitGatewayReachableVpcs(ctx, c, subnet.Spec.Vpc)
+	if err != nil {
 		return nil, err
 	}
-
-	var routeTables []string
-	for i := range attachmentList.Items {
-		if attachmentList.Items[i].Spec.Vpc != subnet.Spec.Vpc {
-			continue
-		}
-		routeTables = append(routeTables, attachmentList.Items[i].Spec.RouteTables()...)
-	}
-	if len(routeTables) == 0 {
-		return nil, nil
-	}
-
-	reachable := transitGatewayReachableVpcs("", subnet.Spec.Vpc, routeTables, attachmentList.Items)
 	if len(reachable) == 0 {
 		return nil, nil
 	}
@@ -397,6 +377,108 @@ func validateSubnetTransitGatewayCIDROverlap(ctx context.Context, c client.Reade
 	}
 
 	return errs, nil
+}
+
+// validateSubnetEndpointPoolOverlap rejects a Subnet whose CIDR overlaps
+// a Vpc endpoint pool. Inside its own Vpc the Subnet would swallow the
+// VIPs, which are reached through the Vpc gateway and have no arp_table
+// entry. Across a peering or a shared TransitGatewayRouteTable the FIB
+// would hold the pool route and this Subnet's route for one prefix.
+func validateSubnetEndpointPoolOverlap(ctx context.Context, c client.Reader, subnet *juneauv1alpha1.Subnet, path *field.Path) (field.ErrorList, error) {
+	_, subnetCIDR, err := net.ParseCIDR(subnet.Spec.CIDR)
+	if err != nil {
+		return nil, nil
+	}
+
+	peerings, err := listPeeredVpcs(ctx, c, subnet.Spec.Vpc)
+	if err != nil {
+		return nil, err
+	}
+	reachable, err := listTransitGatewayReachableVpcs(ctx, c, subnet.Spec.Vpc)
+	if err != nil {
+		return nil, err
+	}
+
+	var vpcList juneauv1alpha1.VpcList
+	if err := c.List(ctx, &vpcList); err != nil {
+		return nil, err
+	}
+
+	var errs field.ErrorList
+	for i := range vpcList.Items {
+		vpc := &vpcList.Items[i]
+
+		var reach string
+		switch {
+		case vpc.Name == subnet.Spec.Vpc:
+			reach = fmt.Sprintf("of its own Vpc %q", vpc.Name)
+		case peerings[vpc.Name] != "":
+			reach = fmt.Sprintf("of Vpc %q, which is peered by VpcPeering %q", vpc.Name, peerings[vpc.Name])
+		case reachable[vpc.Name] != "":
+			reach = fmt.Sprintf("of Vpc %q, which is reachable through TransitGatewayRouteTable %q", vpc.Name, reachable[vpc.Name])
+		default:
+			continue
+		}
+
+		for _, entry := range vpc.Spec.EndpointPool.Cidrs() {
+			_, poolCIDR, err := net.ParseCIDR(entry)
+			if err != nil {
+				continue
+			}
+			if cidrsOverlap(subnetCIDR, poolCIDR) {
+				errs = append(errs, field.Invalid(path, subnet.Spec.CIDR,
+					fmt.Sprintf("overlaps with endpoint pool CIDR %q %s", entry, reach)))
+			}
+		}
+	}
+
+	return errs, nil
+}
+
+// listPeeredVpcs returns the Vpcs peered with vpcName, mapped to the
+// VpcPeering that connects them.
+func listPeeredVpcs(ctx context.Context, c client.Reader, vpcName string) (map[string]string, error) {
+	var peeringList juneauv1alpha1.VpcPeeringList
+	if err := c.List(ctx, &peeringList); err != nil {
+		return nil, err
+	}
+
+	peerings := map[string]string{}
+	for i := range peeringList.Items {
+		peering := &peeringList.Items[i]
+		peer, ok := peering.Spec.PeerOf(vpcName)
+		if !ok {
+			continue
+		}
+		if _, seen := peerings[peer]; !seen {
+			peerings[peer] = peering.Name
+		}
+	}
+
+	return peerings, nil
+}
+
+// listTransitGatewayReachableVpcs returns the Vpcs whose prefixes reach
+// vpcName through a shared TransitGatewayRouteTable, mapped to the route
+// table that carries them.
+func listTransitGatewayReachableVpcs(ctx context.Context, c client.Reader, vpcName string) (map[string]string, error) {
+	var attachmentList juneauv1alpha1.TransitGatewayAttachmentList
+	if err := c.List(ctx, &attachmentList); err != nil {
+		return nil, err
+	}
+
+	var routeTables []string
+	for i := range attachmentList.Items {
+		if attachmentList.Items[i].Spec.Vpc != vpcName {
+			continue
+		}
+		routeTables = append(routeTables, attachmentList.Items[i].Spec.RouteTables()...)
+	}
+	if len(routeTables) == 0 {
+		return nil, nil
+	}
+
+	return transitGatewayReachableVpcs("", vpcName, routeTables, attachmentList.Items), nil
 }
 
 func cidrsOverlap(a, b *net.IPNet) bool {
