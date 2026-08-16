@@ -63,6 +63,7 @@ nav:
     - ElasticIP: resources/elasticip.md
     - ElasticIPAttachment: resources/elasticipattachment.md
     - NATGateway: resources/natgateway.md
+    - VpcEndpoint: resources/vpcendpoint.md
     - ServiceNATAttachment: resources/servicenatattachment.md
     - ServiceLoadBalancer: resources/serviceloadbalancer.md
     - NetworkInterface: resources/networkinterface.md

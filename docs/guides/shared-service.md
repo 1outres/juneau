@@ -12,6 +12,8 @@ Juneauの共有Service機能を使うと、ある Vpc に置いた Service を�
 
 加えて、Service ごとに到達可能な Consumer Vpc を絞り込む whitelist annotation `juneau.loutres.me/shared-service-allowed-consumer-vpcs` も設定できます。
 
+呼び出す側の Vpc に `spec.service.consume: true` を立てたくない場合は、[VpcEndpoint](../resources/vpcendpoint.md)で Service 1 つ分だけ穴を開けることもできます。Service 側の `shared-service` annotation も不要になる代わりに、到達できる先は VpcEndpoint に書いた Service だけになります。
+
 このガイドでは、
 
 1. default Vpc の共有Service に 別の Vpc からアクセス

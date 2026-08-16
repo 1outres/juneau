@@ -35,6 +35,8 @@ spec:
 
 `spec.service` を一切設定していないVpcをServiceの所属先として指定すると、Serviceの作成は拒否されます。詳細は[Vpc](../resources/vpc.md)を参照してください。
 
+Vpc全体にService CIDRへの経路を通したくないときは、[VpcEndpoint](../resources/vpcendpoint.md)を使う手もあります。`spec.service` を設定しないまま、名指しした1つのServiceだけをVpc内のアドレスで受けられます。
+
 ### 2. Subnetを2つ作成
 
 同じVpcに属するSubnetを2つ作成します。backendとclientを別々のSubnetに置くことで、同一Vpc内の異なるSubnet間でServiceが利用できることを確認します。
