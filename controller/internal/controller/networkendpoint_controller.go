@@ -24,11 +24,20 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
+
+// networkEndpointNodeNameIndex indexes NetworkEndpoint by spec.nodeName
+// so a Node change can find the endpoints pinned to that Node.
+const networkEndpointNodeNameIndex = "spec.nodeName"
 
 // NetworkEndpointReconciler reconciles a NetworkEndpoint object
 type NetworkEndpointReconciler struct {
@@ -64,12 +73,7 @@ func (r *NetworkEndpointReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	var address string
-	for _, addr := range node.Status.Addresses {
-		if addr.Type == corev1.NodeInternalIP {
-			address = addr.Address
-		}
-	}
+	address := nodeInternalIP(&node)
 
 	if resource.Status.NodeIP == address {
 		return ctrl.Result{}, nil
@@ -128,9 +132,74 @@ func (r *NetworkEndpointReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	); err != nil {
 		return fmt.Errorf("failed to set up field indexer for NetworkEndpoint.spec.podRef.uid: %w", err)
 	}
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&juneauv1alpha1.NetworkEndpoint{},
+		networkEndpointNodeNameIndex,
+		func(obj client.Object) []string {
+			nwep := obj.(*juneauv1alpha1.NetworkEndpoint)
+			if nwep.Spec.NodeName == "" {
+				return nil
+			}
+			return []string{nwep.Spec.NodeName}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to set up field indexer for NetworkEndpoint.%s: %w", networkEndpointNodeNameIndex, err)
+	}
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&juneauv1alpha1.NetworkEndpoint{}).
+		Watches(
+			&corev1.Node{},
+			handler.EnqueueRequestsFromMapFunc(r.mapNodeToEndpoints),
+			builder.WithPredicates(predicate.Funcs{UpdateFunc: nodeInternalIPChanged}),
+		).
 		Named("networkendpoint").
 		Complete(r)
+}
+
+// mapNodeToEndpoints enqueues every NetworkEndpoint pinned to the
+// changed Node so status.nodeIP follows the Node's underlay IP. Remote
+// daemons use that IP as the VXLAN VTEP, so a stale value silently
+// breaks cross-node traffic.
+func (r *NetworkEndpointReconciler) mapNodeToEndpoints(ctx context.Context, obj client.Object) []reconcile.Request {
+	var list juneauv1alpha1.NetworkEndpointList
+	if err := r.List(ctx, &list, client.MatchingFields{networkEndpointNodeNameIndex: obj.GetName()}); err != nil {
+		log.FromContext(ctx).Error(err, "unable to list NetworkEndpoints for Node", "node", obj.GetName())
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(list.Items))
+	for i := range list.Items {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(&list.Items[i]),
+		})
+	}
+	return requests
+}
+
+// nodeInternalIPChanged keeps the Node watch quiet unless the address
+// we copy has actually moved. kubelet rewrites Node status every few
+// seconds, and without this filter every heartbeat would re-enqueue
+// every NetworkEndpoint in the cluster.
+func nodeInternalIPChanged(e event.UpdateEvent) bool {
+	oldNode, ok := e.ObjectOld.(*corev1.Node)
+	if !ok {
+		return false
+	}
+	newNode, ok := e.ObjectNew.(*corev1.Node)
+	if !ok {
+		return false
+	}
+	return nodeInternalIP(oldNode) != nodeInternalIP(newNode)
+}
+
+// nodeInternalIP returns the Node's InternalIP, or an empty string when
+// it has none yet.
+func nodeInternalIP(node *corev1.Node) string {
+	for _, addr := range node.Status.Addresses {
+		if addr.Type == corev1.NodeInternalIP {
+			return addr.Address
+		}
+	}
+	return ""
 }

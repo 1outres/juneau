@@ -91,6 +91,24 @@ func (r *Runner) watch(informer cache.Informer, keysFunc func(obj any) []string)
 // Enqueue adds a key directly to the work queue. Use for bootstrapping.
 func (r *Runner) Enqueue(key string) { r.queue.Add(key) }
 
+// Resync enqueues key every interval until ctx is cancelled. Use it for
+// reconcilers whose desired state can drift without an informer event,
+// such as one that owns kernel state an operator can change by hand.
+func (r *Runner) Resync(ctx context.Context, interval time.Duration, key string) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				r.queue.Add(key)
+			}
+		}
+	}()
+}
+
 // Start launches `workers` goroutines that process the queue until ctx is
 // cancelled or Stop is called.
 func (r *Runner) Start(ctx context.Context, workers int) {

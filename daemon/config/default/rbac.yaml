@@ -230,19 +230,6 @@ roleRef:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: cni-daemon-allocationclaim-viewer-binding
-subjects:
-  - kind: ServiceAccount
-    name: cni-daemon
-    namespace: kube-system
-roleRef:
-  kind: ClusterRole
-  name: juneau-allocationclaim-viewer-role
-  apiGroup: rbac.authorization.k8s.io
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
   name: cni-daemon-securitygroup-viewer-binding
 subjects:
   - kind: ServiceAccount

@@ -69,14 +69,6 @@ func NewApp() *cli.Command {
 				}},
 			},
 			&cli.StringFlag{
-				Name:  "pod-namespace",
-				Value: "kube-system",
-				Usage: "Namespace where the daemon writes per-Node NetworkEndpoint resources.",
-				Sources: cli.ValueSourceChain{Chain: []cli.ValueSource{
-					cli.EnvVar("POD_NAMESPACE"),
-				}},
-			},
-			&cli.StringFlag{
 				Name: "vxlan-parent-iface",
 			},
 			&cli.StringFlag{
@@ -115,7 +107,6 @@ func NewApp() *cli.Command {
 			probeBindAddress := cmd.String("probe-proxy-bind-address")
 			probeNetNSDir := cmd.String("probe-netns-dir")
 			nodeName := cmd.String("node-name")
-			podNamespace := cmd.String("pod-namespace")
 			vxlanParentIface := cmd.String("vxlan-parent-iface")
 			nodeIngressIfaceName := cmd.String("node-ingress-iface")
 			bpfPinPath := cmd.String("bpf-pin-path")
@@ -164,7 +155,6 @@ func NewApp() *cli.Command {
 					&juneauv1alpha1.ExternalNetworkAttachment{}: {},
 					&juneauv1alpha1.ServiceNATAttachment{}:      {},
 					&juneauv1alpha1.SecurityGroup{}:             {},
-					&juneauv1alpha1.AllocationClaim{}:           {},
 					&juneauv1alpha1.NetworkACL{}:                {},
 					&juneauv1alpha1.TraceSession{}:              {},
 					&juneauv1alpha1.ServiceLoadBalancer{}:       {},
@@ -413,9 +403,10 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("failed to sync cache")
 			}
 
-			juneauNodeIfaceInfo, err := bootstrap.SetupDefaultGatewayIface(ctx, cl, nodeName)
+			juneauNode := bootstrap.NewJuneauNodeConverger(cl, nodeName)
+			juneauNodeIfaceInfo, err := juneauNode.Converge(ctx)
 			if err != nil {
-				return fmt.Errorf("setup default gateway iface: %w", err)
+				return fmt.Errorf("converge juneau_node iface: %w", err)
 			}
 			hostIfaceInfo := &juneauNodeIfaceInfo.HostIfaceInfo
 
@@ -509,14 +500,22 @@ func NewApp() *cli.Command {
 				}
 			}()
 
-			// Publish the per-Node juneau_node NetworkEndpoint so the
-			// data plane reconcilers (arp/fdb/pod-iface/attacher) can
-			// program the maps. Other nodes also pick it up to populate
-			// their fdb (remote) entries pointing at this node's
-			// juneau_node MAC.
-			if err := bootstrap.EnsureJuneauNodeEndpoint(ctx, cl, podNamespace, nodeName, juneauNodeIfaceInfo, "default"); err != nil {
-				return fmt.Errorf("ensure juneau_node NetworkEndpoint: %w", err)
+			// Keep following the endpoint for the rest of the daemon's
+			// life. The controller deletes and recreates the object when
+			// the node's identity changes, and the replacement has no
+			// spec.attachment, so a daemon that converged only at
+			// startup left the data plane reconcilers with nothing to
+			// program. Started after the BPF manager so a rebuilt veth
+			// finds the attacher ready to move its TC programs.
+			juneauNodeRunner := runner.New(juneauNode)
+			if err := juneauNodeRunner.Watch(nwepInfromer, juneauNode.EnqueueKey); err != nil {
+				return fmt.Errorf("watch NWEP (juneau_node): %w", err)
 			}
+			juneauNodeRunner.Start(ctx, 1)
+			juneauNodeRunner.Resync(ctx, bootstrap.JuneauNodeResyncPeriod, runner.SingletonKey)
+			defer func() {
+				_ = juneauNodeRunner.Stop()
+			}()
 
 			probeProxy := probeproxy.NewServer(cl, probeBindAddress, probeNetNSDir)
 			if err := probeProxy.Recover(ctx, nodeName); err != nil {

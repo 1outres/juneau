@@ -2,100 +2,147 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"strings"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// JuneauNodeEndpointName is the deterministic NetworkEndpoint name for
-// the per-node juneau_node pseudo-pod. Same form across daemon restarts
-// so the resource is updated in place rather than re-created.
-func JuneauNodeEndpointName(nodeName string) string {
-	return "juneau-node." + nodeName
-}
-
-// EnsureJuneauNodeEndpoint creates or updates the NetworkEndpoint that
-// represents this node's juneau_node pseudo-pod on the default Subnet.
-// It is the only kind=Node endpoint juneau emits; data plane reconcilers
-// (arp/fdb/pod-iface/attacher) pick it up just like a Pod NWEP.
+// patchJuneauNodeAttachment records the local juneau_node veth on the
+// kind=Node NetworkEndpoint the controller published for this node.
 //
-// Called after SetupDefaultGatewayIface so the veth's ifindex/MAC are
-// known. The resource lives in the daemon's own namespace so it shares
-// RBAC with Pod NWEPs.
-func EnsureJuneauNodeEndpoint(
+// Only spec.attachment is written. The identity fields (kind, nodeName,
+// subnet, address, macAddress) belong to the controller and are
+// immutable per the NetworkEndpoint webhook, so the daemon must never
+// send them. The attachment itself is node-local and changes whenever
+// the veth is re-created, which is why the controller never writes it.
+//
+// The endpoint comes from the caller, so one convergence pass reads the
+// object once and both halves of it work from the same read.
+//
+// That read comes from the informer cache, so the controller can have
+// moved the object on before this write lands. It does exactly that on
+// an identity change, which is when the daemon writes here in the first
+// place, so a conflict is expected rather than a fault: retry from the
+// version that won instead of reporting it.
+func patchJuneauNodeAttachment(
 	ctx context.Context,
 	cl client.Client,
-	namespace string,
-	nodeName string,
+	endpoint *juneauv1alpha1.NetworkEndpoint,
 	info *JuneauNodeIfaceInfo,
-	subnetName string,
 ) error {
 	if info == nil {
 		return fmt.Errorf("juneau_node iface info is nil")
 	}
 
-	var subnet juneauv1alpha1.Subnet
-	if err := cl.Get(ctx, client.ObjectKey{Name: subnetName}, &subnet); err != nil {
-		return fmt.Errorf("get Subnet %q: %w", subnetName, err)
+	desired := &juneauv1alpha1.NetworkEndpointAttachment{
+		Ifindex:        info.Ifindex,
+		HostMACAddress: info.HostSideMAC.String(),
 	}
-	_, ipnet, err := net.ParseCIDR(subnet.Spec.CIDR)
-	if err != nil {
-		return fmt.Errorf("parse subnet CIDR %q: %w", subnet.Spec.CIDR, err)
-	}
-	address := (&net.IPNet{IP: info.AssignedIP, Mask: ipnet.Mask}).String()
+	key := client.ObjectKeyFromObject(endpoint)
+	current := endpoint.DeepCopy()
 
-	desired := juneauv1alpha1.NetworkEndpointSpec{
-		Kind:       juneauv1alpha1.EndpointKindNode,
-		NodeName:   nodeName,
-		Subnet:     subnetName,
-		Address:    address,
-		MACAddress: info.HostSideMAC.String(),
-		Attachment: &juneauv1alpha1.NetworkEndpointAttachment{
-			Ifindex:        info.Ifindex,
-			HostMACAddress: info.HostSideMAC.String(),
-		},
-	}
-
-	name := JuneauNodeEndpointName(nodeName)
-	current := &juneauv1alpha1.NetworkEndpoint{}
-	err = cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, current)
-	if apierrors.IsNotFound(err) {
-		obj := &juneauv1alpha1.NetworkEndpoint{
-			ObjectMeta: metav1.ObjectMeta{
-				Namespace: namespace,
-				Name:      name,
-			},
-			Spec: desired,
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if current.Spec.Attachment != nil && *current.Spec.Attachment == *desired {
+			return nil
 		}
-		return cl.Create(ctx, obj)
+
+		current.Spec.Attachment = desired
+		err := cl.Update(ctx, current)
+		if apierrors.IsConflict(err) {
+			// Re-read so the next attempt carries a resourceVersion the
+			// server still accepts.
+			fresh := &juneauv1alpha1.NetworkEndpoint{}
+			if getErr := cl.Get(ctx, key, fresh); getErr != nil {
+				return getErr
+			}
+			current = fresh
+		}
+		return err
+	})
+}
+
+// ErrJuneauNodeEndpointNotFound reports that the controller has not
+// published this node's kind=Node NetworkEndpoint.
+//
+// It means different things to the two callers. At startup it is fatal:
+// the daemon has no identity to realize, so it exits and the DaemonSet
+// restart is the retry. On the work queue it is a normal gap, because
+// the controller deletes and recreates the object whenever the node's
+// identity changes.
+var ErrJuneauNodeEndpointNotFound = errors.New("no kind=Node NetworkEndpoint")
+
+// FindJuneauNodeEndpoint returns the kind=Node NetworkEndpoint the
+// controller published for this node.
+//
+// The lookup is by identity rather than by namespace and name because
+// the controller and the daemon are deployed in different namespaces
+// and neither knows the other's. A node has exactly one kind=Node
+// endpoint, so the pair (kind, nodeName) already names it; more than
+// one match means a leftover from an older layout is still around, and
+// programming both would give the node two MACs on the overlay.
+func FindJuneauNodeEndpoint(ctx context.Context, cl client.Client, nodeName string) (*juneauv1alpha1.NetworkEndpoint, error) {
+	var list juneauv1alpha1.NetworkEndpointList
+	if err := cl.List(ctx, &list); err != nil {
+		return nil, fmt.Errorf("list NetworkEndpoints: %w", err)
 	}
+
+	var found []*juneauv1alpha1.NetworkEndpoint
+	for i := range list.Items {
+		endpoint := &list.Items[i]
+		if endpoint.Spec.Kind != juneauv1alpha1.EndpointKindNode {
+			continue
+		}
+		if endpoint.Spec.NodeName != nodeName {
+			continue
+		}
+		found = append(found, endpoint)
+	}
+
+	switch len(found) {
+	case 0:
+		return nil, fmt.Errorf("node %q: %w", nodeName, ErrJuneauNodeEndpointNotFound)
+	case 1:
+		return found[0], nil
+	default:
+		names := make([]string, 0, len(found))
+		for _, endpoint := range found {
+			names = append(names, endpoint.Namespace+"/"+endpoint.Name)
+		}
+		return nil, fmt.Errorf("node %q has %d kind=Node NetworkEndpoints (%s), want exactly one", nodeName, len(found), strings.Join(names, ", "))
+	}
+}
+
+// parseJuneauNodeIdentity turns the address and MAC the controller
+// published on the kind=Node NetworkEndpoint into the values the veth
+// setup needs. Anything missing or unparseable is an error: the daemon
+// has no business inventing an identity of its own.
+func parseJuneauNodeIdentity(endpoint *juneauv1alpha1.NetworkEndpoint) (*JuneauNodeIdentity, error) {
+	ref := endpoint.Namespace + "/" + endpoint.Name
+
+	if endpoint.Spec.Address == "" {
+		return nil, fmt.Errorf("NetworkEndpoint %s has no spec.address", ref)
+	}
+	ip, ipnet, err := net.ParseCIDR(endpoint.Spec.Address)
 	if err != nil {
-		return fmt.Errorf("get NetworkEndpoint %s/%s: %w", namespace, name, err)
+		return nil, fmt.Errorf("parse NetworkEndpoint %s spec.address %q: %w", ref, endpoint.Spec.Address, err)
 	}
 
-	// Identity fields (kind, nodeName, subnet, address, macAddress) are
-	// immutable per the NWEP webhook. Only the attachment may change
-	// across daemon restarts (ifindex differs after a reboot). If
-	// anything else drifted, surface the conflict rather than papering
-	// over it.
-	if current.Spec.Kind != desired.Kind ||
-		current.Spec.NodeName != desired.NodeName ||
-		current.Spec.Subnet != desired.Subnet ||
-		current.Spec.Address != desired.Address ||
-		current.Spec.MACAddress != desired.MACAddress {
-		return fmt.Errorf("juneau_node NetworkEndpoint %s/%s identity drifted; manual cleanup required (existing=%+v desired=%+v)",
-			namespace, name, current.Spec, desired)
+	if endpoint.Spec.MACAddress == "" {
+		return nil, fmt.Errorf("NetworkEndpoint %s has no spec.macAddress", ref)
+	}
+	mac, err := net.ParseMAC(endpoint.Spec.MACAddress)
+	if err != nil {
+		return nil, fmt.Errorf("parse NetworkEndpoint %s spec.macAddress %q: %w", ref, endpoint.Spec.MACAddress, err)
 	}
 
-	if current.Spec.Attachment != nil &&
-		current.Spec.Attachment.Ifindex == desired.Attachment.Ifindex &&
-		current.Spec.Attachment.HostMACAddress == desired.Attachment.HostMACAddress {
-		return nil
-	}
-	current.Spec.Attachment = desired.Attachment
-	return cl.Update(ctx, current)
+	return &JuneauNodeIdentity{
+		Address: &net.IPNet{IP: ip, Mask: ipnet.Mask},
+		MAC:     mac,
+	}, nil
 }

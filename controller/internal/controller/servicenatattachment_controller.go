@@ -161,9 +161,10 @@ func (r *ServiceNATAttachmentReconciler) Reconcile(ctx context.Context, req ctrl
 		return ctrl.Result{}, nil
 	}
 
-	mac, err := serviceNATMAC(address)
+	mac, err := endpointMAC(net.ParseIP(address))
 	if err != nil {
-		if updateErr := r.updateErrorStatus(ctx, &resource, subnetName, serviceNATAttachmentReasonReconcileFailed, err.Error()); updateErr != nil {
+		message := fmt.Errorf("assigned address %q: %w", address, err).Error()
+		if updateErr := r.updateErrorStatus(ctx, &resource, subnetName, serviceNATAttachmentReasonReconcileFailed, message); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
 		return ctrl.Result{}, nil
@@ -424,20 +425,4 @@ func serviceNATAttachmentName(nodeName, vpcName string) string {
 // name for the SNAT endpoint backing the given attachment.
 func serviceNATEndpointName(attachmentName string) string {
 	return attachmentName + serviceNATEndpointSuffix
-}
-
-// serviceNATMAC derives a stable MAC for the per-Node SNAT IP. The MAC
-// is in the IPv4-multicast LAA range (02:xx:xx:xx:xx:xx with the lower
-// 4 octets taken from the IP), the same convention used elsewhere in
-// the codebase for synthetic gateway / endpoint MACs.
-func serviceNATMAC(address string) (string, error) {
-	ip := net.ParseIP(address)
-	if ip == nil {
-		return "", fmt.Errorf("invalid address %q", address)
-	}
-	ip4 := ip.To4()
-	if ip4 == nil {
-		return "", fmt.Errorf("address %q is not IPv4", address)
-	}
-	return fmt.Sprintf("02:00:%02x:%02x:%02x:%02x", ip4[0], ip4[1], ip4[2], ip4[3]), nil
 }
