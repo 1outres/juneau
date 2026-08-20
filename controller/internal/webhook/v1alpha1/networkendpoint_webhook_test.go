@@ -101,6 +101,7 @@ var _ = Describe("NetworkEndpoint webhook", func() {
 		networkEndpoint.Spec.Attachment = &juneauv1alpha1.NetworkEndpointAttachment{
 			Ifindex:        1,
 			HostMACAddress: "02:42:ac:10:00:11",
+			ContainerID:    "container-s1-1",
 		}
 		Expect(webhookK8sClient.Create(context.Background(), networkEndpoint)).To(Succeed())
 
@@ -108,7 +109,26 @@ var _ = Describe("NetworkEndpoint webhook", func() {
 		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKeyFromObject(networkEndpoint), &current)).To(Succeed())
 		current.Spec.Attachment.Ifindex = 99
 		current.Spec.Attachment.HostMACAddress = "02:42:ac:10:00:99"
+		current.Spec.Attachment.ContainerID = "container-sandbox-2"
+		current.Spec.MACAddress = "02:42:ac:10:00:99"
 		Expect(webhookK8sClient.Update(context.Background(), &current)).To(Succeed())
+	})
+
+	It("rejects Pod MAC mutation within the same attachment generation", func() {
+		networkEndpoint := newValidNetworkEndpoint(webhookUniqueTestName("networkendpoint"))
+		networkEndpoint.Spec.Attachment = &juneauv1alpha1.NetworkEndpointAttachment{
+			Ifindex:        1,
+			HostMACAddress: "02:42:ac:10:00:11",
+			ContainerID:    "container-sandbox-1",
+		}
+		Expect(webhookK8sClient.Create(context.Background(), networkEndpoint)).To(Succeed())
+
+		var current juneauv1alpha1.NetworkEndpoint
+		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKeyFromObject(networkEndpoint), &current)).To(Succeed())
+		current.Spec.MACAddress = "02:42:ac:10:00:99"
+		err := webhookK8sClient.Update(context.Background(), &current)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.macAddress is immutable"))
 	})
 })
 

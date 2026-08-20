@@ -79,10 +79,10 @@ func TestExecuteHTTPSendsProbeUserAgent(t *testing.T) {
 func TestPublishRejectsCollisionWithoutDroppingExistingTargets(t *testing.T) {
 	proxy := NewServer(nil, "", t.TempDir())
 	first := probeconfig.Configs{"shared": {Type: "tcp", Port: 80}}
-	if err := proxy.publish("first", "/first", "10.0.0.1", first); err != nil {
+	if err := proxy.publish("first", "", "/first", "10.0.0.1", first); err != nil {
 		t.Fatal(err)
 	}
-	if err := proxy.publish("second", "/second", "10.0.0.2", probeconfig.Configs{
+	if err := proxy.publish("second", "", "/second", "10.0.0.2", probeconfig.Configs{
 		"other":  {Type: "tcp", Port: 80},
 		"shared": {Type: "tcp", Port: 81},
 	}); err == nil {
@@ -93,6 +93,34 @@ func TestPublishRejectsCollisionWithoutDroppingExistingTargets(t *testing.T) {
 	}
 	if _, exists := proxy.targets["other"]; exists {
 		t.Fatal("partially published a colliding Pod")
+	}
+}
+
+func TestUnregisterPodIgnoresStaleContainerGeneration(t *testing.T) {
+	proxy := NewServer(nil, "", t.TempDir())
+	configs := probeconfig.Configs{"ready": {Type: "tcp", Port: 80}}
+	if err := proxy.publish("pod-uid", "container-s2", "/pinned/netns", "10.0.0.1", configs); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := proxy.UnregisterPod("pod-uid", "container-s1"); err != nil {
+		t.Fatalf("stale unregister: %v", err)
+	}
+	if got := proxy.containerIDs["pod-uid"]; got != "container-s2" {
+		t.Fatalf("live generation changed to %q", got)
+	}
+	if _, exists := proxy.targets["ready"]; !exists {
+		t.Fatal("stale unregister removed the live probe target")
+	}
+
+	// State is removed before the best-effort namespace unpin, so verify the
+	// matching generation is released even on an unprivileged test host.
+	_ = proxy.UnregisterPod("pod-uid", "container-s2")
+	if _, exists := proxy.containerIDs["pod-uid"]; exists {
+		t.Fatal("matching unregister retained the container generation")
+	}
+	if _, exists := proxy.targets["ready"]; exists {
+		t.Fatal("matching unregister retained the probe target")
 	}
 }
 

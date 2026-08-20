@@ -43,8 +43,8 @@ type CNIServer struct {
 }
 
 type ProbeRegistrar interface {
-	RegisterPod(ctx context.Context, namespace, name, uid, netnsPath, address string) error
-	UnregisterPod(uid string) error
+	RegisterPod(ctx context.Context, namespace, name, uid, containerID, netnsPath, address string) error
+	UnregisterPod(uid, containerID string) error
 }
 
 func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb.CNIResponse, retErr error) {
@@ -270,12 +270,13 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 			Attachment: &juneauv1alpha1.NetworkEndpointAttachment{
 				Ifindex:        vethHost.Index,
 				HostMACAddress: hostHWAddr.String(),
+				ContainerID:    req.ContainerId,
 			},
 		},
 		Status: juneauv1alpha1.NetworkEndpointStatus{},
 	}
 
-	createdByUs, err := c.createNetworkEndpoint(ctx, nwep, podUID)
+	createdByUs, err := c.upsertNetworkEndpoint(ctx, nwep, podUID)
 	if err != nil {
 		zap.L().Error("failed to create NetworkEndpoint resource", zap.Error(err))
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to create NetworkEndpoint resource", err.Error())
@@ -318,10 +319,10 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to serialize CNI result", err.Error())
 	}
 	if c.probeRegistrar != nil && req.Ifname == "eth0" {
-		if err := c.probeRegistrar.RegisterPod(ctx, podNamespace, podName, podUID, req.Netns, nwiface.Status.Address); err != nil {
+		if err := c.probeRegistrar.RegisterPod(ctx, podNamespace, podName, podUID, req.ContainerId, req.Netns, nwiface.Status.Address); err != nil {
 			return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to register Pod probes", err.Error())
 		}
-		cleanups = append(cleanups, func() { _ = c.probeRegistrar.UnregisterPod(podUID) })
+		cleanups = append(cleanups, func() { _ = c.probeRegistrar.UnregisterPod(podUID, req.ContainerId) })
 	}
 
 	return &cnipb.CNIResponse{
@@ -432,11 +433,6 @@ func (c *CNIServer) Del(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.Em
 	podUID := req.Args[PodUIDKey]
 
 	zap.S().Infof("CNI DEL request for pod %s/%s ifname=%s", podNamespace, podName, req.Ifname)
-	if c.probeRegistrar != nil && req.Ifname == "eth0" {
-		if err := c.probeRegistrar.UnregisterPod(podUID); err != nil {
-			zap.L().Warn("failed to unregister Pod probes", zap.Error(err))
-		}
-	}
 
 	vethHostName := c.vethHostName(req.Ifname, req.ContainerId)
 
@@ -462,12 +458,43 @@ func (c *CNIServer) Del(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.Em
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to list NetworkEndpoint resources", err.Error())
 	}
 
+	// Only tear down the attachment (NetworkEndpoint and its probes) when
+	// this DEL is for the generation recorded in the attachment. A stale
+	// DEL from an older sandbox (same Pod UID/name/ifname, different CNI
+	// container ID) must not delete the live endpoint. Attachments created
+	// before this generation was recorded have an empty ContainerID;
+	// treat those as legacy and still honor DEL for compatibility.
+	matchesGeneration := false
 	for _, nwep := range nwepList.Items {
+		attachment := nwep.Spec.Attachment
+		if attachment == nil || attachment.ContainerID == "" || attachment.ContainerID == req.ContainerId {
+			matchesGeneration = true
+		}
+	}
+	if !matchesGeneration && len(nwepList.Items) > 0 {
+		zap.S().Debugf("CNI DEL for pod %s/%s ifname=%s ignored: attachment generation %q != container %q",
+			podNamespace, podName, req.Ifname, nwepList.Items[0].Spec.Attachment.ContainerID, req.ContainerId)
+		return &emptypb.Empty{}, nil
+	}
+
+	for _, nwep := range nwepList.Items {
+		attachment := nwep.Spec.Attachment
+		if attachment != nil && attachment.ContainerID != "" && attachment.ContainerID != req.ContainerId {
+			continue
+		}
 		if err := c.client.Delete(ctx, &nwep); err != nil {
 			zap.L().Error("failed to delete NetworkEndpoint resource", zap.Error(err))
 		}
 	}
 
+	// Unregister Pod probes only for the generation being torn down. The
+	// stale-DEL guard above already ensures this DEL matches the live
+	// attachment, so the probe generation is safe to release.
+	if c.probeRegistrar != nil && req.Ifname == "eth0" {
+		if err := c.probeRegistrar.UnregisterPod(podUID, req.ContainerId); err != nil {
+			zap.L().Warn("failed to unregister Pod probes", zap.Error(err))
+		}
+	}
 	return &emptypb.Empty{}, nil
 }
 
@@ -526,15 +553,18 @@ func (c *CNIServer) createVethPair(veth *netlink.Veth) error {
 	return netlink.LinkAdd(veth)
 }
 
-// createNetworkEndpoint creates the NetworkEndpoint resource. If a NWEP
-// with the same key already exists (e.g. ADD retried after a crash), it is
-// reused when the pod UID matches — which is the signal that the existing
-// record corresponds to the same pod instance. A UID mismatch indicates a
-// stale record for a different pod and is reported as a hard error.
+// upsertNetworkEndpoint creates the NetworkEndpoint resource, or when a
+// record with the same key already exists (e.g. ADD retried after a crash
+// or a sandbox recreation with the same Pod UID) refreshes its attachment
+// generation in place. Identity fields (kind, nodeName, subnet, address,
+// podRef) are immutable and describe who the endpoint is. MACAddress and
+// Attachment (ifindex, host MAC, CNI container ID) belong to the sandbox
+// generation and are refreshed together. A UID mismatch indicates a stale
+// record for a different pod and is reported as a hard error.
 //
 // Returns createdByUs=true only when this call actually inserted the
 // resource, so the caller knows whether to register a rollback cleanup.
-func (c *CNIServer) createNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha1.NetworkEndpoint, podUID string) (bool, error) {
+func (c *CNIServer) upsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha1.NetworkEndpoint, podUID string) (bool, error) {
 	err := c.client.Create(ctx, nwep)
 	if err == nil {
 		return true, nil
@@ -556,7 +586,13 @@ func (c *CNIServer) createNetworkEndpoint(ctx context.Context, nwep *juneauv1alp
 			existing.Namespace, existing.Name, existingUID, podUID)
 	}
 
-	zap.S().Infof("reusing existing NetworkEndpoint %s/%s for pod UID %s", existing.Namespace, existing.Name, podUID)
+	// Same pod instance: refresh the attachment generation (pod MAC,
+	// ifindex, host MAC, CNI container ID) to match the new sandbox.
+	existing.Spec.MACAddress = nwep.Spec.MACAddress
+	existing.Spec.Attachment = nwep.Spec.Attachment
+	if updErr := c.client.Update(ctx, existing); updErr != nil {
+		return false, fmt.Errorf("update existing NetworkEndpoint %s/%s attachment: %w", existing.Namespace, existing.Name, updErr)
+	}
 	*nwep = *existing
 	return false, nil
 }
