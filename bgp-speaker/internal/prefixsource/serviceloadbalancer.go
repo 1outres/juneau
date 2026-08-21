@@ -102,13 +102,13 @@ func (ServiceLoadBalancerSource) Build(ctx context.Context, in Input) (Result, e
 			continue
 		}
 		if !netRes.bgp {
-			// Not an error: ARP-only networks just don't produce BGP
-			// advertisements. Surface a soft note so kubectl-juneau
-			// users can correlate "VIP allocated but not advertised."
+			// Not an error: ARP-mode networks announce the VIP with an
+			// ARPAdvertisement instead. Surface a soft note so
+			// kubectl-juneau users can see why bird has no route for it.
 			errs = append(errs, nodestate.ResourceError{
 				ResourceKind: "ServiceLoadBalancer",
 				ResourceName: slb.Namespace + "/" + slb.Name,
-				Message:      fmt.Sprintf("ExternalNetwork %q type is not bgp; skipping advertisement", netName),
+				Message:      fmt.Sprintf("ExternalNetwork %q is ARP-mode; the VIP is announced via ARPAdvertisement", netName),
 			})
 			continue
 		}

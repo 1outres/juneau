@@ -118,6 +118,10 @@ func TestServiceLoadBalancerSource_SkipsARPExternalNetworkWithSoftError(t *testi
 	if res.Errors[0].ResourceKind != "ServiceLoadBalancer" {
 		t.Errorf("Errors[0].ResourceKind: %s", res.Errors[0].ResourceKind)
 	}
+	const wantMessage = `ExternalNetwork "public-arp" is ARP-mode; the VIP is announced via ARPAdvertisement`
+	if res.Errors[0].Message != wantMessage {
+		t.Errorf("Errors[0].Message = %q, want %q", res.Errors[0].Message, wantMessage)
+	}
 }
 
 func TestServiceLoadBalancerSource_RecordsErrorOnMissingExternalNetwork(t *testing.T) {
