@@ -49,6 +49,7 @@ rules:
   - allocationclaims
   - allocationleases
   - allocationpools
+  - arpadvertisements
   - bgpadvertisements
   - bgppeers
   - elasticipattachments
@@ -85,6 +86,7 @@ rules:
   - allocationclaims/finalizers
   - allocationleases/finalizers
   - allocationpools/finalizers
+  - arpadvertisements/finalizers
   - bgpadvertisements/finalizers
   - bgppeers/finalizers
   - elasticipattachments/finalizers
@@ -115,6 +117,7 @@ rules:
   - allocationclaims/status
   - allocationleases/status
   - allocationpools/status
+  - arpadvertisements/status
   - bgpadvertisements/status
   - bgppeers/status
   - elasticipattachments/status

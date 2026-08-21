@@ -29,6 +29,7 @@ resources:
 - bases/juneau.loutres.me_transitgateways.yaml
 - bases/juneau.loutres.me_transitgatewayroutetables.yaml
 - bases/juneau.loutres.me_transitgatewayattachments.yaml
+- bases/juneau.loutres.me_arpadvertisements.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
