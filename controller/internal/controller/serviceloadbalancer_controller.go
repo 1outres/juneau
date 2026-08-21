@@ -89,6 +89,7 @@ type ServiceLoadBalancerReconciler struct {
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=externalnetworks,verbs=get;list;watch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=addresspools,verbs=get;list;watch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=allocationclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=arpadvertisements,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=services/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get;list;watch
@@ -134,6 +135,10 @@ func (r *ServiceLoadBalancerReconciler) handleDeletion(ctx context.Context, reso
 		return nil
 	}
 
+	if err := deleteARPAdvertisement(ctx, r.Client, serviceLoadBalancerAdvertisementName(resource.Namespace, resource.Name)); err != nil {
+		return err
+	}
+
 	claimName := serviceLoadBalancerClaimName(resource)
 	var claim juneauv1alpha1.AllocationClaim
 	switch err := r.Get(ctx, client.ObjectKey{Name: claimName}, &claim); {
@@ -168,7 +173,7 @@ func (r *ServiceLoadBalancerReconciler) reconcileNormal(ctx context.Context, res
 
 	desired := buildDesiredStatus(resource, svc, endpointAgg)
 
-	poolNames, err := r.resolvePoolRefs(ctx, resource)
+	resolved, err := r.resolvePoolRefs(ctx, resource)
 	if err != nil {
 		var reconcileErr *serviceLoadBalancerReconcileError
 		if stderrors.As(err, &reconcileErr) {
@@ -192,10 +197,16 @@ func (r *ServiceLoadBalancerReconciler) reconcileNormal(ctx context.Context, res
 		return ctrl.Result{}, err
 	}
 
-	address, addressPool, requeue, err := r.ensureClaim(ctx, resource, poolNames)
+	address, addressPool, requeue, err := r.ensureClaim(ctx, resource, resolved.pools)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+
+	announcingNode, err := r.reconcileARPAdvertisement(ctx, resource, &resolved.externalNetwork, address, desired.AdvertisingNodes)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	desired.ArpAnnouncingNode = announcingNode
 
 	meta.SetStatusCondition(&desired.Conditions, metav1.Condition{
 		Type:               juneauv1alpha1.ServiceLoadBalancerConditionAccepted,
@@ -319,11 +330,21 @@ func (r *ServiceLoadBalancerReconciler) fetchParentService(ctx context.Context, 
 	return &svc, nil
 }
 
+// serviceLoadBalancerPools is the address space behind the
+// referenced ExternalNetwork, resolved once per reconcile: the
+// network itself, so the advertisement can name it, and the pools a
+// claim should target.
+type serviceLoadBalancerPools struct {
+	externalNetwork juneauv1alpha1.ExternalNetwork
+	pools           []poolRef
+}
+
 // resolvePoolRefs walks ExternalNetwork → AddressPools and returns
-// the AllocationPool names a claim should target. Only BGP-mode
-// AddressPools are eligible at this phase; ARP-mode pools are
-// reserved for future work.
-func (r *ServiceLoadBalancerReconciler) resolvePoolRefs(ctx context.Context, resource *juneauv1alpha1.ServiceLoadBalancer) ([]poolRef, error) {
+// the AllocationPool names a claim should target. Every pool must
+// advertise in the mode the ExternalNetwork type asks for, so the VIP
+// reaches the external network through the path the ExternalNetwork
+// describes.
+func (r *ServiceLoadBalancerReconciler) resolvePoolRefs(ctx context.Context, resource *juneauv1alpha1.ServiceLoadBalancer) (*serviceLoadBalancerPools, error) {
 	if strings.TrimSpace(resource.Spec.ExternalNetwork) == "" {
 		return nil, &serviceLoadBalancerReconcileError{
 			reason:  juneauv1alpha1.ServiceLoadBalancerReasonInvalidConfig,
@@ -349,7 +370,18 @@ func (r *ServiceLoadBalancerReconciler) resolvePoolRefs(ctx context.Context, res
 		}
 	}
 
-	pools := make([]poolRef, 0, len(externalNetwork.Spec.AddressPools))
+	advertiseMode, err := externalNetworkAdvertiseMode(externalNetwork.Spec.Type)
+	if err != nil {
+		return nil, &serviceLoadBalancerReconcileError{
+			reason:  juneauv1alpha1.ServiceLoadBalancerReasonExternalNetwork,
+			message: fmt.Sprintf("ExternalNetwork %q: %v", externalNetwork.Name, err),
+		}
+	}
+
+	resolved := &serviceLoadBalancerPools{
+		externalNetwork: externalNetwork,
+		pools:           make([]poolRef, 0, len(externalNetwork.Spec.AddressPools)),
+	}
 	for _, raw := range externalNetwork.Spec.AddressPools {
 		name := strings.TrimSpace(raw)
 		if name == "" {
@@ -367,27 +399,30 @@ func (r *ServiceLoadBalancerReconciler) resolvePoolRefs(ctx context.Context, res
 			return nil, err
 		}
 
-		if addressPool.Spec.AdvertiseMode != juneauv1alpha1.AddressPoolAdvertiseModeBGP {
+		if addressPool.Spec.AdvertiseMode != advertiseMode {
 			return nil, &serviceLoadBalancerReconcileError{
-				reason:  juneauv1alpha1.ServiceLoadBalancerReasonExternalNetwork,
-				message: fmt.Sprintf("AddressPool %q advertiseMode must be bgp", addressPool.Name),
+				reason: juneauv1alpha1.ServiceLoadBalancerReasonExternalNetwork,
+				message: fmt.Sprintf(
+					"AddressPool %q advertiseMode must be %s to match ExternalNetwork %q of type %s",
+					addressPool.Name, advertiseMode, externalNetwork.Name, externalNetwork.Spec.Type,
+				),
 			}
 		}
 
-		pools = append(pools, poolRef{
+		resolved.pools = append(resolved.pools, poolRef{
 			AddressPool:    addressPool.Name,
 			AllocationPool: AddressPoolAllocationPoolName(addressPool.Name),
 		})
 	}
 
-	if len(pools) == 0 {
+	if len(resolved.pools) == 0 {
 		return nil, &serviceLoadBalancerReconcileError{
 			reason:  juneauv1alpha1.ServiceLoadBalancerReasonExternalNetwork,
 			message: fmt.Sprintf("ExternalNetwork %q resolves to no usable AddressPools", externalNetwork.Name),
 		}
 	}
 
-	return pools, nil
+	return resolved, nil
 }
 
 // poolRef pairs an AddressPool name with its derived AllocationPool
@@ -491,6 +526,7 @@ func buildDesiredStatus(resource *juneauv1alpha1.ServiceLoadBalancer, svc *corev
 		AddressPool:         resource.Status.AddressPool,
 		Ports:               portsFromServiceWithEndpoints(svc, agg),
 		AdvertisingNodes:    advertising,
+		ArpAnnouncingNode:   resource.Status.ArpAnnouncingNode,
 		BackendSummary:      summariseBackends(agg),
 		AllocationClaimName: resource.Status.AllocationClaimName,
 		Conditions:          append([]metav1.Condition(nil), resource.Status.Conditions...),
@@ -550,6 +586,7 @@ func (r *ServiceLoadBalancerReconciler) commitErrorStatus(ctx context.Context, r
 		AddressPool:         resource.Status.AddressPool,
 		Ports:               resource.Status.Ports,
 		AdvertisingNodes:    append([]string(nil), resource.Status.AdvertisingNodes...),
+		ArpAnnouncingNode:   resource.Status.ArpAnnouncingNode,
 		BackendSummary:      resource.Status.BackendSummary,
 		AllocationClaimName: resource.Status.AllocationClaimName,
 		Conditions:          append([]metav1.Condition(nil), resource.Status.Conditions...),

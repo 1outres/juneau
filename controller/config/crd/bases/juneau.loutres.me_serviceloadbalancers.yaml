@@ -32,6 +32,9 @@ spec:
     - jsonPath: .status.backendSummary.localReadyNodes
       name: AdvertisingNodes
       type: integer
+    - jsonPath: .status.arpAnnouncingNode
+      name: ARPNode
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Allocated")].status
       name: Allocated
       type: string
@@ -135,6 +138,14 @@ spec:
                   AllocationClaimName names the AllocationClaim that owns the VIP
                   allocation. Recorded so that finalization and observability can
                   follow the claim without having to re-derive the name.
+                type: string
+              arpAnnouncingNode:
+                description: |-
+                  ArpAnnouncingNode mirrors the node the ARPAdvertisement names when
+                  the VIP lives on an arp ExternalNetwork. It is empty on a bgp
+                  ExternalNetwork and while no node advertises the VIP. The
+                  ARPAdvertisement stays authoritative; this field only puts the node
+                  next to the rest of the load balancer state.
                 type: string
               backendSummary:
                 description: |-

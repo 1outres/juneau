@@ -216,6 +216,14 @@ type ServiceLoadBalancerStatus struct {
 	// +listType=set
 	AdvertisingNodes []string `json:"advertisingNodes,omitempty"`
 
+	// ArpAnnouncingNode mirrors the node the ARPAdvertisement names when
+	// the VIP lives on an arp ExternalNetwork. It is empty on a bgp
+	// ExternalNetwork and while no node advertises the VIP. The
+	// ARPAdvertisement stays authoritative; this field only puts the node
+	// next to the rest of the load balancer state.
+	// +optional
+	ArpAnnouncingNode string `json:"arpAnnouncingNode,omitempty"`
+
 	// BackendSummary aggregates endpoint-level fleet health for
 	// dashboards.
 	// +optional
@@ -243,6 +251,7 @@ type ServiceLoadBalancerStatus struct {
 // +kubebuilder:printcolumn:name="VIP",type="string",JSONPath=".status.vip"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="AdvertisingNodes",type="integer",JSONPath=".status.backendSummary.localReadyNodes"
+// +kubebuilder:printcolumn:name="ARPNode",type="string",JSONPath=".status.arpAnnouncingNode"
 // +kubebuilder:printcolumn:name="Allocated",type="string",JSONPath=".status.conditions[?(@.type==\"Allocated\")].status"
 // +kubebuilder:printcolumn:name="Available",type="string",JSONPath=".status.conditions[?(@.type==\"Available\")].status"
 
