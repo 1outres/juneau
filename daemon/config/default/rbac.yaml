@@ -191,6 +191,19 @@ roleRef:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
+  name: cni-daemon-arpadvertisement-viewer-binding
+subjects:
+  - kind: ServiceAccount
+    name: cni-daemon
+    namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: juneau-arpadvertisement-viewer-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
   name: cni-daemon-natgateway-viewer-binding
 subjects:
   - kind: ServiceAccount
@@ -199,6 +212,19 @@ subjects:
 roleRef:
   kind: ClusterRole
   name: juneau-natgateway-viewer-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cni-daemon-externalnetwork-viewer-binding
+subjects:
+  - kind: ServiceAccount
+    name: cni-daemon
+    namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: juneau-externalnetwork-viewer-role
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: rbac.authorization.k8s.io/v1

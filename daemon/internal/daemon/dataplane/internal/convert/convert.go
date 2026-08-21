@@ -27,6 +27,14 @@ func IPv4ToUint32(ip net.IP) (uint32, error) {
 	return binary.BigEndian.Uint32(ip4), nil
 }
 
+// Uint32ToIPv4 is the inverse of IPv4ToUint32. Use it to render a BPF
+// map field back as a readable address.
+func Uint32ToIPv4(value uint32) net.IP {
+	ip := make(net.IP, net.IPv4len)
+	binary.BigEndian.PutUint32(ip, value)
+	return ip
+}
+
 // IPv4ToBPFNetworkOrder encodes an IPv4 address as a uint32 whose
 // memory representation, on a little-endian host, is network byte
 // order. Use this for any BPF map field declared as __be32 — direct

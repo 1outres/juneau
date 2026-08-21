@@ -43,12 +43,14 @@ type Manager struct {
 	eipaInformer                      cache.Informer
 	addressPoolInformer               cache.Informer
 	bgpAdvertisementInformer          cache.Informer
+	arpAdvertisementInformer          cache.Informer
 	subnetInformer                    cache.Informer
 	rtInformer                        cache.Informer
 	tgwRouteTableInformer             cache.Informer
 	vpcInformer                       cache.Informer
 	serviceInformer                   cache.Informer
 	endpointSliceInformer             cache.Informer
+	externalNetworkInformer           cache.Informer
 	externalNetworkAttachmentInformer cache.Informer
 	natGatewayInformer                cache.Informer
 	serviceNATAttachmentInformer      cache.Informer
@@ -70,6 +72,7 @@ type Manager struct {
 	serviceRunner      *runner.Runner
 	vpcEndpointRunner  *runner.Runner
 	naptRunner         *runner.Runner
+	externalArpRunner  *runner.Runner
 	serviceNATRunner   *runner.Runner
 	sgRunner           *runner.Runner
 	sgMembershipRunner *runner.Runner
@@ -93,6 +96,7 @@ type Manager struct {
 	membershipStore *policy.MembershipStore
 
 	napt           *reconciler.Napt
+	externalArp    *reconciler.ExternalArp
 	ownedAddresses *ownedaddr.Store
 
 	juNodeUnderlayIP net.IP
@@ -113,6 +117,7 @@ type Manager struct {
 	nodeIngressIfindex int
 	pinPath            string
 	hostMac            net.HardwareAddr
+	nodeIngressMac     net.HardwareAddr
 
 	podEgress    *program.PodEgress
 	podIngress   *program.PodIngress
@@ -313,6 +318,31 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 			}
 		}
 		m.naptRunner.Start(ctx, 1)
+	}
+
+	if m.arpAdvertisementInformer != nil {
+		externalArp, err := reconciler.NewExternalArp(
+			m.client,
+			m.podEgress,
+			m.ownedAddresses,
+			m.nodeName,
+			m.nodeIngressIfindex,
+			m.nodeIngressMac,
+		)
+		if err != nil {
+			return fmt.Errorf("build external-arp reconciler: %w", err)
+		}
+		m.externalArp = externalArp
+		m.externalArpRunner = runner.New(externalArp)
+		if err := m.externalArpRunner.Watch(m.arpAdvertisementInformer, runner.MetaNamespaceKey); err != nil {
+			return fmt.Errorf("watch ARPAdvertisement: %w", err)
+		}
+		if m.externalNetworkInformer != nil {
+			if err := m.externalArpRunner.WatchFanOut(m.externalNetworkInformer, externalArp.FanOutExternalNetworkToAdvertisements); err != nil {
+				return fmt.Errorf("watch ExternalNetwork (external-arp fan-out): %w", err)
+			}
+		}
+		m.externalArpRunner.Start(ctx, 1)
 	}
 
 	if m.serviceNATAttachmentInformer != nil {
@@ -625,23 +655,18 @@ func (m *Manager) Stop() error {
 		}
 	}
 
-	if m.podEgress != nil {
-		if err := m.podEgress.Close(); err != nil {
-			return err
-		}
-	}
-	if m.podIngress != nil {
-		if err := m.podIngress.Close(); err != nil {
-			return err
-		}
-	}
-
+	// Every CloseAll below writes through a pod_egress map handle, so
+	// they have to run while the program objects are still open.
 	if m.napt != nil {
 		if err := m.napt.CloseAll(); err != nil {
 			return err
 		}
 	}
-
+	if m.externalArp != nil {
+		if err := m.externalArp.CloseAll(); err != nil {
+			return err
+		}
+	}
 	if m.sgStore != nil {
 		if err := m.sgStore.CloseAll(); err != nil {
 			return err
@@ -649,6 +674,17 @@ func (m *Manager) Stop() error {
 	}
 	if m.aclStore != nil {
 		if err := m.aclStore.CloseAll(); err != nil {
+			return err
+		}
+	}
+
+	if m.podEgress != nil {
+		if err := m.podEgress.Close(); err != nil {
+			return err
+		}
+	}
+	if m.podIngress != nil {
+		if err := m.podIngress.Close(); err != nil {
 			return err
 		}
 	}
@@ -667,6 +703,7 @@ func (m *Manager) Stop() error {
 		m.vpcEndpointRunner,
 		m.serviceLBRunner,
 		m.naptRunner,
+		m.externalArpRunner,
 		m.serviceNATRunner,
 		m.sgRunner,
 		m.sgMembershipRunner,
@@ -718,67 +755,87 @@ func (m *Manager) SubnetInformer() cache.Informer { return m.subnetInformer }
 // VpcID is allocated late).
 func (m *Manager) VpcInformer() cache.Informer { return m.vpcInformer }
 
+// ManagerConfig carries everything a Manager needs to run. The
+// informers all share one type, so naming them at the call site is the
+// only thing that keeps two of them from being swapped by accident.
+type ManagerConfig struct {
+	Client client.Client
+
+	NWEPInformer                      cache.Informer
+	EIPAInformer                      cache.Informer
+	AddressPoolInformer               cache.Informer
+	BGPAdvertisementInformer          cache.Informer
+	ARPAdvertisementInformer          cache.Informer
+	RouteTableInformer                cache.Informer
+	TransitGatewayRouteTableInformer  cache.Informer
+	SubnetInformer                    cache.Informer
+	VpcInformer                       cache.Informer
+	ServiceInformer                   cache.Informer
+	EndpointSliceInformer             cache.Informer
+	ExternalNetworkInformer           cache.Informer
+	ExternalNetworkAttachmentInformer cache.Informer
+	NATGatewayInformer                cache.Informer
+	ServiceNATAttachmentInformer      cache.Informer
+	NetworkInterfaceInformer          cache.Informer
+	SecurityGroupInformer             cache.Informer
+	NetworkACLInformer                cache.Informer
+	ServiceLoadBalancerInformer       cache.Informer
+	VpcEndpointInformer               cache.Informer
+	TraceSessionInformer              cache.Informer
+	NodeInformer                      cache.Informer
+
+	NodeName           string
+	VxlanIfindex       int
+	HostIfindex        int
+	NodeIngressIfindex int
+	PinPath            string
+
+	// DefaultGatewayMac is the juneau_node veth MAC, the overlay
+	// gateway identity. It is not the MAC of any external link.
+	DefaultGatewayMac net.HardwareAddr
+	// NodeIngressMac is the MAC of the NIC node_ingress is attached
+	// to. It is what the external ARP responder answers with, so it
+	// must be the address the upstream router will actually see.
+	NodeIngressMac net.HardwareAddr
+
+	JuNodeUnderlayIP net.IP
+}
+
 // NewManager constructs a Manager. The caller is responsible for driving
 // Start and Stop around the rest of the daemon's lifecycle.
-func NewManager(
-	cl client.Client,
-	nwepInformer cache.Informer,
-	eipaInformer cache.Informer,
-	addressPoolInformer cache.Informer,
-	bgpAdvertisementInformer cache.Informer,
-	rtInformer cache.Informer,
-	tgwRouteTableInformer cache.Informer,
-	subnetInformer cache.Informer,
-	vpcInformer cache.Informer,
-	serviceInformer cache.Informer,
-	endpointSliceInformer cache.Informer,
-	externalNetworkAttachmentInformer cache.Informer,
-	natGatewayInformer cache.Informer,
-	serviceNATAttachmentInformer cache.Informer,
-	networkInterfaceInformer cache.Informer,
-	securityGroupInformer cache.Informer,
-	networkACLInformer cache.Informer,
-	serviceLoadBalancerInformer cache.Informer,
-	vpcEndpointInformer cache.Informer,
-	traceSessionInformer cache.Informer,
-	nodeInformer cache.Informer,
-	nodeName string,
-	vxlanIfindex int,
-	hostIfindex int,
-	nodeIngressIfindex int,
-	pinPath string,
-	defaultGatewayMac net.HardwareAddr,
-	juNodeUnderlayIP net.IP,
-) *Manager {
+func NewManager(cfg ManagerConfig) *Manager {
 	return &Manager{
-		client:                            cl,
-		nwepInformer:                      nwepInformer,
-		eipaInformer:                      eipaInformer,
-		addressPoolInformer:               addressPoolInformer,
-		bgpAdvertisementInformer:          bgpAdvertisementInformer,
-		rtInformer:                        rtInformer,
-		tgwRouteTableInformer:             tgwRouteTableInformer,
-		subnetInformer:                    subnetInformer,
-		vpcInformer:                       vpcInformer,
-		serviceInformer:                   serviceInformer,
-		endpointSliceInformer:             endpointSliceInformer,
-		externalNetworkAttachmentInformer: externalNetworkAttachmentInformer,
-		natGatewayInformer:                natGatewayInformer,
-		serviceNATAttachmentInformer:      serviceNATAttachmentInformer,
-		networkInterfaceInformer:          networkInterfaceInformer,
-		securityGroupInformer:             securityGroupInformer,
-		networkACLInformer:                networkACLInformer,
-		serviceLoadBalancerInformer:       serviceLoadBalancerInformer,
-		vpcEndpointInformer:               vpcEndpointInformer,
-		traceSessionInformer:              traceSessionInformer,
-		nodeInformer:                      nodeInformer,
-		nodeName:                          nodeName,
-		vxlanIfindex:                      vxlanIfindex,
-		hostIfindex:                       hostIfindex,
-		nodeIngressIfindex:                nodeIngressIfindex,
-		pinPath:                           pinPath,
-		hostMac:                           defaultGatewayMac,
-		juNodeUnderlayIP:                  juNodeUnderlayIP,
+		client:                            cfg.Client,
+		nwepInformer:                      cfg.NWEPInformer,
+		eipaInformer:                      cfg.EIPAInformer,
+		addressPoolInformer:               cfg.AddressPoolInformer,
+		bgpAdvertisementInformer:          cfg.BGPAdvertisementInformer,
+		arpAdvertisementInformer:          cfg.ARPAdvertisementInformer,
+		rtInformer:                        cfg.RouteTableInformer,
+		tgwRouteTableInformer:             cfg.TransitGatewayRouteTableInformer,
+		subnetInformer:                    cfg.SubnetInformer,
+		vpcInformer:                       cfg.VpcInformer,
+		serviceInformer:                   cfg.ServiceInformer,
+		endpointSliceInformer:             cfg.EndpointSliceInformer,
+		externalNetworkInformer:           cfg.ExternalNetworkInformer,
+		externalNetworkAttachmentInformer: cfg.ExternalNetworkAttachmentInformer,
+		natGatewayInformer:                cfg.NATGatewayInformer,
+		serviceNATAttachmentInformer:      cfg.ServiceNATAttachmentInformer,
+		networkInterfaceInformer:          cfg.NetworkInterfaceInformer,
+		securityGroupInformer:             cfg.SecurityGroupInformer,
+		networkACLInformer:                cfg.NetworkACLInformer,
+		serviceLoadBalancerInformer:       cfg.ServiceLoadBalancerInformer,
+		vpcEndpointInformer:               cfg.VpcEndpointInformer,
+		traceSessionInformer:              cfg.TraceSessionInformer,
+		nodeInformer:                      cfg.NodeInformer,
+		nodeName:                          cfg.NodeName,
+		vxlanIfindex:                      cfg.VxlanIfindex,
+		hostIfindex:                       cfg.HostIfindex,
+		nodeIngressIfindex:                cfg.NodeIngressIfindex,
+		pinPath:                           cfg.PinPath,
+		hostMac:                           cfg.DefaultGatewayMac,
+		nodeIngressMac:                    cfg.NodeIngressMac,
+		juNodeUnderlayIP:                  cfg.JuNodeUnderlayIP,
 	}
 }
 
