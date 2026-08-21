@@ -130,13 +130,16 @@ func validateAllocationPoolForStatus(pool *juneauloutresmev1alpha1.AllocationPoo
 		if pool.Spec.IP == nil {
 			return "spec.ip is required for type=ip"
 		}
-		if len(pool.Spec.IP.CIDRs) == 0 {
-			return "spec.ip.cidrs must contain at least one entry"
+		if len(pool.Spec.IP.CIDRs) == 0 && len(pool.Spec.IP.Ranges) == 0 {
+			return "spec.ip.cidrs or spec.ip.ranges must contain at least one entry"
 		}
 		for _, raw := range pool.Spec.IP.CIDRs {
 			if _, err := netip.ParsePrefix(raw); err != nil {
 				return "invalid CIDR: " + raw
 			}
+		}
+		if _, err := parseRangeCandidates(pool.Spec.IP.Ranges); err != nil {
+			return err.Error()
 		}
 		for _, raw := range pool.Spec.IP.Excluded {
 			if _, err := netip.ParseAddr(raw); err != nil {

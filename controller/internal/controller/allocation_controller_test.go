@@ -551,3 +551,195 @@ var _ = Describe("Allocation controllers", func() {
 		}).Should(Succeed())
 	})
 })
+
+var _ = Describe("Allocation controllers with range-typed IP pools", func() {
+	ctx := context.Background()
+
+	newIPClaim := func(name, ownerName, poolName string) *juneauv1alpha1.AllocationClaim {
+		return &juneauv1alpha1.AllocationClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: juneauv1alpha1.AllocationClaimSpec{
+				PoolRefs:    []juneauv1alpha1.AllocationPoolReference{{Name: poolName}},
+				ResourceRef: juneauv1alpha1.AllocationResourceReference{APIVersion: juneauv1alpha1.GroupVersion.String(), Kind: "Vpc", Name: ownerName},
+				Attribute:   "status.address",
+			},
+		}
+	}
+
+	createPoolWithOwners := func(pool *juneauv1alpha1.AllocationPool, claims ...*juneauv1alpha1.AllocationClaim) {
+		Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+		for _, claim := range claims {
+			owner := &juneauv1alpha1.Vpc{ObjectMeta: metav1.ObjectMeta{Name: claim.Spec.ResourceRef.Name}}
+			Expect(k8sClient.Create(ctx, owner)).To(Succeed())
+			Expect(k8sClient.Create(ctx, claim)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, claim)
+				_ = k8sClient.Delete(ctx, owner)
+			})
+		}
+	}
+
+	reconcileAll := func(claims ...*juneauv1alpha1.AllocationClaim) {
+		reconciler := &AllocationClaimReconciler{Client: k8sClient, APIReader: k8sClient, Scheme: k8sClient.Scheme()}
+		for _, claim := range claims {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: claim.Name}})
+			Expect(err).NotTo(HaveOccurred())
+		}
+	}
+
+	allocatedIP := func(claim *juneauv1alpha1.AllocationClaim) string {
+		var fresh juneauv1alpha1.AllocationClaim
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: claim.Name}, &fresh)).To(Succeed())
+		Expect(fresh.Status.Phase).To(Equal(juneauv1alpha1.AllocationClaimPhaseAllocated))
+		return fresh.Status.Value.IP
+	}
+
+	It("allocates from a pool that only declares spec.ip.ranges", func() {
+		poolName := uniqueTestName("pool-range-only")
+		pool := &juneauv1alpha1.AllocationPool{
+			ObjectMeta: metav1.ObjectMeta{Name: poolName},
+			Spec: juneauv1alpha1.AllocationPoolSpec{
+				Type:     juneauv1alpha1.AllocationTypeIP,
+				Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+				IP: &juneauv1alpha1.AllocationPoolIPSpec{
+					Ranges: []juneauv1alpha1.AllocationPoolIPRange{{Start: "203.0.113.10", End: "203.0.113.11"}},
+				},
+			},
+		}
+		claimA := newIPClaim(uniqueTestName("range-claim-a"), uniqueTestName("range-owner-a"), poolName)
+		claimB := newIPClaim(uniqueTestName("range-claim-b"), uniqueTestName("range-owner-b"), poolName)
+		createPoolWithOwners(pool, claimA, claimB)
+
+		reconcileAll(claimA, claimB)
+
+		Expect(allocatedIP(claimA)).To(Equal("203.0.113.10"))
+		Expect(allocatedIP(claimB)).To(Equal("203.0.113.11"))
+	})
+
+	It("drains the CIDRs before the ranges when a pool declares both", func() {
+		poolName := uniqueTestName("pool-mixed")
+		pool := &juneauv1alpha1.AllocationPool{
+			ObjectMeta: metav1.ObjectMeta{Name: poolName},
+			Spec: juneauv1alpha1.AllocationPoolSpec{
+				Type:     juneauv1alpha1.AllocationTypeIP,
+				Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+				IP: &juneauv1alpha1.AllocationPoolIPSpec{
+					CIDRs:  []string{"192.0.2.0/30"},
+					Ranges: []juneauv1alpha1.AllocationPoolIPRange{{Start: "203.0.113.5", End: "203.0.113.6"}},
+				},
+			},
+		}
+		claims := []*juneauv1alpha1.AllocationClaim{
+			newIPClaim(uniqueTestName("mixed-claim-a"), uniqueTestName("mixed-owner-a"), poolName),
+			newIPClaim(uniqueTestName("mixed-claim-b"), uniqueTestName("mixed-owner-b"), poolName),
+			newIPClaim(uniqueTestName("mixed-claim-c"), uniqueTestName("mixed-owner-c"), poolName),
+		}
+		createPoolWithOwners(pool, claims...)
+
+		reconcileAll(claims...)
+
+		Expect(allocatedIP(claims[0])).To(Equal("192.0.2.1"))
+		Expect(allocatedIP(claims[1])).To(Equal("192.0.2.2"))
+		Expect(allocatedIP(claims[2])).To(Equal("203.0.113.5"))
+	})
+
+	It("honors spec.ip.excluded inside a range", func() {
+		poolName := uniqueTestName("pool-range-excluded")
+		pool := &juneauv1alpha1.AllocationPool{
+			ObjectMeta: metav1.ObjectMeta{Name: poolName},
+			Spec: juneauv1alpha1.AllocationPoolSpec{
+				Type:     juneauv1alpha1.AllocationTypeIP,
+				Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+				IP: &juneauv1alpha1.AllocationPoolIPSpec{
+					Ranges:   []juneauv1alpha1.AllocationPoolIPRange{{Start: "203.0.113.20", End: "203.0.113.23"}},
+					Excluded: []string{"203.0.113.20", "203.0.113.21"},
+				},
+			},
+		}
+		claim := newIPClaim(uniqueTestName("range-excl-claim"), uniqueTestName("range-excl-owner"), poolName)
+		createPoolWithOwners(pool, claim)
+
+		reconcileAll(claim)
+
+		Expect(allocatedIP(claim)).To(Equal("203.0.113.22"))
+	})
+
+	It("honors a requestedIP that falls inside a range", func() {
+		poolName := uniqueTestName("pool-range-requested")
+		pool := &juneauv1alpha1.AllocationPool{
+			ObjectMeta: metav1.ObjectMeta{Name: poolName},
+			Spec: juneauv1alpha1.AllocationPoolSpec{
+				Type:     juneauv1alpha1.AllocationTypeIP,
+				Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+				IP: &juneauv1alpha1.AllocationPoolIPSpec{
+					Ranges: []juneauv1alpha1.AllocationPoolIPRange{{Start: "203.0.113.30", End: "203.0.113.39"}},
+				},
+			},
+		}
+		requested := "203.0.113.35"
+		claim := newIPClaim(uniqueTestName("range-req-claim"), uniqueTestName("range-req-owner"), poolName)
+		claim.Spec.RequestedIP = &requested
+		createPoolWithOwners(pool, claim)
+
+		reconcileAll(claim)
+
+		Expect(allocatedIP(claim)).To(Equal(requested))
+	})
+
+	It("refuses a requestedIP outside every range", func() {
+		poolName := uniqueTestName("pool-range-outside")
+		pool := &juneauv1alpha1.AllocationPool{
+			ObjectMeta: metav1.ObjectMeta{Name: poolName},
+			Spec: juneauv1alpha1.AllocationPoolSpec{
+				Type:     juneauv1alpha1.AllocationTypeIP,
+				Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+				IP: &juneauv1alpha1.AllocationPoolIPSpec{
+					Ranges: []juneauv1alpha1.AllocationPoolIPRange{{Start: "203.0.113.30", End: "203.0.113.39"}},
+				},
+			},
+		}
+		requested := "203.0.113.40"
+		claim := newIPClaim(uniqueTestName("range-out-claim"), uniqueTestName("range-out-owner"), poolName)
+		claim.Spec.RequestedIP = &requested
+		createPoolWithOwners(pool, claim)
+
+		reconcileAll(claim)
+
+		var fresh juneauv1alpha1.AllocationClaim
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: claim.Name}, &fresh)).To(Succeed())
+		Expect(fresh.Status.Value.IP).To(BeEmpty())
+		cond := meta.FindStatusCondition(fresh.Status.Conditions, juneauv1alpha1.AllocationClaimStatusReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Reason).To(Equal("AllocationFailed"))
+		Expect(cond.Message).To(ContainSubstring("outside pool"))
+	})
+
+	It("reports Pending once every range is exhausted", func() {
+		poolName := uniqueTestName("pool-range-exhausted")
+		pool := &juneauv1alpha1.AllocationPool{
+			ObjectMeta: metav1.ObjectMeta{Name: poolName},
+			Spec: juneauv1alpha1.AllocationPoolSpec{
+				Type:     juneauv1alpha1.AllocationTypeIP,
+				Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+				IP: &juneauv1alpha1.AllocationPoolIPSpec{
+					Ranges: []juneauv1alpha1.AllocationPoolIPRange{{Start: "203.0.113.50", End: "203.0.113.50"}},
+				},
+			},
+		}
+		claimA := newIPClaim(uniqueTestName("range-exh-claim-a"), uniqueTestName("range-exh-owner-a"), poolName)
+		claimB := newIPClaim(uniqueTestName("range-exh-claim-b"), uniqueTestName("range-exh-owner-b"), poolName)
+		createPoolWithOwners(pool, claimA, claimB)
+
+		reconcileAll(claimA, claimB)
+
+		Expect(allocatedIP(claimA)).To(Equal("203.0.113.50"))
+
+		var fresh juneauv1alpha1.AllocationClaim
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: claimB.Name}, &fresh)).To(Succeed())
+		Expect(fresh.Status.Phase).To(Equal(juneauv1alpha1.AllocationClaimPhasePending))
+		cond := meta.FindStatusCondition(fresh.Status.Conditions, juneauv1alpha1.AllocationClaimStatusReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Reason).To(Equal("Pending"))
+	})
+})

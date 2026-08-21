@@ -56,17 +56,33 @@ type AllocationPoolNumberSpec struct {
 }
 
 type AllocationPoolIPSpec struct {
-	// CIDR ranges that participate in this pool. The union forms the
-	// candidate address space.
-	// +kubebuilder:validation:MinItems=1
+	// CIDR ranges that participate in this pool. The union with Ranges
+	// forms the candidate address space. The network and broadcast
+	// addresses of every CIDR are kept out of automatic allocation.
+	// +optional
 	// +listType=set
-	CIDRs []string `json:"cidrs"`
+	CIDRs []string `json:"cidrs,omitempty"`
+
+	// Ranges lists inclusive start-end address intervals that participate
+	// in this pool. Every address of a range is allocatable.
+	// +optional
+	// +listType=atomic
+	Ranges []AllocationPoolIPRange `json:"ranges,omitempty"`
 
 	// Excluded lists individual addresses that must never be allocated.
 	// Typically populated with reserved IPs such as gateway, network or
 	// broadcast addresses.
 	// +listType=set
 	Excluded []string `json:"excluded,omitempty"`
+}
+
+// AllocationPoolIPRange is an inclusive IPv4 address interval.
+type AllocationPoolIPRange struct {
+	// +required
+	Start string `json:"start"`
+
+	// +required
+	End string `json:"end"`
 }
 
 // AllocationPoolStatus defines the observed state of AllocationPool.

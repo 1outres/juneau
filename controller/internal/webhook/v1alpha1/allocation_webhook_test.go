@@ -58,6 +58,88 @@ var _ = Describe("Allocation webhooks", func() {
 			Expect(err.Error()).To(ContainSubstring("must be less than or equal"))
 		})
 
+		It("accepts type=ip with only spec.ip.cidrs", func() {
+			Expect(webhookK8sClient.Create(ctx, &juneauv1alpha1.AllocationPool{
+				ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("allocationpool")},
+				Spec: juneauv1alpha1.AllocationPoolSpec{
+					Type:     juneauv1alpha1.AllocationTypeIP,
+					Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+					IP:       &juneauv1alpha1.AllocationPoolIPSpec{CIDRs: []string{"192.0.2.0/24"}},
+				},
+			})).To(Succeed())
+		})
+
+		It("accepts type=ip with only spec.ip.ranges", func() {
+			Expect(webhookK8sClient.Create(ctx, &juneauv1alpha1.AllocationPool{
+				ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("allocationpool")},
+				Spec: juneauv1alpha1.AllocationPoolSpec{
+					Type:     juneauv1alpha1.AllocationTypeIP,
+					Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+					IP: &juneauv1alpha1.AllocationPoolIPSpec{
+						Ranges: []juneauv1alpha1.AllocationPoolIPRange{{Start: "192.0.2.10", End: "192.0.2.20"}},
+					},
+				},
+			})).To(Succeed())
+		})
+
+		It("rejects type=ip with neither spec.ip.cidrs nor spec.ip.ranges", func() {
+			err := webhookK8sClient.Create(ctx, &juneauv1alpha1.AllocationPool{
+				ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("allocationpool")},
+				Spec: juneauv1alpha1.AllocationPoolSpec{
+					Type:     juneauv1alpha1.AllocationTypeIP,
+					Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+					IP:       &juneauv1alpha1.AllocationPoolIPSpec{},
+				},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("spec.ip.cidrs or spec.ip.ranges must contain at least one entry"))
+		})
+
+		It("rejects a range whose start is after its end", func() {
+			err := webhookK8sClient.Create(ctx, &juneauv1alpha1.AllocationPool{
+				ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("allocationpool")},
+				Spec: juneauv1alpha1.AllocationPoolSpec{
+					Type:     juneauv1alpha1.AllocationTypeIP,
+					Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+					IP: &juneauv1alpha1.AllocationPoolIPSpec{
+						Ranges: []juneauv1alpha1.AllocationPoolIPRange{{Start: "192.0.2.20", End: "192.0.2.10"}},
+					},
+				},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("range start must be less than or equal to range end"))
+		})
+
+		It("rejects an IPv6 range", func() {
+			err := webhookK8sClient.Create(ctx, &juneauv1alpha1.AllocationPool{
+				ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("allocationpool")},
+				Spec: juneauv1alpha1.AllocationPoolSpec{
+					Type:     juneauv1alpha1.AllocationTypeIP,
+					Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+					IP: &juneauv1alpha1.AllocationPoolIPSpec{
+						Ranges: []juneauv1alpha1.AllocationPoolIPRange{{Start: "2001:db8::1", End: "2001:db8::10"}},
+					},
+				},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("only IPv4 is supported"))
+		})
+
+		It("rejects a range with an unparsable bound", func() {
+			err := webhookK8sClient.Create(ctx, &juneauv1alpha1.AllocationPool{
+				ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("allocationpool")},
+				Spec: juneauv1alpha1.AllocationPoolSpec{
+					Type:     juneauv1alpha1.AllocationTypeIP,
+					Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+					IP: &juneauv1alpha1.AllocationPoolIPSpec{
+						Ranges: []juneauv1alpha1.AllocationPoolIPRange{{Start: "not-an-ip", End: "192.0.2.10"}},
+					},
+				},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("spec.ip.ranges[0].start"))
+		})
+
 		It("rejects immutable spec.type update", func() {
 			pool := &juneauv1alpha1.AllocationPool{
 				ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("allocationpool")},
