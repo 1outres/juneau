@@ -54,9 +54,9 @@ var _ = Describe("NATGateway webhook", func() {
 		Expect(err.Error()).To(ContainSubstring("referenced ExternalNetwork does not exist"))
 	})
 
-	It("rejects an ExternalNetwork with non-bgp type", func() {
+	It("accepts an ARP ExternalNetwork", func() {
 		externalNetworkName := createWebhookExternalNetwork(juneauv1alpha1.ExternalNetworkTypeARP)
-		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.NATGateway{
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.NATGateway{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: webhookUniqueTestName("natgateway"),
 			},
@@ -64,9 +64,7 @@ var _ = Describe("NATGateway webhook", func() {
 				Vpc:             "default",
 				ExternalNetwork: externalNetworkName,
 			},
-		})
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("must have type=bgp"))
+		})).To(Succeed())
 	})
 
 	It("accepts a valid NATGateway", func() {

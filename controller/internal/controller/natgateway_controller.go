@@ -103,8 +103,8 @@ func (r *NATGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 		return ctrl.Result{}, err
 	}
-	if externalNetwork.Spec.Type != juneauloutresmev1alpha1.ExternalNetworkTypeBGP {
-		if updateErr := r.updateStatus(ctx, &resource, resource.Status.GatewayID, metav1.ConditionFalse, natGatewayReasonMissingDependency, fmt.Sprintf("ExternalNetwork %q must have type=bgp", resource.Spec.ExternalNetwork)); updateErr != nil {
+	if !supportsExternalNetworkType(externalNetwork.Spec.Type) {
+		if updateErr := r.updateStatus(ctx, &resource, resource.Status.GatewayID, metav1.ConditionFalse, natGatewayReasonMissingDependency, fmt.Sprintf("ExternalNetwork %q has unsupported type %q", resource.Spec.ExternalNetwork, externalNetwork.Spec.Type)); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
 		return ctrl.Result{}, nil

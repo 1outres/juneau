@@ -73,10 +73,8 @@ func (r *ExternalNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, nil
 	}
 
-	// Skip fan-out when the ExternalNetwork is not BGP-typed: NAT
-	// Gateways only support BGP-mode ExternalNetworks today.
-	if externalNetwork.Spec.Type != juneauv1alpha1.ExternalNetworkTypeBGP {
-		return ctrl.Result{}, nil
+	if !supportsExternalNetworkType(externalNetwork.Spec.Type) {
+		return ctrl.Result{}, fmt.Errorf("ExternalNetwork %q has unsupported type %q", externalNetwork.Name, externalNetwork.Spec.Type)
 	}
 
 	referenced, err := r.hasReferencingNATGateway(ctx, &externalNetwork)

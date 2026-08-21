@@ -122,8 +122,6 @@ func (v *ExternalNetworkAttachmentCustomValidator) validate(ctx context.Context,
 			} else {
 				return nil, err
 			}
-		} else if externalNetwork.Spec.Type != juneauloutresmev1alpha1.ExternalNetworkTypeBGP {
-			errs = append(errs, field.Invalid(specPath.Child("externalNetwork"), obj.Spec.ExternalNetwork, "referenced ExternalNetwork must have type=bgp"))
 		}
 	}
 
