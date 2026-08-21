@@ -159,8 +159,6 @@ func (v *ElasticIPCustomValidator) validate(ctx context.Context, obj *juneaulout
 			} else {
 				return nil, err
 			}
-		} else if externalNetwork.Spec.Type != juneauloutresmev1alpha1.ExternalNetworkTypeBGP {
-			errs = append(errs, field.Invalid(externalNetworkPath, obj.Spec.ExternalNetwork, "referenced ExternalNetwork must have type=bgp"))
 		}
 	}
 

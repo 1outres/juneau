@@ -144,3 +144,14 @@ func deleteAdvertisement(ctx context.Context, c client.Client, advertisement cli
 	}
 	return nil
 }
+
+// arpAdvertisementDeletedByFinalizer leaves the ARPAdvertisement without an
+// OwnerReference. A namespaced consumer has to use it: Kubernetes drops an
+// OwnerReference that points from a namespaced object to a cluster-scoped one
+// and would collect the advertisement at once. Such a consumer deletes the
+// advertisement from its own finalizer instead.
+type arpAdvertisementDeletedByFinalizer struct{}
+
+func (arpAdvertisementDeletedByFinalizer) applyTo(*juneauv1alpha1.ARPAdvertisement) error {
+	return nil
+}

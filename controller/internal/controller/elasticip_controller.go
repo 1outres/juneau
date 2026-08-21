@@ -71,7 +71,9 @@ func (e *elasticIPReconcileError) Error() string {
 // Address allocation is delegated to an AllocationClaim that targets the
 // AllocationPools backing the AddressPools attached to the referenced
 // ExternalNetwork. The reconciler owns the lifecycle of that claim and
-// mirrors its outcome into ElasticIP.status.
+// mirrors its outcome into ElasticIP.status. For an arp ExternalNetwork it
+// also owns an ARPAdvertisement that points the address at the node holding
+// the attachment.
 type ElasticIPReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -84,6 +86,7 @@ type ElasticIPReconciler struct {
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=addresspools,verbs=get;list;watch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=elasticipattachments,verbs=get;list;watch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=allocationclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=arpadvertisements,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -121,6 +124,10 @@ func (r *ElasticIPReconciler) handleDeletion(ctx context.Context, resource *june
 		return nil
 	}
 
+	if err := deleteARPAdvertisement(ctx, r.Client, elasticIPAdvertisementName(resource.Namespace, resource.Name)); err != nil {
+		return err
+	}
+
 	claimName := elasticIPClaimName(resource)
 	var claim juneauv1alpha1.AllocationClaim
 	if err := r.Get(ctx, client.ObjectKey{Name: claimName}, &claim); err == nil {
@@ -136,7 +143,7 @@ func (r *ElasticIPReconciler) handleDeletion(ctx context.Context, resource *june
 }
 
 func (r *ElasticIPReconciler) reconcileNormal(ctx context.Context, resource *juneauv1alpha1.ElasticIP) (ctrl.Result, error) {
-	poolNames, err := r.resolvePoolRefs(ctx, resource)
+	pools, err := r.resolvePoolRefs(ctx, resource)
 	if err != nil {
 		var reconcileErr *elasticIPReconcileError
 		if stderrors.As(err, &reconcileErr) {
@@ -148,8 +155,17 @@ func (r *ElasticIPReconciler) reconcileNormal(ctx context.Context, resource *jun
 		return ctrl.Result{}, err
 	}
 
-	address, requeue, err := r.ensureClaim(ctx, resource, poolNames)
+	address, requeue, err := r.ensureClaim(ctx, resource, pools.allocationPoolNames)
 	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	attachments, err := r.listActiveAttachments(ctx, resource)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if err := r.reconcileAdvertisement(ctx, resource, pools, address, attachments); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -192,11 +208,6 @@ func (r *ElasticIPReconciler) reconcileNormal(ctx context.Context, resource *jun
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
-	}
-
-	attachments, err := r.listActiveAttachments(ctx, resource)
-	if err != nil {
-		return ctrl.Result{}, err
 	}
 
 	switch len(attachments) {
@@ -243,10 +254,19 @@ func (r *ElasticIPReconciler) reconcileNormal(ctx context.Context, resource *jun
 	return ctrl.Result{}, nil
 }
 
+// elasticIPPools is the address space behind the referenced ExternalNetwork,
+// resolved once per reconcile: the network itself, so the advertisement can
+// name it, and the AllocationPool names the claim draws from.
+type elasticIPPools struct {
+	externalNetwork     juneauv1alpha1.ExternalNetwork
+	allocationPoolNames []string
+}
+
 // resolvePoolRefs returns the AllocationPool names that back the AddressPools
-// attached to the referenced ExternalNetwork. Only BGP-mode AddressPools are
-// included, matching the prior behaviour.
-func (r *ElasticIPReconciler) resolvePoolRefs(ctx context.Context, resource *juneauv1alpha1.ElasticIP) ([]string, error) {
+// attached to the referenced ExternalNetwork. Every pool must advertise in the
+// mode the ExternalNetwork type asks for, so the address reaches the external
+// network through the path the ExternalNetwork describes.
+func (r *ElasticIPReconciler) resolvePoolRefs(ctx context.Context, resource *juneauv1alpha1.ElasticIP) (*elasticIPPools, error) {
 	if strings.TrimSpace(resource.Spec.ExternalNetwork) == "" {
 		return nil, &elasticIPReconcileError{
 			reason:  elasticIPReasonMissingDependency,
@@ -272,7 +292,18 @@ func (r *ElasticIPReconciler) resolvePoolRefs(ctx context.Context, resource *jun
 		}
 	}
 
-	poolNames := make([]string, 0, len(externalNetwork.Spec.AddressPools))
+	advertiseMode, err := externalNetworkAdvertiseMode(externalNetwork.Spec.Type)
+	if err != nil {
+		return nil, &elasticIPReconcileError{
+			reason:  elasticIPReasonInvalidAddressPool,
+			message: fmt.Sprintf("ExternalNetwork %q: %v", externalNetwork.Name, err),
+		}
+	}
+
+	pools := &elasticIPPools{
+		externalNetwork:     externalNetwork,
+		allocationPoolNames: make([]string, 0, len(externalNetwork.Spec.AddressPools)),
+	}
 	for _, raw := range externalNetwork.Spec.AddressPools {
 		poolName := strings.TrimSpace(raw)
 		if poolName == "" {
@@ -290,24 +321,73 @@ func (r *ElasticIPReconciler) resolvePoolRefs(ctx context.Context, resource *jun
 			return nil, err
 		}
 
-		if addressPool.Spec.AdvertiseMode != juneauv1alpha1.AddressPoolAdvertiseModeBGP {
+		if addressPool.Spec.AdvertiseMode != advertiseMode {
 			return nil, &elasticIPReconcileError{
-				reason:  elasticIPReasonInvalidAddressPool,
-				message: fmt.Sprintf("AddressPool %q advertiseMode must be bgp", addressPool.Name),
+				reason: elasticIPReasonInvalidAddressPool,
+				message: fmt.Sprintf(
+					"AddressPool %q advertiseMode must be %s to match ExternalNetwork %q of type %s",
+					addressPool.Name, advertiseMode, externalNetwork.Name, externalNetwork.Spec.Type,
+				),
 			}
 		}
 
-		poolNames = append(poolNames, AddressPoolAllocationPoolName(addressPool.Name))
+		pools.allocationPoolNames = append(pools.allocationPoolNames, AddressPoolAllocationPoolName(addressPool.Name))
 	}
 
-	if len(poolNames) == 0 {
+	if len(pools.allocationPoolNames) == 0 {
 		return nil, &elasticIPReconcileError{
 			reason:  elasticIPReasonMissingDependency,
 			message: fmt.Sprintf("ExternalNetwork %q resolves to no usable AddressPools", externalNetwork.Name),
 		}
 	}
 
-	return poolNames, nil
+	return pools, nil
+}
+
+// reconcileAdvertisement keeps the ARPAdvertisement in step with the one node
+// that answers for this address. It is removed whenever no such node exists:
+// an unallocated ElasticIP, one nothing is attached to, or one whose
+// attachments do not agree on a node. Leaving it behind would keep a node
+// answering for an address it no longer holds.
+func (r *ElasticIPReconciler) reconcileAdvertisement(
+	ctx context.Context,
+	resource *juneauv1alpha1.ElasticIP,
+	pools *elasticIPPools,
+	address string,
+	attachments []juneauv1alpha1.ElasticIPAttachment,
+) error {
+	name := elasticIPAdvertisementName(resource.Namespace, resource.Name)
+
+	switch pools.externalNetwork.Spec.Type {
+	case juneauv1alpha1.ExternalNetworkTypeBGP:
+		return deleteARPAdvertisement(ctx, r.Client, name)
+	case juneauv1alpha1.ExternalNetworkTypeARP:
+		nodeName := elasticIPAnsweringNode(attachments)
+		if address == "" || nodeName == "" {
+			return deleteARPAdvertisement(ctx, r.Client, name)
+		}
+		return ensureARPAdvertisement(ctx, r.Client, arpAdvertisementSpec{
+			Name:            name,
+			ExternalNetwork: pools.externalNetwork.Name,
+			Address:         address,
+			NodeName:        nodeName,
+		}, arpAdvertisementDeletedByFinalizer{})
+	default:
+		return fmt.Errorf("ExternalNetwork %q has unsupported type %q", pools.externalNetwork.Name, pools.externalNetwork.Spec.Type)
+	}
+}
+
+// elasticIPAnsweringNode returns the node that answers for the address, or an
+// empty string when the attachments name anything other than exactly one.
+func elasticIPAnsweringNode(attachments []juneauv1alpha1.ElasticIPAttachment) string {
+	if len(attachments) != 1 {
+		return ""
+	}
+	return attachments[0].Status.NodeName
+}
+
+func elasticIPAdvertisementName(namespace, name string) string {
+	return fmt.Sprintf("eip-%s-%s", namespace, name)
 }
 
 // ensureClaim creates or updates the AllocationClaim that backs this
