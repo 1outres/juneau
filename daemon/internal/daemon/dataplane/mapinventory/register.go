@@ -29,6 +29,7 @@ func RegisterPodEgress(inv *Inventory, p *program.PodEgress) error {
 		registerFib,
 		registerTgwFib,
 		registerExternalAddressPools,
+		registerExternalArp,
 		registerNATSnat,
 		registerNATDnat,
 		registerService,
@@ -255,6 +256,23 @@ func registerExternalAddressPools(inv *Inventory, p *program.PodEgress) error {
 		}},
 		Value: Schema{Fields: []Field{
 			FieldU8Named("present"),
+		}},
+	})
+}
+
+func registerExternalArp(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name: "external_arp_table",
+		Map:  p.Objs.ExternalArpTable,
+		Key: Schema{Fields: []Field{
+			FieldU32Named("ifindex", "node ingress NIC the reply is sent back out of"),
+			// ipaddr: writer is convert.IPv4ToUint32 (host-order
+			// numeric layout, LE bytes [d,c,b,a]).
+			FieldIPv4Named("ipaddr"),
+		}},
+		Value: Schema{Fields: []Field{
+			FieldMACNamed("mac", "MAC answered with in the ARP reply"),
+			FieldPadOf(2),
 		}},
 	})
 }

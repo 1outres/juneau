@@ -97,6 +97,18 @@ type PodEgressExternalAddressPoolsKey struct {
 	Addr      uint32
 }
 
+type PodEgressExternalArpKey struct {
+	_       structs.HostLayout
+	Ifindex uint32
+	Ipaddr  uint32
+}
+
+type PodEgressExternalArpVal struct {
+	_   structs.HostLayout
+	Mac [6]uint8
+	Pad [2]uint8
+}
+
 type PodEgressFdbKey struct {
 	_        structs.HostLayout
 	SubnetId uint32
@@ -476,6 +488,7 @@ type PodEgressMapSpecs struct {
 	BackendMap            *ebpf.MapSpec `ebpf:"backend_map"`
 	CtMap                 *ebpf.MapSpec `ebpf:"ct_map"`
 	ExternalAddressPools  *ebpf.MapSpec `ebpf:"external_address_pools"`
+	ExternalArpTable      *ebpf.MapSpec `ebpf:"external_arp_table"`
 	Fdb                   *ebpf.MapSpec `ebpf:"fdb"`
 	FibInner              *ebpf.MapSpec `ebpf:"fib_inner"`
 	FibMap                *ebpf.MapSpec `ebpf:"fib_map"`
@@ -546,6 +559,7 @@ type PodEgressMaps struct {
 	BackendMap            *ebpf.Map `ebpf:"backend_map"`
 	CtMap                 *ebpf.Map `ebpf:"ct_map"`
 	ExternalAddressPools  *ebpf.Map `ebpf:"external_address_pools"`
+	ExternalArpTable      *ebpf.Map `ebpf:"external_arp_table"`
 	Fdb                   *ebpf.Map `ebpf:"fdb"`
 	FibInner              *ebpf.Map `ebpf:"fib_inner"`
 	FibMap                *ebpf.Map `ebpf:"fib_map"`
@@ -590,6 +604,7 @@ func (m *PodEgressMaps) Close() error {
 		m.BackendMap,
 		m.CtMap,
 		m.ExternalAddressPools,
+		m.ExternalArpTable,
 		m.Fdb,
 		m.FibInner,
 		m.FibMap,

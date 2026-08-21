@@ -4,6 +4,7 @@
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 #include <stdbool.h>
+#include "arp.h"
 #include "ct.h"
 #include "lb.h"
 #include "maps.h"
@@ -719,6 +720,29 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
   return handle_dnat(skb, eth, iph, nv, trace_id);
 }
 
+static __always_inline int handle_external_arp(struct __sk_buff *skb,
+                                               void *data_end,
+                                               struct ethhdr *eth) {
+  struct arp_request req;
+  if (arp_parse_request(data_end, eth, &req) != 0)
+    return TC_ACT_OK;
+
+  struct external_arp_key key = {
+      .ifindex = skb->ifindex,
+      .ipaddr = req.target_addr,
+  };
+  const struct external_arp_val *val =
+      bpf_map_lookup_elem(&external_arp_table, &key);
+  // Anything juneau does not own belongs to the host stack. Dropping
+  // here would also drop ARP for the node's own InternalIP and make
+  // the node unreachable, because this program runs on the physical NIC.
+  if (!val)
+    return TC_ACT_OK;
+
+  arp_rewrite_to_reply(eth, &req, val->mac);
+  return bpf_redirect(skb->ifindex, 0);
+}
+
 static __always_inline int handle_l2(struct __sk_buff *skb) {
   void *data = (void *)(long)skb->data;
   void *data_end = (void *)(long)skb->data_end;
@@ -727,7 +751,10 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
   if ((void *)(eth + 1) > data_end)
     return TC_ACT_SHOT;
 
-  if (bpf_ntohs(eth->h_proto) != ETH_P_IP)
+  __u16 proto = bpf_ntohs(eth->h_proto);
+  if (proto == ETH_P_ARP)
+    return handle_external_arp(skb, data_end, eth);
+  if (proto != ETH_P_IP)
     return TC_ACT_OK;
 
   // Hook-entry trace event. node_ingress sees pre-decap underlay

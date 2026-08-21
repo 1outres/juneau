@@ -41,6 +41,10 @@
 #define MAX_ADDRESS_POOLS_MAP 512
 #endif
 
+#ifndef MAX_EXTERNAL_ARP
+#define MAX_EXTERNAL_ARP 4096
+#endif
+
 #ifndef MAX_NAT_MAP
 #define MAX_NAT_MAP 131072
 #endif
@@ -474,6 +478,30 @@ struct {
   __type(value, __u8);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } external_address_pools SEC(".maps");
+
+struct external_arp_key {
+  __u32 ifindex;
+  __u32 ipaddr;
+};
+
+// external_arp_val carries the MAC to answer with rather than having
+// the data plane look it up from ifindex, so a future per-address
+// virtual MAC needs no BPF change.
+struct external_arp_val {
+  __u8 mac[6];
+  __u8 _pad[2];
+};
+
+// external_arp_table holds the external addresses this node answers
+// ARP for on the node ingress NIC. The ifindex in the key keeps the
+// map usable once juneau supports more than one external NIC.
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_EXTERNAL_ARP);
+  __type(key, struct external_arp_key);
+  __type(value, struct external_arp_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} external_arp_table SEC(".maps");
 
 struct nat_inside {
   __u32 subnet_id;
