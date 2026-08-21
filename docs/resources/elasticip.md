@@ -3,7 +3,7 @@
 ElasticIPは、外部から到達可能なIPアドレスを表すリソースです。
 
 `spec.externalNetwork`で参照したExternalNetworkに紐づくAddressPoolから1つのアドレスが選ばれます。
-ElasticIPで利用されるAddressPoolは`spec.advertiseMode=bgp`である必要があります。
+ElasticIPで利用されるAddressPoolは、`spec.advertiseMode`がExternalNetworkの`spec.type`と一致している必要があります。
 
 `spec.requestedIP`は省略可能で、指定した場合はそのIPv4アドレスをElasticIPとして要求します。
 指定するアドレスは、`spec.externalNetwork`で参照したExternalNetworkに紐づくAddressPoolのいずれかに含まれている必要があります。
@@ -17,3 +17,14 @@ ElasticIPによる1:1 NATは、ICMPエラーメッセージが内包する元パ
 - Available:アドレスは選ばれているが、まだElasticIPAttachmentで関連付けられていない状態
 - Attached:アドレスが選ばれ、1つのElasticIPAttachmentで関連付けられている状態
 - Error:依存リソースの不整合や複数のElasticIPAttachment参照などで正常に扱えない状態
+
+## type=arpのExternalNetworkを使う場合
+
+外部からの到達性は、経路広報ではなく、ElasticIPAttachmentで関連付けたPodが動いているNodeがARP Replyを返すことで成立します。
+controllerは`eip-<namespace>-<ElasticIP名>`という名前の[ARPAdvertisement](arpadvertisement.md)を作り、`spec.nodeName`にElasticIPAttachmentの`status.nodeName`を書きます。
+Podが別のNodeへ再スケジュールされると、ElasticIPAttachmentの`status.nodeName`が変わり、ARPAdvertisementもそれに追従します。
+
+ElasticIPAttachmentが外れている間はARPAdvertisementが削除され、そのアドレスにはどのNodeも応答しません。
+`PHASE: Available`のままでも外部からは到達できない、という状態になります。
+
+応答するNodeが移ったときにgratuitous ARPを送らないため、上流のneighborキャッシュが更新されるまで通信は戻りません。詳しくは[ARPAdvertisement](arpadvertisement.md)を参照してください。
