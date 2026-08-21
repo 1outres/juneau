@@ -30,17 +30,18 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	"github.com/1outres/juneau/controller/internal/addressrange"
 )
 
 // AddressPoolReconciler reconciles AddressPool resources.
 //
 // AddressPool is the user-facing CRD that declares an advertise mode (BGP /
-// ARP) and a set of CIDRs. Behind the scenes the reconciler maintains a
+// ARP) and a set of addresses. Behind the scenes the reconciler maintains a
 // 1:1 AllocationPool (`addr-<name>`) so that ElasticIP, NATGateway and
 // future consumers can allocate addresses through the shared
 // AllocationClaim framework. The advertise mode itself is consumed by
 // other components (BGP speaker, future ARP responder); this reconciler
-// only mirrors the CIDR list into the allocation framework.
+// only translates the address list into the allocation framework.
 type AddressPoolReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -92,16 +93,18 @@ func (r *AddressPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 func (r *AddressPoolReconciler) ensureAllocationPool(ctx context.Context, addressPool *juneauv1alpha1.AddressPool) error {
 	name := AddressPoolAllocationPoolName(addressPool.Name)
 
+	ipSpec, err := allocationPoolIPSpec(addressPool)
+	if err != nil {
+		return err
+	}
 	desiredSpec := juneauv1alpha1.AllocationPoolSpec{
 		Type:     juneauv1alpha1.AllocationTypeIP,
 		Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
-		IP: &juneauv1alpha1.AllocationPoolIPSpec{
-			CIDRs: append([]string(nil), addressPool.Spec.Addresses...),
-		},
+		IP:       ipSpec,
 	}
 
 	var existing juneauv1alpha1.AllocationPool
-	err := r.Get(ctx, client.ObjectKey{Name: name}, &existing)
+	err = r.Get(ctx, client.ObjectKey{Name: name}, &existing)
 	switch {
 	case apierrors.IsNotFound(err):
 		pool := &juneauv1alpha1.AllocationPool{
@@ -123,8 +126,8 @@ func (r *AddressPoolReconciler) ensureAllocationPool(ctx context.Context, addres
 		return fmt.Errorf("get AllocationPool: %w", err)
 	}
 
-	// Update path: confirm the OwnerRef and CIDR set are aligned with the
-	// current AddressPool state.
+	// Update path: confirm the OwnerRef and address space are aligned with
+	// the current AddressPool state.
 	updated := existing.DeepCopy()
 	if err := controllerutil.SetControllerReference(addressPool, updated, r.Scheme); err != nil {
 		return fmt.Errorf("set owner reference: %w", err)
@@ -136,6 +139,33 @@ func (r *AddressPoolReconciler) ensureAllocationPool(ctx context.Context, addres
 		return nil
 	}
 	return r.Update(ctx, updated)
+}
+
+// allocationPoolIPSpec translates the user-declared addresses into the shape
+// the allocation framework understands. BGP pools declare CIDRs, ARP pools
+// declare start-end ranges; an address that does not match its advertise mode
+// is an error rather than a value the reconciler guesses at.
+func allocationPoolIPSpec(addressPool *juneauv1alpha1.AddressPool) (*juneauv1alpha1.AllocationPoolIPSpec, error) {
+	switch addressPool.Spec.AdvertiseMode {
+	case juneauv1alpha1.AddressPoolAdvertiseModeBGP:
+		return &juneauv1alpha1.AllocationPoolIPSpec{
+			CIDRs: append([]string(nil), addressPool.Spec.Addresses...),
+		}, nil
+	case juneauv1alpha1.AddressPoolAdvertiseModeARP:
+		var ranges []juneauv1alpha1.AllocationPoolIPRange
+		for _, address := range addressPool.Spec.Addresses {
+			start, end, err := addressrange.ParseIPv4Range(address)
+			if err != nil {
+				return nil, fmt.Errorf("address %q: %w", address, err)
+			}
+			ranges = append(ranges, juneauv1alpha1.AllocationPoolIPRange{
+				Start: start.String(),
+				End:   end.String(),
+			})
+		}
+		return &juneauv1alpha1.AllocationPoolIPSpec{Ranges: ranges}, nil
+	}
+	return nil, fmt.Errorf("unsupported advertiseMode %q", addressPool.Spec.AdvertiseMode)
 }
 
 // SetupWithManager sets up the controller with the Manager.
