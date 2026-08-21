@@ -15,21 +15,21 @@ import (
 	bpf "github.com/1outres/juneau/daemon/internal/daemon/bpf"
 )
 
-type fakeNatMap struct {
+type fakeBpfMap struct {
 	entries map[any]any
 	deletes int
 }
 
-func newFakeNatMap() *fakeNatMap {
-	return &fakeNatMap{entries: make(map[any]any)}
+func newFakeBpfMap() *fakeBpfMap {
+	return &fakeBpfMap{entries: make(map[any]any)}
 }
 
-func (m *fakeNatMap) Update(key, value any, _ ebpf.MapUpdateFlags) error {
+func (m *fakeBpfMap) Update(key, value any, _ ebpf.MapUpdateFlags) error {
 	m.entries[indirectValue(key)] = indirectValue(value)
 	return nil
 }
 
-func (m *fakeNatMap) Delete(key any) error {
+func (m *fakeBpfMap) Delete(key any) error {
 	key = indirectValue(key)
 	if _, ok := m.entries[key]; !ok {
 		return ebpf.ErrKeyNotExist
@@ -54,7 +54,7 @@ func newNatTestScheme(t *testing.T) *runtime.Scheme {
 	return scheme
 }
 
-func newNatFixture(t *testing.T, attachmentNode string, includeAttachment bool) (*Nat, *fakeNatMap, *fakeNatMap, *juneauv1alpha1.ElasticIPAttachment) {
+func newNatFixture(t *testing.T, attachmentNode string, includeAttachment bool) (*Nat, *fakeBpfMap, *fakeBpfMap, *juneauv1alpha1.ElasticIPAttachment) {
 	t.Helper()
 
 	attachment := &juneauv1alpha1.ElasticIPAttachment{
@@ -85,8 +85,8 @@ func newNatFixture(t *testing.T, attachmentNode string, includeAttachment bool) 
 		objects = append(objects, attachment)
 	}
 	cl := fake.NewClientBuilder().WithScheme(newNatTestScheme(t)).WithRuntimeObjects(objects...).Build()
-	dnatMap := newFakeNatMap()
-	snatMap := newFakeNatMap()
+	dnatMap := newFakeBpfMap()
+	snatMap := newFakeBpfMap()
 	r := &Nat{
 		client:    cl,
 		dnatMap:   dnatMap,

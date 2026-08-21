@@ -16,33 +16,36 @@ import (
 	bpf "github.com/1outres/juneau/daemon/internal/daemon/bpf"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/convert"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/program"
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/reconciler/ownedaddr"
 )
+
+const naptScope = "napt"
 
 // Napt reconciles per-node NAPT state derived from
 // ExternalNetworkAttachments owned by this node:
 //
-//   - Adds a /32 entry into external_address_pools so node_ingress treats
+//   - Claims a /32 in external_address_pools so node_ingress treats
 //     packets destined to this node's host_napt_ip as candidates for
 //     reverse NAPT (and ElasticIP fall-through).
 //   - Maintains napt_src[NATGWID] = host_napt_ip for every NATGateway
 //     that references the Attachment's ExternalNetwork.
 type Napt struct {
-	client    client.Client
-	podEgress *program.PodEgress
-	nodeName  string
+	client   client.Client
+	naptSrc  bpfMap
+	nodeName string
+	owned    *ownedaddr.Scope
 
-	mu            sync.Mutex
-	poolInstalled map[string]bpf.PodEgressExternalAddressPoolsKey // attachment -> /32 key
-	srcInstalled  map[string]map[uint32]struct{}                  // attachment -> set of installed NATGWIDs
+	mu           sync.Mutex
+	srcInstalled map[string]map[uint32]struct{} // attachment -> set of installed NATGWIDs
 }
 
-func NewNapt(cl client.Client, podEgress *program.PodEgress, nodeName string) *Napt {
+func NewNapt(cl client.Client, podEgress *program.PodEgress, owned *ownedaddr.Store, nodeName string) *Napt {
 	return &Napt{
-		client:        cl,
-		podEgress:     podEgress,
-		nodeName:      nodeName,
-		poolInstalled: make(map[string]bpf.PodEgressExternalAddressPoolsKey),
-		srcInstalled:  make(map[string]map[uint32]struct{}),
+		client:       cl,
+		naptSrc:      podEgress.Objs.NaptSrc,
+		nodeName:     nodeName,
+		owned:        owned.Scope(naptScope),
+		srcInstalled: make(map[string]map[uint32]struct{}),
 	}
 }
 
@@ -67,38 +70,19 @@ func (r *Napt) Reconcile(ctx context.Context, key string) error {
 		return r.delete(key)
 	}
 
-	if err := r.upsertExternalAddressPools(key, address); err != nil {
+	if err := r.claimExternalAddress(key, address); err != nil {
 		return err
 	}
 
-	if err := r.upsertNaptSrc(ctx, key, &attachment, address); err != nil {
-		return err
-	}
-
-	return nil
+	return r.upsertNaptSrc(ctx, key, &attachment, address)
 }
 
-func (r *Napt) upsertExternalAddressPools(attachmentName, address string) error {
-	poolKey, _, err := parseExternalAddressPrefix(naptHostPrefix(address))
+func (r *Napt) claimExternalAddress(attachmentName, address string) error {
+	key, err := ownedaddr.ParsePrefix(address)
 	if err != nil {
 		return fmt.Errorf("parse assignedIP %q: %w", address, err)
 	}
-
-	var one uint8 = 1
-	if err := r.podEgress.Objs.ExternalAddressPools.Update(&poolKey, &one, ebpf.UpdateAny); err != nil {
-		return fmt.Errorf("update external_address_pools entry for %q: %w", address, err)
-	}
-
-	r.mu.Lock()
-	if old, ok := r.poolInstalled[attachmentName]; ok && old != poolKey {
-		if err := r.podEgress.Objs.ExternalAddressPools.Delete(&old); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-			r.mu.Unlock()
-			return fmt.Errorf("delete stale external_address_pools entry: %w", err)
-		}
-	}
-	r.poolInstalled[attachmentName] = poolKey
-	r.mu.Unlock()
-	return nil
+	return r.owned.Set(attachmentName, []ownedaddr.Key{key})
 }
 
 func (r *Napt) upsertNaptSrc(ctx context.Context, attachmentName string, attachment *juneauv1alpha1.ExternalNetworkAttachment, address string) error {
@@ -127,7 +111,7 @@ func (r *Napt) upsertNaptSrc(ctx context.Context, attachmentName string, attachm
 	val := bpf.PodEgressNaptSrcVal{HostIp: hostIP}
 	for gwID := range desired {
 		key := bpf.PodEgressNaptSrcKey{NatGatewayId: gwID}
-		if err := r.podEgress.Objs.NaptSrc.Update(&key, &val, ebpf.UpdateAny); err != nil {
+		if err := r.naptSrc.Update(&key, &val, ebpf.UpdateAny); err != nil {
 			return fmt.Errorf("update napt_src[%d]: %w", gwID, err)
 		}
 	}
@@ -142,7 +126,7 @@ func (r *Napt) upsertNaptSrc(ctx context.Context, attachmentName string, attachm
 			continue
 		}
 		key := bpf.PodEgressNaptSrcKey{NatGatewayId: gwID}
-		if err := r.podEgress.Objs.NaptSrc.Delete(&key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+		if err := r.naptSrc.Delete(&key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 			r.mu.Unlock()
 			return fmt.Errorf("delete stale napt_src[%d]: %w", gwID, err)
 		}
@@ -154,36 +138,27 @@ func (r *Napt) upsertNaptSrc(ctx context.Context, attachmentName string, attachm
 
 func (r *Napt) delete(attachmentName string) error {
 	r.mu.Lock()
-	poolKey, hadPool := r.poolInstalled[attachmentName]
-	if hadPool {
-		delete(r.poolInstalled, attachmentName)
-	}
 	srcKeys := r.srcInstalled[attachmentName]
 	delete(r.srcInstalled, attachmentName)
 	r.mu.Unlock()
 
-	if hadPool {
-		if err := r.podEgress.Objs.ExternalAddressPools.Delete(&poolKey); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-			return fmt.Errorf("delete external_address_pools entry: %w", err)
-		}
+	var errs []error
+	if err := r.owned.Release(attachmentName); err != nil {
+		errs = append(errs, err)
 	}
-	for gwID := range srcKeys {
-		key := bpf.PodEgressNaptSrcKey{NatGatewayId: gwID}
-		if err := r.podEgress.Objs.NaptSrc.Delete(&key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-			return fmt.Errorf("delete napt_src[%d]: %w", gwID, err)
-		}
-	}
-	return nil
+	errs = append(errs, r.deleteNaptSrc(srcKeys)...)
+	return errors.Join(errs...)
 }
 
-func naptHostPrefix(address string) string {
-	if strings.Contains(address, "/") {
-		return address
+func (r *Napt) deleteNaptSrc(gwIDs map[uint32]struct{}) []error {
+	var errs []error
+	for gwID := range gwIDs {
+		key := bpf.PodEgressNaptSrcKey{NatGatewayId: gwID}
+		if err := r.naptSrc.Delete(&key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			errs = append(errs, fmt.Errorf("delete napt_src[%d]: %w", gwID, err))
+		}
 	}
-	if ip := net.ParseIP(address); ip != nil && ip.To4() != nil {
-		return address + "/32"
-	}
-	return address
+	return errs
 }
 
 // parseAssignedIPForBPF parses an attachment's assignedIP and encodes
@@ -233,25 +208,16 @@ func (r *Napt) FanOutAllAttachments(any) []string {
 // attachments.
 func (r *Napt) CloseAll() error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	var errs []error
-	for _, poolKey := range r.poolInstalled {
-		if err := r.podEgress.Objs.ExternalAddressPools.Delete(&poolKey); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-			errs = append(errs, err)
-		}
-	}
-	for _, gwSet := range r.srcInstalled {
-		for gwID := range gwSet {
-			key := bpf.PodEgressNaptSrcKey{NatGatewayId: gwID}
-			if err := r.podEgress.Objs.NaptSrc.Delete(&key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-				errs = append(errs, err)
-			}
-		}
-	}
-	r.poolInstalled = make(map[string]bpf.PodEgressExternalAddressPoolsKey)
+	srcInstalled := r.srcInstalled
 	r.srcInstalled = make(map[string]map[uint32]struct{})
-	if len(errs) > 0 {
-		return errors.Join(errs...)
+	r.mu.Unlock()
+
+	var errs []error
+	if err := r.owned.ReleaseAll(); err != nil {
+		errs = append(errs, err)
 	}
-	return nil
+	for _, gwSet := range srcInstalled {
+		errs = append(errs, r.deleteNaptSrc(gwSet)...)
+	}
+	return errors.Join(errs...)
 }

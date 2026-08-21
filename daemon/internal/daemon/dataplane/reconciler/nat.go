@@ -25,8 +25,8 @@ import (
 // where reply traffic enters the data plane.
 type Nat struct {
 	client   client.Client
-	dnatMap  natMap
-	snatMap  natMap
+	dnatMap  bpfMap
+	snatMap  bpfMap
 	nodeName string
 
 	mu        sync.Mutex
@@ -39,7 +39,10 @@ type natSnapshot struct {
 	programSNAT bool
 }
 
-type natMap interface {
+// bpfMap is the subset of *ebpf.Map the reconcilers in this package
+// drive. It exists so each reconciler can be exercised without a live
+// kernel map.
+type bpfMap interface {
 	Update(key, value any, flags ebpf.MapUpdateFlags) error
 	Delete(key any) error
 }

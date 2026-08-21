@@ -55,3 +55,11 @@ func IPMaskToUint32(mask net.IPMask) (uint32, error) {
 	}
 	return binary.BigEndian.Uint32(mask), nil
 }
+
+// BPFNetworkOrderToIPv4 is the inverse of IPv4ToBPFNetworkOrder. Use it
+// to render a BPF map field back as a readable address.
+func BPFNetworkOrderToIPv4(value uint32) net.IP {
+	ip := make(net.IP, net.IPv4len)
+	binary.LittleEndian.PutUint32(ip, value)
+	return ip
+}

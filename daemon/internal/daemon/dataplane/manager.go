@@ -19,6 +19,7 @@ import (
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/policy"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/program"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/reconciler"
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/reconciler/ownedaddr"
 	servicereconciler "github.com/1outres/juneau/daemon/internal/daemon/dataplane/reconciler/service"
 	servicelbreconciler "github.com/1outres/juneau/daemon/internal/daemon/dataplane/reconciler/serviceloadbalancer"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/trace"
@@ -91,7 +92,8 @@ type Manager struct {
 	aclStore        *policy.ACLStore
 	membershipStore *policy.MembershipStore
 
-	napt *reconciler.Napt
+	napt           *reconciler.Napt
+	ownedAddresses *ownedaddr.Store
 
 	juNodeUnderlayIP net.IP
 
@@ -181,6 +183,8 @@ func (m *Manager) Start(ctx context.Context) error {
 func (m *Manager) MapInventory() *mapinventory.Inventory { return m.mapInventory }
 
 func (m *Manager) startReconcilers(ctx context.Context) error {
+	m.ownedAddresses = ownedaddr.NewStore(m.podEgress.Objs.ExternalAddressPools)
+
 	subnetReconciler := reconciler.NewSubnet(m.client, m.podEgress)
 	m.subnetRunner = runner.New(subnetReconciler)
 	if err := m.subnetRunner.Watch(m.subnetInformer, runner.MetaNamespaceKey); err != nil {
@@ -270,7 +274,7 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	}
 	m.natRunner.Start(ctx, 1)
 
-	m.bgpPoolRunner = runner.New(reconciler.NewBgpPool(m.client, m.podEgress))
+	m.bgpPoolRunner = runner.New(reconciler.NewBgpPool(m.client, m.ownedAddresses))
 	bgpPoolKey := runner.ConstantKey(runner.SingletonKey)
 	if err := m.bgpPoolRunner.Watch(m.addressPoolInformer, bgpPoolKey); err != nil {
 		return fmt.Errorf("watch AddressPool: %w", err)
@@ -298,7 +302,7 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	}
 
 	if m.externalNetworkAttachmentInformer != nil {
-		m.napt = reconciler.NewNapt(m.client, m.podEgress, m.nodeName)
+		m.napt = reconciler.NewNapt(m.client, m.podEgress, m.ownedAddresses, m.nodeName)
 		m.naptRunner = runner.New(m.napt)
 		if err := m.naptRunner.Watch(m.externalNetworkAttachmentInformer, runner.MetaNamespaceKey); err != nil {
 			return fmt.Errorf("watch ExternalNetworkAttachment: %w", err)
