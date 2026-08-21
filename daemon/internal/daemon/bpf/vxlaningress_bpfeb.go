@@ -65,12 +65,6 @@ type VxlanIngressBackendVal struct {
 	BackendSubnetId uint32
 }
 
-type VxlanIngressBgpAddressPoolsKey struct {
-	_         structs.HostLayout
-	Prefixlen uint32
-	Addr      uint32
-}
-
 type VxlanIngressCtKey struct {
 	_     structs.HostLayout
 	Scope uint32
@@ -95,6 +89,12 @@ type VxlanIngressCtVal struct {
 	Pad          uint8
 	_            [4]byte
 	LastSeenNs   uint64
+}
+
+type VxlanIngressExternalAddressPoolsKey struct {
+	_         structs.HostLayout
+	Prefixlen uint32
+	Addr      uint32
 }
 
 type VxlanIngressFdbKey struct {
@@ -430,8 +430,8 @@ type VxlanIngressMapSpecs struct {
 	AclRulesInnerProto    *ebpf.MapSpec `ebpf:"acl_rules_inner_proto"`
 	ArpTable              *ebpf.MapSpec `ebpf:"arp_table"`
 	BackendMap            *ebpf.MapSpec `ebpf:"backend_map"`
-	BgpAddressPools       *ebpf.MapSpec `ebpf:"bgp_address_pools"`
 	CtMap                 *ebpf.MapSpec `ebpf:"ct_map"`
+	ExternalAddressPools  *ebpf.MapSpec `ebpf:"external_address_pools"`
 	Fdb                   *ebpf.MapSpec `ebpf:"fdb"`
 	FibInner              *ebpf.MapSpec `ebpf:"fib_inner"`
 	FibMap                *ebpf.MapSpec `ebpf:"fib_map"`
@@ -496,8 +496,8 @@ type VxlanIngressMaps struct {
 	AclRulesInnerProto    *ebpf.Map `ebpf:"acl_rules_inner_proto"`
 	ArpTable              *ebpf.Map `ebpf:"arp_table"`
 	BackendMap            *ebpf.Map `ebpf:"backend_map"`
-	BgpAddressPools       *ebpf.Map `ebpf:"bgp_address_pools"`
 	CtMap                 *ebpf.Map `ebpf:"ct_map"`
+	ExternalAddressPools  *ebpf.Map `ebpf:"external_address_pools"`
 	Fdb                   *ebpf.Map `ebpf:"fdb"`
 	FibInner              *ebpf.Map `ebpf:"fib_inner"`
 	FibMap                *ebpf.Map `ebpf:"fib_map"`
@@ -538,8 +538,8 @@ func (m *VxlanIngressMaps) Close() error {
 		m.AclRulesInnerProto,
 		m.ArpTable,
 		m.BackendMap,
-		m.BgpAddressPools,
 		m.CtMap,
+		m.ExternalAddressPools,
 		m.Fdb,
 		m.FibInner,
 		m.FibMap,

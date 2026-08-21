@@ -622,7 +622,7 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
   // Packets destined to this node's underlay IP may be the response
   // leg of a host-network Service NAPT flow (CT_ACTION_SVC_NAPT_IN).
   // Try a SVC_NAPT_IN match first; on miss, fall through to the
-  // bgp_address_pools / NAPT_IN / ElasticIP path so deployments where
+  // external_address_pools / NAPT_IN / ElasticIP path so deployments where
   // host_napt_ip and the node's underlay IP coincide (single-NIC
   // bare-metal advertising the node IP via BGP, etc.) still recover
   // their existing NAPT_IN flows.
@@ -647,15 +647,16 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
                                 /*quote=*/NULL);
       }
     }
-    // Fall through to bgp_address_pools below.
+    // Fall through to external_address_pools below.
   }
 
-  struct bgp_address_pools_key bgp_key = {
+  struct external_address_pools_key pool_key = {
       .prefixlen = 32,
       .addr = iph->daddr,
   };
-  const __u8 *bgp_val = bpf_map_lookup_elem(&bgp_address_pools, &bgp_key);
-  if (!bgp_val || *bgp_val == 0)
+  const __u8 *pool_val =
+      bpf_map_lookup_elem(&external_address_pools, &pool_key);
+  if (!pool_val || *pool_val == 0)
     return TC_ACT_OK;
 
   // First try NAPT reverse: ct_map keyed on (HOST, src=internet,

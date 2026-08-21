@@ -28,7 +28,7 @@ func RegisterPodEgress(inv *Inventory, p *program.PodEgress) error {
 		registerServiceNATIP,
 		registerFib,
 		registerTgwFib,
-		registerBGPAddressPools,
+		registerExternalAddressPools,
 		registerNATSnat,
 		registerNATDnat,
 		registerService,
@@ -245,10 +245,10 @@ func registerTgwFib(inv *Inventory, p *program.PodEgress) error {
 	})
 }
 
-func registerBGPAddressPools(inv *Inventory, p *program.PodEgress) error {
+func registerExternalAddressPools(inv *Inventory, p *program.PodEgress) error {
 	return inv.Register(&Descriptor{
-		Name: "bgp_address_pools",
-		Map:  p.Objs.BgpAddressPools,
+		Name: "external_address_pools",
+		Map:  p.Objs.ExternalAddressPools,
 		Key: Schema{Fields: []Field{
 			FieldU32Named("prefixlen"),
 			FieldIPv4BENamed("addr"),

@@ -21,7 +21,7 @@ import (
 // Napt reconciles per-node NAPT state derived from
 // ExternalNetworkAttachments owned by this node:
 //
-//   - Adds a /32 entry into bgp_address_pools so node_ingress treats
+//   - Adds a /32 entry into external_address_pools so node_ingress treats
 //     packets destined to this node's host_napt_ip as candidates for
 //     reverse NAPT (and ElasticIP fall-through).
 //   - Maintains napt_src[NATGWID] = host_napt_ip for every NATGateway
@@ -31,18 +31,18 @@ type Napt struct {
 	podEgress *program.PodEgress
 	nodeName  string
 
-	mu           sync.Mutex
-	bgpInstalled map[string]bpf.PodEgressBgpAddressPoolsKey // attachment -> /32 key
-	srcInstalled map[string]map[uint32]struct{}             // attachment -> set of installed NATGWIDs
+	mu            sync.Mutex
+	poolInstalled map[string]bpf.PodEgressExternalAddressPoolsKey // attachment -> /32 key
+	srcInstalled  map[string]map[uint32]struct{}                  // attachment -> set of installed NATGWIDs
 }
 
 func NewNapt(cl client.Client, podEgress *program.PodEgress, nodeName string) *Napt {
 	return &Napt{
-		client:       cl,
-		podEgress:    podEgress,
-		nodeName:     nodeName,
-		bgpInstalled: make(map[string]bpf.PodEgressBgpAddressPoolsKey),
-		srcInstalled: make(map[string]map[uint32]struct{}),
+		client:        cl,
+		podEgress:     podEgress,
+		nodeName:      nodeName,
+		poolInstalled: make(map[string]bpf.PodEgressExternalAddressPoolsKey),
+		srcInstalled:  make(map[string]map[uint32]struct{}),
 	}
 }
 
@@ -67,7 +67,7 @@ func (r *Napt) Reconcile(ctx context.Context, key string) error {
 		return r.delete(key)
 	}
 
-	if err := r.upsertBgpAddressPools(key, address); err != nil {
+	if err := r.upsertExternalAddressPools(key, address); err != nil {
 		return err
 	}
 
@@ -78,25 +78,25 @@ func (r *Napt) Reconcile(ctx context.Context, key string) error {
 	return nil
 }
 
-func (r *Napt) upsertBgpAddressPools(attachmentName, address string) error {
-	bgpKey, _, err := parseBGPAddressPoolPrefix(naptHostPrefix(address))
+func (r *Napt) upsertExternalAddressPools(attachmentName, address string) error {
+	poolKey, _, err := parseExternalAddressPrefix(naptHostPrefix(address))
 	if err != nil {
 		return fmt.Errorf("parse assignedIP %q: %w", address, err)
 	}
 
 	var one uint8 = 1
-	if err := r.podEgress.Objs.BgpAddressPools.Update(&bgpKey, &one, ebpf.UpdateAny); err != nil {
-		return fmt.Errorf("update bgp_address_pools entry for %q: %w", address, err)
+	if err := r.podEgress.Objs.ExternalAddressPools.Update(&poolKey, &one, ebpf.UpdateAny); err != nil {
+		return fmt.Errorf("update external_address_pools entry for %q: %w", address, err)
 	}
 
 	r.mu.Lock()
-	if old, ok := r.bgpInstalled[attachmentName]; ok && old != bgpKey {
-		if err := r.podEgress.Objs.BgpAddressPools.Delete(&old); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+	if old, ok := r.poolInstalled[attachmentName]; ok && old != poolKey {
+		if err := r.podEgress.Objs.ExternalAddressPools.Delete(&old); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 			r.mu.Unlock()
-			return fmt.Errorf("delete stale bgp_address_pools entry: %w", err)
+			return fmt.Errorf("delete stale external_address_pools entry: %w", err)
 		}
 	}
-	r.bgpInstalled[attachmentName] = bgpKey
+	r.poolInstalled[attachmentName] = poolKey
 	r.mu.Unlock()
 	return nil
 }
@@ -154,17 +154,17 @@ func (r *Napt) upsertNaptSrc(ctx context.Context, attachmentName string, attachm
 
 func (r *Napt) delete(attachmentName string) error {
 	r.mu.Lock()
-	bgpKey, hadBgp := r.bgpInstalled[attachmentName]
-	if hadBgp {
-		delete(r.bgpInstalled, attachmentName)
+	poolKey, hadPool := r.poolInstalled[attachmentName]
+	if hadPool {
+		delete(r.poolInstalled, attachmentName)
 	}
 	srcKeys := r.srcInstalled[attachmentName]
 	delete(r.srcInstalled, attachmentName)
 	r.mu.Unlock()
 
-	if hadBgp {
-		if err := r.podEgress.Objs.BgpAddressPools.Delete(&bgpKey); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-			return fmt.Errorf("delete bgp_address_pools entry: %w", err)
+	if hadPool {
+		if err := r.podEgress.Objs.ExternalAddressPools.Delete(&poolKey); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			return fmt.Errorf("delete external_address_pools entry: %w", err)
 		}
 	}
 	for gwID := range srcKeys {
@@ -235,8 +235,8 @@ func (r *Napt) CloseAll() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var errs []error
-	for _, bgpKey := range r.bgpInstalled {
-		if err := r.podEgress.Objs.BgpAddressPools.Delete(&bgpKey); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+	for _, poolKey := range r.poolInstalled {
+		if err := r.podEgress.Objs.ExternalAddressPools.Delete(&poolKey); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 			errs = append(errs, err)
 		}
 	}
@@ -248,7 +248,7 @@ func (r *Napt) CloseAll() error {
 			}
 		}
 	}
-	r.bgpInstalled = make(map[string]bpf.PodEgressBgpAddressPoolsKey)
+	r.poolInstalled = make(map[string]bpf.PodEgressExternalAddressPoolsKey)
 	r.srcInstalled = make(map[string]map[uint32]struct{})
 	if len(errs) > 0 {
 		return errors.Join(errs...)

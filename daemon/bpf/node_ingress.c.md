@@ -17,7 +17,7 @@
 ## handle_l3
 
 1. L3ヘッダーのパースを行う
-2. 宛先IPアドレスでbgp_address_pools mapを引く
+2. 宛先IPアドレスでexternal_address_pools mapを引く
 3. 見つからないもしくはvalueが0だったらTC_ACT_OK
 4. nat_dnat_mapを引く
 5. 見つからなかったらTC_ACT_SHOT

@@ -19,7 +19,7 @@ import (
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/program"
 )
 
-// BgpPool keeps podEgress.BgpAddressPools in sync with the set of
+// BgpPool keeps podEgress.ExternalAddressPools in sync with the set of
 // AddressPools referenced by BGPAdvertisements. It runs with SingletonKey
 // because the desired state is a function of all AddressPool and
 // BGPAdvertisement objects, not any single one.
@@ -28,14 +28,14 @@ type BgpPool struct {
 	podEgress *program.PodEgress
 
 	mu   sync.Mutex
-	last map[string]bpf.PodEgressBgpAddressPoolsKey
+	last map[string]bpf.PodEgressExternalAddressPoolsKey
 }
 
 func NewBgpPool(cl client.Client, podEgress *program.PodEgress) *BgpPool {
 	return &BgpPool{
 		client:    cl,
 		podEgress: podEgress,
-		last:      make(map[string]bpf.PodEgressBgpAddressPoolsKey),
+		last:      make(map[string]bpf.PodEgressExternalAddressPoolsKey),
 	}
 }
 
@@ -57,8 +57,8 @@ func (r *BgpPool) Reconcile(ctx context.Context, _ string) error {
 		if _, ok := desired[key]; ok {
 			continue
 		}
-		if err := r.podEgress.Objs.BgpAddressPools.Delete(&oldKey); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-			return fmt.Errorf("delete bgp_address_pools entry %s: %w", key, err)
+		if err := r.podEgress.Objs.ExternalAddressPools.Delete(&oldKey); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			return fmt.Errorf("delete external_address_pools entry %s: %w", key, err)
 		}
 	}
 
@@ -67,8 +67,8 @@ func (r *BgpPool) Reconcile(ctx context.Context, _ string) error {
 		if oldKey, ok := r.last[key]; ok && oldKey == newKey {
 			continue
 		}
-		if err := r.podEgress.Objs.BgpAddressPools.Update(&newKey, &one, ebpf.UpdateAny); err != nil {
-			return fmt.Errorf("update bgp_address_pools entry %s: %w", key, err)
+		if err := r.podEgress.Objs.ExternalAddressPools.Update(&newKey, &one, ebpf.UpdateAny); err != nil {
+			return fmt.Errorf("update external_address_pools entry %s: %w", key, err)
 		}
 	}
 
@@ -77,7 +77,7 @@ func (r *BgpPool) Reconcile(ctx context.Context, _ string) error {
 	return nil
 }
 
-func (r *BgpPool) buildDesired(ctx context.Context) (map[string]bpf.PodEgressBgpAddressPoolsKey, []string, error) {
+func (r *BgpPool) buildDesired(ctx context.Context) (map[string]bpf.PodEgressExternalAddressPoolsKey, []string, error) {
 	var pools juneauv1alpha1.AddressPoolList
 	if err := r.client.List(ctx, &pools); err != nil {
 		return nil, nil, fmt.Errorf("list AddressPools: %w", err)
@@ -112,7 +112,7 @@ func (r *BgpPool) buildDesired(ctx context.Context) (map[string]bpf.PodEgressBgp
 	}
 	sort.Strings(poolNames)
 
-	desired := make(map[string]bpf.PodEgressBgpAddressPoolsKey)
+	desired := make(map[string]bpf.PodEgressExternalAddressPoolsKey)
 	var warnings []string
 	for _, poolName := range poolNames {
 		pool, ok := poolsByName[poolName]
@@ -126,7 +126,7 @@ func (r *BgpPool) buildDesired(ctx context.Context) (map[string]bpf.PodEgressBgp
 		}
 
 		for _, raw := range pool.Spec.Addresses {
-			key, canonical, err := parseBGPAddressPoolPrefix(raw)
+			key, canonical, err := parseExternalAddressPrefix(raw)
 			if err != nil {
 				warnings = append(warnings, fmt.Sprintf("AddressPool/%s: invalid address %q: %v", pool.Name, raw, err))
 				continue
@@ -138,8 +138,8 @@ func (r *BgpPool) buildDesired(ctx context.Context) (map[string]bpf.PodEgressBgp
 	return desired, warnings, nil
 }
 
-func parseBGPAddressPoolPrefix(raw string) (bpf.PodEgressBgpAddressPoolsKey, string, error) {
-	var key bpf.PodEgressBgpAddressPoolsKey
+func parseExternalAddressPrefix(raw string) (bpf.PodEgressExternalAddressPoolsKey, string, error) {
+	var key bpf.PodEgressExternalAddressPoolsKey
 
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

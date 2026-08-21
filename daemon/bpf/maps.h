@@ -455,19 +455,25 @@ struct {
   __array(values, struct tgw_fib_inner_map);
 } tgw_fib_map SEC(".maps");
 
-struct bgp_address_pools_key {
+struct external_address_pools_key {
   __u32 prefixlen;
   __u32 addr;
 };
 
+// external_address_pools gates node_ingress: a hit means juneau owns
+// the destination address and handles the packet itself, a miss means
+// the packet belongs to the host stack and is passed through. It is
+// not tied to BGP. Every way juneau claims an external address (BGP
+// advertisement, per-node NAPT address, ARP advertisement) writes this
+// same map.
 struct {
   __uint(type, BPF_MAP_TYPE_LPM_TRIE);
   __uint(max_entries, MAX_ADDRESS_POOLS_MAP);
   __uint(map_flags, BPF_F_NO_PREALLOC);
-  __type(key, struct bgp_address_pools_key);
+  __type(key, struct external_address_pools_key);
   __type(value, __u8);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
-} bgp_address_pools SEC(".maps");
+} external_address_pools SEC(".maps");
 
 struct nat_inside {
   __u32 subnet_id;

@@ -26,7 +26,7 @@ func lpmUint32(t *testing.T, ip string) uint32 {
 	return binary.LittleEndian.Uint32(parsed)
 }
 
-func TestParseBGPAddressPoolPrefix(t *testing.T) {
+func TestParseExternalAddressPrefix(t *testing.T) {
 	tests := []struct {
 		name       string
 		raw        string
@@ -85,7 +85,7 @@ func TestParseBGPAddressPoolPrefix(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			key, canonical, err := parseBGPAddressPoolPrefix(tt.raw)
+			key, canonical, err := parseExternalAddressPrefix(tt.raw)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("want error, got none (canonical=%q key=%+v)", canonical, key)
