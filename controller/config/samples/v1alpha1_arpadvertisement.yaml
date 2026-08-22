@@ -1,0 +1,11 @@
+apiVersion: juneau.loutres.me/v1alpha1
+kind: ARPAdvertisement
+metadata:
+  labels:
+    app.kubernetes.io/name: controller
+    app.kubernetes.io/managed-by: kustomize
+  name: arpadvertisement-sample
+spec:
+  externalNetwork: externalnetwork-sample
+  address: 192.0.2.10
+  nodeName: node-sample

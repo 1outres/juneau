@@ -35,17 +35,26 @@ var _ = Describe("ExternalNetworkAttachment webhook", func() {
 		Expect(err.Error()).To(ContainSubstring("referenced ExternalNetwork does not exist"))
 	})
 
-	It("rejects an ExternalNetwork with non-bgp type", func() {
+	It("accepts an ARP ExternalNetwork", func() {
 		externalNetworkName := createWebhookExternalNetwork(juneauv1alpha1.ExternalNetworkTypeARP)
-		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.ExternalNetworkAttachment{
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.ExternalNetworkAttachment{
 			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("ena")},
 			Spec: juneauv1alpha1.ExternalNetworkAttachmentSpec{
 				ExternalNetwork: externalNetworkName,
 				NodeName:        "node-a",
 			},
-		})
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("must have type=bgp"))
+		})).To(Succeed())
+	})
+
+	It("accepts a BGP ExternalNetwork", func() {
+		externalNetworkName := createWebhookExternalNetwork(juneauv1alpha1.ExternalNetworkTypeBGP)
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.ExternalNetworkAttachment{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("ena")},
+			Spec: juneauv1alpha1.ExternalNetworkAttachmentSpec{
+				ExternalNetwork: externalNetworkName,
+				NodeName:        "node-a",
+			},
+		})).To(Succeed())
 	})
 
 	It("rejects updating immutable spec fields", func() {

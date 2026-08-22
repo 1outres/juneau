@@ -53,11 +53,11 @@ spec:
                 properties:
                   cidrs:
                     description: |-
-                      CIDR ranges that participate in this pool. The union forms the
-                      candidate address space.
+                      CIDR ranges that participate in this pool. The union with Ranges
+                      forms the candidate address space. The network and broadcast
+                      addresses of every CIDR are kept out of automatic allocation.
                     items:
                       type: string
-                    minItems: 1
                     type: array
                     x-kubernetes-list-type: set
                   excluded:
@@ -69,8 +69,24 @@ spec:
                       type: string
                     type: array
                     x-kubernetes-list-type: set
-                required:
-                - cidrs
+                  ranges:
+                    description: |-
+                      Ranges lists inclusive start-end address intervals that participate
+                      in this pool. Every address of a range is allocatable.
+                    items:
+                      description: AllocationPoolIPRange is an inclusive IPv4 address
+                        interval.
+                      properties:
+                        end:
+                          type: string
+                        start:
+                          type: string
+                      required:
+                      - end
+                      - start
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
                 type: object
               number:
                 properties:

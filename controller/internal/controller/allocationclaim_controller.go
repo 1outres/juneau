@@ -379,18 +379,18 @@ func (r *AllocationClaimReconciler) allocateIP(ctx context.Context, pool *juneau
 		return "", fmt.Errorf("pool %q is type=ip but spec.ip is nil", pool.Name)
 	}
 
-	candidatePrefixes, err := parsePrefixes(pool.Spec.IP.CIDRs)
+	candidates, err := parsePoolCandidates(pool.Spec.IP)
 	if err != nil {
-		return "", fmt.Errorf("pool %q has invalid CIDRs: %w", pool.Name, err)
+		return "", fmt.Errorf("pool %q has an invalid candidate space: %w", pool.Name, err)
 	}
 
 	if claim.Spec.AllocationFilter != nil && len(claim.Spec.AllocationFilter.CIDRs) > 0 {
-		filterPrefixes, err := parsePrefixes(claim.Spec.AllocationFilter.CIDRs)
+		filter, err := parsePrefixCandidates(claim.Spec.AllocationFilter.CIDRs)
 		if err != nil {
 			return "", fmt.Errorf("claim %q has invalid allocationFilter: %w", claim.Name, err)
 		}
-		candidatePrefixes = intersectPrefixes(candidatePrefixes, filterPrefixes)
-		if len(candidatePrefixes) == 0 {
+		candidates = intersectCandidates(candidates, filter)
+		if len(candidates) == 0 {
 			return "", errAllPoolsExhausted
 		}
 	}
@@ -410,7 +410,7 @@ func (r *AllocationClaimReconciler) allocateIP(ctx context.Context, pool *juneau
 		if err != nil {
 			return "", fmt.Errorf("requested IP %q is invalid: %w", *requested, err)
 		}
-		if !addrInPrefixes(addr, candidatePrefixes) {
+		if !candidatesContain(candidates, addr) {
 			return "", fmt.Errorf("requested IP %q is outside pool %q candidate space", *requested, pool.Name)
 		}
 		if holder, exists := used[addr]; exists {
@@ -419,18 +419,11 @@ func (r *AllocationClaimReconciler) allocateIP(ctx context.Context, pool *juneau
 		return addr.String(), nil
 	}
 
-	for _, prefix := range candidatePrefixes {
-		for addr := firstUsableAddr(prefix); prefix.Contains(addr); addr = addr.Next() {
-			if !isUsableInPrefix(addr, prefix) {
-				continue
-			}
-			if _, exists := used[addr]; exists {
-				continue
-			}
-			return addr.String(), nil
-		}
+	addr, ok := firstFitCandidate(candidates, used)
+	if !ok {
+		return "", errAllPoolsExhausted
 	}
-	return "", errAllPoolsExhausted
+	return addr.String(), nil
 }
 
 func (r *AllocationClaimReconciler) collectUsedNumbers(ctx context.Context, poolName, selfClaimName, selfLeaseName string) (map[uint64]string, error) {
@@ -785,103 +778,4 @@ var leaseDeletionPredicate = predicate.Funcs{
 	UpdateFunc:  func(event.UpdateEvent) bool { return false },
 	GenericFunc: func(event.GenericEvent) bool { return false },
 	DeleteFunc:  func(event.DeleteEvent) bool { return true },
-}
-
-// parsePrefixes parses a list of CIDR strings into netip.Prefix values.
-// netip.Prefix.Masked() is applied so that prefixes like "10.0.0.5/24" are
-// normalised to their network form ("10.0.0.0/24") before iteration.
-func parsePrefixes(raws []string) ([]netip.Prefix, error) {
-	out := make([]netip.Prefix, 0, len(raws))
-	for _, raw := range raws {
-		p, err := netip.ParsePrefix(raw)
-		if err != nil {
-			return nil, fmt.Errorf("invalid CIDR %q: %w", raw, err)
-		}
-		out = append(out, p.Masked())
-	}
-	return out, nil
-}
-
-// intersectPrefixes returns the entries from filter that are fully covered by
-// at least one prefix in candidates. Filter prefixes that are not subsets of
-// the candidate space are dropped (the consumer cannot allocate outside the
-// pool's CIDRs).
-func intersectPrefixes(candidates, filter []netip.Prefix) []netip.Prefix {
-	out := make([]netip.Prefix, 0, len(filter))
-	for _, f := range filter {
-		for _, c := range candidates {
-			if c.Bits() <= f.Bits() && c.Contains(f.Addr()) {
-				out = append(out, f)
-				break
-			}
-		}
-	}
-	return out
-}
-
-func addrInPrefixes(addr netip.Addr, prefixes []netip.Prefix) bool {
-	for _, p := range prefixes {
-		if p.Contains(addr) {
-			return true
-		}
-	}
-	return false
-}
-
-// firstUsableAddr returns the first iteration anchor for a prefix. For /31
-// and /32 (and IPv6 /127, /128) every address is usable, so we start at the
-// network address. For wider prefixes we skip the network address itself.
-func firstUsableAddr(p netip.Prefix) netip.Addr {
-	bits := p.Bits()
-	switch p.Addr().BitLen() {
-	case 32:
-		if bits >= 31 {
-			return p.Addr()
-		}
-	case 128:
-		if bits >= 127 {
-			return p.Addr()
-		}
-	}
-	return p.Addr().Next()
-}
-
-// isUsableInPrefix returns false for the broadcast/all-ones address in IPv4
-// prefixes wider than /31 (and the equivalent for IPv6 wider than /127).
-func isUsableInPrefix(addr netip.Addr, p netip.Prefix) bool {
-	bits := p.Bits()
-	switch addr.BitLen() {
-	case 32:
-		if bits >= 31 {
-			return true
-		}
-		return addr != lastAddrInPrefix(p)
-	case 128:
-		if bits >= 127 {
-			return true
-		}
-		return addr != lastAddrInPrefix(p)
-	}
-	return true
-}
-
-// lastAddrInPrefix returns the broadcast (all-ones) address of the prefix.
-func lastAddrInPrefix(p netip.Prefix) netip.Addr {
-	addr := p.Masked().Addr()
-	bits := p.Bits()
-	bs := addr.As16()
-	totalBits := addr.BitLen()
-	hostBits := totalBits - bits
-	for i := 15; hostBits > 0 && i >= 0; i-- {
-		flip := hostBits
-		if flip > 8 {
-			flip = 8
-		}
-		bs[i] |= byte(1<<flip - 1)
-		hostBits -= flip
-	}
-	if addr.Is4() {
-		return netip.AddrFrom4([4]byte{bs[12], bs[13], bs[14], bs[15]})
-	}
-	return netip.AddrFrom16(bs)
 }

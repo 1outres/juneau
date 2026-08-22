@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 
@@ -213,13 +214,16 @@ func validateAllocationPoolFields(pool *juneauloutresmev1alpha1.AllocationPool, 
 			*errs = append(*errs, field.Required(specPath.Child("ip"), "spec.ip is required for type=ip"))
 			return nil
 		}
-		if len(pool.Spec.IP.CIDRs) == 0 {
-			*errs = append(*errs, field.Required(specPath.Child("ip", "cidrs"), "spec.ip.cidrs must contain at least one entry"))
+		if len(pool.Spec.IP.CIDRs) == 0 && len(pool.Spec.IP.Ranges) == 0 {
+			*errs = append(*errs, field.Required(specPath.Child("ip"), "spec.ip.cidrs or spec.ip.ranges must contain at least one entry"))
 		}
 		for i, raw := range pool.Spec.IP.CIDRs {
 			if _, err := netip.ParsePrefix(raw); err != nil {
 				*errs = append(*errs, field.Invalid(specPath.Child("ip", "cidrs").Index(i), raw, fmt.Sprintf("invalid CIDR: %v", err)))
 			}
+		}
+		for i, entry := range pool.Spec.IP.Ranges {
+			validateAllocationPoolIPRange(specPath.Child("ip", "ranges").Index(i), entry, errs)
 		}
 		for i, raw := range pool.Spec.IP.Excluded {
 			if _, err := netip.ParseAddr(raw); err != nil {
@@ -238,4 +242,33 @@ func validateAllocationPoolFields(pool *juneauloutresmev1alpha1.AllocationPool, 
 		*errs = append(*errs, field.Invalid(specPath.Child("ip"), pool.Spec.IP, fmt.Sprintf("spec.ip is not supported for type=%q", pool.Spec.Type)))
 	}
 	return nil
+}
+
+func validateAllocationPoolIPRange(path *field.Path, entry juneauloutresmev1alpha1.AllocationPoolIPRange, errs *field.ErrorList) {
+	start, startErr := parseAllocationPoolIPBound(entry.Start)
+	if startErr != nil {
+		*errs = append(*errs, field.Invalid(path.Child("start"), entry.Start, startErr.Error()))
+	}
+	end, endErr := parseAllocationPoolIPBound(entry.End)
+	if endErr != nil {
+		*errs = append(*errs, field.Invalid(path.Child("end"), entry.End, endErr.Error()))
+	}
+	if startErr != nil || endErr != nil {
+		return
+	}
+	if start.Compare(end) > 0 {
+		*errs = append(*errs, field.Invalid(path, entry, "range start must be less than or equal to range end"))
+	}
+}
+
+func parseAllocationPoolIPBound(raw string) (netip.Addr, error) {
+	addr, err := netip.ParseAddr(raw)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("invalid IP: %v", err)
+	}
+	addr = addr.Unmap()
+	if !addr.Is4() {
+		return netip.Addr{}, errors.New("only IPv4 is supported")
+	}
+	return addr, nil
 }

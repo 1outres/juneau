@@ -367,6 +367,13 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "BGPAdvertisement")
 		os.Exit(1)
 	}
+	if err = (&controller.ARPAdvertisementReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ARPAdvertisement")
+		os.Exit(1)
+	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
 		if err = webhookjuneauv1alpha1.SetupAddressPoolWebhookWithManager(mgr); err != nil {
@@ -378,6 +385,13 @@ func main() {
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
 		if err = webhookjuneauv1alpha1.SetupBGPAdvertisementWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "BGPAdvertisement")
+			os.Exit(1)
+		}
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err = webhookjuneauv1alpha1.SetupARPAdvertisementWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "ARPAdvertisement")
 			os.Exit(1)
 		}
 	}

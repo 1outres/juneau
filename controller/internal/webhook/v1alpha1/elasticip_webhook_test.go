@@ -31,13 +31,10 @@ var _ = Describe("ElasticIP webhook", func() {
 		Expect(err.Error()).To(ContainSubstring("referenced ExternalNetwork does not exist"))
 	})
 
-	It("rejects an ExternalNetwork with non-bgp type", func() {
+	It("accepts an ARP ExternalNetwork", func() {
 		externalNetworkName := createWebhookExternalNetwork(juneauv1alpha1.ExternalNetworkTypeARP)
 
-		err := webhookK8sClient.Create(context.Background(), newValidElasticIP(webhookUniqueTestName("elasticip"), externalNetworkName))
-
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("referenced ExternalNetwork must have type=bgp"))
+		Expect(webhookK8sClient.Create(context.Background(), newValidElasticIP(webhookUniqueTestName("elasticip"), externalNetworkName))).To(Succeed())
 	})
 
 	It("rejects immutable spec.externalNetwork updates", func() {

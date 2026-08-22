@@ -39,6 +39,13 @@ func TestSchemaLayoutMatchesGenerated(t *testing.T) {
 			valueSize: unsafe.Sizeof(bpf.PodEgressArpTableVal{}),
 		},
 		{
+			name:      "external_arp_table",
+			key:       schemaExternalArpKey(),
+			val:       schemaExternalArpVal(),
+			keySize:   unsafe.Sizeof(bpf.PodEgressExternalArpKey{}),
+			valueSize: unsafe.Sizeof(bpf.PodEgressExternalArpVal{}),
+		},
+		{
 			name:      "fdb",
 			key:       schemaFdbKey(),
 			val:       schemaFdbVal(),
@@ -200,6 +207,19 @@ func schemaArpKey() Schema {
 	}}
 }
 func schemaArpVal() Schema { return Schema{Fields: []Field{FieldMACNamed("mac")}} }
+
+func schemaExternalArpKey() Schema {
+	return Schema{Fields: []Field{
+		FieldU32Named("ifindex"),
+		FieldIPv4Named("ipaddr"),
+	}}
+}
+func schemaExternalArpVal() Schema {
+	return Schema{Fields: []Field{
+		FieldMACNamed("mac"),
+		FieldPadOf(2),
+	}}
+}
 
 func schemaFdbKey() Schema {
 	return Schema{Fields: []Field{

@@ -9,6 +9,7 @@ BGPAdvertisementは、AddressPoolが保持するアドレス範囲をBGPで外�
 
 `spec.addressPools`に含まれる各AddressPoolは、`spec.advertiseMode=bgp`である必要があります。
 `spec.advertiseMode=arp`のAddressPoolは参照できません。
+arp modeの広報には[ARPAdvertisement](arpadvertisement.md)を使いますが、こちらはcontrollerが自動的に作成するもので、ユーザーが作る必要はありません。
 
 ## 広報範囲の絞り込み
 

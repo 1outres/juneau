@@ -2,8 +2,6 @@ package reconciler
 
 import (
 	"context"
-	"encoding/binary"
-	"net"
 	"reflect"
 	"sort"
 	"strings"
@@ -15,98 +13,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/reconciler/ownedaddr"
 )
-
-func lpmUint32(t *testing.T, ip string) uint32 {
-	t.Helper()
-	parsed := net.ParseIP(ip).To4()
-	if parsed == nil {
-		t.Fatalf("invalid test IP %q", ip)
-	}
-	return binary.LittleEndian.Uint32(parsed)
-}
-
-func TestParseBGPAddressPoolPrefix(t *testing.T) {
-	tests := []struct {
-		name       string
-		raw        string
-		wantAddr   uint32
-		wantPrefix uint32
-		wantCanon  string
-		wantErr    bool
-	}{
-		{
-			name:       "plain IPv4 becomes /32",
-			raw:        "10.1.2.3",
-			wantAddr:   lpmUint32(t, "10.1.2.3"),
-			wantPrefix: 32,
-			wantCanon:  "10.1.2.3/32",
-		},
-		{
-			name:       "CIDR is canonicalized to network address",
-			raw:        "10.1.2.3/24",
-			wantAddr:   lpmUint32(t, "10.1.2.0"),
-			wantPrefix: 24,
-			wantCanon:  "10.1.2.0/24",
-		},
-		{
-			name:       "whitespace is trimmed",
-			raw:        "  10.1.2.3/24  ",
-			wantAddr:   lpmUint32(t, "10.1.2.0"),
-			wantPrefix: 24,
-			wantCanon:  "10.1.2.0/24",
-		},
-		{
-			name:    "empty string is rejected",
-			raw:     "",
-			wantErr: true,
-		},
-		{
-			name:    "invalid IP is rejected",
-			raw:     "not-an-ip",
-			wantErr: true,
-		},
-		{
-			name:    "malformed CIDR is rejected",
-			raw:     "10.1.2.3/40",
-			wantErr: true,
-		},
-		{
-			name:    "IPv6 plain address is rejected",
-			raw:     "fe80::1",
-			wantErr: true,
-		},
-		{
-			name:    "IPv6 CIDR is rejected",
-			raw:     "fe80::/64",
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			key, canonical, err := parseBGPAddressPoolPrefix(tt.raw)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("want error, got none (canonical=%q key=%+v)", canonical, key)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if canonical != tt.wantCanon {
-				t.Errorf("canonical = %q, want %q", canonical, tt.wantCanon)
-			}
-			if key.Addr != tt.wantAddr {
-				t.Errorf("key.Addr = %#x, want %#x", key.Addr, tt.wantAddr)
-			}
-			if key.Prefixlen != tt.wantPrefix {
-				t.Errorf("key.Prefixlen = %d, want %d", key.Prefixlen, tt.wantPrefix)
-			}
-		})
-	}
-}
 
 func newTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
@@ -115,23 +23,40 @@ func newTestScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-func TestBgpPool_BuildDesired(t *testing.T) {
-	newPool := func(name string, mode juneauv1alpha1.AddressPoolAdvertiseMode, addrs ...string) *juneauv1alpha1.AddressPool {
-		return &juneauv1alpha1.AddressPool{
-			ObjectMeta: metav1.ObjectMeta{Name: name},
-			Spec: juneauv1alpha1.AddressPoolSpec{
-				AdvertiseMode: mode,
-				Addresses:     addrs,
-			},
-		}
-	}
-	newAdv := func(name string, pools ...string) *juneauv1alpha1.BGPAdvertisement {
-		return &juneauv1alpha1.BGPAdvertisement{
-			ObjectMeta: metav1.ObjectMeta{Name: name},
-			Spec:       juneauv1alpha1.BGPAdvertisementSpec{AddressPools: pools},
-		}
-	}
+func newBgpPool(t *testing.T, objs []runtime.Object) (*BgpPool, *fakeBpfMap) {
+	t.Helper()
+	cl := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithRuntimeObjects(objs...).Build()
+	poolMap := newFakeBpfMap()
+	return NewBgpPool(cl, ownedaddr.NewStore(poolMap)), poolMap
+}
 
+func prefixStrings(keys []ownedaddr.Key) []string {
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, key.String())
+	}
+	sort.Strings(out)
+	return out
+}
+
+func newBgpTestPool(name string, mode juneauv1alpha1.AddressPoolAdvertiseMode, addrs ...string) *juneauv1alpha1.AddressPool {
+	return &juneauv1alpha1.AddressPool{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: juneauv1alpha1.AddressPoolSpec{
+			AdvertiseMode: mode,
+			Addresses:     addrs,
+		},
+	}
+}
+
+func newBgpTestAdvertisement(name string, pools ...string) *juneauv1alpha1.BGPAdvertisement {
+	return &juneauv1alpha1.BGPAdvertisement{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec:       juneauv1alpha1.BGPAdvertisementSpec{AddressPools: pools},
+	}
+}
+
+func TestBgpPool_BuildDesired(t *testing.T) {
 	tests := []struct {
 		name         string
 		objs         []runtime.Object
@@ -141,9 +66,9 @@ func TestBgpPool_BuildDesired(t *testing.T) {
 		{
 			name: "referenced BGP pool emits entries, non-BGP is warned",
 			objs: []runtime.Object{
-				newPool("bgp", juneauv1alpha1.AddressPoolAdvertiseModeBGP, "10.1.0.0/24", "192.168.1.1"),
-				newPool("arp", juneauv1alpha1.AddressPoolAdvertiseModeARP, "10.2.0.0/24"),
-				newAdv("adv", "bgp", "arp"),
+				newBgpTestPool("bgp", juneauv1alpha1.AddressPoolAdvertiseModeBGP, "10.1.0.0/24", "192.168.1.1"),
+				newBgpTestPool("arp", juneauv1alpha1.AddressPoolAdvertiseModeARP, "10.2.0.0/24"),
+				newBgpTestAdvertisement("adv", "bgp", "arp"),
 			},
 			wantCanon:    []string{"10.1.0.0/24", "192.168.1.1/32"},
 			wantWarnRegx: []string{"advertiseMode"},
@@ -151,7 +76,7 @@ func TestBgpPool_BuildDesired(t *testing.T) {
 		{
 			name: "missing pool reference is warned and skipped",
 			objs: []runtime.Object{
-				newAdv("adv", "ghost"),
+				newBgpTestAdvertisement("adv", "ghost"),
 			},
 			wantCanon:    nil,
 			wantWarnRegx: []string{"missing AddressPool/ghost"},
@@ -159,15 +84,15 @@ func TestBgpPool_BuildDesired(t *testing.T) {
 		{
 			name: "unreferenced BGP pool is not emitted",
 			objs: []runtime.Object{
-				newPool("idle", juneauv1alpha1.AddressPoolAdvertiseModeBGP, "10.3.0.0/24"),
+				newBgpTestPool("idle", juneauv1alpha1.AddressPoolAdvertiseModeBGP, "10.3.0.0/24"),
 			},
 			wantCanon: nil,
 		},
 		{
 			name: "invalid address is warned, valid siblings still emitted",
 			objs: []runtime.Object{
-				newPool("bgp", juneauv1alpha1.AddressPoolAdvertiseModeBGP, "bogus", "10.4.0.0/24"),
-				newAdv("adv", "bgp"),
+				newBgpTestPool("bgp", juneauv1alpha1.AddressPoolAdvertiseModeBGP, "bogus", "10.4.0.0/24"),
+				newBgpTestAdvertisement("adv", "bgp"),
 			},
 			wantCanon:    []string{"10.4.0.0/24"},
 			wantWarnRegx: []string{"invalid address"},
@@ -175,9 +100,9 @@ func TestBgpPool_BuildDesired(t *testing.T) {
 		{
 			name: "duplicate prefixes across pools are deduped",
 			objs: []runtime.Object{
-				newPool("a", juneauv1alpha1.AddressPoolAdvertiseModeBGP, "10.5.0.0/24"),
-				newPool("b", juneauv1alpha1.AddressPoolAdvertiseModeBGP, "10.5.0.0/24"),
-				newAdv("adv", "a", "b"),
+				newBgpTestPool("a", juneauv1alpha1.AddressPoolAdvertiseModeBGP, "10.5.0.0/24"),
+				newBgpTestPool("b", juneauv1alpha1.AddressPoolAdvertiseModeBGP, "10.5.0.0/24"),
+				newBgpTestAdvertisement("adv", "a", "b"),
 			},
 			wantCanon: []string{"10.5.0.0/24"},
 		},
@@ -185,18 +110,13 @@ func TestBgpPool_BuildDesired(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cl := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithRuntimeObjects(tt.objs...).Build()
-			r := NewBgpPool(cl, nil)
+			r, _ := newBgpPool(t, tt.objs)
 			desired, warnings, err := r.buildDesired(context.Background())
 			if err != nil {
 				t.Fatalf("buildDesired: %v", err)
 			}
 
-			gotCanon := make([]string, 0, len(desired))
-			for k := range desired {
-				gotCanon = append(gotCanon, k)
-			}
-			sort.Strings(gotCanon)
+			gotCanon := prefixStrings(desired)
 			want := append([]string{}, tt.wantCanon...)
 			sort.Strings(want)
 			if len(gotCanon) != len(want) || (len(gotCanon) > 0 && !reflect.DeepEqual(gotCanon, want)) {
@@ -216,5 +136,81 @@ func TestBgpPool_BuildDesired(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBgpPool_ReconcileProgramsDesiredPrefixes(t *testing.T) {
+	objs := []runtime.Object{
+		newBgpTestPool("bgp", juneauv1alpha1.AddressPoolAdvertiseModeBGP, "10.1.0.0/24", "192.168.1.1"),
+		newBgpTestAdvertisement("adv", "bgp"),
+	}
+	r, poolMap := newBgpPool(t, objs)
+
+	if err := r.Reconcile(context.Background(), "__singleton__"); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	got := poolPrefixes(t, poolMap)
+	want := []string{"10.1.0.0/24", "192.168.1.1/32"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("external_address_pools = %v, want %v", got, want)
+	}
+}
+
+func TestBgpPool_ReconcileDropsPrefixesThatLeftThePool(t *testing.T) {
+	pool := newBgpTestPool("bgp", juneauv1alpha1.AddressPoolAdvertiseModeBGP, "10.1.0.0/24", "10.2.0.0/24")
+	objs := []runtime.Object{pool, newBgpTestAdvertisement("adv", "bgp")}
+	r, poolMap := newBgpPool(t, objs)
+
+	if err := r.Reconcile(context.Background(), "__singleton__"); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	pool.Spec.Addresses = []string{"10.1.0.0/24"}
+	if err := r.client.Update(context.Background(), pool); err != nil {
+		t.Fatalf("update AddressPool: %v", err)
+	}
+	if err := r.Reconcile(context.Background(), "__singleton__"); err != nil {
+		t.Fatalf("Reconcile after shrink: %v", err)
+	}
+
+	got := poolPrefixes(t, poolMap)
+	want := []string{"10.1.0.0/24"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("external_address_pools = %v, want %v", got, want)
+	}
+}
+
+func TestBgpPool_ReconcileKeepsPrefixClaimedByNapt(t *testing.T) {
+	pool := newBgpTestPool("bgp", juneauv1alpha1.AddressPoolAdvertiseModeBGP, "192.0.2.5")
+	objs := []runtime.Object{pool, newBgpTestAdvertisement("adv", "bgp")}
+	cl := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithRuntimeObjects(objs...).Build()
+	poolMap := newFakeBpfMap()
+	store := ownedaddr.NewStore(poolMap)
+	r := NewBgpPool(cl, store)
+
+	naptClaim, err := ownedaddr.ParsePrefix("192.0.2.5")
+	if err != nil {
+		t.Fatalf("ParsePrefix: %v", err)
+	}
+	if err := store.Scope(naptScope).Set("extnet--node-a", []ownedaddr.Key{naptClaim}); err != nil {
+		t.Fatalf("Set napt claim: %v", err)
+	}
+	if err := r.Reconcile(context.Background(), "__singleton__"); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	pool.Spec.Addresses = nil
+	if err := r.client.Update(context.Background(), pool); err != nil {
+		t.Fatalf("update AddressPool: %v", err)
+	}
+	if err := r.Reconcile(context.Background(), "__singleton__"); err != nil {
+		t.Fatalf("Reconcile after emptying pool: %v", err)
+	}
+
+	got := poolPrefixes(t, poolMap)
+	want := []string{"192.0.2.5/32"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("external_address_pools = %v, want %v (napt still claims it)", got, want)
 	}
 }

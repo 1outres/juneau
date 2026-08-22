@@ -28,7 +28,8 @@ func RegisterPodEgress(inv *Inventory, p *program.PodEgress) error {
 		registerServiceNATIP,
 		registerFib,
 		registerTgwFib,
-		registerBGPAddressPools,
+		registerExternalAddressPools,
+		registerExternalArp,
 		registerNATSnat,
 		registerNATDnat,
 		registerService,
@@ -245,16 +246,33 @@ func registerTgwFib(inv *Inventory, p *program.PodEgress) error {
 	})
 }
 
-func registerBGPAddressPools(inv *Inventory, p *program.PodEgress) error {
+func registerExternalAddressPools(inv *Inventory, p *program.PodEgress) error {
 	return inv.Register(&Descriptor{
-		Name: "bgp_address_pools",
-		Map:  p.Objs.BgpAddressPools,
+		Name: "external_address_pools",
+		Map:  p.Objs.ExternalAddressPools,
 		Key: Schema{Fields: []Field{
 			FieldU32Named("prefixlen"),
 			FieldIPv4BENamed("addr"),
 		}},
 		Value: Schema{Fields: []Field{
 			FieldU8Named("present"),
+		}},
+	})
+}
+
+func registerExternalArp(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name: "external_arp_table",
+		Map:  p.Objs.ExternalArpTable,
+		Key: Schema{Fields: []Field{
+			FieldU32Named("ifindex", "node ingress NIC the reply is sent back out of"),
+			// ipaddr: writer is convert.IPv4ToUint32 (host-order
+			// numeric layout, LE bytes [d,c,b,a]).
+			FieldIPv4Named("ipaddr"),
+		}},
+		Value: Schema{Fields: []Field{
+			FieldMACNamed("mac", "MAC answered with in the ARP reply"),
+			FieldPadOf(2),
 		}},
 	})
 }

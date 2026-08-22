@@ -2,10 +2,13 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -296,3 +299,221 @@ var _ = Describe("ServiceLoadBalancer service-sync reconciler (Phase 2)", func()
 		}).Should(Succeed())
 	})
 })
+
+var _ = Describe("ServiceLoadBalancer ARP advertisement", func() {
+	It("advertises the VIP from exactly one of the advertising nodes", func() {
+		ctx := context.Background()
+		slb, svc := createARPServiceLoadBalancer(ctx, []string{"10.170.0.10-10.170.0.20"})
+		createServiceEndpointSlice(ctx, svc.Name, "node-slb-a", "node-slb-b")
+
+		vip := waitForServiceLoadBalancerVIP(slb.Name)
+
+		Eventually(func(g Gomega) {
+			g.Expect(reconcileServiceLoadBalancer(slb.Name)).To(Succeed())
+			g.Expect(getServiceLoadBalancer(slb.Name).Status.AdvertisingNodes).To(ConsistOf("node-slb-a", "node-slb-b"))
+		}).Should(Succeed())
+
+		var advertisements juneauv1alpha1.ARPAdvertisementList
+		Expect(k8sClient.List(ctx, &advertisements)).To(Succeed())
+		matching := 0
+		for _, advertisement := range advertisements.Items {
+			if advertisement.Spec.Address == vip {
+				matching++
+			}
+		}
+		Expect(matching).To(Equal(1))
+
+		var advertisement juneauv1alpha1.ARPAdvertisement
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: serviceLoadBalancerAdvertisementName("default", slb.Name)}, &advertisement)).To(Succeed())
+		Expect(advertisement.Spec.Address).To(Equal(vip))
+		Expect(advertisement.Spec.NodeName).To(BeElementOf("node-slb-a", "node-slb-b"))
+		Expect(getServiceLoadBalancer(slb.Name).Status.ArpAnnouncingNode).To(Equal(advertisement.Spec.NodeName))
+	})
+
+	It("moves the advertisement when the elected node stops advertising", func() {
+		ctx := context.Background()
+		slb, svc := createARPServiceLoadBalancer(ctx, []string{"10.170.1.10-10.170.1.20"})
+		slice := createServiceEndpointSlice(ctx, svc.Name, "node-slb-c", "node-slb-d")
+
+		waitForServiceLoadBalancerVIP(slb.Name)
+
+		var before juneauv1alpha1.ARPAdvertisement
+		Eventually(func(g Gomega) {
+			g.Expect(reconcileServiceLoadBalancer(slb.Name)).To(Succeed())
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: serviceLoadBalancerAdvertisementName("default", slb.Name)}, &before)).To(Succeed())
+			g.Expect(before.Spec.NodeName).NotTo(BeEmpty())
+		}).Should(Succeed())
+
+		remaining := "node-slb-c"
+		if before.Spec.NodeName == remaining {
+			remaining = "node-slb-d"
+		}
+		setEndpointSliceNodes(ctx, slice, remaining)
+
+		Eventually(func(g Gomega) {
+			g.Expect(reconcileServiceLoadBalancer(slb.Name)).To(Succeed())
+			var after juneauv1alpha1.ARPAdvertisement
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: serviceLoadBalancerAdvertisementName("default", slb.Name)}, &after)).To(Succeed())
+			g.Expect(after.Spec.NodeName).To(Equal(remaining))
+			g.Expect(after.Spec.Address).To(Equal(before.Spec.Address))
+			g.Expect(after.UID).To(Equal(before.UID))
+			g.Expect(getServiceLoadBalancer(slb.Name).Status.ArpAnnouncingNode).To(Equal(remaining))
+		}).Should(Succeed())
+	})
+
+	It("keeps the elected node while it still advertises", func() {
+		ctx := context.Background()
+		slb, svc := createARPServiceLoadBalancer(ctx, []string{"10.170.2.10-10.170.2.20"})
+		slice := createServiceEndpointSlice(ctx, svc.Name, "node-slb-e")
+
+		waitForServiceLoadBalancerVIP(slb.Name)
+
+		var before juneauv1alpha1.ARPAdvertisement
+		Eventually(func(g Gomega) {
+			g.Expect(reconcileServiceLoadBalancer(slb.Name)).To(Succeed())
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: serviceLoadBalancerAdvertisementName("default", slb.Name)}, &before)).To(Succeed())
+			g.Expect(before.Spec.NodeName).To(Equal("node-slb-e"))
+		}).Should(Succeed())
+
+		setEndpointSliceNodes(ctx, slice, "node-slb-e", "node-slb-f", "node-slb-g")
+
+		Eventually(func(g Gomega) {
+			g.Expect(reconcileServiceLoadBalancer(slb.Name)).To(Succeed())
+			g.Expect(getServiceLoadBalancer(slb.Name).Status.AdvertisingNodes).To(HaveLen(3))
+		}).Should(Succeed())
+
+		var after juneauv1alpha1.ARPAdvertisement
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: serviceLoadBalancerAdvertisementName("default", slb.Name)}, &after)).To(Succeed())
+		Expect(after.Spec.NodeName).To(Equal("node-slb-e"))
+	})
+
+	It("removes the advertisement when no node advertises the VIP", func() {
+		ctx := context.Background()
+		slb, svc := createARPServiceLoadBalancer(ctx, []string{"10.170.3.10-10.170.3.20"})
+		slice := createServiceEndpointSlice(ctx, svc.Name, "node-slb-h")
+
+		waitForServiceLoadBalancerVIP(slb.Name)
+		Eventually(func(g Gomega) {
+			g.Expect(reconcileServiceLoadBalancer(slb.Name)).To(Succeed())
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: serviceLoadBalancerAdvertisementName("default", slb.Name)}, &juneauv1alpha1.ARPAdvertisement{})).To(Succeed())
+		}).Should(Succeed())
+
+		setEndpointSliceNodes(ctx, slice)
+
+		Eventually(func(g Gomega) {
+			g.Expect(reconcileServiceLoadBalancer(slb.Name)).To(Succeed())
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: serviceLoadBalancerAdvertisementName("default", slb.Name)}, &juneauv1alpha1.ARPAdvertisement{})
+			g.Expect(errors.IsNotFound(err)).To(BeTrue())
+			fresh := getServiceLoadBalancer(slb.Name)
+			g.Expect(fresh.Status.ArpAnnouncingNode).To(BeEmpty())
+			g.Expect(fresh.Status.Phase).To(Equal(juneauv1alpha1.ServiceLoadBalancerPhaseDegraded))
+		}).Should(Succeed())
+	})
+
+	It("removes the advertisement when the ServiceLoadBalancer is deleted", func() {
+		ctx := context.Background()
+		slb, svc := createARPServiceLoadBalancer(ctx, []string{"10.170.4.10-10.170.4.20"})
+		createServiceEndpointSlice(ctx, svc.Name, "node-slb-i")
+
+		waitForServiceLoadBalancerVIP(slb.Name)
+		Eventually(func(g Gomega) {
+			g.Expect(reconcileServiceLoadBalancer(slb.Name)).To(Succeed())
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: serviceLoadBalancerAdvertisementName("default", slb.Name)}, &juneauv1alpha1.ARPAdvertisement{})).To(Succeed())
+		}).Should(Succeed())
+
+		Expect(k8sClient.Delete(ctx, svc)).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			g.Expect(reconcileServiceLoadBalancer(slb.Name)).To(Succeed())
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: serviceLoadBalancerAdvertisementName("default", slb.Name)}, &juneauv1alpha1.ARPAdvertisement{})
+			g.Expect(errors.IsNotFound(err)).To(BeTrue())
+			g.Expect(errors.IsNotFound(k8sClient.Get(ctx, client.ObjectKey{Name: slb.Name, Namespace: "default"}, &juneauv1alpha1.ServiceLoadBalancer{}))).To(BeTrue())
+		}).Should(Succeed())
+	})
+
+	It("does not advertise over ARP for a BGP ExternalNetwork", func() {
+		ctx := context.Background()
+		externalNetworkName, _ := createControllerElasticIPNetwork(ctx, []string{"10.171.0.0/29"})
+		svc := newJuneauLBService(uniqueTestName("lb-svc"), externalNetworkName)
+		Expect(k8sClient.Create(ctx, svc)).To(Succeed())
+		slb := awaitSLBExists(svc.Name)
+		createServiceEndpointSlice(ctx, svc.Name, "node-slb-bgp")
+
+		waitForServiceLoadBalancerVIP(slb.Name)
+
+		Eventually(func(g Gomega) {
+			g.Expect(reconcileServiceLoadBalancer(slb.Name)).To(Succeed())
+			g.Expect(getServiceLoadBalancer(slb.Name).Status.AdvertisingNodes).To(ConsistOf("node-slb-bgp"))
+		}).Should(Succeed())
+
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: serviceLoadBalancerAdvertisementName("default", slb.Name)}, &juneauv1alpha1.ARPAdvertisement{})
+		Expect(errors.IsNotFound(err)).To(BeTrue())
+		Expect(getServiceLoadBalancer(slb.Name).Status.ArpAnnouncingNode).To(BeEmpty())
+	})
+})
+
+func createARPServiceLoadBalancer(ctx context.Context, addresses []string) (*juneauv1alpha1.ServiceLoadBalancer, *corev1.Service) {
+	poolName := createExternalAddressPool(ctx, juneauv1alpha1.AddressPoolAdvertiseModeARP, addresses)
+	externalNetworkName := createExternalNetworkWithPools(ctx, juneauv1alpha1.ExternalNetworkTypeARP, poolName)
+
+	svc := newJuneauLBService(uniqueTestName("lb-svc"), externalNetworkName)
+	Expect(k8sClient.Create(ctx, svc)).To(Succeed())
+	slb := awaitSLBExists(svc.Name)
+	DeferCleanup(func() {
+		Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &juneauv1alpha1.ARPAdvertisement{
+			ObjectMeta: metav1.ObjectMeta{Name: serviceLoadBalancerAdvertisementName("default", slb.Name)},
+		}))).To(Succeed())
+	})
+	return slb, svc
+}
+
+func createServiceEndpointSlice(ctx context.Context, svcName string, nodes ...string) *discoveryv1.EndpointSlice {
+	slice := newEndpointSlice(svcName, fmt.Sprintf("%s-slice", svcName),
+		[]discoveryv1.EndpointPort{
+			{Name: ptr.To("http"), Protocol: ptr.To(corev1.ProtocolTCP), Port: ptr.To(int32(8080))},
+		},
+		endpointsOnNodes(nodes),
+	)
+	Expect(k8sClient.Create(ctx, slice)).To(Succeed())
+	DeferCleanup(func() {
+		Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, slice))).To(Succeed())
+	})
+	return slice
+}
+
+func setEndpointSliceNodes(ctx context.Context, slice *discoveryv1.EndpointSlice, nodes ...string) {
+	builders := endpointsOnNodes(nodes)
+	endpoints := make([]discoveryv1.Endpoint, 0, len(builders))
+	for _, builder := range builders {
+		endpoints = append(endpoints, builder.build())
+	}
+
+	Eventually(func(g Gomega) {
+		var current discoveryv1.EndpointSlice
+		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(slice), &current)).To(Succeed())
+		current.Endpoints = endpoints
+		g.Expect(k8sClient.Update(ctx, &current)).To(Succeed())
+	}).Should(Succeed())
+}
+
+func endpointsOnNodes(nodes []string) []endpointBuilder {
+	builders := make([]endpointBuilder, 0, len(nodes))
+	for i, node := range nodes {
+		builders = append(builders, endpointBuilder{
+			Address: fmt.Sprintf("10.98.0.%d", i+1),
+			Node:    node,
+			Ready:   ptr.To(true),
+		})
+	}
+	return builders
+}
+
+func waitForServiceLoadBalancerVIP(name string) string {
+	var vip string
+	Eventually(func(g Gomega) {
+		g.Expect(reconcileServiceLoadBalancer(name)).To(Succeed())
+		g.Expect(getServiceLoadBalancer(name).Status.VIP).NotTo(BeEmpty())
+		vip = getServiceLoadBalancer(name).Status.VIP
+	}).Should(Succeed())
+	return vip
+}

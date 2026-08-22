@@ -147,11 +147,13 @@ func NewApp() *cli.Command {
 					&juneauv1alpha1.ElasticIPAttachment{}:       {},
 					&juneauv1alpha1.AddressPool{}:               {},
 					&juneauv1alpha1.BGPAdvertisement{}:          {},
+					&juneauv1alpha1.ARPAdvertisement{}:          {},
 					&juneauv1alpha1.Subnet{}:                    {},
 					&juneauv1alpha1.Vpc{}:                       {},
 					&juneauv1alpha1.RouteTable{}:                {},
 					&juneauv1alpha1.TransitGatewayRouteTable{}:  {},
 					&juneauv1alpha1.NATGateway{}:                {},
+					&juneauv1alpha1.ExternalNetwork{}:           {},
 					&juneauv1alpha1.ExternalNetworkAttachment{}: {},
 					&juneauv1alpha1.ServiceNATAttachment{}:      {},
 					&juneauv1alpha1.SecurityGroup{}:             {},
@@ -190,6 +192,11 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("get BGPAdvertisement informer: %w", err)
 			}
 
+			arpAdvertisementInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.ARPAdvertisement{})
+			if err != nil {
+				return fmt.Errorf("get ARPAdvertisement informer: %w", err)
+			}
+
 			rtInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.RouteTable{})
 			if err != nil {
 				return fmt.Errorf("get RouteTable informer: %w", err)
@@ -218,6 +225,11 @@ func NewApp() *cli.Command {
 			endpointSliceInformer, err := cache.GetInformer(ctx, &discoveryv1.EndpointSlice{})
 			if err != nil {
 				return fmt.Errorf("get EndpointSlice informer: %w", err)
+			}
+
+			externalNetworkInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.ExternalNetwork{})
+			if err != nil {
+				return fmt.Errorf("get ExternalNetwork informer: %w", err)
 			}
 
 			externalNetworkAttachmentInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.ExternalNetworkAttachment{})
@@ -461,7 +473,39 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("lookup node ingress iface %q: %w", nodeIngressIfaceName, err)
 			}
 
-			bpfManager := dataplane.NewManager(cl, nwepInfromer, eipaInformer, addressPoolInformer, bgpAdvertisementInformer, rtInformer, tgwRouteTableInformer, subnetInformer, vpcInformer, serviceInformer, endpointSliceInformer, externalNetworkAttachmentInformer, natGatewayInformer, serviceNATAttachmentInformer, networkInterfaceInformer, securityGroupInformer, networkACLInformer, serviceLoadBalancerInformer, vpcEndpointInformer, traceSessionInformer, nodeInformer, nodeName, vxlanIfindex, hostIfaceInfo.Ifindex, nodeIngressIface.Index, bpfPinPath, hostIfaceInfo.MAC, nodeUnderlayIP)
+			bpfManager := dataplane.NewManager(dataplane.ManagerConfig{
+				Client:                            cl,
+				NWEPInformer:                      nwepInfromer,
+				EIPAInformer:                      eipaInformer,
+				AddressPoolInformer:               addressPoolInformer,
+				BGPAdvertisementInformer:          bgpAdvertisementInformer,
+				ARPAdvertisementInformer:          arpAdvertisementInformer,
+				RouteTableInformer:                rtInformer,
+				TransitGatewayRouteTableInformer:  tgwRouteTableInformer,
+				SubnetInformer:                    subnetInformer,
+				VpcInformer:                       vpcInformer,
+				ServiceInformer:                   serviceInformer,
+				EndpointSliceInformer:             endpointSliceInformer,
+				ExternalNetworkInformer:           externalNetworkInformer,
+				ExternalNetworkAttachmentInformer: externalNetworkAttachmentInformer,
+				NATGatewayInformer:                natGatewayInformer,
+				ServiceNATAttachmentInformer:      serviceNATAttachmentInformer,
+				NetworkInterfaceInformer:          networkInterfaceInformer,
+				SecurityGroupInformer:             securityGroupInformer,
+				NetworkACLInformer:                networkACLInformer,
+				ServiceLoadBalancerInformer:       serviceLoadBalancerInformer,
+				VpcEndpointInformer:               vpcEndpointInformer,
+				TraceSessionInformer:              traceSessionInformer,
+				NodeInformer:                      nodeInformer,
+				NodeName:                          nodeName,
+				VxlanIfindex:                      vxlanIfindex,
+				HostIfindex:                       hostIfaceInfo.Ifindex,
+				NodeIngressIfindex:                nodeIngressIface.Index,
+				PinPath:                           bpfPinPath,
+				DefaultGatewayMac:                 hostIfaceInfo.MAC,
+				NodeIngressMac:                    nodeIngressIface.HardwareAddr,
+				JuNodeUnderlayIP:                  nodeUnderlayIP,
+			})
 			if err := bpfManager.Start(ctx); err != nil {
 				return fmt.Errorf("initialize BPF manager: %w", err)
 			}

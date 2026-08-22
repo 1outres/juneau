@@ -57,9 +57,10 @@ const (
 // The reconciler allocates a per-(ExternalNetwork, Node) IP via an
 // AllocationClaim against the AddressPools attached to the referenced
 // ExternalNetwork. The IP is published in status.assignedIP and
-// referenced by the daemon's NAPT reconciler. A per-node /32
-// BGPAdvertisement is also installed so the assigned IP is announced
-// only by the owning node's bgp-speaker.
+// referenced by the daemon's NAPT reconciler. A per-node advertisement
+// is also installed so the assigned IP reaches the external network from
+// the owning node alone: a /32 BGPAdvertisement for a bgp ExternalNetwork,
+// an ARPAdvertisement for an arp one.
 type ExternalNetworkAttachmentReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -72,6 +73,7 @@ type ExternalNetworkAttachmentReconciler struct {
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=addresspools,verbs=get;list;watch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=allocationclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=bgpadvertisements,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=arpadvertisements,verbs=get;list;watch;create;update;patch;delete
 
 func (r *ExternalNetworkAttachmentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -86,13 +88,13 @@ func (r *ExternalNetworkAttachmentReconciler) Reconcile(ctx context.Context, req
 	}
 
 	if !resource.DeletionTimestamp.IsZero() {
-		// AllocationClaim and BGPAdvertisement are owned by the
-		// ExternalNetworkAttachment; both are GC'd by Kubernetes
-		// when the attachment is deleted.
+		// The AllocationClaim and the advertisement are owned by the
+		// ExternalNetworkAttachment; all of them are GC'd by
+		// Kubernetes when the attachment is deleted.
 		return ctrl.Result{}, nil
 	}
 
-	poolNames, err := r.resolvePoolNames(ctx, &resource)
+	pools, err := r.resolvePools(ctx, &resource)
 	if err != nil {
 		var reconcileErr *externalNetworkAttachmentReconcileError
 		if stderrors.As(err, &reconcileErr) {
@@ -104,7 +106,7 @@ func (r *ExternalNetworkAttachmentReconciler) Reconcile(ctx context.Context, req
 		return ctrl.Result{}, err
 	}
 
-	address, requeue, err := r.ensureClaim(ctx, &resource, poolNames)
+	address, requeue, err := r.ensureClaim(ctx, &resource, pools.allocationPoolNames)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -123,7 +125,7 @@ func (r *ExternalNetworkAttachmentReconciler) Reconcile(ctx context.Context, req
 		return ctrl.Result{}, nil
 	}
 
-	if err := r.ensureBGPAdvertisement(ctx, &resource, address); err != nil {
+	if err := r.ensureAdvertisement(ctx, &resource, pools, address); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -143,7 +145,16 @@ func (e *externalNetworkAttachmentReconcileError) Error() string {
 	return e.message
 }
 
-func (r *ExternalNetworkAttachmentReconciler) resolvePoolNames(ctx context.Context, resource *juneauloutresmev1alpha1.ExternalNetworkAttachment) ([]string, error) {
+// externalNetworkAttachmentPools is the AddressPool set behind the referenced
+// ExternalNetwork, resolved once per reconcile: the AddressPool names an
+// advertisement points at and the AllocationPool names the claim draws from.
+type externalNetworkAttachmentPools struct {
+	externalNetwork     juneauloutresmev1alpha1.ExternalNetwork
+	addressPoolNames    []string
+	allocationPoolNames []string
+}
+
+func (r *ExternalNetworkAttachmentReconciler) resolvePools(ctx context.Context, resource *juneauloutresmev1alpha1.ExternalNetworkAttachment) (*externalNetworkAttachmentPools, error) {
 	if strings.TrimSpace(resource.Spec.ExternalNetwork) == "" {
 		return nil, &externalNetworkAttachmentReconcileError{
 			reason:  externalNetworkAttachmentReasonMissingDependency,
@@ -169,7 +180,19 @@ func (r *ExternalNetworkAttachmentReconciler) resolvePoolNames(ctx context.Conte
 		}
 	}
 
-	poolNames := make([]string, 0, len(externalNetwork.Spec.AddressPools))
+	advertiseMode, err := externalNetworkAdvertiseMode(externalNetwork.Spec.Type)
+	if err != nil {
+		return nil, &externalNetworkAttachmentReconcileError{
+			reason:  externalNetworkAttachmentReasonInvalidPool,
+			message: fmt.Sprintf("ExternalNetwork %q: %v", externalNetwork.Name, err),
+		}
+	}
+
+	pools := &externalNetworkAttachmentPools{
+		externalNetwork:     externalNetwork,
+		addressPoolNames:    make([]string, 0, len(externalNetwork.Spec.AddressPools)),
+		allocationPoolNames: make([]string, 0, len(externalNetwork.Spec.AddressPools)),
+	}
 	for _, raw := range externalNetwork.Spec.AddressPools {
 		poolName := strings.TrimSpace(raw)
 		if poolName == "" {
@@ -187,24 +210,28 @@ func (r *ExternalNetworkAttachmentReconciler) resolvePoolNames(ctx context.Conte
 			return nil, err
 		}
 
-		if addressPool.Spec.AdvertiseMode != juneauloutresmev1alpha1.AddressPoolAdvertiseModeBGP {
+		if addressPool.Spec.AdvertiseMode != advertiseMode {
 			return nil, &externalNetworkAttachmentReconcileError{
-				reason:  externalNetworkAttachmentReasonInvalidPool,
-				message: fmt.Sprintf("AddressPool %q advertiseMode must be bgp", addressPool.Name),
+				reason: externalNetworkAttachmentReasonInvalidPool,
+				message: fmt.Sprintf(
+					"AddressPool %q advertiseMode must be %s to match ExternalNetwork %q of type %s",
+					addressPool.Name, advertiseMode, externalNetwork.Name, externalNetwork.Spec.Type,
+				),
 			}
 		}
 
-		poolNames = append(poolNames, AddressPoolAllocationPoolName(addressPool.Name))
+		pools.addressPoolNames = append(pools.addressPoolNames, addressPool.Name)
+		pools.allocationPoolNames = append(pools.allocationPoolNames, AddressPoolAllocationPoolName(addressPool.Name))
 	}
 
-	if len(poolNames) == 0 {
+	if len(pools.allocationPoolNames) == 0 {
 		return nil, &externalNetworkAttachmentReconcileError{
 			reason:  externalNetworkAttachmentReasonMissingDependency,
 			message: fmt.Sprintf("ExternalNetwork %q resolves to no usable AddressPools", externalNetwork.Name),
 		}
 	}
 
-	return poolNames, nil
+	return pools, nil
 }
 
 func (r *ExternalNetworkAttachmentReconciler) ensureClaim(ctx context.Context, resource *juneauloutresmev1alpha1.ExternalNetworkAttachment, poolNames []string) (string, bool, error) {
@@ -257,27 +284,42 @@ func (r *ExternalNetworkAttachmentReconciler) ensureClaim(ctx context.Context, r
 	return "", false, nil
 }
 
-func (r *ExternalNetworkAttachmentReconciler) ensureBGPAdvertisement(ctx context.Context, resource *juneauloutresmev1alpha1.ExternalNetworkAttachment, address string) error {
-	advName := externalNetworkAttachmentBGPAdvertisementName(resource)
+// ensureAdvertisement installs the advertisement the ExternalNetwork type asks
+// for and drops the other kind. Both kinds share one name, so the leftover can
+// only come from an ExternalNetwork whose type changed; the type is immutable,
+// but removing it keeps a stale object from advertising the address forever.
+func (r *ExternalNetworkAttachmentReconciler) ensureAdvertisement(ctx context.Context, resource *juneauloutresmev1alpha1.ExternalNetworkAttachment, pools *externalNetworkAttachmentPools, address string) error {
+	advName := externalNetworkAttachmentAdvertisementName(resource.Name)
 
-	var externalNetwork juneauloutresmev1alpha1.ExternalNetwork
-	if err := r.Get(ctx, client.ObjectKey{Name: resource.Spec.ExternalNetwork}, &externalNetwork); err != nil {
-		return err
-	}
-
-	pools := make([]string, 0, len(externalNetwork.Spec.AddressPools))
-	for _, p := range externalNetwork.Spec.AddressPools {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			pools = append(pools, p)
+	switch pools.externalNetwork.Spec.Type {
+	case juneauloutresmev1alpha1.ExternalNetworkTypeBGP:
+		if err := r.ensureBGPAdvertisement(ctx, resource, pools, advName, address); err != nil {
+			return err
 		}
+		return deleteARPAdvertisement(ctx, r.Client, advName)
+	case juneauloutresmev1alpha1.ExternalNetworkTypeARP:
+		desired := arpAdvertisementSpec{
+			Name:            advName,
+			ExternalNetwork: pools.externalNetwork.Name,
+			Address:         address,
+			NodeName:        resource.Spec.NodeName,
+		}
+		ownership := arpAdvertisementOwnedBy{Owner: resource, Scheme: r.Scheme}
+		if err := ensureARPAdvertisement(ctx, r.Client, desired, ownership); err != nil {
+			return err
+		}
+		return deleteBGPAdvertisement(ctx, r.Client, advName)
+	default:
+		return fmt.Errorf("ExternalNetwork %q has unsupported type %q", pools.externalNetwork.Name, pools.externalNetwork.Spec.Type)
 	}
+}
 
+func (r *ExternalNetworkAttachmentReconciler) ensureBGPAdvertisement(ctx context.Context, resource *juneauloutresmev1alpha1.ExternalNetworkAttachment, pools *externalNetworkAttachmentPools, advName, address string) error {
 	adv := &juneauloutresmev1alpha1.BGPAdvertisement{
 		ObjectMeta: metav1.ObjectMeta{Name: advName},
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, adv, func() error {
-		adv.Spec.AddressPools = pools
+		adv.Spec.AddressPools = pools.addressPoolNames
 		adv.Spec.NodeName = resource.Spec.NodeName
 		adv.Spec.Prefix = fmt.Sprintf("%s/32", address)
 		return controllerutil.SetControllerReference(resource, adv, r.Scheme)
@@ -288,8 +330,8 @@ func (r *ExternalNetworkAttachmentReconciler) ensureBGPAdvertisement(ctx context
 	return nil
 }
 
-func externalNetworkAttachmentBGPAdvertisementName(resource *juneauloutresmev1alpha1.ExternalNetworkAttachment) string {
-	return fmt.Sprintf("ena-%s", resource.Name)
+func externalNetworkAttachmentAdvertisementName(attachmentName string) string {
+	return fmt.Sprintf("ena-%s", attachmentName)
 }
 
 func (r *ExternalNetworkAttachmentReconciler) updatePendingStatus(ctx context.Context, resource *juneauloutresmev1alpha1.ExternalNetworkAttachment, address, reason, message string) error {

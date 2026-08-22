@@ -41,6 +41,7 @@ nav:
   - Getting Started: getting-started.md
   - User Guide:
     - BGPを使ってExternalNetworkを構築する: guides/external-network-bgp.md
+    - ARPを使ってExternalNetworkを構築する: guides/external-network-arp.md
     - VPCでServiceを利用する: guides/custom-vpc-service.md
     - Vpcで共有Serviceを利用する: guides/shared-service.md
     - Service LoadBalancerを公開する: guides/service-loadbalancer.md
@@ -70,6 +71,7 @@ nav:
     - NetworkEndpoint: resources/networkendpoint.md
     - SecurityGroup: resources/securitygroup.md
     - NetworkACL: resources/networkacl.md
+    - ARPAdvertisement: resources/arpadvertisement.md
     - BGPAdvertisement: resources/bgpadvertisement.md
     - BGPPeer: resources/bgppeer.md
     - BGPNodeState: resources/bgpnodestate.md

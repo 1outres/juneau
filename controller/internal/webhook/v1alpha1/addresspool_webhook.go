@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"net"
 	"slices"
-	"strings"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -34,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	"github.com/1outres/juneau/controller/internal/addressrange"
 )
 
 // nolint:unused
@@ -177,19 +177,8 @@ func (v *AddressPoolCustomValidator) validate(newObj *juneauloutresmev1alpha1.Ad
 		}
 	case juneauloutresmev1alpha1.AddressPoolAdvertiseModeARP:
 		for i, a := range newObj.Spec.Addresses {
-			parts := strings.Split(a, "-")
-			if len(parts) != 2 {
-				errs = append(errs, field.Invalid(field.NewPath("spec", "addresses").Index(i), a, "must be in start-end format"))
-				continue
-			}
-			start := net.ParseIP(strings.TrimSpace(parts[0])).To4()
-			end := net.ParseIP(strings.TrimSpace(parts[1])).To4()
-			if start == nil || end == nil {
-				errs = append(errs, field.Invalid(field.NewPath("spec", "addresses").Index(i), a, "must be IPv4 range"))
-				continue
-			}
-			if bytesCompare(start, end) > 0 {
-				errs = append(errs, field.Invalid(field.NewPath("spec", "addresses").Index(i), a, "range start must be <= end"))
+			if _, _, err := addressrange.ParseIPv4Range(a); err != nil {
+				errs = append(errs, field.Invalid(field.NewPath("spec", "addresses").Index(i), a, err.Error()))
 			}
 		}
 	}
@@ -216,23 +205,4 @@ func (v *AddressPoolCustomValidator) validate(newObj *juneauloutresmev1alpha1.Ad
 	}
 
 	return nil, nil
-}
-
-func bytesCompare(a, b net.IP) int {
-	for i := 0; i < len(a) && i < len(b); i++ {
-		if a[i] == b[i] {
-			continue
-		}
-		if a[i] < b[i] {
-			return -1
-		}
-		return 1
-	}
-	if len(a) == len(b) {
-		return 0
-	}
-	if len(a) < len(b) {
-		return -1
-	}
-	return 1
 }

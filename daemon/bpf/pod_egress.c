@@ -4,6 +4,7 @@
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 #include <stdbool.h>
+#include "arp.h"
 #include "ct.h"
 #include "lb.h"
 #include "maps.h"
@@ -19,24 +20,13 @@
 #endif
 
 #define ETH_ALEN 6
-#define ETH_P_ARP 0x0806
 #define ETH_P_IP 0x0800
-#define ARPHRD_ETHER 1
-#define ARPOP_REQUEST 1
-#define ARPOP_REPLY 2
 #define IP_OFFSET 0x1FFF
 
 #define TC_ACT_OK 0
 #define TC_ACT_SHOT 2
 
 #define AF_INET 2
-
-struct arp_payload {
-  __u8 sha[ETH_ALEN];
-  __be32 spa;
-  __u8 tha[ETH_ALEN];
-  __be32 tpa;
-} __attribute__((packed));
 
 // Per-CPU scratch slot for transient trace_nat_event allocations
 // inside __juneau_bpf_subprog helpers. Subprograms have an
@@ -306,37 +296,23 @@ static __always_inline int handle_snat(struct __sk_buff *skb,
 static __always_inline int handle_arp(struct __sk_buff *skb, void *data_end,
                                       struct ethhdr *eth, __u32 subnet_id,
                                       const struct subnet_val *subnet) {
-  struct arphdr *arp = (void *)(eth + 1);
-  if ((void *)(arp + 1) > data_end)
+  struct arp_request req;
+  if (arp_parse_request(data_end, eth, &req) != 0)
     return TC_ACT_SHOT;
 
-  if (arp->ar_hrd != bpf_htons(ARPHRD_ETHER))
-    return TC_ACT_SHOT;
-  if (arp->ar_pro != bpf_htons(ETH_P_IP))
-    return TC_ACT_SHOT;
-  if (arp->ar_hln != ETH_ALEN || arp->ar_pln != 4)
-    return TC_ACT_SHOT;
-  if (arp->ar_op != bpf_htons(ARPOP_REQUEST))
-    return TC_ACT_SHOT;
-
-  struct arp_payload *payload = (void *)(arp + 1);
-  if ((void *)(payload + 1) > data_end)
-    return TC_ACT_SHOT;
-
-  __u32 tpa = bpf_ntohl(payload->tpa);
   __u32 gw_addr = subnet->gw_addr;
   __u32 mask = subnet->mask;
 
-  if ((tpa & mask) != (gw_addr & mask))
+  if ((req.target_addr & mask) != (gw_addr & mask))
     return TC_ACT_SHOT;
 
   __u8 responder_mac[ETH_ALEN];
-  if (tpa == gw_addr) {
+  if (req.target_addr == gw_addr) {
     __builtin_memcpy(responder_mac, subnet->gw_mac, ETH_ALEN);
   } else {
     struct arp_table_key ak = {
         .subnet_id = subnet_id,
-        .ipaddr = tpa,
+        .ipaddr = req.target_addr,
     };
     const struct arp_table_val *av = bpf_map_lookup_elem(&arp_table, &ak);
     if (!av)
@@ -344,20 +320,7 @@ static __always_inline int handle_arp(struct __sk_buff *skb, void *data_end,
     __builtin_memcpy(responder_mac, av->mac, ETH_ALEN);
   }
 
-  __u8 requester_mac[ETH_ALEN];
-  __builtin_memcpy(requester_mac, eth->h_source, ETH_ALEN);
-  __be32 requester_ip = payload->spa;
-  __be32 target_ip = payload->tpa;
-
-  __builtin_memcpy(eth->h_dest, requester_mac, ETH_ALEN);
-  __builtin_memcpy(eth->h_source, responder_mac, ETH_ALEN);
-
-  arp->ar_op = bpf_htons(ARPOP_REPLY);
-  __builtin_memcpy(payload->tha, requester_mac, ETH_ALEN);
-  payload->tpa = requester_ip;
-  __builtin_memcpy(payload->sha, responder_mac, ETH_ALEN);
-  payload->spa = target_ip;
-
+  arp_rewrite_to_reply(eth, &req, responder_mac);
   return bpf_redirect(skb->ifindex, 0);
 }
 

@@ -438,6 +438,26 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /validate-juneau-loutres-me-v1alpha1-arpadvertisement
+  failurePolicy: Fail
+  name: varpadvertisement-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - arpadvertisements
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /validate-juneau-loutres-me-v1alpha1-bgpadvertisement
   failurePolicy: Fail
   name: vbgpadvertisement-v1alpha1.kb.io

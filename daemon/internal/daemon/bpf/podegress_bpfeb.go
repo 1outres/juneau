@@ -65,12 +65,6 @@ type PodEgressBackendVal struct {
 	BackendSubnetId uint32
 }
 
-type PodEgressBgpAddressPoolsKey struct {
-	_         structs.HostLayout
-	Prefixlen uint32
-	Addr      uint32
-}
-
 type PodEgressCtKey struct {
 	_     structs.HostLayout
 	Scope uint32
@@ -95,6 +89,24 @@ type PodEgressCtVal struct {
 	Pad          uint8
 	_            [4]byte
 	LastSeenNs   uint64
+}
+
+type PodEgressExternalAddressPoolsKey struct {
+	_         structs.HostLayout
+	Prefixlen uint32
+	Addr      uint32
+}
+
+type PodEgressExternalArpKey struct {
+	_       structs.HostLayout
+	Ifindex uint32
+	Ipaddr  uint32
+}
+
+type PodEgressExternalArpVal struct {
+	_   structs.HostLayout
+	Mac [6]uint8
+	Pad [2]uint8
 }
 
 type PodEgressFdbKey struct {
@@ -474,8 +486,9 @@ type PodEgressMapSpecs struct {
 	AclRulesInnerProto    *ebpf.MapSpec `ebpf:"acl_rules_inner_proto"`
 	ArpTable              *ebpf.MapSpec `ebpf:"arp_table"`
 	BackendMap            *ebpf.MapSpec `ebpf:"backend_map"`
-	BgpAddressPools       *ebpf.MapSpec `ebpf:"bgp_address_pools"`
 	CtMap                 *ebpf.MapSpec `ebpf:"ct_map"`
+	ExternalAddressPools  *ebpf.MapSpec `ebpf:"external_address_pools"`
+	ExternalArpTable      *ebpf.MapSpec `ebpf:"external_arp_table"`
 	Fdb                   *ebpf.MapSpec `ebpf:"fdb"`
 	FibInner              *ebpf.MapSpec `ebpf:"fib_inner"`
 	FibMap                *ebpf.MapSpec `ebpf:"fib_map"`
@@ -544,8 +557,9 @@ type PodEgressMaps struct {
 	AclRulesInnerProto    *ebpf.Map `ebpf:"acl_rules_inner_proto"`
 	ArpTable              *ebpf.Map `ebpf:"arp_table"`
 	BackendMap            *ebpf.Map `ebpf:"backend_map"`
-	BgpAddressPools       *ebpf.Map `ebpf:"bgp_address_pools"`
 	CtMap                 *ebpf.Map `ebpf:"ct_map"`
+	ExternalAddressPools  *ebpf.Map `ebpf:"external_address_pools"`
+	ExternalArpTable      *ebpf.Map `ebpf:"external_arp_table"`
 	Fdb                   *ebpf.Map `ebpf:"fdb"`
 	FibInner              *ebpf.Map `ebpf:"fib_inner"`
 	FibMap                *ebpf.Map `ebpf:"fib_map"`
@@ -588,8 +602,9 @@ func (m *PodEgressMaps) Close() error {
 		m.AclRulesInnerProto,
 		m.ArpTable,
 		m.BackendMap,
-		m.BgpAddressPools,
 		m.CtMap,
+		m.ExternalAddressPools,
+		m.ExternalArpTable,
 		m.Fdb,
 		m.FibInner,
 		m.FibMap,

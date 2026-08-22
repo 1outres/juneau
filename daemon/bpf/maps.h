@@ -41,6 +41,10 @@
 #define MAX_ADDRESS_POOLS_MAP 512
 #endif
 
+#ifndef MAX_EXTERNAL_ARP
+#define MAX_EXTERNAL_ARP 4096
+#endif
+
 #ifndef MAX_NAT_MAP
 #define MAX_NAT_MAP 131072
 #endif
@@ -455,19 +459,49 @@ struct {
   __array(values, struct tgw_fib_inner_map);
 } tgw_fib_map SEC(".maps");
 
-struct bgp_address_pools_key {
+struct external_address_pools_key {
   __u32 prefixlen;
   __u32 addr;
 };
 
+// external_address_pools gates node_ingress: a hit means juneau owns
+// the destination address and handles the packet itself, a miss means
+// the packet belongs to the host stack and is passed through. It is
+// not tied to BGP. Every way juneau claims an external address (BGP
+// advertisement, per-node NAPT address, ARP advertisement) writes this
+// same map.
 struct {
   __uint(type, BPF_MAP_TYPE_LPM_TRIE);
   __uint(max_entries, MAX_ADDRESS_POOLS_MAP);
   __uint(map_flags, BPF_F_NO_PREALLOC);
-  __type(key, struct bgp_address_pools_key);
+  __type(key, struct external_address_pools_key);
   __type(value, __u8);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
-} bgp_address_pools SEC(".maps");
+} external_address_pools SEC(".maps");
+
+struct external_arp_key {
+  __u32 ifindex;
+  __u32 ipaddr;
+};
+
+// external_arp_val carries the MAC to answer with rather than having
+// the data plane look it up from ifindex, so a future per-address
+// virtual MAC needs no BPF change.
+struct external_arp_val {
+  __u8 mac[6];
+  __u8 _pad[2];
+};
+
+// external_arp_table holds the external addresses this node answers
+// ARP for on the node ingress NIC. The ifindex in the key keeps the
+// map usable once juneau supports more than one external NIC.
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_EXTERNAL_ARP);
+  __type(key, struct external_arp_key);
+  __type(value, struct external_arp_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} external_arp_table SEC(".maps");
 
 struct nat_inside {
   __u32 subnet_id;

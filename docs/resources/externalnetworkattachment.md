@@ -17,3 +17,15 @@ NATGatewayがNodeごとに動作するために必要となる、(ExternalNetwor
 このNode上のPodがNATGateway経由でVpc外へ出る際、このアドレスがソースIPとして使われます。
 
 `status.conditions`の`Ready`は、NAPTソースIPアドレスの払い出しが完了し、このAttachmentが利用可能な状態かを表します。
+
+## 広報
+
+払い出したNAPTソースIPアドレスに戻り通信を届けるため、controllerは`ena-<ExternalNetworkAttachment名>`という名前のadvertisementを1つ作成します。
+どちらの種類になるかは参照先ExternalNetworkの`spec.type`で決まります。
+
+- `bgp`の場合、`spec.prefix`が`<assignedIP>/32`、`spec.nodeName`がこのAttachmentのNodeであるBGPAdvertisement
+- `arp`の場合、`spec.address`が`assignedIP`、`spec.nodeName`がこのAttachmentのNodeである[ARPAdvertisement](arpadvertisement.md)
+
+どちらもExternalNetworkAttachmentがOwnerになっているため、ExternalNetworkAttachmentを削除するとGarbage Collectorが回収します。
+
+ExternalNetworkAttachment名は`<ExternalNetwork名>--<Node名>`です。

@@ -21,6 +21,12 @@ NATGatewayをVpc外への経路として利用するには、対象VpcのRouteTa
 NATGatewayを作成すると、対象ExternalNetworkに紐づくNodeごとの[ExternalNetworkAttachment](externalnetworkattachment.md)が自動的に作成され、Nodeごとに1つずつNAPTソースIPアドレスが払い出されます。
 Pod がVpc外へ出るとき、そのPodが配置されているNodeに対応するソースIPアドレスが利用されます。
 
+戻り通信が正しいNodeへ届くよう、払い出したソースIPアドレスはExternalNetworkの`spec.type`に応じた方法で外部へ知らせます。
+`bgp`ならExternalNetworkAttachmentのcontrollerがそのNodeを指定した`/32`のBGPAdvertisementを、`arp`なら同じくそのNodeを指定した[ARPAdvertisement](arpadvertisement.md)を作成します。
+
+`arp`の場合、Nodeが増えるたびにAddressPoolから1つずつアドレスを消費します。
+AddressPoolの範囲がNode数より狭いと、あぶれたNodeのExternalNetworkAttachmentは`Ready=False`（`reason: NoAddress`）のままになり、そのNode上のPodはNATGateway経由で外部に出られません。
+
 ## 対応プロトコル
 
 NAPTの対象はTCP、UDP、ICMPの3つです。それ以外のプロトコルはNATGateway経由で外部に出ることができません。
