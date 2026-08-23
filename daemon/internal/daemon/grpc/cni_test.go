@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
@@ -9,8 +10,10 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 type fakeProbeRegistrar struct {
@@ -58,6 +61,11 @@ func indexNWEPByPodRefInterface(obj client.Object) []string {
 
 func newTestCNIServer(t *testing.T, objs ...client.Object) (*CNIServer, *fakeProbeRegistrar) {
 	t.Helper()
+	return newTestCNIServerWith(t, interceptor.Funcs{}, objs...)
+}
+
+func newTestCNIServerWith(t *testing.T, funcs interceptor.Funcs, objs ...client.Object) (*CNIServer, *fakeProbeRegistrar) {
+	t.Helper()
 	registrar := &fakeProbeRegistrar{}
 	builder := fake.NewClientBuilder().
 		WithScheme(newTestScheme()).
@@ -67,7 +75,12 @@ func newTestCNIServer(t *testing.T, objs ...client.Object) (*CNIServer, *fakePro
 	if len(objs) > 0 {
 		builder = builder.WithObjects(objs...)
 	}
-	return newCNIServer(builder.Build(), registrar), registrar
+	cached := builder.Build()
+	return newCNIServer(cached, interceptor.NewClient(cached, funcs), registrar), registrar
+}
+
+func networkEndpointResource() schema.GroupResource {
+	return schema.GroupResource{Group: juneauv1alpha1.GroupVersion.Group, Resource: "networkendpoints"}
 }
 
 func newTestNWEP(podName, ifname, podUID, containerID string, ifindex int) *juneauv1alpha1.NetworkEndpoint {
@@ -121,7 +134,7 @@ func TestUpsertNetworkEndpointCreatesThenRefreshesGeneration(t *testing.T) {
 	}
 
 	var got juneauv1alpha1.NetworkEndpoint
-	if err := server.client.Get(ctx, client.ObjectKey{Namespace: "default", Name: "pod-a.eth0"}, &got); err != nil {
+	if err := server.apiClient.Get(ctx, client.ObjectKey{Namespace: "default", Name: "pod-a.eth0"}, &got); err != nil {
 		t.Fatalf("get endpoint: %v", err)
 	}
 	if got.Spec.Attachment == nil || got.Spec.Attachment.ContainerID != "container-s2-2" {
@@ -157,7 +170,7 @@ func TestUpsertNetworkEndpointIdempotentRetry(t *testing.T) {
 	}
 
 	var got juneauv1alpha1.NetworkEndpoint
-	if err := server.client.Get(ctx, client.ObjectKey{Namespace: "default", Name: "pod-a.1net"}, &got); err != nil {
+	if err := server.apiClient.Get(ctx, client.ObjectKey{Namespace: "default", Name: "pod-a.1net"}, &got); err != nil {
 		t.Fatalf("get endpoint: %v", err)
 	}
 	if got.Spec.Attachment.ContainerID != "container-s1-1" {
@@ -200,7 +213,7 @@ func TestDelStaleGenerationIsNoop(t *testing.T) {
 	}
 
 	var got juneauv1alpha1.NetworkEndpoint
-	if err := server.client.Get(ctx, client.ObjectKey{Namespace: "default", Name: "pod-a.eth0"}, &got); err != nil {
+	if err := server.apiClient.Get(ctx, client.ObjectKey{Namespace: "default", Name: "pod-a.eth0"}, &got); err != nil {
 		t.Fatalf("live endpoint must survive stale DEL, got err %v", err)
 	}
 	if len(registrar.unregistered) != 0 {
@@ -227,7 +240,7 @@ func TestDelCurrentGenerationDeletesEndpointAndProbes(t *testing.T) {
 	}
 
 	var got juneauv1alpha1.NetworkEndpoint
-	err := server.client.Get(ctx, client.ObjectKey{Namespace: "default", Name: "pod-a.eth0"}, &got)
+	err := server.apiClient.Get(ctx, client.ObjectKey{Namespace: "default", Name: "pod-a.eth0"}, &got)
 	if !apierrors.IsNotFound(err) {
 		t.Fatalf("endpoint should be deleted, got err %v", err)
 	}
@@ -256,7 +269,7 @@ func TestDelLegacyAttachmentWithoutGenerationStillDeletes(t *testing.T) {
 		t.Fatalf("DEL legacy: %v", err)
 	}
 	var got juneauv1alpha1.NetworkEndpoint
-	err := server.client.Get(ctx, client.ObjectKey{Namespace: "default", Name: "pod-a.eth0"}, &got)
+	err := server.apiClient.Get(ctx, client.ObjectKey{Namespace: "default", Name: "pod-a.eth0"}, &got)
 	if !apierrors.IsNotFound(err) {
 		t.Fatalf("legacy endpoint should be deleted, got err %v", err)
 	}
@@ -280,5 +293,151 @@ func TestDelWithNoEndpointIsIdempotent(t *testing.T) {
 	}
 	if len(registrar.unregistered) != 1 || registrar.unregistered[0] != "pod-uid-1:container-s1-1" {
 		t.Fatalf("expected probe unregistration without endpoint, got %v", registrar.unregistered)
+	}
+}
+
+func TestDelKeepsEndpointWhenDeleteRacesNewerGeneration(t *testing.T) {
+	nwep := newTestNWEP("pod-a", "eth0", "pod-uid-1", "container-s1-1", 1)
+	server, registrar := newTestCNIServerWith(t, interceptor.Funcs{
+		Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			// ADD(S2) lands between the read that decides the
+			// generation and the delete that acts on it.
+			var live juneauv1alpha1.NetworkEndpoint
+			if err := cl.Get(ctx, client.ObjectKeyFromObject(obj), &live); err != nil {
+				return err
+			}
+			live.Spec.Attachment.ContainerID = "container-s2-2"
+			live.Spec.Attachment.Ifindex = 2
+			if err := cl.Update(ctx, &live); err != nil {
+				return err
+			}
+			return cl.Delete(ctx, obj, opts...)
+		},
+	}, nwep)
+	ctx := context.Background()
+
+	req := &cnipb.CNIRequest{
+		Args: map[string]string{
+			PodNamespaceKey: "default",
+			PodNameKey:      "pod-a",
+			PodUIDKey:       "pod-uid-1",
+		},
+		Ifname:      "eth0",
+		ContainerId: "container-s1-1",
+	}
+	if _, err := server.Del(ctx, req); err != nil {
+		t.Fatalf("racing DEL: %v", err)
+	}
+
+	var got juneauv1alpha1.NetworkEndpoint
+	if err := server.apiClient.Get(ctx, client.ObjectKey{Namespace: "default", Name: "pod-a.eth0"}, &got); err != nil {
+		t.Fatalf("endpoint claimed by the newer sandbox must survive, got err %v", err)
+	}
+	if got.Spec.Attachment.ContainerID != "container-s2-2" {
+		t.Fatalf("newer attachment must be intact, got %+v", got.Spec.Attachment)
+	}
+	if len(registrar.unregistered) != 0 {
+		t.Fatalf("racing DEL must not unregister probes, got %v", registrar.unregistered)
+	}
+}
+
+func TestDelIgnoresEndpointOwnedByAnotherPod(t *testing.T) {
+	nwep := newTestNWEP("pod-a", "eth0", "pod-uid-2", "container-s2-2", 2)
+	server, _ := newTestCNIServer(t, nwep)
+	ctx := context.Background()
+
+	req := &cnipb.CNIRequest{
+		Args: map[string]string{
+			PodNamespaceKey: "default",
+			PodNameKey:      "pod-a",
+			PodUIDKey:       "pod-uid-1",
+		},
+		Ifname:      "eth0",
+		ContainerId: "container-s1-1",
+	}
+	if _, err := server.Del(ctx, req); err != nil {
+		t.Fatalf("DEL for a replaced pod: %v", err)
+	}
+
+	var got juneauv1alpha1.NetworkEndpoint
+	if err := server.apiClient.Get(ctx, client.ObjectKey{Namespace: "default", Name: "pod-a.eth0"}, &got); err != nil {
+		t.Fatalf("endpoint of the other pod must survive, got err %v", err)
+	}
+}
+
+func TestUpsertNetworkEndpointRetriesUpdateConflict(t *testing.T) {
+	updates := 0
+	server, _ := newTestCNIServerWith(t, interceptor.Funcs{
+		Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			updates++
+			if updates == 1 {
+				return apierrors.NewConflict(networkEndpointResource(), obj.GetName(), errors.New("stale resourceVersion"))
+			}
+			return cl.Update(ctx, obj, opts...)
+		},
+	})
+	ctx := context.Background()
+
+	nwepS1 := newTestNWEP("pod-a", "eth0", "pod-uid-1", "container-s1-1", 1)
+	if _, err := server.upsertNetworkEndpoint(ctx, nwepS1, "pod-uid-1"); err != nil {
+		t.Fatalf("ADD(S1): %v", err)
+	}
+
+	nwepS2 := newTestNWEP("pod-a", "eth0", "pod-uid-1", "container-s2-2", 2)
+	createdByUs, err := server.upsertNetworkEndpoint(ctx, nwepS2, "pod-uid-1")
+	if err != nil {
+		t.Fatalf("ADD(S2) must survive one update conflict: %v", err)
+	}
+	if createdByUs {
+		t.Fatal("ADD(S2) must not report createdByUs=true")
+	}
+	if updates < 2 {
+		t.Fatalf("expected the update to be retried, got %d attempts", updates)
+	}
+
+	var got juneauv1alpha1.NetworkEndpoint
+	if err := server.apiClient.Get(ctx, client.ObjectKey{Namespace: "default", Name: "pod-a.eth0"}, &got); err != nil {
+		t.Fatalf("get endpoint: %v", err)
+	}
+	if got.Spec.Attachment.ContainerID != "container-s2-2" {
+		t.Fatalf("attachment generation not refreshed, got %+v", got.Spec.Attachment)
+	}
+}
+
+func TestUpsertNetworkEndpointRecreatesWhenRecordVanishes(t *testing.T) {
+	creates, gets := 0, 0
+	server, _ := newTestCNIServerWith(t, interceptor.Funcs{
+		Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			creates++
+			if creates == 1 {
+				return apierrors.NewAlreadyExists(networkEndpointResource(), obj.GetName())
+			}
+			return cl.Create(ctx, obj, opts...)
+		},
+		Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			gets++
+			if gets == 1 {
+				return apierrors.NewNotFound(networkEndpointResource(), key.Name)
+			}
+			return cl.Get(ctx, key, obj, opts...)
+		},
+	})
+	ctx := context.Background()
+
+	nwep := newTestNWEP("pod-a", "eth0", "pod-uid-1", "container-s1-1", 1)
+	createdByUs, err := server.upsertNetworkEndpoint(ctx, nwep, "pod-uid-1")
+	if err != nil {
+		t.Fatalf("ADD must retry the create when the record vanished: %v", err)
+	}
+	if !createdByUs {
+		t.Fatal("the retried create inserted the endpoint, so createdByUs must be true")
+	}
+
+	var got juneauv1alpha1.NetworkEndpoint
+	if err := server.apiClient.Get(ctx, client.ObjectKey{Namespace: "default", Name: "pod-a.eth0"}, &got); err != nil {
+		t.Fatalf("get endpoint: %v", err)
+	}
+	if got.Spec.Attachment.ContainerID != "container-s1-1" {
+		t.Fatalf("unexpected attachment, got %+v", got.Spec.Attachment)
 	}
 }

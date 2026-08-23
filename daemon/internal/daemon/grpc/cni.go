@@ -15,6 +15,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 
 	"github.com/1outres/juneau/daemon/pkg/cnipb"
@@ -35,10 +36,22 @@ const (
 	PodUIDKey       = "K8S_POD_UID"
 )
 
+// CNIServer keeps two clients on purpose.
+//
+// cachedClient reads through the daemon's informer cache, which is fine
+// for the NetworkInterface an ADD or CHECK needs: the controller writes
+// it once and the daemon only waits for it.
+//
+// apiClient talks to the API server directly. The NetworkEndpoint of a
+// pod carries the sandbox generation that tells a stale DEL from a live
+// one, and the cache can still hold the generation an ADD has already
+// replaced. Deciding on that view would delete a running endpoint, so
+// every NetworkEndpoint read that guards a write goes through apiClient.
 type CNIServer struct {
 	cnipb.UnimplementedCNIServer
 
-	client         client.Client
+	cachedClient   client.Client
+	apiClient      client.Client
 	probeRegistrar ProbeRegistrar
 }
 
@@ -69,7 +82,7 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 	}()
 
 	var nwifaceList juneauv1alpha1.NetworkInterfaceList
-	if err := c.client.List(ctx, &nwifaceList, client.InNamespace(podNamespace), client.MatchingFields{
+	if err := c.cachedClient.List(ctx, &nwifaceList, client.InNamespace(podNamespace), client.MatchingFields{
 		"spec.podRef.uid":       podUID,
 		"spec.podRef.name":      podName,
 		"spec.podRef.interface": req.Ifname,
@@ -245,7 +258,7 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 	nwep := &juneauv1alpha1.NetworkEndpoint{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: podNamespace,
-			Name:      podName + "." + req.Ifname,
+			Name:      networkEndpointName(podName, req.Ifname),
 			OwnerReferences: []metav1.OwnerReference{
 				{
 					APIVersion: juneauv1alpha1.GroupVersion.String(),
@@ -339,7 +352,7 @@ func (c *CNIServer) Check(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.
 
 	// 1. NetworkInterface exists and has been allocated.
 	var nwifList juneauv1alpha1.NetworkInterfaceList
-	if err := c.client.List(ctx, &nwifList, client.InNamespace(podNamespace), client.MatchingFields{
+	if err := c.cachedClient.List(ctx, &nwifList, client.InNamespace(podNamespace), client.MatchingFields{
 		"spec.podRef.uid":       podUID,
 		"spec.podRef.name":      podName,
 		"spec.podRef.interface": req.Ifname,
@@ -356,7 +369,7 @@ func (c *CNIServer) Check(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.
 
 	// 2. NetworkEndpoint exists and its address agrees with the NWIF.
 	var nwepList juneauv1alpha1.NetworkEndpointList
-	if err := c.client.List(ctx, &nwepList, client.InNamespace(podNamespace), client.MatchingFields{
+	if err := c.cachedClient.List(ctx, &nwepList, client.InNamespace(podNamespace), client.MatchingFields{
 		"spec.podRef.uid":       podUID,
 		"spec.podRef.name":      podName,
 		"spec.podRef.interface": req.Ifname,
@@ -448,43 +461,15 @@ func (c *CNIServer) Del(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.Em
 		zap.S().Debugf("Deleted veth: %s", vethHostName)
 	}
 
-	var nwepList juneauv1alpha1.NetworkEndpointList
-	if err := c.client.List(ctx, &nwepList, client.InNamespace(podNamespace), client.MatchingFields{
-		"spec.podRef.uid":       podUID,
-		"spec.podRef.name":      podName,
-		"spec.podRef.interface": req.Ifname,
-	}); err != nil {
-		zap.L().Error("failed to list NetworkEndpoint resources", zap.Error(err))
-		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to list NetworkEndpoint resources", err.Error())
+	release, err := c.releaseNetworkEndpoint(ctx, podNamespace, podName, podUID, req.Ifname, req.ContainerId)
+	if err != nil {
+		zap.L().Error("failed to release NetworkEndpoint resource", zap.Error(err))
+		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to release NetworkEndpoint resource", err.Error())
 	}
-
-	// Only tear down the attachment (NetworkEndpoint and its probes) when
-	// this DEL is for the generation recorded in the attachment. A stale
-	// DEL from an older sandbox (same Pod UID/name/ifname, different CNI
-	// container ID) must not delete the live endpoint. Attachments created
-	// before this generation was recorded have an empty ContainerID;
-	// treat those as legacy and still honor DEL for compatibility.
-	matchesGeneration := false
-	for _, nwep := range nwepList.Items {
-		attachment := nwep.Spec.Attachment
-		if attachment == nil || attachment.ContainerID == "" || attachment.ContainerID == req.ContainerId {
-			matchesGeneration = true
-		}
-	}
-	if !matchesGeneration && len(nwepList.Items) > 0 {
-		zap.S().Debugf("CNI DEL for pod %s/%s ifname=%s ignored: attachment generation %q != container %q",
-			podNamespace, podName, req.Ifname, nwepList.Items[0].Spec.Attachment.ContainerID, req.ContainerId)
+	if release == networkEndpointSuperseded {
+		zap.S().Debugf("CNI DEL for pod %s/%s ifname=%s ignored: a newer sandbox than container %q owns the endpoint",
+			podNamespace, podName, req.Ifname, req.ContainerId)
 		return &emptypb.Empty{}, nil
-	}
-
-	for _, nwep := range nwepList.Items {
-		attachment := nwep.Spec.Attachment
-		if attachment != nil && attachment.ContainerID != "" && attachment.ContainerID != req.ContainerId {
-			continue
-		}
-		if err := c.client.Delete(ctx, &nwep); err != nil {
-			zap.L().Error("failed to delete NetworkEndpoint resource", zap.Error(err))
-		}
 	}
 
 	// Unregister Pod probes only for the generation being torn down. The
@@ -498,9 +483,84 @@ func (c *CNIServer) Del(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.Em
 	return &emptypb.Empty{}, nil
 }
 
-func newCNIServer(client client.Client, probeRegistrar ProbeRegistrar) *CNIServer {
+// networkEndpointRelease says what a CNI DEL found when it went for the
+// Pod NetworkEndpoint of its own sandbox.
+type networkEndpointRelease int
+
+const (
+	// networkEndpointReleased means no endpoint of this sandbox is left:
+	// either the DEL deleted it, or none belonged to the request.
+	networkEndpointReleased networkEndpointRelease = iota
+	// networkEndpointSuperseded means a newer sandbox owns the endpoint,
+	// so the DEL is stale and has to leave the live attachment alone.
+	networkEndpointSuperseded
+)
+
+// releaseNetworkEndpoint deletes the Pod NetworkEndpoint of the sandbox
+// this CNI DEL is for, and only that one.
+//
+// A sandbox can be recreated under the same Pod UID, so a late DEL from
+// the old sandbox can arrive after the new one has taken the endpoint
+// over. The read is uncached and the delete is guarded by the version it
+// read, so a generation that changed at either point leaves the live
+// endpoint standing instead of tearing the running pod off the network.
+func (c *CNIServer) releaseNetworkEndpoint(ctx context.Context, namespace, podName, podUID, ifname, containerID string) (networkEndpointRelease, error) {
+	key := client.ObjectKey{Namespace: namespace, Name: networkEndpointName(podName, ifname)}
+
+	var nwep juneauv1alpha1.NetworkEndpoint
+	if err := c.apiClient.Get(ctx, key, &nwep); err != nil {
+		if apierrors.IsNotFound(err) {
+			return networkEndpointReleased, nil
+		}
+		return networkEndpointReleased, fmt.Errorf("fetch NetworkEndpoint %s: %w", key, err)
+	}
+
+	if !podRefMatches(nwep.Spec.PodRef, podName, podUID, ifname) {
+		// The name belongs to another pod instance, so this DEL has no
+		// endpoint of its own to remove.
+		return networkEndpointReleased, nil
+	}
+	if !attachmentBelongsTo(nwep.Spec.Attachment, containerID) {
+		return networkEndpointSuperseded, nil
+	}
+
+	err := c.apiClient.Delete(ctx, &nwep, client.Preconditions{
+		UID:             &nwep.UID,
+		ResourceVersion: &nwep.ResourceVersion,
+	})
+	switch {
+	case err == nil, apierrors.IsNotFound(err):
+		return networkEndpointReleased, nil
+	case apierrors.IsConflict(err):
+		return networkEndpointSuperseded, nil
+	default:
+		return networkEndpointReleased, fmt.Errorf("delete NetworkEndpoint %s: %w", key, err)
+	}
+}
+
+// networkEndpointName is the name Add gives the NetworkEndpoint of a pod
+// interface. Del looks the object up by that name, so both sides have to
+// build it the same way.
+func networkEndpointName(podName, ifname string) string {
+	return podName + "." + ifname
+}
+
+func podRefMatches(ref *juneauv1alpha1.NetworkEndpointPodReference, podName, podUID, ifname string) bool {
+	return ref != nil && ref.Name == podName && ref.UID == podUID && ref.Interface == ifname
+}
+
+// attachmentBelongsTo reports whether the attachment was recorded by the
+// given CNI container. Attachments written before the container ID was
+// recorded carry an empty one; treat those as legacy and let DEL take
+// them down so an upgrade does not leak endpoints.
+func attachmentBelongsTo(attachment *juneauv1alpha1.NetworkEndpointAttachment, containerID string) bool {
+	return attachment == nil || attachment.ContainerID == "" || attachment.ContainerID == containerID
+}
+
+func newCNIServer(cachedClient, apiClient client.Client, probeRegistrar ProbeRegistrar) *CNIServer {
 	return &CNIServer{
-		client:         client,
+		cachedClient:   cachedClient,
+		apiClient:      apiClient,
 		probeRegistrar: probeRegistrar,
 	}
 }
@@ -562,10 +622,38 @@ func (c *CNIServer) createVethPair(veth *netlink.Veth) error {
 // generation and are refreshed together. A UID mismatch indicates a stale
 // record for a different pod and is reported as a hard error.
 //
+// A concurrent DEL of the previous sandbox can remove the record between
+// the create and the read, and a concurrent write can move it between the
+// read and the update. Both are races over the same key rather than
+// faults, so each attempt starts from the desired object again and the
+// loop is bounded by the shared retry backoff.
+//
 // Returns createdByUs=true only when this call actually inserted the
 // resource, so the caller knows whether to register a rollback cleanup.
 func (c *CNIServer) upsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha1.NetworkEndpoint, podUID string) (bool, error) {
-	err := c.client.Create(ctx, nwep)
+	desired := nwep.DeepCopy()
+
+	var createdByUs bool
+	err := retry.OnError(retry.DefaultRetry, isNetworkEndpointRace, func() error {
+		attempt := desired.DeepCopy()
+		created, err := c.createOrRefreshNetworkEndpoint(ctx, attempt, podUID)
+		if err != nil {
+			return err
+		}
+		createdByUs = created
+		*nwep = *attempt
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return createdByUs, nil
+}
+
+// createOrRefreshNetworkEndpoint is one attempt of upsertNetworkEndpoint.
+// It reports whether the attempt inserted the resource.
+func (c *CNIServer) createOrRefreshNetworkEndpoint(ctx context.Context, nwep *juneauv1alpha1.NetworkEndpoint, podUID string) (bool, error) {
+	err := c.apiClient.Create(ctx, nwep)
 	if err == nil {
 		return true, nil
 	}
@@ -574,7 +662,7 @@ func (c *CNIServer) upsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alp
 	}
 
 	existing := &juneauv1alpha1.NetworkEndpoint{}
-	if getErr := c.client.Get(ctx, client.ObjectKeyFromObject(nwep), existing); getErr != nil {
+	if getErr := c.apiClient.Get(ctx, client.ObjectKeyFromObject(nwep), existing); getErr != nil {
 		return false, fmt.Errorf("fetch existing NetworkEndpoint %s/%s: %w", nwep.Namespace, nwep.Name, getErr)
 	}
 	if existing.Spec.PodRef == nil || existing.Spec.PodRef.UID != podUID {
@@ -590,11 +678,18 @@ func (c *CNIServer) upsertNetworkEndpoint(ctx context.Context, nwep *juneauv1alp
 	// ifindex, host MAC, CNI container ID) to match the new sandbox.
 	existing.Spec.MACAddress = nwep.Spec.MACAddress
 	existing.Spec.Attachment = nwep.Spec.Attachment
-	if updErr := c.client.Update(ctx, existing); updErr != nil {
+	if updErr := c.apiClient.Update(ctx, existing); updErr != nil {
 		return false, fmt.Errorf("update existing NetworkEndpoint %s/%s attachment: %w", existing.Namespace, existing.Name, updErr)
 	}
 	*nwep = *existing
 	return false, nil
+}
+
+// isNetworkEndpointRace reports whether the error says another writer got
+// to the same key first: NotFound from the read that follows an
+// AlreadyExists create, Conflict from the update that follows the read.
+func isNetworkEndpointRace(err error) bool {
+	return apierrors.IsNotFound(err) || apierrors.IsConflict(err)
 }
 
 // cleanupVeth best-effort deletes the host-side veth by name. Deleting the
@@ -622,7 +717,7 @@ func (c *CNIServer) cleanupVeth(name string) {
 func (c *CNIServer) cleanupNetworkEndpoint(nwep *juneauv1alpha1.NetworkEndpoint) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := c.client.Delete(ctx, nwep); err != nil {
+	if err := c.apiClient.Delete(ctx, nwep); err != nil {
 		if apierrors.IsNotFound(err) {
 			return
 		}
