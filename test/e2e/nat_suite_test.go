@@ -60,25 +60,6 @@ type externalNetworkAttachmentStatus struct {
 	Conditions []bgpNodeStateConditionEntry `json:"conditions,omitempty"`
 }
 
-type routeTableObject struct {
-	Metadata struct {
-		Name string `json:"name"`
-	} `json:"metadata"`
-	Status struct {
-		TableID    uint32                       `json:"tableID,omitempty"`
-		Routes     []routeTableRoute            `json:"routes,omitempty"`
-		Conditions []bgpNodeStateConditionEntry `json:"conditions,omitempty"`
-	} `json:"status"`
-}
-
-type routeTableRoute struct {
-	Dst string `json:"dst"`
-	Via struct {
-		Type       string `json:"type"`
-		NATGateway string `json:"natGateway,omitempty"`
-	} `json:"via"`
-}
-
 func applyNATGateway(name, vpc, externalNetwork string) error {
 	manifest := fmt.Sprintf(`apiVersion: juneau.loutres.me/v1alpha1
 kind: NATGateway
@@ -282,18 +263,6 @@ func kindNetworkIPv4Subnet() string {
 	}
 	Fail(fmt.Sprintf("docker network %s has no IPv4 subnet: %q", kindDockerNetwork, out))
 	return ""
-}
-
-func getRouteTableObject(name string) (*routeTableObject, error) {
-	out, err := kubectlOutput(repoRoot, "get", "routetable", name, "-o", "json")
-	if err != nil {
-		return nil, err
-	}
-	var obj routeTableObject
-	if err := json.Unmarshal([]byte(out), &obj); err != nil {
-		return nil, fmt.Errorf("decode routetable/%s: %w", name, err)
-	}
-	return &obj, nil
 }
 
 func dumpNATDiagnostics() {

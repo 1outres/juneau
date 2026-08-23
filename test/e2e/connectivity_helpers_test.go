@@ -402,6 +402,37 @@ func mainRouteTablePatch(routes ...route) (string, error) {
 	return string(encoded), nil
 }
 
+func vpcManifest(vpc string) string {
+	return fmt.Sprintf(`apiVersion: juneau.loutres.me/v1alpha1
+kind: Vpc
+metadata:
+  name: %s
+`, vpc)
+}
+
+func mainRouteTableManifest(vpc string, routes ...route) (string, error) {
+	encoded, err := json.Marshal(append(make([]route, 0, len(routes)), routes...))
+	if err != nil {
+		return "", fmt.Errorf("encode route table routes: %w", err)
+	}
+	return fmt.Sprintf(`apiVersion: juneau.loutres.me/v1alpha1
+kind: RouteTable
+metadata:
+  name: %s
+spec:
+  vpc: %s
+  routes: %s
+`, vpc, vpc, encoded), nil
+}
+
+func vpcWithMainRouteTableManifest(vpc string, routes ...route) (string, error) {
+	routeTable, err := mainRouteTableManifest(vpc, routes...)
+	if err != nil {
+		return "", err
+	}
+	return vpcManifest(vpc) + "---\n" + routeTable, nil
+}
+
 // vpcMainRouteTable reads the name of the RouteTable the Vpc reconciler
 // created for the Vpc.
 func vpcMainRouteTable(vpc string) (string, error) {
@@ -458,6 +489,63 @@ func clearMainRouteTableRoutes(vpc string) {
 
 func reportMainRouteTableClearFailure(vpc string, err error) {
 	_, _ = fmt.Fprintf(GinkgoWriter, "best-effort clear of the main RouteTable of vpc %s failed: %v\n", vpc, err)
+}
+
+type routeTableObject struct {
+	Metadata routeTableMeta   `json:"metadata"`
+	Spec     routeTableSpec   `json:"spec"`
+	Status   routeTableStatus `json:"status"`
+}
+
+type routeTableMeta struct {
+	Name            string               `json:"name"`
+	OwnerReferences []routeTableOwnerRef `json:"ownerReferences,omitempty"`
+}
+
+type routeTableOwnerRef struct {
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
+	Controller bool   `json:"controller,omitempty"`
+}
+
+type routeTableSpec struct {
+	Vpc    string  `json:"vpc"`
+	Routes []route `json:"routes,omitempty"`
+}
+
+type routeTableStatus struct {
+	TableID    uint32                       `json:"tableID,omitempty"`
+	Routes     []routeTableRoute            `json:"routes,omitempty"`
+	Conditions []bgpNodeStateConditionEntry `json:"conditions,omitempty"`
+}
+
+type routeTableRoute struct {
+	Dst string `json:"dst"`
+	Via struct {
+		Type       string `json:"type"`
+		NATGateway string `json:"natGateway,omitempty"`
+	} `json:"via"`
+}
+
+func getRouteTableObject(name string) (*routeTableObject, error) {
+	out, err := kubectlOutput(repoRoot, "get", "routetable", name, "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	var obj routeTableObject
+	if err := json.Unmarshal([]byte(out), &obj); err != nil {
+		return nil, fmt.Errorf("decode routetable/%s: %w", name, err)
+	}
+	return &obj, nil
+}
+
+func routeTableControllerRef(obj *routeTableObject) *routeTableOwnerRef {
+	for i := range obj.Metadata.OwnerReferences {
+		if obj.Metadata.OwnerReferences[i].Controller {
+			return &obj.Metadata.OwnerReferences[i]
+		}
+	}
+	return nil
 }
 
 func waitServiceEndpoints(namespace string, serviceName string) {
