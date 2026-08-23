@@ -76,6 +76,47 @@ var _ = Describe("Vpc/Subnet controllers", func() {
 		Expect(controllerRef.UID).To(Equal(vpc.UID))
 	})
 
+	It("adopts a main RouteTable that already exists and keeps its spec.routes", func() {
+		name := uniqueTestName("vpc")
+		routes := []juneauv1alpha1.Route{{
+			Dst: "192.0.2.0/24",
+			Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaInternetGateway},
+		}}
+
+		Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: juneauv1alpha1.RouteTableSpec{
+				Vpc:    name,
+				Routes: routes,
+			},
+		})).To(Succeed())
+
+		Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.Vpc{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+		})).To(Succeed())
+
+		var vpc juneauv1alpha1.Vpc
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: name}, &vpc)).To(Succeed())
+			ready := meta.FindStatusCondition(vpc.Status.Conditions, juneauv1alpha1.VpcStatusReady)
+			g.Expect(ready).NotTo(BeNil())
+			g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+		}).Should(Succeed())
+
+		var rt juneauv1alpha1.RouteTable
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: name}, &rt)).To(Succeed())
+			owner := metav1.GetControllerOf(&rt)
+			g.Expect(owner).NotTo(BeNil())
+			g.Expect(owner.Kind).To(Equal("Vpc"))
+			g.Expect(owner.Name).To(Equal(name))
+			g.Expect(owner.UID).To(Equal(vpc.UID))
+		}).Should(Succeed())
+
+		Expect(rt.Spec.Vpc).To(Equal(name))
+		Expect(rt.Spec.Routes).To(Equal(routes))
+	})
+
 	It("backs spec.endpointPool with an ip AllocationPool owned by the Vpc", func() {
 		poolCIDR := uniqueEndpointPoolCIDR()
 		vpcName := createControllerVpcWithEndpointPool(poolCIDR)
