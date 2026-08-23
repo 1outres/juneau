@@ -75,7 +75,7 @@ shop-payment   shop-vpc    payment-vpc   True
 
 ### 3. 両方のRouteTableにルートを追加
 
-VpcのメインRouteTableはVpc名と同じ名前で自動生成されます。それぞれに対向Subnetへのルートを追記します。
+VpcのメインRouteTableはVpc名と同じ名前で自動生成されます。それぞれに対向Subnetへのルートを追記します。どちらもcontrollerが作ったRouteTableへの追記なので、Vpcと同じマニフェストにまとめるなら`kubectl apply --server-side`を使ってください。詳細は[RouteTable](../resources/routetable.md)を参照してください。
 
 ```yaml
 apiVersion: juneau.loutres.me/v1alpha1

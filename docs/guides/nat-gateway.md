@@ -148,7 +148,7 @@ spec:
         natGateway: egress-natgw
 ```
 
-RouteTableのメタ名はVpc名と同じです。このルートが無いとVpc内のPodからVpc外への経路が成立しません。詳細は[RouteTable](../resources/routetable.md)を参照してください。
+RouteTableのメタ名はVpc名と同じです。このルートが無いとVpc内のPodからVpc外への経路が成立しません。controllerが先に作っているオブジェクトなので、Vpcと同じマニフェストにまとめるときは`kubectl apply --server-side`で適用してください。詳細は[RouteTable](../resources/routetable.md)を参照してください。
 
 ### 8. ExternalNetworkAttachmentが払い出されたことを確認
 

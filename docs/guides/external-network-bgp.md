@@ -158,7 +158,7 @@ spec:
         type: internetGateway
 ```
 
-RouteTableのメタ名はVpc名と同じです。このルートがないと、Podから外部への通信経路が成立しません。詳細は[RouteTable](../resources/routetable.md)を参照してください。
+RouteTableのメタ名はVpc名と同じです。このルートがないと、Podから外部への通信経路が成立しません。このRouteTableはVpcの作成時にcontrollerが作るので、Vpcと同じマニフェストにまとめるなら`kubectl apply --server-side`で適用してください。詳細は[RouteTable](../resources/routetable.md)を参照してください。
 
 ### 8. ElasticIPを作成
 

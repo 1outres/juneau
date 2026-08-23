@@ -173,7 +173,7 @@ $ kubectl get transitgatewayroutetable corp-tgw-spoke -o jsonpath="$ROUTES"
 
 ### 6. 各VpcのRouteTableにルートを追加
 
-VpcのメインRouteTableはVpc名と同じ名前で自動生成されます。TransitGateway経由で出したい宛先を書き足します。
+VpcのメインRouteTableはVpc名と同じ名前で自動生成されます。TransitGateway経由で出したい宛先を書き足します。どれもcontrollerが作ったRouteTableへの追記なので、Vpcと同じマニフェストにまとめるなら`kubectl apply --server-side`を使ってください。詳細は[RouteTable](../resources/routetable.md)を参照してください。
 
 ```yaml
 apiVersion: juneau.loutres.me/v1alpha1
