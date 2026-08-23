@@ -173,18 +173,10 @@ metadata:
 spec:
   vpc: %s
   cidr: %s
----
-apiVersion: juneau.loutres.me/v1alpha1
-kind: RouteTable
-metadata:
-  name: %s
-spec:
-  vpc: %s
-  routes:
-    - dst: 0.0.0.0/0
-      via:
-        type: internetGateway
-`, bgpVpcName, bgpSubnetName, bgpVpcName, bgpSubnetCIDR, bgpVpcName, bgpVpcName))).To(Succeed())
+`, bgpVpcName, bgpSubnetName, bgpVpcName, bgpSubnetCIDR))).To(Succeed())
+
+	By("routing 0/0 via the internet gateway on the main RouteTable")
+	setMainRouteTableRoutes(bgpVpcName, internetGatewayRoute("0.0.0.0/0"))
 	waitSubnetReady(bgpSubnetName)
 }
 

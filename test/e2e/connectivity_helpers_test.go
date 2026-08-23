@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -341,6 +342,122 @@ func waitResourceReady(resource string, name string) {
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(strings.TrimSpace(ready)).To(Equal("True"))
 	}).Should(Succeed())
+}
+
+type routeViaType string
+
+const (
+	viaInternetGateway routeViaType = "internetGateway"
+	viaNATGateway      routeViaType = "natGateway"
+	viaVpcPeering      routeViaType = "vpcPeering"
+	viaTransitGateway  routeViaType = "transitGateway"
+)
+
+type routeVia struct {
+	Type           routeViaType `json:"type"`
+	NATGateway     string       `json:"natGateway,omitempty"`
+	VpcPeering     string       `json:"vpcPeering,omitempty"`
+	TransitGateway string       `json:"transitGateway,omitempty"`
+}
+
+type route struct {
+	Dst string   `json:"dst"`
+	Via routeVia `json:"via"`
+}
+
+type routeTablePatch struct {
+	Spec routeTablePatchSpec `json:"spec"`
+}
+
+type routeTablePatchSpec struct {
+	Routes []route `json:"routes"`
+}
+
+func internetGatewayRoute(dst string) route {
+	return route{Dst: dst, Via: routeVia{Type: viaInternetGateway}}
+}
+
+func natGatewayRoute(dst string, natGateway string) route {
+	return route{Dst: dst, Via: routeVia{Type: viaNATGateway, NATGateway: natGateway}}
+}
+
+func vpcPeeringRoute(dst string, vpcPeering string) route {
+	return route{Dst: dst, Via: routeVia{Type: viaVpcPeering, VpcPeering: vpcPeering}}
+}
+
+func transitGatewayRoute(dst string, transitGateway string) route {
+	return route{Dst: dst, Via: routeVia{Type: viaTransitGateway, TransitGateway: transitGateway}}
+}
+
+// mainRouteTablePatch builds the merge patch that makes the given routes
+// the whole spec.routes of a RouteTable.
+func mainRouteTablePatch(routes ...route) (string, error) {
+	patch := routeTablePatch{Spec: routeTablePatchSpec{Routes: make([]route, 0, len(routes))}}
+	patch.Spec.Routes = append(patch.Spec.Routes, routes...)
+
+	encoded, err := json.Marshal(patch)
+	if err != nil {
+		return "", fmt.Errorf("encode route table patch: %w", err)
+	}
+	return string(encoded), nil
+}
+
+// vpcMainRouteTable reads the name of the RouteTable the Vpc reconciler
+// created for the Vpc.
+func vpcMainRouteTable(vpc string) (string, error) {
+	out, err := kubectlJSONPath(repoRoot, `{.status.mainRouteTable}`, "get", "vpc", vpc)
+	if err != nil {
+		return "", err
+	}
+	name := strings.TrimSpace(out)
+	if name == "" {
+		return "", fmt.Errorf("vpc %s has no main route table in status yet", vpc)
+	}
+	return name, nil
+}
+
+// waitVpcMainRouteTable waits until the Vpc names its main RouteTable.
+// The reconciler owns that object, so a spec that creates it races the
+// reconciler and one of the two loses with AlreadyExists. The Vpc writes
+// status.mainRouteTable only after the object exists, so waiting for the
+// field and then patching never races.
+func waitVpcMainRouteTable(vpc string) string {
+	var name string
+	Eventually(func(g Gomega) {
+		var err error
+		name, err = vpcMainRouteTable(vpc)
+		g.Expect(err).NotTo(HaveOccurred())
+	}).Should(Succeed())
+	return name
+}
+
+// setMainRouteTableRoutes replaces spec.routes of the Vpc's main
+// RouteTable with the given routes.
+func setMainRouteTableRoutes(vpc string, routes ...route) {
+	name := waitVpcMainRouteTable(vpc)
+	patch, err := mainRouteTablePatch(routes...)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(run(repoRoot, "kubectl", "patch", "routetable", name, "--type=merge", "-p", patch)).To(Succeed())
+}
+
+// clearMainRouteTableRoutes empties spec.routes of the Vpc's main
+// RouteTable. It is best-effort so teardown never fails a suite.
+func clearMainRouteTableRoutes(vpc string) {
+	name, err := vpcMainRouteTable(vpc)
+	if err != nil {
+		reportMainRouteTableClearFailure(vpc, err)
+		return
+	}
+	patch, err := mainRouteTablePatch()
+	if err != nil {
+		reportMainRouteTableClearFailure(vpc, err)
+		return
+	}
+	runBestEffort(repoRoot, "kubectl", "patch", "routetable", name, "--type=merge", "-p", patch)
+}
+
+func reportMainRouteTableClearFailure(vpc string, err error) {
+	_, _ = fmt.Fprintf(GinkgoWriter, "best-effort clear of the main RouteTable of vpc %s failed: %v\n", vpc, err)
 }
 
 func waitServiceEndpoints(namespace string, serviceName string) {

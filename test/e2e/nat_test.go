@@ -80,39 +80,14 @@ spec:
 		Expect(applyNATGateway(natGatewayName, natVpcName, natExternalNet)).To(Succeed())
 		waitNATGatewayReady(natGatewayName)
 
-		// Overwrite the main RouteTable (name = VPC name) with a 0/0
-		// route via the NATGateway. The Vpc reconciler treats a
-		// pre-existing same-named RT as the main RT, so updating its
-		// spec gives every Pod in the default subnet a NAT egress path.
 		By("setting 0/0 via natGateway on the main RouteTable")
-		rtManifest := fmt.Sprintf(`apiVersion: juneau.loutres.me/v1alpha1
-kind: RouteTable
-metadata:
-  name: %s
-spec:
-  vpc: %s
-  routes:
-    - dst: 0.0.0.0/0
-      via:
-        type: natGateway
-        natGateway: %s
-`, natVpcName, natVpcName, natGatewayName)
-		Expect(applyManifest(rtManifest)).To(Succeed())
+		setMainRouteTableRoutes(natVpcName, natGatewayRoute("0.0.0.0/0", natGatewayName))
 	})
 
 	AfterAll(func() {
 		// Drop the NATGateway reference from the main RT before deleting
 		// the NATGateway itself; otherwise the delete is webhook-rejected.
-		clearMain := fmt.Sprintf(`apiVersion: juneau.loutres.me/v1alpha1
-kind: RouteTable
-metadata:
-  name: %s
-spec:
-  vpc: %s
-`, natVpcName, natVpcName)
-		if err := runWithStdin(repoRoot, clearMain, "kubectl", "apply", "-f", "-"); err != nil {
-			_, _ = fmt.Fprintf(GinkgoWriter, "best-effort clear of main RT routes failed: %v\n", err)
-		}
+		clearMainRouteTableRoutes(natVpcName)
 
 		runBestEffort(repoRoot, "kubectl", "delete", "natgateway", natGatewayName, "--ignore-not-found=true")
 		runBestEffort(repoRoot, "kubectl", "delete", "subnet", natSubnetName, "--ignore-not-found=true")
@@ -143,8 +118,8 @@ spec:
 	})
 
 	It("N1.5: is undeletable while a RouteTable references it via spec.routes", func() {
-		// The main RouteTable created in BeforeAll already references
-		// this NATGateway via 0/0, so the delete must be rejected.
+		// BeforeAll already pointed the main RouteTable 0/0 route at this
+		// NATGateway, so the delete must be rejected.
 		out, err := kubectlOutput(repoRoot, "delete", "natgateway", natGatewayName)
 		Expect(err).To(HaveOccurred(), "delete should be rejected, got %q", out)
 

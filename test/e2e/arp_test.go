@@ -80,18 +80,10 @@ metadata:
 spec:
   vpc: %s
   cidr: %s
----
-apiVersion: juneau.loutres.me/v1alpha1
-kind: RouteTable
-metadata:
-  name: %s
-spec:
-  vpc: %s
-  routes:
-    - dst: 0.0.0.0/0
-      via:
-        type: internetGateway
-`, arpVpcName, arpSubnetName, arpVpcName, arpSubnetCIDR, arpVpcName, arpVpcName))).To(Succeed())
+`, arpVpcName, arpSubnetName, arpVpcName, arpSubnetCIDR))).To(Succeed())
+
+		By("routing 0/0 via the internet gateway on the ElasticIP VPC main RouteTable")
+		setMainRouteTableRoutes(arpVpcName, internetGatewayRoute("0.0.0.0/0"))
 		waitSubnetReady(arpSubnetName)
 
 		By("creating the VPC and NATGateway the egress spec runs in")
@@ -113,33 +105,14 @@ spec:
 		Expect(applyNATGateway(arpNATGatewayName, arpNATVpcName, arpNATExternalNetworkName)).To(Succeed())
 		waitNATGatewayReady(arpNATGatewayName)
 
-		Expect(applyManifest(fmt.Sprintf(`apiVersion: juneau.loutres.me/v1alpha1
-kind: RouteTable
-metadata:
-  name: %s
-spec:
-  vpc: %s
-  routes:
-    - dst: 0.0.0.0/0
-      via:
-        type: natGateway
-        natGateway: %s
-`, arpNATVpcName, arpNATVpcName, arpNATGatewayName))).To(Succeed())
+		By("routing 0/0 via the NATGateway on the egress VPC main RouteTable")
+		setMainRouteTableRoutes(arpNATVpcName, natGatewayRoute("0.0.0.0/0", arpNATGatewayName))
 	})
 
 	AfterAll(func() {
 		// The NATGateway cannot be deleted while a RouteTable still routes
 		// through it, so the reference goes first.
-		clearMain := fmt.Sprintf(`apiVersion: juneau.loutres.me/v1alpha1
-kind: RouteTable
-metadata:
-  name: %s
-spec:
-  vpc: %s
-`, arpNATVpcName, arpNATVpcName)
-		if err := runWithStdin(repoRoot, clearMain, "kubectl", "apply", "-f", "-"); err != nil {
-			_, _ = fmt.Fprintf(GinkgoWriter, "best-effort clear of the NAT RouteTable routes failed: %v\n", err)
-		}
+		clearMainRouteTableRoutes(arpNATVpcName)
 
 		runBestEffort(repoRoot, "kubectl", "delete", "natgateway", arpNATGatewayName, "--ignore-not-found=true")
 		runBestEffort(repoRoot, "kubectl", "delete", "routetable", arpNATVpcName, "--ignore-not-found=true")
