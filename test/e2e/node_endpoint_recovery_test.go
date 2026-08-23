@@ -136,6 +136,17 @@ func hostIfaceAttr(node, iface, attr string) (string, error) {
 	return dockerExecOutput(node, "cat", fmt.Sprintf("/sys/class/net/%s/%s", iface, attr))
 }
 
+// hostIfaceNames lists the interfaces in a node's own network
+// namespace. Listing them all keeps a missing interface apart from a
+// command that failed to run.
+func hostIfaceNames(node string) ([]string, error) {
+	out, err := dockerExecOutput(node, "ls", "/sys/class/net")
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(out), nil
+}
+
 func restartDaemonOnNode(node string) {
 	GinkgoHelper()
 	Expect(run(repoRoot, "kubectl", "delete", "pod", "-n", daemonNamespace,

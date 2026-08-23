@@ -369,13 +369,21 @@ func assertPodNetwork(namespace string, podName string, expectedSubnet string) {
 	}).Should(Succeed())
 }
 
+func podIPOf(namespace string, podName string) (string, error) {
+	out, err := kubectlJSONPath(repoRoot, `{.status.podIP}`, "-n", namespace, "get", "pod", podName)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
 func assertPodConnectivity(namespace string, clientPod string, serverPod string) {
-	serverIP, err := kubectlJSONPath(repoRoot, `{.status.podIP}`, "-n", namespace, "get", "pod", serverPod)
+	serverIP, err := podIPOf(namespace, serverPod)
 	Expect(err).NotTo(HaveOccurred())
-	Expect(strings.TrimSpace(serverIP)).NotTo(BeEmpty())
+	Expect(serverIP).NotTo(BeEmpty())
 
 	Eventually(func(g Gomega) {
-		out, err := kubectlOutput(repoRoot, "exec", "-n", namespace, clientPod, "--", "curl", "-sS", "--max-time", "5", fmt.Sprintf("http://%s", strings.TrimSpace(serverIP)))
+		out, err := kubectlOutput(repoRoot, "exec", "-n", namespace, clientPod, "--", "curl", "-sS", "--max-time", "5", fmt.Sprintf("http://%s", serverIP))
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(strings.ToLower(out)).To(ContainSubstring("welcome to nginx"))
 	}).Should(Succeed())
