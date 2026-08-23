@@ -32,6 +32,7 @@ const (
 	DefaultNetNSDir    = "/var/run/juneau/netns"
 	maxErrorBody       = 1024
 	maxConcurrency     = 128
+	probeInterfaceName = "eth0"
 )
 
 type target struct {
@@ -51,7 +52,11 @@ type Server struct {
 	mu      sync.RWMutex
 	targets map[string]target
 	pods    map[string][]string
-	limit   chan struct{}
+	// containerIDs records the CNI container ID that published the
+	// current probe generation for each Pod UID. A stale DEL from an
+	// older sandbox must not unregister the live generation.
+	containerIDs map[string]string
+	limit        chan struct{}
 }
 
 func NewServer(cl client.Client, bind, netnsDir string) *Server {
@@ -64,7 +69,8 @@ func NewServer(cl client.Client, bind, netnsDir string) *Server {
 	return &Server{
 		client: cl, bind: bind, netnsDir: netnsDir,
 		targets: make(map[string]target), pods: make(map[string][]string),
-		limit: make(chan struct{}, maxConcurrency),
+		containerIDs: make(map[string]string),
+		limit:        make(chan struct{}, maxConcurrency),
 	}
 }
 
@@ -99,7 +105,7 @@ func (s *Server) Run(ctx context.Context) error {
 // RegisterPod is called synchronously by CNI ADD after networking is ready.
 // It pins the namespace before publishing token mappings, so kubelet cannot
 // observe a target whose namespace is unavailable.
-func (s *Server) RegisterPod(ctx context.Context, namespace, name, uid, netnsPath, address string) error {
+func (s *Server) RegisterPod(ctx context.Context, namespace, name, uid, containerID, netnsPath, address string) error {
 	if !validUID(uid) {
 		return fmt.Errorf("invalid Pod UID %q", uid)
 	}
@@ -131,14 +137,14 @@ func (s *Server) RegisterPod(ctx context.Context, namespace, name, uid, netnsPat
 	if err != nil {
 		return err
 	}
-	if err := s.publish(uid, pinned, host.String(), configs); err != nil {
+	if err := s.publish(uid, containerID, pinned, host.String(), configs); err != nil {
 		_ = s.unpinNetNS(uid)
 		return err
 	}
 	return nil
 }
 
-func (s *Server) publish(uid, netnsPath, host string, configs probeconfig.Configs) error {
+func (s *Server) publish(uid, containerID, netnsPath, host string, configs probeconfig.Configs) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for token := range configs {
@@ -153,6 +159,7 @@ func (s *Server) publish(uid, netnsPath, host string, configs probeconfig.Config
 		tokens = append(tokens, token)
 	}
 	s.pods[uid] = tokens
+	s.containerIDs[uid] = containerID
 	return nil
 }
 
@@ -189,19 +196,19 @@ func (s *Server) Recover(ctx context.Context, nodeName string) error {
 		}); err != nil {
 			return fmt.Errorf("list NetworkEndpoints for Pod %s/%s: %w", pod.Namespace, pod.Name, err)
 		}
-		var address string
-		for j := range endpoints.Items {
-			endpoint := &endpoints.Items[j]
-			if endpoint.Spec.NodeName == nodeName && endpoint.Spec.PodRef != nil && endpoint.Spec.PodRef.Interface == "eth0" {
-				address = endpoint.Spec.Address
-				break
-			}
-		}
-		host, _, err := net.ParseCIDR(address)
-		if err != nil {
+		endpoint := probeEndpointOf(endpoints.Items, nodeName)
+		if endpoint == nil {
 			continue
 		}
-		if err := s.publish(uid, pin, host.String(), configs); err != nil {
+		host, _, err := net.ParseCIDR(endpoint.Spec.Address)
+		if err != nil {
+			return fmt.Errorf("parse address of NetworkEndpoint %s/%s: %w", endpoint.Namespace, endpoint.Name, err)
+		}
+		var containerID string
+		if endpoint.Spec.Attachment != nil {
+			containerID = endpoint.Spec.Attachment.ContainerID
+		}
+		if err := s.publish(uid, containerID, pin, host.String(), configs); err != nil {
 			return fmt.Errorf("recover Pod %s/%s probes: %w", pod.Namespace, pod.Name, err)
 		}
 		active[uid] = struct{}{}
@@ -214,14 +221,31 @@ func (s *Server) Recover(ctx context.Context, nodeName string) error {
 		if _, ok := active[entry.Name()]; ok {
 			continue
 		}
-		if err := s.UnregisterPod(entry.Name()); err != nil {
+		if err := s.UnregisterPod(entry.Name(), ""); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Server) UnregisterPod(uid string) error {
+// probeEndpointOf returns the NetworkEndpoint this node published for the
+// Pod interface probes run against. The address and the sandbox generation
+// have to describe one endpoint, so both are read from this single object.
+func probeEndpointOf(endpoints []juneauv1alpha1.NetworkEndpoint, nodeName string) *juneauv1alpha1.NetworkEndpoint {
+	for i := range endpoints {
+		endpoint := &endpoints[i]
+		if endpoint.Spec.NodeName != nodeName || endpoint.Spec.PodRef == nil {
+			continue
+		}
+		if endpoint.Spec.PodRef.Interface != probeInterfaceName {
+			continue
+		}
+		return endpoint
+	}
+	return nil
+}
+
+func (s *Server) UnregisterPod(uid, containerID string) error {
 	if uid == "" {
 		return nil
 	}
@@ -229,6 +253,10 @@ func (s *Server) UnregisterPod(uid string) error {
 		return fmt.Errorf("invalid Pod UID %q", uid)
 	}
 	s.mu.Lock()
+	if containerID != "" && s.containerIDs[uid] != "" && s.containerIDs[uid] != containerID {
+		s.mu.Unlock()
+		return nil
+	}
 	s.removePodLocked(uid)
 	s.mu.Unlock()
 	return s.unpinNetNS(uid)
@@ -239,6 +267,7 @@ func (s *Server) removePodLocked(uid string) {
 		delete(s.targets, token)
 	}
 	delete(s.pods, uid)
+	delete(s.containerIDs, uid)
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

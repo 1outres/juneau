@@ -228,7 +228,12 @@ func stopGraceful(srv *grpc.Server) {
 // ServerConfig bundles construction-time options for NewServer so
 // new transport knobs do not become positional-arg churn.
 type ServerConfig struct {
-	Client         client.Client
+	// Client reads through the daemon's informer cache.
+	Client client.Client
+	// APIClient reads and writes the API server directly, for the
+	// NetworkEndpoint state the CNI handlers must not decide on a
+	// cached view. See CNIServer.
+	APIClient      client.Client
 	ProbeRegistrar ProbeRegistrar
 	TraceBus       *trace.Bus
 	TraceStore     *trace.Store
@@ -249,7 +254,7 @@ type ServerConfig struct {
 func NewServer(cfg ServerConfig) *Server {
 	s := &Server{
 		cniServer: grpc.NewServer(),
-		cni:       newCNIServer(cfg.Client, cfg.ProbeRegistrar),
+		cni:       newCNIServer(cfg.Client, cfg.APIClient, cfg.ProbeRegistrar),
 	}
 	cnipb.RegisterCNIServer(s.cniServer, s.cni)
 

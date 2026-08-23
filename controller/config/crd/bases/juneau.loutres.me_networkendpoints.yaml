@@ -62,6 +62,14 @@ spec:
                   Attachment describes the local kernel iface that backs this
                   endpoint on Spec.NodeName. Populated by the local daemon.
                 properties:
+                  containerID:
+                    description: |-
+                      ContainerID is the CNI container ID of the sandbox that owns this
+                      attachment. It identifies the attachment generation: a Pod UID may
+                      be reused across sandbox recreations, and a stale DEL for an old
+                      sandbox must not tear down the live attachment. Populated by the
+                      daemon on ADD and matched on DEL.
+                    type: string
                   hostMACAddress:
                     description: |-
                       HostMACAddress is the MAC of the host-side veth peer (the side

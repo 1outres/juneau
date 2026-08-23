@@ -292,6 +292,11 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("create client: %w", err)
 			}
 
+			apiClient, err := client.New(kubecfg, client.Options{Scheme: scheme})
+			if err != nil {
+				return fmt.Errorf("create uncached client: %w", err)
+			}
+
 			if err := cache.IndexField(
 				ctx,
 				&juneauv1alpha1.NetworkInterface{},
@@ -572,6 +577,7 @@ func NewApp() *cli.Command {
 
 			grpcServer := grpc.NewServer(grpc.ServerConfig{
 				Client:         cl,
+				APIClient:      apiClient,
 				ProbeRegistrar: probeProxy,
 				TraceBus:       bpfManager.TraceBus(),
 				TraceStore:     bpfManager.TraceStore(),

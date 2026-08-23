@@ -67,6 +67,14 @@ type NetworkEndpointAttachment struct {
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	HostMACAddress string `json:"hostMACAddress"`
+
+	// ContainerID is the CNI container ID of the sandbox that owns this
+	// attachment. It identifies the attachment generation: a Pod UID may
+	// be reused across sandbox recreations, and a stale DEL for an old
+	// sandbox must not tear down the live attachment. Populated by the
+	// daemon on ADD and matched on DEL.
+	// +optional
+	ContainerID string `json:"containerID,omitempty"`
 }
 
 // NetworkEndpointSpec defines the desired state of NetworkEndpoint.
