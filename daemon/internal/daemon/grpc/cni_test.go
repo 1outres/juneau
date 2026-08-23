@@ -3,10 +3,14 @@ package grpc
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	"github.com/1outres/juneau/daemon/pkg/cnipb"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -439,5 +443,98 @@ func TestUpsertNetworkEndpointRecreatesWhenRecordVanishes(t *testing.T) {
 	}
 	if got.Spec.Attachment.ContainerID != "container-s1-1" {
 		t.Fatalf("unexpected attachment, got %+v", got.Spec.Attachment)
+	}
+}
+
+func captureLogs(t *testing.T) *observer.ObservedLogs {
+	t.Helper()
+	core, logs := observer.New(zapcore.DebugLevel)
+	restore := zap.ReplaceGlobals(zap.New(core))
+	t.Cleanup(restore)
+	return logs
+}
+
+func hasLogEntry(logs *observer.ObservedLogs, level zapcore.Level, fragments ...string) bool {
+	for _, entry := range logs.All() {
+		if entry.Level != level {
+			continue
+		}
+		matched := true
+		for _, fragment := range fragments {
+			if !strings.Contains(entry.Message, fragment) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func TestDelStaleGenerationLogsAtInfo(t *testing.T) {
+	nwep := newTestNWEP("pod-a", "eth0", "pod-uid-1", "container-s2-2", 2)
+	server, _ := newTestCNIServer(t, nwep)
+	logs := captureLogs(t)
+
+	req := &cnipb.CNIRequest{
+		Args: map[string]string{
+			PodNamespaceKey: "default",
+			PodNameKey:      "pod-a",
+			PodUIDKey:       "pod-uid-1",
+		},
+		Ifname:      "eth0",
+		ContainerId: "container-s1-1",
+	}
+	if _, err := server.Del(context.Background(), req); err != nil {
+		t.Fatalf("stale DEL: %v", err)
+	}
+
+	if !hasLogEntry(logs, zapcore.InfoLevel, "default/pod-a", "eth0", "container-s1-1", "container-s2-2") {
+		t.Fatalf("stale DEL must be reported at info level with both generations, got %v", logs.All())
+	}
+}
+
+func TestDelLogsRequestWithContainerID(t *testing.T) {
+	server, _ := newTestCNIServer(t)
+	logs := captureLogs(t)
+
+	req := &cnipb.CNIRequest{
+		Args: map[string]string{
+			PodNamespaceKey: "default",
+			PodNameKey:      "pod-a",
+			PodUIDKey:       "pod-uid-1",
+		},
+		Ifname:      "eth0",
+		ContainerId: "container-s1-1",
+	}
+	if _, err := server.Del(context.Background(), req); err != nil {
+		t.Fatalf("DEL: %v", err)
+	}
+
+	if !hasLogEntry(logs, zapcore.InfoLevel, "CNI DEL request", "container-s1-1") {
+		t.Fatalf("DEL request log must carry the container ID, got %v", logs.All())
+	}
+}
+
+func TestDelAcceptsShortContainerID(t *testing.T) {
+	nwep := newTestNWEP("pod-a", "eth0", "pod-uid-1", "abc", 1)
+	server, registrar := newTestCNIServer(t, nwep)
+
+	req := &cnipb.CNIRequest{
+		Args: map[string]string{
+			PodNamespaceKey: "default",
+			PodNameKey:      "pod-a",
+			PodUIDKey:       "pod-uid-1",
+		},
+		Ifname:      "eth0",
+		ContainerId: "abc",
+	}
+	if _, err := server.Del(context.Background(), req); err != nil {
+		t.Fatalf("DEL with a short container ID: %v", err)
+	}
+	if len(registrar.unregistered) != 1 || registrar.unregistered[0] != "pod-uid-1:abc" {
+		t.Fatalf("unexpected probe unregistrations: %v", registrar.unregistered)
 	}
 }

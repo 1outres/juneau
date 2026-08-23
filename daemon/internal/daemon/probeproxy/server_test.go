@@ -6,10 +6,20 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	probeconfig "github.com/1outres/juneau/controller/pkg/probe"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func TestExecuteHTTPInTargetNamespace(t *testing.T) {
@@ -168,4 +178,145 @@ func splitServerAddress(t *testing.T, rawURL string) (string, int32) {
 		t.Fatal(err)
 	}
 	return host, int32(port)
+}
+
+func newRecoveryClient(t *testing.T, objs ...client.Object) client.Client {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := juneauv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	return fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithIndex(&juneauv1alpha1.NetworkEndpoint{}, "spec.podRef.uid", func(obj client.Object) []string {
+			endpoint, ok := obj.(*juneauv1alpha1.NetworkEndpoint)
+			if !ok || endpoint.Spec.PodRef == nil {
+				return nil
+			}
+			return []string{endpoint.Spec.PodRef.UID}
+		}).
+		WithObjects(objs...).
+		Build()
+}
+
+func newProbePod(t *testing.T, uid string, configs probeconfig.Configs) *corev1.Pod {
+	t.Helper()
+	encoded, err := probeconfig.Encode(configs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "default",
+			Name:      "pod-a",
+			UID:       types.UID(uid),
+			Annotations: map[string]string{
+				probeconfig.AnnotationRewriteVersion: probeconfig.RewriteVersion,
+				probeconfig.AnnotationConfigs:        encoded,
+			},
+		},
+	}
+}
+
+func newProbeEndpoint(name, podUID, ifname, address string, attachment *juneauv1alpha1.NetworkEndpointAttachment) *juneauv1alpha1.NetworkEndpoint {
+	return &juneauv1alpha1.NetworkEndpoint{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: name},
+		Spec: juneauv1alpha1.NetworkEndpointSpec{
+			Kind:     juneauv1alpha1.EndpointKindPod,
+			NodeName: "node-a",
+			Address:  address,
+			PodRef: &juneauv1alpha1.NetworkEndpointPodReference{
+				Name:      "pod-a",
+				Interface: ifname,
+				UID:       podUID,
+			},
+			Attachment: attachment,
+		},
+	}
+}
+
+func pinNetNSDir(t *testing.T, uid string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, uid), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func TestRecoverReadsAddressAndContainerIDFromOneEndpoint(t *testing.T) {
+	configs := probeconfig.Configs{"ready": {Type: "tcp", Port: 80, Timeout: 1}}
+	pod := newProbePod(t, "pod-uid-1", configs)
+	live := newProbeEndpoint("pod-a.eth0", "pod-uid-1", "eth0", "10.0.0.1/24", nil)
+	duplicate := newProbeEndpoint("pod-a.eth0.old", "pod-uid-1", "eth0", "10.0.0.2/24",
+		&juneauv1alpha1.NetworkEndpointAttachment{Ifindex: 2, ContainerID: "container-s2"})
+
+	proxy := NewServer(newRecoveryClient(t, pod, live, duplicate), "", pinNetNSDir(t, "pod-uid-1"))
+	if err := proxy.Recover(context.Background(), "node-a"); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+
+	host := proxy.targets["ready"].host
+	containerID := proxy.containerIDs["pod-uid-1"]
+	switch {
+	case host == "10.0.0.1" && containerID == "":
+	case host == "10.0.0.2" && containerID == "container-s2":
+	default:
+		t.Fatalf("address %q and container ID %q come from different endpoints", host, containerID)
+	}
+}
+
+func TestRecoverIgnoresSecondaryInterfaces(t *testing.T) {
+	configs := probeconfig.Configs{"ready": {Type: "tcp", Port: 80, Timeout: 1}}
+	pod := newProbePod(t, "pod-uid-1", configs)
+	primary := newProbeEndpoint("pod-a.eth0", "pod-uid-1", "eth0", "10.0.0.1/24",
+		&juneauv1alpha1.NetworkEndpointAttachment{Ifindex: 1, ContainerID: "container-s1"})
+	secondary := newProbeEndpoint("pod-a.1net", "pod-uid-1", "1net", "10.1.0.1/24",
+		&juneauv1alpha1.NetworkEndpointAttachment{Ifindex: 3, ContainerID: "container-other"})
+
+	proxy := NewServer(newRecoveryClient(t, pod, primary, secondary), "", pinNetNSDir(t, "pod-uid-1"))
+	if err := proxy.Recover(context.Background(), "node-a"); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+
+	if got := proxy.targets["ready"].host; got != "10.0.0.1" {
+		t.Fatalf("recovered host = %q, want the primary interface address", got)
+	}
+	if got := proxy.containerIDs["pod-uid-1"]; got != "container-s1" {
+		t.Fatalf("recovered container ID = %q, want the primary interface generation", got)
+	}
+}
+
+func TestRecoverRejectsMalformedEndpointAddress(t *testing.T) {
+	configs := probeconfig.Configs{"ready": {Type: "tcp", Port: 80, Timeout: 1}}
+	pod := newProbePod(t, "pod-uid-1", configs)
+	broken := newProbeEndpoint("pod-a.eth0", "pod-uid-1", "eth0", "not-a-cidr",
+		&juneauv1alpha1.NetworkEndpointAttachment{Ifindex: 1, ContainerID: "container-s1"})
+
+	proxy := NewServer(newRecoveryClient(t, pod, broken), "", pinNetNSDir(t, "pod-uid-1"))
+	err := proxy.Recover(context.Background(), "node-a")
+	if err == nil {
+		t.Fatal("expected an error for an endpoint address that cannot be parsed")
+	}
+	if !strings.Contains(err.Error(), "not-a-cidr") {
+		t.Fatalf("error must name the address it could not parse, got %v", err)
+	}
+}
+
+func TestRecoverSkipsPodWithoutPinnedNamespace(t *testing.T) {
+	configs := probeconfig.Configs{"ready": {Type: "tcp", Port: 80, Timeout: 1}}
+	pod := newProbePod(t, "pod-uid-1", configs)
+	endpoint := newProbeEndpoint("pod-a.eth0", "pod-uid-1", "eth0", "10.0.0.1/24",
+		&juneauv1alpha1.NetworkEndpointAttachment{Ifindex: 1, ContainerID: "container-s1"})
+
+	proxy := NewServer(newRecoveryClient(t, pod, endpoint), "", t.TempDir())
+	if err := proxy.Recover(context.Background(), "node-a"); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if _, exists := proxy.targets["ready"]; exists {
+		t.Fatal("published a target for a Pod with no pinned namespace")
+	}
 }

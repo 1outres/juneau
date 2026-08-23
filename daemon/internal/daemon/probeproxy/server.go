@@ -32,6 +32,7 @@ const (
 	DefaultNetNSDir    = "/var/run/juneau/netns"
 	maxErrorBody       = 1024
 	maxConcurrency     = 128
+	probeInterfaceName = "eth0"
 )
 
 type target struct {
@@ -195,25 +196,17 @@ func (s *Server) Recover(ctx context.Context, nodeName string) error {
 		}); err != nil {
 			return fmt.Errorf("list NetworkEndpoints for Pod %s/%s: %w", pod.Namespace, pod.Name, err)
 		}
-		var address string
-		for j := range endpoints.Items {
-			endpoint := &endpoints.Items[j]
-			if endpoint.Spec.NodeName == nodeName && endpoint.Spec.PodRef != nil && endpoint.Spec.PodRef.Interface == "eth0" {
-				address = endpoint.Spec.Address
-				break
-			}
-		}
-		host, _, err := net.ParseCIDR(address)
-		if err != nil {
+		endpoint := probeEndpointOf(endpoints.Items, nodeName)
+		if endpoint == nil {
 			continue
 		}
+		host, _, err := net.ParseCIDR(endpoint.Spec.Address)
+		if err != nil {
+			return fmt.Errorf("parse address of NetworkEndpoint %s/%s: %w", endpoint.Namespace, endpoint.Name, err)
+		}
 		var containerID string
-		for j := range endpoints.Items {
-			endpoint := &endpoints.Items[j]
-			if endpoint.Spec.NodeName == nodeName && endpoint.Spec.PodRef != nil && endpoint.Spec.PodRef.Interface == "eth0" && endpoint.Spec.Attachment != nil {
-				containerID = endpoint.Spec.Attachment.ContainerID
-				break
-			}
+		if endpoint.Spec.Attachment != nil {
+			containerID = endpoint.Spec.Attachment.ContainerID
 		}
 		if err := s.publish(uid, containerID, pin, host.String(), configs); err != nil {
 			return fmt.Errorf("recover Pod %s/%s probes: %w", pod.Namespace, pod.Name, err)
@@ -235,6 +228,23 @@ func (s *Server) Recover(ctx context.Context, nodeName string) error {
 	return nil
 }
 
+// probeEndpointOf returns the NetworkEndpoint this node published for the
+// Pod interface probes run against. The address and the sandbox generation
+// have to describe one endpoint, so both are read from this single object.
+func probeEndpointOf(endpoints []juneauv1alpha1.NetworkEndpoint, nodeName string) *juneauv1alpha1.NetworkEndpoint {
+	for i := range endpoints {
+		endpoint := &endpoints[i]
+		if endpoint.Spec.NodeName != nodeName || endpoint.Spec.PodRef == nil {
+			continue
+		}
+		if endpoint.Spec.PodRef.Interface != probeInterfaceName {
+			continue
+		}
+		return endpoint
+	}
+	return nil
+}
+
 func (s *Server) UnregisterPod(uid, containerID string) error {
 	if uid == "" {
 		return nil
@@ -248,7 +258,6 @@ func (s *Server) UnregisterPod(uid, containerID string) error {
 		return nil
 	}
 	s.removePodLocked(uid)
-	delete(s.containerIDs, uid)
 	s.mu.Unlock()
 	return s.unpinNetNS(uid)
 }
