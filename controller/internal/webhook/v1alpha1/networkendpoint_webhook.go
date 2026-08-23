@@ -111,9 +111,11 @@ func (v *NetworkEndpointCustomValidator) ValidateUpdate(ctx context.Context, old
 	// Identity fields (kind, nodeName, subnet, address) and PodRef are
 	// immutable: they describe who this endpoint is. Attachment is mutable
 	// because it is the daemon's view of the local kernel iface. A Pod MAC
-	// may change only when its CNI container ID changes, because both values
-	// belong to the same sandbox attachment generation. Non-Pod endpoint
-	// MACs remain immutable identities.
+	// may change only together with its Attachment, because both values
+	// describe the same veth pair: the daemon rebuilds the veth on every
+	// CNI ADD, so a retried ADD reuses the container ID but gets fresh
+	// MACs and a fresh ifindex. Non-Pod endpoint MACs remain immutable
+	// identities.
 	if networkendpoint.Spec.Kind != oldNetworkEndpoint.Spec.Kind {
 		errs = append(errs, field.Invalid(specPath.Child("kind"), networkendpoint.Spec.Kind, "spec.kind is immutable"))
 	}
@@ -127,7 +129,7 @@ func (v *NetworkEndpointCustomValidator) ValidateUpdate(ctx context.Context, old
 		errs = append(errs, field.Invalid(specPath.Child("address"), networkendpoint.Spec.Address, "spec.address is immutable"))
 	}
 	if networkendpoint.Spec.MACAddress != oldNetworkEndpoint.Spec.MACAddress &&
-		!podAttachmentGenerationChanged(oldNetworkEndpoint, networkendpoint) {
+		!podAttachmentChanged(oldNetworkEndpoint, networkendpoint) {
 		errs = append(errs, field.Invalid(specPath.Child("macAddress"), networkendpoint.Spec.MACAddress, "spec.macAddress is immutable"))
 	}
 	errs = append(errs, validatePodRefImmutable(podRefPath, oldNetworkEndpoint.Spec.PodRef, networkendpoint.Spec.PodRef)...)
@@ -142,15 +144,20 @@ func (v *NetworkEndpointCustomValidator) ValidateUpdate(ctx context.Context, old
 	return nil, nil
 }
 
-func podAttachmentGenerationChanged(oldEndpoint, newEndpoint *juneauv1alpha1.NetworkEndpoint) bool {
+func podAttachmentChanged(oldEndpoint, newEndpoint *juneauv1alpha1.NetworkEndpoint) bool {
 	if oldEndpoint.Spec.Kind != juneauv1alpha1.EndpointKindPod ||
-		newEndpoint.Spec.Kind != juneauv1alpha1.EndpointKindPod ||
-		oldEndpoint.Spec.Attachment == nil || newEndpoint.Spec.Attachment == nil {
+		newEndpoint.Spec.Kind != juneauv1alpha1.EndpointKindPod {
 		return false
 	}
-	oldContainerID := oldEndpoint.Spec.Attachment.ContainerID
-	newContainerID := newEndpoint.Spec.Attachment.ContainerID
-	return newContainerID != "" && newContainerID != oldContainerID
+	oldAttachment := oldEndpoint.Spec.Attachment
+	newAttachment := newEndpoint.Spec.Attachment
+	if oldAttachment == nil && newAttachment == nil {
+		return false
+	}
+	if oldAttachment == nil || newAttachment == nil {
+		return true
+	}
+	return *oldAttachment != *newAttachment
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type NetworkEndpoint.
