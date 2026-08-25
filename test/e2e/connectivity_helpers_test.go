@@ -378,15 +378,54 @@ func podIPOf(namespace string, podName string) (string, error) {
 }
 
 func assertPodConnectivity(namespace string, clientPod string, serverPod string) {
-	serverIP, err := podIPOf(namespace, serverPod)
-	Expect(err).NotTo(HaveOccurred())
-	Expect(serverIP).NotTo(BeEmpty())
+	serverIP := mustPodIP(namespace, serverPod)
 
 	Eventually(func(g Gomega) {
 		out, err := kubectlOutput(repoRoot, "exec", "-n", namespace, clientPod, "--", "curl", "-sS", "--max-time", "5", fmt.Sprintf("http://%s", serverIP))
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(strings.ToLower(out)).To(ContainSubstring("welcome to nginx"))
 	}).Should(Succeed())
+}
+
+// mustPodIP returns a Pod's address and fails the spec when it has
+// none yet.
+func mustPodIP(namespace string, podName string) string {
+	ip, err := podIPOf(namespace, podName)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(ip).NotTo(BeEmpty())
+	return ip
+}
+
+// assertPodPortConnectivity requires a HTTP probe to serverPod on the
+// given port to answer with wantBody.
+func assertPodPortConnectivity(namespace string, clientPod string, serverPod string, port int, wantBody string) {
+	address := fmt.Sprintf("%s:%d", mustPodIP(namespace, serverPod), port)
+
+	Eventually(func(g Gomega) {
+		out, err := kubectlOutput(repoRoot, "exec", "-n", namespace, clientPod, "--", "curl", "-sS", "--max-time", "5", fmt.Sprintf("http://%s", address))
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(strings.ToLower(out)).To(ContainSubstring(wantBody))
+	}).Should(Succeed())
+}
+
+// assertNoPodConnectivity asserts a HTTP probe from clientPod to serverPod
+// fails. We use a short-timeout single-shot probe — success would
+// actively contradict the assertion, so retrying only delays real
+// regressions.
+func assertNoPodConnectivity(namespace string, clientPod string, serverPod string) {
+	assertNoPodHTTP(namespace, clientPod, mustPodIP(namespace, serverPod))
+}
+
+// assertNoPodPortConnectivity is assertNoPodConnectivity aimed at one
+// destination port.
+func assertNoPodPortConnectivity(namespace string, clientPod string, serverPod string, port int) {
+	assertNoPodHTTP(namespace, clientPod, fmt.Sprintf("%s:%d", mustPodIP(namespace, serverPod), port))
+}
+
+func assertNoPodHTTP(namespace string, clientPod string, address string) {
+	out, curlErr := kubectlOutput(repoRoot, "exec", "-n", namespace, clientPod, "--",
+		"curl", "-sS", "--max-time", "3", fmt.Sprintf("http://%s", address))
+	Expect(curlErr).To(HaveOccurred(), "curl should fail per policy, got: %s", out)
 }
 
 // assertPodPing requires every echo request the Pod sends to be
