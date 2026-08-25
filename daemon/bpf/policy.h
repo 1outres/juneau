@@ -1,23 +1,28 @@
 // Unified policy stage: NetworkACL → SecurityGroup → CT install.
 //
-// apply_policy_egress / apply_policy_ingress replace the per-layer
-// apply_sg_egress / apply_sg_ingress used previously. They centralise:
+// apply_policy replaces the per-layer apply_sg_egress / apply_sg_ingress
+// used previously. It centralises:
 //
 //   * The single CT lookup that admits established flows past every
-//     policy layer at once. CT entries created here use
-//     CT_ACTION_POLICY_PASS, signifying "all applicable layers
-//     admitted this flow"; reply packets short-circuit both ACL and
-//     SG eval via the same CT entry.
+//     policy layer at once. Entries live in policy_ct_map, keyed by
+//     the enforcement point that wrote them, so a hit means "this
+//     hook already admitted this flow" and never "some other hook
+//     did".
 //
 //   * The evaluation order: ACL first (Subnet boundary, coarse), SG
-//     second (per-NIC, fine). A DENY at either layer drops; a flow
-//     is admitted only when neither layer denied AND at least one
-//     layer affirmatively allowed (PASS-only outcomes leave the data
-//     plane lookup-free, matching legacy behaviour for SG-less Pods).
+//     second (per-NIC, fine). A DENY at either layer drops. A CT
+//     entry is written whenever either layer is attached, PASS
+//     verdicts included, because the reply still has to get back past
+//     this hook. A Pod behind neither layer leaves the data plane
+//     lookup-free.
 //
 //   * CT install at admission time is bidirectional so the reverse
 //     leg (and follow-on packets in the original direction) skip
 //     re-evaluation.
+//
+// Both hooks share one function body. The hook is a compile-time
+// constant at every call site, so the per-hook branches below fold
+// away and each program still gets straight-line code.
 
 #ifndef JUNEAU_BPF_POLICY_H
 #define JUNEAU_BPF_POLICY_H
@@ -29,55 +34,24 @@
 #include "ct.h"
 #include "maps.h"
 #include "nat.h"
+#include "policy_ct.h"
 #include "sg.h"
 #include "trace.h"
 
-// ct_install_policy_pass writes the bidirectional CT entries that
-// represent "policy admitted this flow". Both directions share the
-// same vpc_id-scoped namespace; the SG and ACL evaluations have
-// already run, so the caller only supplies the forward ct_key
-// (already built for the established-flow short-circuit) plus the
-// initial CT state.
-//
-// Marked as a BPF-to-BPF subprogram (noinline) so the four 24-byte
-// struct allocations on its stack frame (the caller's fwd key
-// pointer is reused; the function adds the ct_val pair plus the
-// reverse ct_key) live in their own frame rather than ballooning
-// the caller's stack. Re-using the caller's fwd ct_key (built for
-// the established-flow short-circuit) instead of a separate args
-// struct saves the 24 bytes that pushed apply_policy_egress's
-// combined call-chain stack over the kernel's 512-byte ceiling.
-static __juneau_bpf_subprog void
-ct_install_policy_pass(const struct ct_key *fwd_key, __u8 init_state,
-                       __u8 init_flags) {
-  __u64 now = bpf_ktime_get_ns();
-  struct ct_val fwd = {
-      .action = CT_ACTION_POLICY_PASS,
-      .state = init_state,
-      .flags_seen = init_flags,
-      .last_seen_ns = now,
-  };
-  bpf_map_update_elem(&ct_map, fwd_key, &fwd, BPF_ANY);
-
-  struct ct_key rev_key = {
-      .scope = fwd_key->scope,
-      .saddr = fwd_key->daddr,
-      .daddr = fwd_key->saddr,
-      .sport = fwd_key->dport,
-      .dport = fwd_key->sport,
-      .proto = fwd_key->proto,
-  };
-  struct ct_val rev = {
-      .action = CT_ACTION_POLICY_PASS,
-      .state = init_state,
-      .flags_seen = init_flags,
-      .last_seen_ns = now,
-  };
-  bpf_map_update_elem(&ct_map, &rev_key, &rev, BPF_ANY);
+// policy_trace_hook translates an enforcement point into the hook id
+// the trace plane reports. The two numbering schemes happen to agree
+// today; converting explicitly keeps them free to diverge.
+static __always_inline __u32 policy_trace_hook(__u8 hook) {
+  if (hook == POLICY_HOOK_POD_EGRESS)
+    return TRACE_HOOK_POD_EGRESS;
+  return TRACE_HOOK_POD_INGRESS;
 }
 
-// apply_policy_egress runs the unified policy stage for an egress
-// packet leaving a Pod's veth.
+// apply_policy runs the policy stage for one packet at one enforcement
+// point. `hook` is a POLICY_HOOK_* value and decides four things: the
+// ACL direction, the SG direction, which address identifies the Pod
+// being protected ("self") and which identifies the other end
+// ("peer"). Everything else is shared.
 //
 // Returns:
 //    1: admitted by policy and CT installed (caller continues)
@@ -96,15 +70,14 @@ ct_install_policy_pass(const struct ct_key *fwd_key, __u8 init_state,
 // `sg_eval` (both noinline subprograms): the rule-scan loops are the
 // real source, and isolating those is enough.
 //
-// trace_id / hook / subnet_id thread the active trace session through
-// the policy stage so per-layer PASS events can fire at the same site
+// trace_id / subnet_id thread the active trace session through the
+// policy stage so per-layer PASS events can fire at the same site
 // where the per-layer DROP events are caught. trace_id == 0 short-
 // circuits every emit with one comparison, so the no-trace path keeps
 // its near-zero overhead.
-static __always_inline int apply_policy_egress(struct __sk_buff *skb,
-                                               __u32 vpc_id, __u32 acl_id,
-                                               __u32 trace_id, __u32 hook,
-                                               __u32 subnet_id) {
+static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
+                                        __u32 vpc_id, __u32 acl_id,
+                                        __u32 trace_id, __u32 subnet_id) {
   struct iphdr *iph = nat_load_iph(skb);
   if (!iph)
     return -2;
@@ -123,28 +96,42 @@ static __always_inline int apply_policy_egress(struct __sk_buff *skb,
     return 0;
   }
 
-  // Established-flow short-circuit. POLICY_PASS hits skip every
-  // per-layer eval. Service-related actions (DNAT/SNAT/...) skip the
-  // policy stage entirely — they were already admitted when the
-  // flow's first packet was evaluated.
-  struct ct_key ck = {
-      .scope = vpc_id,
-      .saddr = iph->saddr,
-      .daddr = iph->daddr,
-      .sport = bpf_htons(sport),
-      .dport = bpf_htons(dport),
-      .proto = proto,
-  };
-  struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &ck);
-  if (cv) {
-    if (cv->action == CT_ACTION_POLICY_PASS) {
-      cv->last_seen_ns = bpf_ktime_get_ns();
-      if (proto == IPPROTO_TCP) {
-        __u8 f;
-        if (ct_read_tcp_flags(iph, data_end, &f) == 0)
-          ct_observe_tcp(&ck, cv, f);
-      }
-      return 0;
+  int egress = (hook == POLICY_HOOK_POD_EGRESS);
+  __be32 self_ip = egress ? iph->saddr : iph->daddr;
+  __be32 peer_ip = egress ? iph->daddr : iph->saddr;
+  __u8 acl_dir = egress ? ACL_DIR_EGRESS : ACL_DIR_INGRESS;
+  __u8 sg_dir = egress ? SG_DIR_EGRESS : SG_DIR_INGRESS;
+  __u32 trace_hook = policy_trace_hook(hook);
+
+  // Established-flow short-circuit. The epoch is part of the key, so a
+  // rule change moves every later lookup onto keys nobody has written:
+  // the flow misses and is evaluated again under the new rules. The
+  // entries left behind by the old epoch are unreachable, and the data
+  // plane never deletes them. The user-space GC in reconciler.Conntrack
+  // drops every entry that is not on the current epoch on its next
+  // pass.
+  //
+  // Do not move the epoch back into the value and compare it here.
+  // That form has to delete the stale pair, and both ways of doing so
+  // cost more than the verifier allows. Remembering "the entry was
+  // stale" and cleaning up at each return keeps a flag live across the
+  // whole ACL and SG evaluation, which makes the verifier walk that
+  // region twice: pod_ingress went from 364,672 to 704,657 processed
+  // instructions. Calling a noinline helper to delete instead pushed
+  // pod_egress past the 1,000,000 limit and the program stopped
+  // loading. With the epoch in the key this path needs no extra branch
+  // at all.
+  __u32 epoch = policy_ct_epoch();
+  struct policy_ct_key ck =
+      policy_ct_build_key(hook, epoch, vpc_id, iph->saddr, iph->daddr,
+                          bpf_htons(sport), bpf_htons(dport), proto);
+  struct policy_ct_val *pv = bpf_map_lookup_elem(&policy_ct_map, &ck);
+  if (pv) {
+    pv->last_seen_ns = bpf_ktime_get_ns();
+    if (proto == IPPROTO_TCP) {
+      __u8 f;
+      if (ct_read_tcp_flags(iph, data_end, &f) == 0)
+        policy_ct_observe_tcp(&ck, pv, f);
     }
     return 0;
   }
@@ -154,28 +141,28 @@ static __always_inline int apply_policy_egress(struct __sk_buff *skb,
   // CT shortcut. The renderer can be told to suppress these via
   // capture mask if too noisy.
   trace_emit_map_miss_l3(skb, trace_id, TRACE_REASON_MISS_CONNTRACK,
-                         hook, TRACE_SCOPE_VPC, vpc_id, subnet_id, 0);
+                         trace_hook, TRACE_SCOPE_VPC, vpc_id, subnet_id, 0);
 
-  // ACL eval first (Subnet boundary). Peer for egress is daddr.
-  int acl_v = acl_evaluate(acl_id, ACL_DIR_EGRESS, proto, dport, iph->daddr);
+  // ACL eval first (Subnet boundary), matched against the peer.
+  int acl_v = acl_evaluate(acl_id, acl_dir, proto, dport, peer_ip);
   if (acl_v == ACL_VERDICT_DENY)
     return -1;
   if (acl_id != 0)
     trace_emit_policy_pass_l3(skb, trace_id, TRACE_REASON_POLICY_ACL_PASS,
-                              hook, TRACE_SCOPE_VPC, vpc_id, subnet_id);
+                              trace_hook, TRACE_SCOPE_VPC, vpc_id, subnet_id);
 
   // SG eval (per-NIC). Skip cleanly when self has no SG attached so
   // the legacy "no enforcement" behaviour is preserved for Pods that
   // sit behind only an ACL (or behind nothing at all).
-  struct sg_membership_val *self = sg_membership_lookup(vpc_id, iph->saddr);
-  struct sg_membership_val *peer = sg_membership_lookup(vpc_id, iph->daddr);
+  struct sg_membership_val *self = sg_membership_lookup(vpc_id, self_ip);
+  struct sg_membership_val *peer = sg_membership_lookup(vpc_id, peer_ip);
   int sg_v = SG_VERDICT_PASS;
   if (self != NULL && self->count > 0)
     {
       struct sg_eval_args sea = {
-          .peer_ip = iph->daddr,
+          .peer_ip = peer_ip,
           .dport = dport,
-          .direction = SG_DIR_EGRESS,
+          .direction = sg_dir,
           .proto = proto,
       };
       sg_v = sg_eval(self, peer, &sea);
@@ -184,15 +171,14 @@ static __always_inline int apply_policy_egress(struct __sk_buff *skb,
     return -3;
   if (self != NULL && self->count > 0)
     trace_emit_policy_pass_l3(skb, trace_id, TRACE_REASON_POLICY_SG_PASS,
-                              hook, TRACE_SCOPE_VPC, vpc_id, subnet_id);
+                              trace_hook, TRACE_SCOPE_VPC, vpc_id, subnet_id);
 
   // CT install policy: any enforcing layer (ACL attached OR SG
-  // attached) is enough to warrant a CT entry. PASS verdicts on
-  // egress still install so the reverse leg's ingress eval — which
-  // may be SG_DIR_INGRESS-default-deny by AWS rules — short-circuits
-  // via CT. Cross-Node flows depend on this: the egress side's local
-  // CT carries the reverse entry that the *return* packet hits at
-  // its ingress hop on the other Node.
+  // attached) is enough to warrant a CT entry. PASS verdicts still
+  // install so the reverse leg — which may be SG-default-deny by AWS
+  // rules — short-circuits via CT. Cross-Node flows depend on this:
+  // the egress side's local CT carries the reverse entry that the
+  // *return* packet hits at this hook on the way back.
   //
   // When neither layer is enforcing, skip CT install to avoid
   // burning map space on flows nobody is policing.
@@ -210,117 +196,8 @@ static __always_inline int apply_policy_egress(struct __sk_buff *skb,
       init_state = ct_initial_state_for_syn(f);
     }
   }
-  ct_install_policy_pass(&ck, init_state, init_flags);
+  policy_ct_install(&ck, init_state, init_flags);
   return 1;
-}
-
-// apply_policy_ingress mirrors apply_policy_egress for inbound
-// traffic at a local Pod's veth. See the apply_policy_egress comment
-// for why this is inlined.
-//
-// Returns:
-//    0: admitted (or short-circuited via CT, or no enforcement)
-//   -1: terminal DENY by NetworkACL (caller must TC_ACT_SHOT)
-//   -2: internal error (caller must TC_ACT_SHOT)
-//   -3: terminal DENY by SecurityGroup (caller must TC_ACT_SHOT)
-//
-// Negative codes are split per layer; see apply_policy_egress for
-// the rationale and caller contract. trace_id / hook / subnet_id
-// thread the trace session through; see apply_policy_egress.
-static __always_inline int apply_policy_ingress(struct __sk_buff *skb,
-                                                __u32 vpc_id, __u32 acl_id,
-                                                __u32 trace_id, __u32 hook,
-                                                __u32 subnet_id) {
-  struct iphdr *iph = nat_load_iph(skb);
-  if (!iph)
-    return -2;
-  void *data_end = nat_skb_data_end(skb);
-
-  __u8 proto = iph->protocol;
-  __u16 sport = 0;
-  __u16 dport = 0;
-  if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
-    __be16 sp_be, dp_be;
-    if (nat_read_l4_ports(iph, data_end, &sp_be, &dp_be) < 0)
-      return 0;
-    sport = bpf_ntohs(sp_be);
-    dport = bpf_ntohs(dp_be);
-  } else if (proto != IPPROTO_ICMP) {
-    return 0;
-  }
-
-  struct ct_key ck = {
-      .scope = vpc_id,
-      .saddr = iph->saddr,
-      .daddr = iph->daddr,
-      .sport = bpf_htons(sport),
-      .dport = bpf_htons(dport),
-      .proto = proto,
-  };
-  struct ct_val *cv = bpf_map_lookup_elem(&ct_map, &ck);
-  if (cv) {
-    if (cv->action == CT_ACTION_POLICY_PASS) {
-      cv->last_seen_ns = bpf_ktime_get_ns();
-      if (proto == IPPROTO_TCP) {
-        __u8 f;
-        if (ct_read_tcp_flags(iph, data_end, &f) == 0)
-          ct_observe_tcp(&ck, cv, f);
-      }
-    }
-    return 0;
-  }
-
-  trace_emit_map_miss_l3(skb, trace_id, TRACE_REASON_MISS_CONNTRACK,
-                         hook, TRACE_SCOPE_VPC, vpc_id, subnet_id, 0);
-
-  // Peer for ingress is the sender (saddr). self is the receiving
-  // Pod, identified by daddr.
-  int acl_v = acl_evaluate(acl_id, ACL_DIR_INGRESS, proto, dport, iph->saddr);
-  if (acl_v == ACL_VERDICT_DENY)
-    return -1;
-  if (acl_id != 0)
-    trace_emit_policy_pass_l3(skb, trace_id, TRACE_REASON_POLICY_ACL_PASS,
-                              hook, TRACE_SCOPE_VPC, vpc_id, subnet_id);
-
-  struct sg_membership_val *self = sg_membership_lookup(vpc_id, iph->daddr);
-  struct sg_membership_val *peer = sg_membership_lookup(vpc_id, iph->saddr);
-  int sg_v = SG_VERDICT_PASS;
-  if (self != NULL && self->count > 0)
-    {
-      struct sg_eval_args sea = {
-          .peer_ip = iph->saddr,
-          .dport = dport,
-          .direction = SG_DIR_INGRESS,
-          .proto = proto,
-      };
-      sg_v = sg_eval(self, peer, &sea);
-    }
-  if (sg_v == SG_VERDICT_DENY)
-    return -3;
-  if (self != NULL && self->count > 0)
-    trace_emit_policy_pass_l3(skb, trace_id, TRACE_REASON_POLICY_SG_PASS,
-                              hook, TRACE_SCOPE_VPC, vpc_id, subnet_id);
-
-  // Symmetric to apply_policy_egress: any enforcing layer warrants a
-  // CT entry, even on PASS verdicts, so the reverse leg's egress
-  // eval short-circuits and the flow's lifecycle (TCP state, GC)
-  // tracks correctly.
-  int acl_enforcing = (acl_id != 0);
-  int sg_enforcing = (self != NULL && self->count > 0);
-  if (!acl_enforcing && !sg_enforcing)
-    return 0;
-
-  __u8 init_flags = 0;
-  __u8 init_state = CT_STATE_ESTABLISHED;
-  if (proto == IPPROTO_TCP) {
-    __u8 f;
-    if (ct_read_tcp_flags(iph, data_end, &f) == 0) {
-      init_flags = f & TCP_FLAG_TRACKED;
-      init_state = ct_initial_state_for_syn(f);
-    }
-  }
-  ct_install_policy_pass(&ck, init_state, init_flags);
-  return 0;
 }
 
 #endif // JUNEAU_BPF_POLICY_H

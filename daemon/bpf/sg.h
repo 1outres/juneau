@@ -18,9 +18,9 @@
 //     direction. Ingress always denies-by-default. The "any rule observed"
 //     boolean from the evaluator lets callers distinguish the two.
 //
-// The evaluator does not write to ct_map; CT installation is the
-// responsibility of the calling program (pod_egress / pod_ingress) so
-// the policy decision and the conntrack key live in one place.
+// The evaluator writes no conntrack state; policy_ct_map is filled by
+// apply_policy in policy.h, so the policy decision and the conntrack
+// key live in one place.
 
 #ifndef JUNEAU_BPF_SG_H
 #define JUNEAU_BPF_SG_H
@@ -110,7 +110,7 @@ struct sg_eval_one_sg_args {
 // Marked as a BPF-to-BPF subprogram (noinline): the rule-scan loop
 // has a 6-way branch per iteration over MAX_RULES_PER_SG=8 rules,
 // which the verifier explores combinatorially when inlined into
-// apply_policy_egress / apply_policy_ingress. Promoting the scan to
+// apply_policy. Promoting the scan to
 // a subprogram lets the verifier explore the loop body once per
 // program (not per call site × per outer SG iteration), keeping the
 // 1M-insn budget intact once trace.h instrumentation expands the
@@ -213,7 +213,7 @@ static __juneau_bpf_subprog int sg_eval(const struct sg_membership_val *self,
   //     no SG defines egress rules).
   //   * Ingress: DENY (AWS default for SG-attached interfaces).
   // The "ALLOW because no rules" case still triggers CT installation
-  // so the reverse-direction packets find a POLICY_PASS entry rather
+  // so the reverse-direction packets find a policy_ct_map entry rather
   // than re-evaluating against an empty ingress ruleset (which would
   // deny).
   bool any_rules = false;
@@ -263,11 +263,11 @@ static __juneau_bpf_subprog int sg_eval(const struct sg_membership_val *self,
   if (!any_rules) {
     // Direction defaults when no attached SG declares rules in this
     // direction:
-    //   * Egress: AWS default-allow → PASS (no CT install needed; the
-    //     receiver-side ingress eval takes responsibility for the
-    //     forward leg, and the receiver-side ALLOW will install CT
-    //     covering both directions).
+    //   * Egress: AWS default-allow → PASS.
     //   * Ingress: AWS default-deny.
+    // PASS is not "skip the conntrack entry": apply_policy installs one
+    // whenever a SG is attached at all, because this hook still has to
+    // let the reply back in past its own default-deny ingress.
     if (direction == SG_DIR_EGRESS)
       return SG_VERDICT_PASS;
     return SG_VERDICT_DENY;

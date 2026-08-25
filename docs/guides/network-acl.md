@@ -213,6 +213,7 @@ NetworkACLとSecurityGroupは同時に有効化できます。
 詳細はそれぞれのリファレンスを参照してください。
 
 - [SecurityGroupでPodの通信を制限する](security-group.md)
+- [NetworkACLとSecurityGroupの評価を追う](../developer/policy-data-plane.md)
 - [SecurityGroup](../resources/securitygroup.md)
 
 ## うまくいかないとき
@@ -236,3 +237,4 @@ NetworkACLとSecurityGroupは同時に有効化できます。
 - [SecurityGroup](../resources/securitygroup.md)
 - [Vpc](../resources/vpc.md)
 - [Subnet](../resources/subnet.md)
+- [NetworkACLとSecurityGroupの評価を追う](../developer/policy-data-plane.md) (データプレーン側の解説)

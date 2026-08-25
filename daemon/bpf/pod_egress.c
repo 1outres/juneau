@@ -2548,9 +2548,9 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
     // rewritten backend IP. -1/-2 are terminal DENY / internal error;
     // 0 means "established flow short-circuited" or "no enforcement";
     // 1 means "admitted on first packet, CT installed".
-    int policy_rc = apply_policy_egress(skb, subnet->vpc_id, subnet->acl_id,
-                                        __trace_id, TRACE_HOOK_POD_EGRESS,
-                                        val->subnet_id);
+    int policy_rc =
+        apply_policy(skb, POLICY_HOOK_POD_EGRESS, subnet->vpc_id,
+                     subnet->acl_id, __trace_id, val->subnet_id);
     if (policy_rc < 0) {
       // -1 = ACL deny, -3 = SG deny, -2 = internal error.
       // Each maps to its own trace reason so the timeline names the

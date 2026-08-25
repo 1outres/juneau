@@ -190,6 +190,14 @@ func (m *Manager) MapInventory() *mapinventory.Inventory { return m.mapInventory
 func (m *Manager) startReconcilers(ctx context.Context) error {
 	m.ownedAddresses = ownedaddr.NewStore(m.podEgress.Objs.ExternalAddressPools)
 
+	// Publish a generation before any rule lands, so nothing a
+	// previous daemon admitted can be short-circuited by rules this
+	// one has not projected yet.
+	policyEpoch, err := policy.NewEpoch(m.podEgress.Objs.PolicyEpochMap)
+	if err != nil {
+		return fmt.Errorf("publish policy epoch: %w", err)
+	}
+
 	subnetReconciler := reconciler.NewSubnet(m.client, m.podEgress)
 	m.subnetRunner = runner.New(subnetReconciler)
 	if err := m.subnetRunner.Watch(m.subnetInformer, runner.MetaNamespaceKey); err != nil {
@@ -372,6 +380,7 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 			m.podEgress.Objs.SgMetaMap,
 			m.podEgress.Objs.SgRuleTable,
 			m.podEgress.MapSpecs.SgRulesInnerProto,
+			policyEpoch,
 		)
 		sg := reconciler.NewSecurityGroup(m.client, m.sgStore)
 		m.sgRunner = runner.New(sg)
@@ -396,6 +405,7 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 			m.podEgress.Objs.AclMetaMap,
 			m.podEgress.Objs.AclRuleTable,
 			m.podEgress.MapSpecs.AclRulesInnerProto,
+			policyEpoch,
 		)
 		acl := reconciler.NewNetworkACL(m.client, m.aclStore)
 		m.aclRunner = runner.New(acl)
@@ -409,7 +419,7 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	// NetworkInterface.status.effectiveSecurityGroups. Cluster-wide so
 	// the data plane can resolve both self and peer.
 	if m.networkInterfaceInformer != nil {
-		m.membershipStore = policy.NewMembershipStore(m.podEgress.Objs.SgMembershipMap)
+		m.membershipStore = policy.NewMembershipStore(m.podEgress.Objs.SgMembershipMap, policyEpoch)
 		mem := reconciler.NewSGMembership(m.client, m.membershipStore)
 		m.sgMembershipRunner = runner.New(mem)
 		if err := m.sgMembershipRunner.Watch(m.networkInterfaceInformer, runner.MetaNamespaceKey); err != nil {
@@ -510,7 +520,7 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 		m.serviceLBRunner.Start(ctx, 1)
 	}
 
-	m.startConntrackGC(ctx)
+	m.startConntrackGC(ctx, policyEpoch)
 	m.startAffinityGC(ctx)
 
 	if err := m.startTrace(ctx); err != nil {
@@ -584,11 +594,22 @@ func (m *Manager) TraceBus() *trace.Bus { return m.traceBus }
 // install learned tuples on remote nodes.
 func (m *Manager) TraceStore() *trace.Store { return m.traceStore }
 
-// startConntrackGC spawns the periodic ct_map garbage collector. It is
-// not informer-driven (no resource events to react to), so it lives
-// outside the Runner abstraction as a plain goroutine.
-func (m *Manager) startConntrackGC(ctx context.Context) {
-	gc := reconciler.NewConntrack(m.podEgress.Objs.CtMap, reconciler.ConntrackGCInterval)
+// startConntrackGC spawns the periodic garbage collector for the
+// conntrack tables (NAT state in ct_map, policy admission state in
+// policy_ct_map). It is not informer-driven (no resource events to
+// react to), so it lives outside the Runner abstraction as a plain
+// goroutine.
+//
+// The GC needs the policy generation because policy_ct_map keys carry
+// it: a rule change leaves entries no lookup can reach, and this is
+// what removes them.
+func (m *Manager) startConntrackGC(ctx context.Context, policyEpoch reconciler.EpochSource) {
+	gc := reconciler.NewConntrack(
+		m.podEgress.Objs.CtMap,
+		m.podEgress.Objs.PolicyCtMap,
+		policyEpoch,
+		reconciler.ConntrackGCInterval,
+	)
 	cctx, cancel := context.WithCancel(ctx)
 	m.conntrackCancel = cancel
 	m.conntrackDone = make(chan struct{})

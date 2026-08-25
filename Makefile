@@ -139,6 +139,10 @@ test-bgp-speaker:
 test-kubectl-juneau:
 	cd kubectl-juneau && go test ./...
 
+.PHONY: daemon-verifier-check
+daemon-verifier-check: ## Load the daemon eBPF objects and report verifier budget usage. Needs root; leaves a running daemon alone.
+	$(MAKE) -C daemon verifier-check
+
 .PHONY: verify
 verify: lint test images ## Run CI verification targets.
 
