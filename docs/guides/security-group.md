@@ -266,3 +266,4 @@ spec:
 - [SecurityGroup](../resources/securitygroup.md)
 - [Vpc](../resources/vpc.md)
 - [Subnet](../resources/subnet.md)
+- [NetworkACLとSecurityGroupの評価を追う](../developer/policy-data-plane.md) (データプレーン側の解説)

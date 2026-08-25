@@ -77,5 +77,6 @@ nav:
     - BGPNodeState: resources/bgpnodestate.md
   - API Reference: api-reference/v1alpha1.md
   - Developer Guide:
+    - NetworkACLとSecurityGroupの評価を追う: developer/policy-data-plane.md
     - 仮想サービスを実装する: developer/virtual-service-plane.md
     - kubectl-juneau に新コマンドを実装する: developer/kubectl-plugin-command.md
