@@ -30,6 +30,10 @@ import (
 // 8. Enforcing peer: an unlisted peer that carries a SG of its own is
 //    still denied, on one Node and across two. Case (4) leaves that
 //    peer SG-less, so its sender hook enforces nothing.
+// 9. Rule expansion: one rule admits every (peer, port) pair it lists,
+//    and nothing else.
+// 10. Both directions (issue #52): a SG whose ingress sits at its entry
+//    budget still enforces the egress rules it declares.
 //
 // Every spec creates an isolated namespace + Vpc + Subnets so they can
 // run in parallel under Ginkgo --procs.
@@ -251,7 +255,133 @@ var _ = Describe("Juneau SecurityGroup", func() {
 		Entry("same Node", placementSameNode),
 		Entry("different Nodes", placementDifferentNodes),
 	)
+
+	It("expansion: one rule admits every peer and port it lists", func() {
+		base := sanitizeName("sg-rule-expansion")
+		fix := newSGFixture(base)
+		DeferCleanup(fix.Cleanup)
+		fix.CreateNetwork()
+
+		// A SG rule costs one data plane entry per (peer, port) pair,
+		// so two peers and two ports is four entries. The client
+		// matches only the second peer, and one of the ports it
+		// reaches is the second one, so a data plane that stopped
+		// short of the whole cross-product answers differently than
+		// this spec wants.
+		fix.CreateSG("server-sg", fmt.Sprintf(`
+  ingress:
+    - from:
+        - cidr: %s
+        - cidr: %s
+      protocol: tcp
+      ports:
+        - port: %d
+        - port: %d`, policyElsewhereCIDR, fix.clientSubnetCIDR, policyOpenPort, policyThirdPort))
+		waitPolicyEntryCounts("securitygroup", fix.SGName("server-sg"), 4, 0)
+
+		fix.CreatePodWithContainers(serverPodName, fix.serverSubnet, fix.serverNode,
+			triplePortServerContainers(), []string{"server-sg"})
+		fix.CreatePodWithContainers(clientPodName, fix.clientSubnet, fix.clientNode,
+			curlClientContainer, nil)
+		waitPodsReady(fix.namespace, serverPodName, clientPodName)
+
+		By("admitting the first port of the rule")
+		assertPodConnectivity(fix.namespace, clientPodName, serverPodName)
+		By("admitting the second port of the rule")
+		assertPodPortConnectivity(fix.namespace, clientPodName, serverPodName, policyThirdPort, policyThirdBody)
+		By("dropping the port the rule leaves out")
+		assertNoPodPortConnectivity(fix.namespace, clientPodName, serverPodName, policyBlockedPort)
+	})
+
+	It("directions: a full ingress budget still leaves egress installed", func() {
+		base := sanitizeName("sg-full-ingress-budget")
+		fix := newSGFixture(base)
+		DeferCleanup(fix.Cleanup)
+		fix.CreateNetwork()
+
+		// server-sg admits both ports, so the only thing that can
+		// decide between them is the client's own egress.
+		fix.CreateSG("server-sg", fmt.Sprintf(`
+  ingress:
+    - from:
+        - cidr: 0.0.0.0/0
+      protocol: tcp
+      ports:
+        - port: %d
+        - port: %d`, policyOpenPort, policyBlockedPort))
+
+		// This is issue #52 on the SecurityGroup side. The ingress
+		// rule lands on exactly sgEntriesPerDirection entries and
+		// matches nothing in the fixture. Before each direction got
+		// its own window in the rule array, those entries filled it,
+		// the egress entry fell off the end, and the client's egress
+		// closed completely.
+		fix.CreateSG("client-sg", fmt.Sprintf(`
+  ingress:
+    - from:
+        - cidr: %s
+        - cidr: %s
+      protocol: tcp
+      ports:%s
+  egress:
+    - to:
+        - cidr: 0.0.0.0/0
+      protocol: tcp
+      ports:
+        - port: %d`,
+			policyElsewhereCIDR, sgSecondElsewhereCIDR,
+			sgFillerPorts(sgBudgetFillerPorts), policyOpenPort))
+		clientSG := fix.SGName("client-sg")
+		waitPolicyEntryCounts("securitygroup", clientSG, sgEntriesPerDirection, 1)
+		waitResourceReady("securitygroup", clientSG)
+
+		fix.CreatePodWithContainers(serverPodName, fix.serverSubnet, fix.serverNode,
+			dualPortServerContainers(), []string{"server-sg"})
+		fix.CreatePodWithContainers(clientPodName, fix.clientSubnet, fix.clientNode,
+			curlClientContainer, []string{"client-sg"})
+		waitPodsReady(fix.namespace, serverPodName, clientPodName)
+
+		By("letting out the port the egress rule names")
+		assertPodConnectivity(fix.namespace, clientPodName, serverPodName)
+		By("keeping in the port it does not")
+		assertNoPodPortConnectivity(fix.namespace, clientPodName, serverPodName, policyBlockedPort)
+	})
 })
+
+const (
+	// sgEntriesPerDirection mirrors
+	// juneauv1alpha1.SecurityGroupMaxEntriesPerDirection. The e2e
+	// module does not depend on the controller module, so the number
+	// is repeated here; the entry-count assertion is what ties the two
+	// together.
+	sgEntriesPerDirection = 8
+
+	// sgSecondElsewhereCIDR is a second documentation-only prefix
+	// (RFC 5737), so a rule can name two peers that match nothing.
+	sgSecondElsewhereCIDR = "198.51.100.0/24"
+
+	// A SG rule costs peers times ports, so naming this many peers and
+	// this many ports lands a direction exactly on its budget.
+	sgBudgetFillerPeers = 2
+	sgBudgetFillerPorts = sgEntriesPerDirection / sgBudgetFillerPeers
+
+	// sgFillerFirstPort starts well clear of the ports the fixtures
+	// actually serve, so a filler can never admit real traffic.
+	sgFillerFirstPort = 8100
+)
+
+// sgFillerPorts returns `count` port entries naming ports no listener
+// in these fixtures binds. They cost their entries without changing any
+// verdict, which is how a spec parks a direction at a chosen point in
+// its budget.
+func sgFillerPorts(count int) string {
+	ports := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		ports = append(ports, fmt.Sprintf(`
+        - port: %d`, sgFillerFirstPort+i))
+	}
+	return strings.Join(ports, "")
+}
 
 // --- helpers ---------------------------------------------------------
 

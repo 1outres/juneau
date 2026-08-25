@@ -59,16 +59,6 @@ func (s policyPlacementScenario) baseName(prefix string) string {
 	return sanitizeName(fmt.Sprintf("%s-%s-%s-%s", prefix, s.layer, s.placement, s.subnets))
 }
 
-const (
-	// policyOpenPort is the destination port every scenario admits.
-	policyOpenPort = 80
-	// policyBlockedPort is the one no rule ever names.
-	policyBlockedPort = 8080
-	// policyAltBody is what the second listener answers with, so the
-	// baseline spec can tell it apart from nginx.
-	policyAltBody = "policy-alt-port"
-)
-
 var _ = Describe("Juneau policy placement", func() {
 	It("baseline: both destination ports answer while no policy is attached", func() {
 		fix := newPolicyFixture(sanitizeName("policy-ports-baseline"))
@@ -308,24 +298,4 @@ func policySGIngressFromElsewhere(port int) string {
       protocol: tcp
       ports:
         - port: %d`, policyElsewhereCIDR, port)
-}
-
-// --- Pod containers --------------------------------------------------
-
-// dualPortServerContainers serves nginx on policyOpenPort and a static
-// page on policyBlockedPort, so one destination Pod carries both the
-// admitted and the denied case.
-func dualPortServerContainers() string {
-	return nginxServerContainer + fmt.Sprintf(`
-    - name: server-alt
-      image: %s
-      command:
-        - /bin/sh
-        - -c
-        - |
-          mkdir -p /www
-          echo %s > /www/index.html
-          exec httpd -f -p %d -h /www
-      ports:
-        - containerPort: %d`, busyboxImage, policyAltBody, policyBlockedPort, policyBlockedPort)
 }

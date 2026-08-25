@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	. "github.com/onsi/gomega"
@@ -298,6 +299,34 @@ func waitObservedGeneration(resource, name string) {
 	}).Should(Succeed())
 }
 
+// waitPolicyEntryCounts waits until the controller publishes the data
+// plane cost of each direction of a NetworkACL or SecurityGroup.
+//
+// This is the status half of the capacity contract. The webhook budgets
+// a spec against these numbers, so a spec that knows how many entries
+// it means to use can check that the controller agrees before drawing
+// any conclusion from the traffic it sees.
+func waitPolicyEntryCounts(resource, name string, ingress, egress int) {
+	want := entryCountText(ingress) + "/" + entryCountText(egress)
+	Eventually(func(g Gomega) {
+		got, err := kubectlJSONPath(repoRoot,
+			`{.status.ingressEntryCount}/{.status.egressEntryCount}`, "get", resource, name)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(strings.TrimSpace(got)).To(Equal(want))
+	}).Should(Succeed())
+}
+
+// entryCountText renders an expected entry count the way the status
+// field reads back through jsonpath. Both counts are omitempty, so a
+// direction that costs nothing leaves the field out and extracts as an
+// empty string rather than "0".
+func entryCountText(entries int) string {
+	if entries == 0 {
+		return ""
+	}
+	return strconv.Itoa(entries)
+}
+
 // --- Pod manifests ---------------------------------------------------
 
 const busyboxImage = "busybox:1.37"
@@ -310,6 +339,58 @@ const nginxServerContainer = `    - name: server
       image: nginx:1.27
       ports:
         - containerPort: 80`
+
+// The policy suites give one destination Pod a listener per outcome
+// they need to tell apart, and let the rules decide which of them
+// answer. Two ports cover "admitted" and "denied"; the third exists for
+// the specs that have to separate an ingress verdict from an egress one
+// in the same run.
+const (
+	// policyOpenPort is the destination port the placement scenarios
+	// admit.
+	policyOpenPort = 80
+	// policyBlockedPort is the one those scenarios never name.
+	policyBlockedPort = 8080
+	// policyAltBody is what the policyBlockedPort listener answers
+	// with, so a spec can tell it apart from nginx.
+	policyAltBody = "policy-alt-port"
+
+	policyThirdPort = 8081
+	policyThirdBody = "policy-third-port"
+)
+
+// altPortServerContainer builds a busybox httpd listener answering
+// `body` on `port`. Each container has its own filesystem, so several
+// of them can serve their own document root from the same path.
+func altPortServerContainer(name string, port int, body string) string {
+	return fmt.Sprintf(`
+    - name: %s
+      image: %s
+      command:
+        - /bin/sh
+        - -c
+        - |
+          mkdir -p /www
+          echo %s > /www/index.html
+          exec httpd -f -p %d -h /www
+      ports:
+        - containerPort: %d`, name, busyboxImage, body, port, port)
+}
+
+// dualPortServerContainers serves nginx on policyOpenPort and a static
+// page on policyBlockedPort, so one destination Pod carries both the
+// admitted and the denied case.
+func dualPortServerContainers() string {
+	return nginxServerContainer + altPortServerContainer("server-alt", policyBlockedPort, policyAltBody)
+}
+
+// triplePortServerContainers adds policyThirdPort to the pair above.
+// A spec that has to see ingress and egress decide differently needs
+// three outcomes at once: one port both directions admit, one only
+// egress admits, and one only ingress admits.
+func triplePortServerContainers() string {
+	return dualPortServerContainers() + altPortServerContainer("server-third", policyThirdPort, policyThirdBody)
+}
 
 func podManifestWithSG(namespace, name, nodeName, subnet string, server bool, sgs []string) string {
 	container := curlClientContainer
