@@ -96,6 +96,14 @@
 #define MAX_CT_MAP 524288
 #endif
 
+#ifndef MAX_POLICY_CT_MAP
+// MAX_POLICY_CT_MAP bounds policy_ct_map. Only flows an ACL or a
+// SecurityGroup actually polices get entries, and each such flow costs
+// 4 entries when both Pods sit on this Node (two hooks x two
+// directions) or 2 entries when the peer is on another Node.
+#define MAX_POLICY_CT_MAP 262144
+#endif
+
 #ifndef MAX_NAPT_SRC
 #define MAX_NAPT_SRC 4096
 #endif
@@ -200,18 +208,10 @@
 // caller sees a reply from the ClusterIP.
 #define CT_ACTION_SVC_SHARED_OUT 7
 #define CT_ACTION_SVC_SHARED_IN 8
-// POLICY_PASS marks a flow whose first packet was admitted by every
-// applicable policy layer (NetworkACL at the Subnet boundary plus
-// SecurityGroup at the NetworkInterface). Subsequent packets short-
-// circuit the per-layer rule scans via a single CT lookup. Both
-// directions of the flow are installed at admission time so reply
-// packets do not re-evaluate any layer.
-//
-// The CT entry does not encode which layers were involved: if any
-// layer's ruleset changes the daemon-side reconciler is responsible for
-// flushing affected entries so re-evaluation occurs. See
-// daemon/internal/daemon/dataplane/policy for that bookkeeping.
-#define CT_ACTION_POLICY_PASS 9
+// 9 is retired. It used to be CT_ACTION_POLICY_PASS, which put policy
+// admission state in ct_map. Policy state now lives in policy_ct_map,
+// keyed per enforcement point. Do not reuse 9 for a new action: old
+// map dumps still carry it.
 // LB_DNAT / LB_REV_NAT: external → VIP source-preserving LoadBalancer
 // path. LB_DNAT is the forward direction installed at node_ingress
 // (caller → VIP, scope=CT_SCOPE_HOST): rewrites daddr/dport to the
@@ -239,6 +239,12 @@
 #define BACKEND_KIND_HOST_LOCAL  2
 
 #define CT_SCOPE_HOST 0
+
+// POLICY_HOOK_* names the enforcement point a policy_ct_map entry
+// belongs to. The set is closed: policy runs at exactly these two
+// places, so helpers may treat "not egress" as "ingress".
+#define POLICY_HOOK_POD_EGRESS 1
+#define POLICY_HOOK_POD_INGRESS 2
 
 // ct_state values mirror daemon/internal/daemon/dataplane/ctstate. Keep
 // them in sync: user-space GC reads ct_val.state and assumes these
@@ -733,6 +739,63 @@ struct {
   __type(value, struct ct_val);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } ct_map SEC(".maps");
+
+// policy_ct_map records which flows the policy stage already admitted.
+// It is kept apart from ct_map for two reasons:
+//
+//   - The key carries the enforcement point (hook). One packet can
+//     cross two enforcement points on the same Node: the sender's
+//     pod_egress and the receiver's pod_ingress. With a shared
+//     keyspace the second hook found the entry the first hook had just
+//     written and skipped its own rules, so the receiving Pod's
+//     ingress rules never ran for same-Node traffic.
+//   - ct_map entries are owned by the NAT paths, which rewrite them
+//     with BPF_ANY on every packet. A policy entry sharing that key
+//     was overwritten the moment the flow also needed NAT.
+//
+// Both directions are installed at admission time, so reply packets
+// short-circuit instead of being evaluated in the wrong direction.
+struct policy_ct_key {
+  __u32 epoch;             // policy_epoch_map value at admission time
+  __u32 scope;             // vpc_id of the Pod this hook enforces for
+  __u32 saddr;             // network byte order
+  __u32 daddr;             // network byte order
+  __u16 sport;             // network byte order
+  __u16 dport;             // network byte order
+  __u8 proto;
+  __u8 hook;               // POLICY_HOOK_*
+  __u8 _pad[2];
+};
+
+struct policy_ct_val {
+  __u8 state;              // CT_STATE_*: latest state derived from observed TCP flags
+  __u8 flags_seen;         // OR-accumulated FIN|SYN|RST|ACK seen on this direction
+  __u8 _pad[2];
+  __u64 last_seen_ns;
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_POLICY_CT_MAP);
+  __type(key, struct policy_ct_key);
+  __type(value, struct policy_ct_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} policy_ct_map SEC(".maps");
+
+// policy_epoch_map holds one counter at index 0: the generation of the
+// policy rules the data plane is enforcing. Every policy_ct_key starts
+// with that value, so bumping the counter puts the whole table out of
+// reach with a single write: later lookups build keys nobody has
+// written, and every flow is evaluated again. Nothing has to walk
+// policy_ct_map, and the fast path pays no comparison. The entries the
+// bump orphaned are reclaimed by the user-space GC.
+struct {
+  __uint(type, BPF_MAP_TYPE_ARRAY);
+  __uint(max_entries, 1);
+  __type(key, __u32);
+  __type(value, __u32);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} policy_epoch_map SEC(".maps");
 
 // napt_src maps a NATGWID (overloaded into fib_val.subnet_id when
 // fib_val.type == FIB_ROUTE_TYPE_NAPT) to the host_napt_ip the local

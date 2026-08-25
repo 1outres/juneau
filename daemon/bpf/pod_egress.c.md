@@ -1,5 +1,6 @@
 - Podから出るパケットを見る
 - Podのveth peerのingressにアタッチするが、実質podのegressを見る形になる
+- 送信元Pod側のpolicy (NetworkACL egress / SecurityGroup egress) を評価する
 - ドロップすると書かれている場合、TC_ACT_SHOTを返す。
 
 # Functions
@@ -14,11 +15,57 @@
 2. ifindex_subnet mapを引く(key: skb->ifindex)
 3. subnet_mapを引く
 4. ARPリクエストの場合、handle_arp関数を呼び出し、その関数の返り値を返す（handle_arp関数にはsubnet_idとsubnet_mapのvalも渡す）
-5. IPv4の場合、apply_conntrack_dnatを呼び出す
+5. IPv4の場合、reverse系のconntrack (SVC_NAPT_IN、SVC_SHARED_IN、LB_REV_NAT) を先に処理する。ヒットしたらそこで終了
+6. apply_policyにhook = POLICY_HOOK_POD_EGRESSで渡す。apply_conntrack_dnatより前に呼ぶので、各layerはPodが指定した5-tuple (Service宛ならClusterIP) を評価する
+   - 戻り値が負ならTC_ACT_SHOT。-1ならACL_DROP、-3ならSG_DROP、-2ならDROP_SHOTをtraceに出す
+7. apply_conntrack_dnatを呼び出す
    - DNATが適用されたらdispatch_after_dnatに渡して終了(dst IPが書き換わったのでFIB再lookup必要)
    - DNAT非該当(CT miss、もしくはCT actionがDNAT以外) → fall through
-6. もし対象がgw_macだったらhandle_l3関数を呼び出し、その関数の返り値を返す(subnet_idとsubnet_mapのvalも渡す)
-7. そうじゃなかったらforward_l2関数を呼び出し、その返り値を返す(subnet_idとsubnet_mapのvalも渡す)
+8. もし対象がgw_macだったらhandle_l3関数を呼び出し、その関数の返り値を返す(subnet_idとsubnet_mapのvalも渡す)
+9. そうじゃなかったらforward_l2関数を呼び出し、その返り値を返す(subnet_idとsubnet_mapのvalも渡す)
+
+## apply_policy (policy.h、pod_ingressと共通)
+
+NetworkACL → SecurityGroup → CT install を1本にまとめたステージ。hookは呼び出し側で定数なので、hookによる分岐はコンパイル時に畳まれる。
+
+hookが決めるのは4つだけで、残りは両hook共通:
+
+| | POLICY_HOOK_POD_EGRESS | POLICY_HOOK_POD_INGRESS |
+| --- | --- | --- |
+| self (守る側のPod) | saddr | daddr |
+| peer (相手) | daddr | saddr |
+| ACL direction | ACL_DIR_EGRESS | ACL_DIR_INGRESS |
+| SG direction | SG_DIR_EGRESS | SG_DIR_INGRESS |
+
+1. iphを読む。読めなければ-2
+2. TCP/UDPならsport/dportを読む。読めなければ0(policy対象外)。TCP/UDP/ICMP以外も0
+3. policy_epoch_map[0]を読み、policy_ct_mapを (epoch, hook, vpc_id, saddr, daddr, sport, dport, proto) で引く
+4. ヒットしたら短絡する。last_seen_nsを更新し、TCPならflagsを取り込んで状態を進め(CLOSEDになったらこのhookが入れた2エントリを消す)、0を返す
+5. missなら以下の評価に進む
+6. MISS_CONNTRACKをtraceに出す
+7. acl_evaluateをacl_id、hookに応じたdirection、peerのIPで呼ぶ。DENYなら-1
+8. acl_id != 0 ならACL_PASSをtraceに出す
+9. sg_membership_mapでselfとpeerのSGリストを引く。selfにSGが1つも付いていなければSGは評価しない(=PASS)
+10. sg_evalがDENYなら-3
+11. selfにSGが付いていればSG_PASSをtraceに出す
+12. acl_id == 0 かつ selfにSGなし(=どのlayerもenforceしていない)なら、CTを入れず0を返す
+13. TCPならflagsを読んで初期stateを決める(SYNならNEW、それ以外はESTABLISHED)
+14. policy_ct_installで2エントリ書き、1を返す
+
+ルールが変わってepochが動くと、前の世代のエントリはkeyの先頭が違うので 3 のlookupが必ずmissする。data planeはそれを消さない。どのhookからも引けなくなっているだけなので、user spaceのGCが30秒ごとの走査で回収する。消す処理をここに足すとverifierの命令数上限 (1,000,000) を超えてtc_pod_egressがロードできなくなる。理由は policy.h のコメントに書いてある。
+
+## policy_ct_map の keyspace
+
+keyに hook が入るので、enforcement point ごとに別のkeyspaceになる。これが無いと、同一node上のPod間通信で送信元のegressが書いたエントリを宛先のingressが引いてしまい、宛先Podのingress ruleが一度も評価されない。
+
+- Xのegress admission → (POD_EGRESS, X→Y) と (POD_INGRESS, Y→X) を書く
+- Yのingress admission → (POD_INGRESS, X→Y) と (POD_EGRESS, Y→X) を書く
+
+同一nodeなら初回パケットは4つのlayer (X egress ACL/SG、Y ingress ACL/SG) を全部通り、応答は各hookが自分で入れた逆向きエントリで短絡する。別nodeでも各nodeに2エントリずつできるだけで、判定結果は同じになる。
+
+keyの先頭には epoch も入っている。ルールを変えるとdaemonがこのカウンタを進めるので、以後のlookupは誰も書いていないkeyを組み立てることになり、admission済みのフローが全部評価し直しになる。
+
+NAT用のct_mapとは別のmapである点も重要で、handle_service系がct_mapを BPF_ANY で上書きしてもpolicyのエントリは壊れない。
 
 ## apply_conntrack_dnat
 

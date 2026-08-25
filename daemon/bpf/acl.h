@@ -14,9 +14,9 @@
 //     between default-allow (no rules to match: PASS, no enforcement)
 //     and the rule-list mode (no rule matched: terminal DENY).
 //
-// The evaluator does NOT touch ct_map; CT installation is the
-// responsibility of apply_policy_egress / apply_policy_ingress in
-// policy.h, which combines ACL and SG verdicts into one CT entry.
+// The evaluator does NOT touch any conntrack table; CT installation is
+// the responsibility of apply_policy in policy.h, which combines the
+// ACL and SG verdicts into one policy_ct_map entry.
 
 #ifndef JUNEAU_BPF_ACL_H
 #define JUNEAU_BPF_ACL_H

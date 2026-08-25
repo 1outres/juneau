@@ -212,6 +212,28 @@ type VxlanIngressNatOutside struct {
 	Addr uint32
 }
 
+type VxlanIngressPolicyCtKey struct {
+	_     structs.HostLayout
+	Epoch uint32
+	Scope uint32
+	Saddr uint32
+	Daddr uint32
+	Sport uint16
+	Dport uint16
+	Proto uint8
+	Hook  uint8
+	Pad   [2]uint8
+}
+
+type VxlanIngressPolicyCtVal struct {
+	_          structs.HostLayout
+	State      uint8
+	FlagsSeen  uint8
+	Pad        [2]uint8
+	_          [4]byte
+	LastSeenNs uint64
+}
+
 type VxlanIngressServiceAclKey struct {
 	_           structs.HostLayout
 	ClusterIp   uint32
@@ -457,6 +479,8 @@ type VxlanIngressMapSpecs struct {
 	NatDnatMap            *ebpf.MapSpec `ebpf:"nat_dnat_map"`
 	NatSnatMap            *ebpf.MapSpec `ebpf:"nat_snat_map"`
 	NodeUnderlays         *ebpf.MapSpec `ebpf:"node_underlays"`
+	PolicyCtMap           *ebpf.MapSpec `ebpf:"policy_ct_map"`
+	PolicyEpochMap        *ebpf.MapSpec `ebpf:"policy_epoch_map"`
 	ServiceAclMap         *ebpf.MapSpec `ebpf:"service_acl_map"`
 	ServiceAffinityMap    *ebpf.MapSpec `ebpf:"service_affinity_map"`
 	ServiceMap            *ebpf.MapSpec `ebpf:"service_map"`
@@ -524,6 +548,8 @@ type VxlanIngressMaps struct {
 	NatDnatMap            *ebpf.Map `ebpf:"nat_dnat_map"`
 	NatSnatMap            *ebpf.Map `ebpf:"nat_snat_map"`
 	NodeUnderlays         *ebpf.Map `ebpf:"node_underlays"`
+	PolicyCtMap           *ebpf.Map `ebpf:"policy_ct_map"`
+	PolicyEpochMap        *ebpf.Map `ebpf:"policy_epoch_map"`
 	ServiceAclMap         *ebpf.Map `ebpf:"service_acl_map"`
 	ServiceAffinityMap    *ebpf.Map `ebpf:"service_affinity_map"`
 	ServiceMap            *ebpf.Map `ebpf:"service_map"`
@@ -567,6 +593,8 @@ func (m *VxlanIngressMaps) Close() error {
 		m.NatDnatMap,
 		m.NatSnatMap,
 		m.NodeUnderlays,
+		m.PolicyCtMap,
+		m.PolicyEpochMap,
 		m.ServiceAclMap,
 		m.ServiceAffinityMap,
 		m.ServiceMap,

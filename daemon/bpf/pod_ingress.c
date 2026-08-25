@@ -152,9 +152,9 @@ static __always_inline int handle(struct __sk_buff *skb) {
   // src (= original ClusterIP for Service responses). Running this
   // after the reverse SNAT keeps user-facing rules ("admit traffic
   // from ClusterIP X") effective.
-  int policy_rc = apply_policy_ingress(skb, subnet->vpc_id, subnet->acl_id,
-                                       __trace_id, TRACE_HOOK_POD_INGRESS,
-                                       isv->subnet_id);
+  int policy_rc =
+      apply_policy(skb, POLICY_HOOK_POD_INGRESS, subnet->vpc_id,
+                   subnet->acl_id, __trace_id, isv->subnet_id);
   if (policy_rc < 0) {
     // -1 = ACL deny, -3 = SG deny, -2 = internal error.
     __u32 reason = TRACE_REASON_DROP_SHOT;
