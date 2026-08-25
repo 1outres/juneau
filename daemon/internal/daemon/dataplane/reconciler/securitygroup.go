@@ -2,7 +2,6 @@ package reconciler
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 
@@ -74,11 +73,27 @@ func (r *SecurityGroup) upsert(_ context.Context, sg *juneauv1alpha1.SecurityGro
 	zap.S().Infow("securitygroup: applying",
 		"name", sg.Name,
 		"groupID", rs.GroupID,
-		"ingress", rs.IngressCount,
-		"egress", rs.EgressCount,
+		"ingress", len(rs.Ingress),
+		"egress", len(rs.Egress),
 		"hasEgress", rs.HasEgressRules)
-	if err := r.store.Apply(rs); err != nil && !errors.Is(err, policy.ErrRuleLimitExceeded) {
-		return err
+	if err := r.store.Apply(rs); err != nil {
+		overCapacity := policy.CapacityErrorsFrom(err)
+		if len(overCapacity) == 0 {
+			return err
+		}
+		// A spec that does not fit never starts fitting, so returning
+		// the error would only make the runner requeue this key behind
+		// a rate limiter forever. Apply already installed the
+		// direction fail-closed, so the data plane is safe; the
+		// controller owns telling the user through status.
+		for _, capacity := range overCapacity {
+			zap.S().Errorw("securitygroup: direction over capacity, installed fail-closed",
+				"name", sg.Name,
+				"groupID", capacity.ID,
+				"direction", capacity.Direction.String(),
+				"entries", capacity.Entries,
+				"limit", capacity.Limit)
+		}
 	}
 
 	r.mu.Lock()

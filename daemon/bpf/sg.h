@@ -11,7 +11,14 @@
 //   * For each SG attached to self, scan its rules for the requested
 //     direction. ALLOW returned by any matching rule short-circuits to
 //     ALLOW. If the relevant direction has rules but none match, the
-//     verdict is DENY.
+//     verdict is DENY. A direction that declares an empty rule list
+//     therefore denies everything, which is what a non-nil empty list
+//     means in the CRD.
+//
+//   * Each direction owns a window of the rule array: ingress is slots
+//     [0, MAX_SG_RULES_PER_DIR), egress is the rest. A scan reads only
+//     its own window, so one direction can never take slots away from
+//     the other.
 //
 //   * Egress default differs from ingress: when a SG has no egress rules
 //     (sg_meta.has_egress_rules == 0) it defaults to ALLOW for that
@@ -89,26 +96,36 @@ static __always_inline int sg_peer_sg_set_contains(const struct sg_membership_va
 // needs. BPF subprograms have a 5-register argument limit; bundling
 // keeps the call signature within that ceiling once the function is
 // promoted out of __always_inline.
+//
+// base is the first slot of the direction's window. The caller works
+// it out because it must be 64 bits wide and 8-byte aligned to stay
+// useful: a narrower field is a sub-8-byte stack write, which the
+// verifier reads back as STACK_MISC instead of the constant that was
+// stored. The scan index would then be an unknown scalar, the loop
+// body would be explored once per possible window, and pod_egress
+// went from 662,664 to 884,347 processed instructions when we
+// computed base here from the __u8 direction field instead.
 struct sg_eval_one_sg_args {
+  __u64 base;
   __u32 sg_id;
   __be32 peer_ip;
   __u32 max_rules;
   __u16 dport;
-  __u8  direction;
   __u8  proto;
 };
 
 // sg_eval_one_sg scans the rules of a single SG for the requested
 // direction. Returns 1 (ALLOW) on match, 0 otherwise.
 //
-// max_rules is the actual rule count for this SG (from sg_meta_val).
-// Capping the loop bound at the live rule count instead of
-// MAX_RULES_PER_SG keeps the verifier instruction budget proportional
-// to real ruleset size on the hot path; we still bound by
-// MAX_RULES_PER_SG so the verifier sees a fixed maximum.
+// max_rules is the rule count this SG holds in the requested
+// direction (from sg_meta_val). Capping the loop bound at the live
+// rule count instead of MAX_SG_RULES_PER_DIR keeps the verifier
+// instruction budget proportional to real ruleset size on the hot
+// path; we still bound by MAX_SG_RULES_PER_DIR so the verifier sees a
+// fixed maximum.
 //
 // Marked as a BPF-to-BPF subprogram (noinline): the rule-scan loop
-// has a 6-way branch per iteration over MAX_RULES_PER_SG=8 rules,
+// has a 6-way branch per iteration over MAX_SG_RULES_PER_DIR=8 rules,
 // which the verifier explores combinatorially when inlined into
 // apply_policy. Promoting the scan to
 // a subprogram lets the verifier explore the loop body once per
@@ -124,22 +141,20 @@ sg_eval_one_sg(const struct sg_eval_one_sg_args *a,
     return 0;
 
   __u32 max_rules = a->max_rules;
-  if (max_rules > MAX_RULES_PER_SG)
-    max_rules = MAX_RULES_PER_SG;
+  if (max_rules > MAX_SG_RULES_PER_DIR)
+    max_rules = MAX_SG_RULES_PER_DIR;
 
   // 64-bit counter for the same reason as acl_evaluate: a 32-bit
   // spill across the helper call degrades to STACK_MISC on kernels
   // without precise sub-8-byte spill tracking, and the verifier then
   // rejects the loop as "infinite loop detected".
-  for (__u64 i = 0; i < MAX_RULES_PER_SG; i++) {
+  for (__u64 i = 0; i < MAX_SG_RULES_PER_DIR; i++) {
     if (i >= max_rules)
       break;
-    __u32 idx = i;
+    __u32 idx = a->base + i;
     struct sg_rule *r = bpf_map_lookup_elem(inner, &idx);
     if (!r)
       break;
-    if (r->direction != a->direction)
-      continue;
     if (!policy_proto_matches(r->proto, a->proto))
       continue;
     if (!policy_port_matches(r->port_lo, r->port_hi, a->dport))
@@ -227,33 +242,41 @@ static __juneau_bpf_subprog int sg_eval(const struct sg_membership_val *self,
     if (!meta)
       continue;
 
+    __u64 base;
     __u32 dir_count;
+    bool declared;
     if (direction == SG_DIR_EGRESS) {
-      if (!meta->has_egress_rules) {
-        // SG keeps the AWS default-allow egress behaviour. Do NOT set
-        // any_rules; another attached SG may still own egress rules.
-        continue;
-      }
+      declared = meta->has_egress_rules != 0;
       dir_count = meta->egress_count;
-      if (dir_count == 0)
-        continue;
+      base = MAX_SG_RULES_PER_DIR;
     } else {
+      // Ingress has no has_ingress_rules flag in sg_meta_val and needs
+      // none: an SG with no ingress rules already defaults to DENY,
+      // which is the verdict an empty ingress list asks for.
       dir_count = meta->ingress_count;
-      if (dir_count == 0)
-        continue;
+      declared = dir_count > 0;
+      base = 0;
     }
-    // The direction-specific count overcounts when both directions
-    // share the rule space (which they do: rules are stored
-    // interleaved). We bound the scan by ingress+egress to be safe.
-    __u32 scan_count = meta->ingress_count + meta->egress_count;
+    // An SG that does not declare this direction keeps the AWS
+    // default; leaving any_rules alone lets another attached SG still
+    // own the direction.
+    if (!declared)
+      continue;
+    // Declaring the direction is enough to enforce it, even with zero
+    // rules: an empty rule list means deny-all, and a direction that
+    // overflows its window is installed with zero rules on purpose.
+    // Setting any_rules only after the count check below would send
+    // both cases back to the default-allow egress path.
     any_rules = true;
+    if (dir_count == 0)
+      continue;
 
     struct sg_eval_one_sg_args one_args = {
+        .base = base,
         .sg_id = sg_id,
         .peer_ip = peer_ip,
-        .max_rules = scan_count,
+        .max_rules = dir_count,
         .dport = dport,
-        .direction = direction,
         .proto = proto,
     };
     if (sg_eval_one_sg(&one_args, peer_sgs))

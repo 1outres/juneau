@@ -6,6 +6,11 @@
 // reusable across multiple resource kinds.
 package policy
 
+import (
+	"fmt"
+	"slices"
+)
+
 // Direction selects the side of a flow a rule applies to.
 type Direction uint8
 
@@ -13,6 +18,17 @@ const (
 	DirIngress Direction = 0
 	DirEgress  Direction = 1
 )
+
+func (d Direction) String() string {
+	switch d {
+	case DirIngress:
+		return "ingress"
+	case DirEgress:
+		return "egress"
+	default:
+		return fmt.Sprintf("Direction(%d)", uint8(d))
+	}
+}
 
 // PeerKind describes how a rule resolves the peer side of a flow.
 type PeerKind uint8
@@ -86,8 +102,13 @@ type Rule struct {
 }
 
 // RuleSet is the post-expansion form one policy resource (SG or ACL)
-// flattens into. Counts mirror the summary controllers project into
-// status.
+// flattens into.
+//
+// The directions are separate slices because the BPF rule array is
+// split into two fixed windows, one per direction. Keeping them apart
+// here is what makes it impossible for a full ingress list to push the
+// egress rules out of the array, which is exactly what a shared slice
+// plus a "sort ingress first" convention used to allow.
 //
 // Both layers reuse this struct; the per-layer Store reads only the
 // fields its BPF meta map cares about (e.g. SGStore ignores
@@ -101,14 +122,12 @@ type RuleSet struct {
 	// identical.
 	GroupID uint32
 
-	// Rules is a single flat slice covering both directions. For
-	// ordered layers (NetworkACL) it is sorted by (Direction asc,
-	// Priority asc) so the BPF evaluator can scan front-to-back and
-	// short-circuit on first match.
-	Rules []Rule
-
-	IngressCount int
-	EgressCount  int
+	// Ingress and Egress each hold one direction's post-expansion
+	// entries. For ordered layers (NetworkACL) each slice is sorted by
+	// Priority asc so the BPF evaluator can scan that direction's
+	// window front-to-back and short-circuit on first match.
+	Ingress []Rule
+	Egress  []Rule
 
 	// HasIngressRules / HasEgressRules report whether the spec
 	// declared the direction explicitly. They drive default-allow vs
@@ -117,4 +136,30 @@ type RuleSet struct {
 	HasEgressRules  bool
 
 	RulesetVersion uint64
+}
+
+// ruleWindow is one direction's slice of a BPF inner rule array.
+type ruleWindow struct {
+	Direction Direction
+	Base      uint32
+	Rules     []Rule
+}
+
+// windows returns both direction windows in slot order. perDirection
+// is the window size the layer's BPF array was built with: ingress
+// occupies slots [0, perDirection), egress [perDirection,
+// 2*perDirection).
+func (rs RuleSet) windows(perDirection int) [2]ruleWindow {
+	return [2]ruleWindow{
+		{Direction: DirIngress, Base: 0, Rules: rs.Ingress},
+		{Direction: DirEgress, Base: uint32(perDirection), Rules: rs.Egress},
+	}
+}
+
+// clone detaches the rule slices from the caller, so a snapshot kept
+// after Apply returns cannot be mutated behind its holder's back.
+func (rs RuleSet) clone() RuleSet {
+	rs.Ingress = slices.Clone(rs.Ingress)
+	rs.Egress = slices.Clone(rs.Egress)
+	return rs
 }

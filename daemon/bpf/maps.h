@@ -134,16 +134,23 @@
 #define MAX_SECURITY_GROUPS 16384
 #endif
 
-#ifndef MAX_RULES_PER_SG
-// MAX_RULES_PER_SG bounds the per-SG rule array size. The data plane
-// scans this many rules per SG per first-packet evaluation, so the
-// number must fit the verifier instruction budget when combined with
-// MAX_SGS_PER_NIC (worst case scan = MAX_SGS_PER_NIC * MAX_RULES_PER_SG
-// rules). 8 fits comfortably below the 1M-insn ceiling on Linux 5.10+.
-// Controllers reject SGs whose post-expansion rule count exceeds this
-// and surface a clean Reason.
-#define MAX_RULES_PER_SG 8
+#ifndef MAX_SG_RULES_PER_DIR
+// MAX_SG_RULES_PER_DIR bounds the post-expansion rule count of ONE
+// direction of one SG. The rule array gives each direction its own
+// window, so a busy ingress can never take slots away from egress.
+// The data plane scans only the window of the direction it is
+// evaluating, so the verifier instruction budget follows this number
+// (worst case scan = MAX_SGS_PER_NIC * MAX_SG_RULES_PER_DIR rules)
+// and not the array size. 8 per direction fits comfortably below the
+// 1M-insn ceiling on Linux 5.10+. Controllers reject SGs whose
+// post-expansion rule count exceeds this in either direction and
+// surface a clean Reason.
+#define MAX_SG_RULES_PER_DIR 8
 #endif
+
+// MAX_RULES_PER_SG is the size of the whole array: ingress occupies
+// slots [0, MAX_SG_RULES_PER_DIR), egress the rest.
+#define MAX_RULES_PER_SG (MAX_SG_RULES_PER_DIR * 2)
 
 #ifndef MAX_SG_MEMBERSHIP
 // MAX_SG_MEMBERSHIP bounds the cluster-wide (vpc_id, ipv4) → SG list
@@ -156,7 +163,7 @@
 // lockstep — the data plane scans this many SGs per packet at most.
 //
 // Note: this also bounds the verifier instruction budget for sg_eval:
-// worst-case insn count grows with MAX_SGS_PER_NIC * MAX_RULES_PER_SG.
+// worst-case insn count grows with MAX_SGS_PER_NIC * MAX_SG_RULES_PER_DIR.
 // Two SGs per NIC (e.g. one role-based + one shared) is enough for most
 // real deployments; can be raised later if the verifier budget allows.
 #define MAX_SGS_PER_NIC 2
@@ -1029,7 +1036,9 @@ struct {
 // controller has expanded the user-facing rule. port_lo/port_hi are
 // inclusive; (0, 0xFFFF) wildcards the L4 port. peer_v4 carries either
 // a CIDR base (network byte order) or a peer sg_id depending on
-// peer_kind.
+// peer_kind. direction is kept for observability / debuggability
+// (bpftool dumps); the eval loop selects the direction by slot window,
+// not by this field.
 struct sg_rule {
   __u8  direction;          // SG_DIR_*
   __u8  proto;              // POLICY_PROTO_ANY or IPPROTO_*
@@ -1069,14 +1078,22 @@ struct {
 //     not by NetworkInterface. There is consequently no
 //     acl_membership_map analogue.
 //   * Rules carry explicit priority and Action. The daemon-side writer
-//     sorts rules by priority (ascending) so the BPF evaluator can scan
-//     front-to-back and short-circuit on the first match.
-//   * MAX_RULES_PER_ACL is larger than MAX_RULES_PER_SG because ACL
-//     rules are CIDR-only (no peer-set fan-out), so the post-expansion
-//     rule budget per ACL is more forgiving. Verifier pressure is
-//     dominated by SG, which sits downstream of ACL eval.
+//     sorts each direction by priority (ascending) so the BPF evaluator
+//     can scan front-to-back and short-circuit on the first match.
+//   * MAX_ACL_RULES_PER_DIR is larger than MAX_SG_RULES_PER_DIR because
+//     ACL rules are CIDR-only (no peer-set fan-out), so the
+//     post-expansion rule budget per ACL is more forgiving. Verifier
+//     pressure is dominated by SG, which sits downstream of ACL eval.
 
-#define MAX_RULES_PER_ACL 16
+// MAX_ACL_RULES_PER_DIR bounds the post-expansion rule count of ONE
+// direction of one ACL, and with it the evaluator's scan length. Each
+// direction owns its own window of the array: ingress is
+// [0, MAX_ACL_RULES_PER_DIR), egress is the rest. Before the split both
+// directions drew from one array of this size, so an ingress-heavy ACL
+// could leave no room for the egress rules and blackhole that
+// direction.
+#define MAX_ACL_RULES_PER_DIR 16
+#define MAX_RULES_PER_ACL     (MAX_ACL_RULES_PER_DIR * 2)
 #define MAX_NETWORK_ACLS  4096
 
 #define ACL_DIR_INGRESS 0
@@ -1109,9 +1126,9 @@ struct {
 
 // acl_rule encodes a single (peer × proto × ports) tuple after the
 // daemon-side writer expands and sorts the user-facing ruleset by
-// priority. priority is kept on the rule for observability /
-// debuggability (bpftool dumps); the eval loop relies on the slot
-// order, not the priority field.
+// priority. priority and direction are kept on the rule for
+// observability / debuggability (bpftool dumps); the eval loop relies
+// on the slot order and the slot window, not on those two fields.
 struct acl_rule {
   __u8  direction;          // ACL_DIR_*
   __u8  proto;              // POLICY_PROTO_ANY or IPPROTO_*

@@ -6,9 +6,12 @@
 //     per-Subnet ruleset. acl_id == 0 means "no ACL attached"; the
 //     evaluator returns ACL_VERDICT_PASS without touching any map.
 //
-//   * The daemon-side writer pre-sorts the inner array by (direction,
-//     priority asc) so the kernel scanner walks slots front-to-back
-//     and short-circuits on the first matching rule.
+//   * Each direction owns a window of the inner array: ingress is
+//     slots [0, MAX_ACL_RULES_PER_DIR), egress is the rest. The
+//     daemon-side writer sorts each window by priority asc, so the
+//     kernel scanner walks its own window front-to-back and
+//     short-circuits on the first matching rule. One direction can
+//     never take slots away from the other.
 //
 //   * has_ingress_rules / has_egress_rules in acl_meta_val choose
 //     between default-allow (no rules to match: PASS, no enforcement)
@@ -81,12 +84,11 @@ static __juneau_bpf_subprog int acl_evaluate(__u32 acl_id, __u8 direction,
     return ACL_VERDICT_DENY;
   }
 
-  // The direction-specific count overcounts when both directions
-  // share the rule space (rules are stored interleaved post-sort).
-  // Bound by ingress+egress so the verifier sees a fixed maximum.
-  __u32 scan_count = meta->ingress_count + meta->egress_count;
-  if (scan_count > MAX_RULES_PER_ACL)
-    scan_count = MAX_RULES_PER_ACL;
+  __u32 base = (direction == ACL_DIR_INGRESS) ? 0 : MAX_ACL_RULES_PER_DIR;
+  __u32 scan_count = (direction == ACL_DIR_INGRESS) ? meta->ingress_count
+                                                    : meta->egress_count;
+  if (scan_count > MAX_ACL_RULES_PER_DIR)
+    scan_count = MAX_ACL_RULES_PER_DIR;
 
   // The counter is deliberately 64-bit: clang spills it across the
   // per-iteration helper call, and a 32-bit spill of a 64-bit-computed
@@ -94,15 +96,13 @@ static __juneau_bpf_subprog int acl_evaluate(__u32 acl_id, __u8 direction,
   // sub-8-byte spills precisely. The verifier then sees an identical
   // state on every back edge and rejects the program with
   // "infinite loop detected". An 8-byte slot keeps the bounds exact.
-  for (__u64 i = 0; i < MAX_RULES_PER_ACL; i++) {
+  for (__u64 i = 0; i < MAX_ACL_RULES_PER_DIR; i++) {
     if (i >= scan_count)
       break;
-    __u32 idx = i;
+    __u32 idx = base + i;
     struct acl_rule *r = bpf_map_lookup_elem(inner, &idx);
     if (!r)
       break;
-    if (r->direction != direction)
-      continue;
     if (!policy_proto_matches(r->proto, proto))
       continue;
     if (!policy_port_matches(r->port_lo, r->port_hi, dport))
@@ -110,7 +110,7 @@ static __juneau_bpf_subprog int acl_evaluate(__u32 acl_id, __u8 direction,
     if (!policy_cidr_matches(r->peer_v4, r->prefixlen, peer_ip))
       continue;
     // First match wins because daemon-side ExpandNetworkACL sorted
-    // by (direction, priority asc).
+    // this direction's window by priority asc.
     if (r->verdict == ACL_VERDICT_ALLOW)
       return ACL_VERDICT_ALLOW;
     return ACL_VERDICT_DENY;
