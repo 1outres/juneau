@@ -65,3 +65,16 @@ var _ = Describe("Juneau cluster connectivity", func() {
 func applyManifest(manifest string) error {
 	return runWithStdin(repoRoot, manifest, "kubectl", "apply", "-f", "-")
 }
+
+const e2eFieldManager = "juneau-e2e"
+
+// applyManifestServerSide applies a manifest the way the guides tell
+// users to apply a Vpc together with its main RouteTable. Client-side
+// apply reads the object and creates it when the read found nothing, so
+// a controller creating the same object in between makes the create fail
+// with AlreadyExists. Server-side apply is a single create-or-merge
+// request and cannot lose that race.
+func applyManifestServerSide(manifest string) error {
+	return runWithStdin(repoRoot, manifest, "kubectl", "apply", "--server-side",
+		"--field-manager="+e2eFieldManager, "-f", "-")
+}

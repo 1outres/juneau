@@ -2,10 +2,28 @@
 
 RouteTableは、Vpc内の経路制御を表すリソースです。
 
-すべてのVpcにはメインのRouteTableが1つ存在します。
-
 Vpcに属するSubnetの接続経路は自動的にconnected routeとして生成されます。
 `spec.routes`は、それに追加する経路を表します。
+
+## メインRouteTable
+
+すべてのVpcにはメインのRouteTableが1つ存在します。Vpcを作成すると、controllerがVpcと同じ名前のRouteTableを作り、その名前をVpcの`status.mainRouteTable`に書きます。
+
+このRouteTableはユーザーが作るものではありません。Vpcと同じ名前のRouteTableをマニフェストに書いたときは、controllerが作ったオブジェクトに経路を足すことになります。
+
+controllerがこのRouteTableに書き込むのは`spec.vpc`とownerReferenceだけです。`spec.routes`には触らないため、ユーザーが書いた経路がcontrollerに消されることはありません。
+
+### VpcとメインRouteTableを一度に適用する
+
+VpcとメインRouteTableを1つのマニフェストにまとめて適用するときは、server-side applyを使ってください。
+
+```console
+$ kubectl apply --server-side -f vpc.yaml
+```
+
+`kubectl apply -f`によるクライアント側のapplyは、対象をGETして、無ければPOSTするという2回のリクエストで動きます。Vpcを作った直後はcontrollerも同じ名前のRouteTableを作りに来るため、この2回の隙間にcontrollerのCreateが着地すると、POSTが`Error from server (AlreadyExists)`で失敗します。GitOpsでディレクトリを一括同期する構成では、タイミング次第でこの失敗を踏みます。
+
+server-side applyはcreate-or-mergeを1回のリクエストで行うので、controllerとユーザーのどちらが先でも失敗しません。ユーザーが先に作った場合は、controllerが後からownerReferenceを付けて自分の管理下に入れますが、`spec.routes`はそのまま残ります。`spec.vpc`は双方が同じ値を書くため、フィールドの所有者が2つになるだけで、コンフリクトにはなりません。
 
 ## `spec.routes[].via.type`
 

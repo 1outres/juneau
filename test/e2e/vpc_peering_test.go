@@ -158,11 +158,10 @@ func (f *peeringFixture) WaitPeeringReady() {
 	waitResourceReady("vpcpeering", f.peering)
 }
 
-// SetPeeringRoute replaces the routes of a Vpc's main RouteTable (which
-// carries the Vpc's own name) with a single route towards the peer.
+// SetPeeringRoute replaces the routes of a Vpc's main RouteTable with a
+// single route towards the peer.
 func (f *peeringFixture) SetPeeringRoute(vpc string, dst string) {
-	patch := fmt.Sprintf(`{"spec":{"routes":[{"dst":%q,"via":{"type":"vpcPeering","vpcPeering":%q}}]}}`, dst, f.peering)
-	Expect(run(repoRoot, "kubectl", "patch", "routetable", vpc, "--type=merge", "-p", patch)).To(Succeed())
+	setMainRouteTableRoutes(vpc, vpcPeeringRoute(dst, f.peering))
 }
 
 // ExpectPeeringRoute checks the controller published the route with the
@@ -194,7 +193,7 @@ func (f *peeringFixture) Cleanup() {
 	// while a RouteTable still names it, and the Vpc guard refuses
 	// while a Subnet or a VpcPeering still names the Vpc.
 	for _, vpc := range []string{f.vpcA, f.vpcB} {
-		runBestEffort(repoRoot, "kubectl", "patch", "routetable", vpc, "--type=merge", "-p", `{"spec":{"routes":[]}}`)
+		clearMainRouteTableRoutes(vpc)
 	}
 	runBestEffort(repoRoot, "kubectl", "delete", "vpcpeering", f.peering, "--ignore-not-found=true")
 	runBestEffort(repoRoot, "kubectl", "delete", "subnet", f.subnetA, "--ignore-not-found=true")

@@ -133,7 +133,7 @@ spec:
         type: internetGateway
 ```
 
-RouteTableのメタ名はVpc名と同じです。詳細は[RouteTable](../resources/routetable.md)を参照してください。
+RouteTableのメタ名はVpc名と同じです。Vpcと同じマニフェストにまとめて適用するなら、`kubectl apply --server-side`を使ってください。詳細は[RouteTable](../resources/routetable.md)を参照してください。
 
 ### 5. ElasticIPを作成
 

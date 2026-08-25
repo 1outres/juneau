@@ -131,6 +131,14 @@ func (r *VpcReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return controllerutil.SetControllerReference(&resource, routeTable, r.Scheme)
 	})
 	if err != nil {
+		// Users and GitOps are told to apply the main RouteTable
+		// themselves, so both writers can target it at once. Losing that
+		// race is normal: the next reconcile adopts the object, and
+		// there is nothing the user could fix, so the Ready condition
+		// must not flicker.
+		if isOptimisticConcurrencyLoss(err) {
+			return ctrl.Result{Requeue: true}, nil
+		}
 		if updateErr := r.updateStatus(ctx, &resource, resource.Status.MainRouteTable, vpcID, metav1.ConditionFalse, vpcReasonReconcileFailed, "failed to reconcile main route table"); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
@@ -375,6 +383,10 @@ func (r *VpcReconciler) ensureNumberClaim(ctx context.Context, vpc *juneauv1alph
 		return nil, err
 	}
 	return claim, nil
+}
+
+func isOptimisticConcurrencyLoss(err error) bool {
+	return errors.IsAlreadyExists(err) || errors.IsConflict(err)
 }
 
 func (r *VpcReconciler) updateStatus(ctx context.Context, vpc *juneauv1alpha1.Vpc, mainRouteTable string, vpcID uint32, status metav1.ConditionStatus, reason, message string) error {

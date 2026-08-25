@@ -334,15 +334,14 @@ func (f *transitGatewayFixture) RouteEveryVpcThroughTheGateway() {
 	f.SetTransitRoutes(f.spokeBVpc, f.hubCIDR, f.spokeACIDR)
 }
 
-// SetTransitRoutes replaces the routes of a Vpc's main RouteTable (which
-// carries the Vpc's own name) with one transit route per destination.
+// SetTransitRoutes replaces the routes of a Vpc's main RouteTable with
+// one transit route per destination.
 func (f *transitGatewayFixture) SetTransitRoutes(vpc string, dsts ...string) {
-	routes := make([]string, 0, len(dsts))
+	routes := make([]route, 0, len(dsts))
 	for _, dst := range dsts {
-		routes = append(routes, fmt.Sprintf(`{"dst":%q,"via":{"type":"transitGateway","transitGateway":%q}}`, dst, f.gateway))
+		routes = append(routes, transitGatewayRoute(dst, f.gateway))
 	}
-	patch := fmt.Sprintf(`{"spec":{"routes":[%s]}}`, strings.Join(routes, ","))
-	Expect(run(repoRoot, "kubectl", "patch", "routetable", vpc, "--type=merge", "-p", patch)).To(Succeed())
+	setMainRouteTableRoutes(vpc, routes...)
 }
 
 func (f *transitGatewayFixture) SetBlackholeRoute(table string, dst string) {
@@ -436,7 +435,7 @@ func (f *transitGatewayFixture) Cleanup() {
 	// and the Vpc guard refuses while a Subnet or an attachment names the
 	// Vpc.
 	for _, vpc := range []string{f.hubVpc, f.spokeAVpc, f.spokeBVpc} {
-		runBestEffort(repoRoot, "kubectl", "patch", "routetable", vpc, "--type=merge", "-p", `{"spec":{"routes":[]}}`)
+		clearMainRouteTableRoutes(vpc)
 	}
 	for _, attachment := range []string{f.hubAttachment, f.spokeAAttachment, f.spokeBAttachment} {
 		runBestEffort(repoRoot, "kubectl", "delete", "transitgatewayattachment", attachment, "--ignore-not-found=true")
