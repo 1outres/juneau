@@ -2,6 +2,7 @@ package v1alpha1
 
 import (
 	"context"
+	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -147,3 +148,85 @@ var _ = Describe("SecurityGroup webhook", func() {
 		Expect(err.Error()).To(ContainSubstring("invalid CIDR"))
 	})
 })
+
+var _ = Describe("SecurityGroup webhook entry capacity", func() {
+	It("accepts a direction that expands to exactly the entry limit", func() {
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.SecurityGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("sg")},
+			Spec: juneauv1alpha1.SecurityGroupSpec{
+				Vpc: "default",
+				Ingress: []juneauv1alpha1.SecurityGroupIngressRule{
+					{From: webhookSGPeers(2), Protocol: juneauv1alpha1.SecurityGroupProtocolTCP, Ports: webhookSGPorts(2)},
+					{From: webhookSGPeers(2), Protocol: juneauv1alpha1.SecurityGroupProtocolTCP, Ports: webhookSGPorts(2)},
+				},
+				Egress: &[]juneauv1alpha1.SecurityGroupEgressRule{
+					{To: webhookSGPeers(4), Protocol: juneauv1alpha1.SecurityGroupProtocolTCP, Ports: webhookSGPorts(2)},
+				},
+			},
+		})).To(Succeed())
+	})
+
+	It("rejects an ingress direction one entry over the limit", func() {
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.SecurityGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("sg")},
+			Spec: juneauv1alpha1.SecurityGroupSpec{
+				Vpc: "default",
+				Ingress: []juneauv1alpha1.SecurityGroupIngressRule{
+					{From: webhookSGPeers(3), Protocol: juneauv1alpha1.SecurityGroupProtocolTCP, Ports: webhookSGPorts(3)},
+				},
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.ingress"))
+		Expect(err.Error()).To(ContainSubstring("Too many: 9"))
+		Expect(err.Error()).To(ContainSubstring("must have at most 8 entries"))
+		Expect(err.Error()).To(ContainSubstring("costs"))
+	})
+
+	It("rejects an egress direction one entry over the limit", func() {
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.SecurityGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("sg")},
+			Spec: juneauv1alpha1.SecurityGroupSpec{
+				Vpc: "default",
+				Egress: &[]juneauv1alpha1.SecurityGroupEgressRule{
+					{To: webhookSGPeers(3), Protocol: juneauv1alpha1.SecurityGroupProtocolTCP, Ports: webhookSGPorts(3)},
+				},
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.egress"))
+		Expect(err.Error()).To(ContainSubstring("Too many: 9"))
+	})
+
+	It("rejects a single rule whose peers times ports exceed the direction budget", func() {
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.SecurityGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("sg")},
+			Spec: juneauv1alpha1.SecurityGroupSpec{
+				Vpc: "default",
+				Ingress: []juneauv1alpha1.SecurityGroupIngressRule{
+					{From: webhookSGPeers(4), Protocol: juneauv1alpha1.SecurityGroupProtocolTCP, Ports: webhookSGPorts(4)},
+				},
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("Too many: 16"))
+		Expect(err.Error()).To(ContainSubstring("peers"))
+	})
+})
+
+func webhookSGPeers(count int) []juneauv1alpha1.SecurityGroupPeer {
+	peers := make([]juneauv1alpha1.SecurityGroupPeer, 0, count)
+	for i := 0; i < count; i++ {
+		peers = append(peers, juneauv1alpha1.SecurityGroupPeer{CIDR: fmt.Sprintf("10.%d.0.0/16", i+1)})
+	}
+	return peers
+}
+
+func webhookSGPorts(count int) []juneauv1alpha1.SecurityGroupPort {
+	ports := make([]juneauv1alpha1.SecurityGroupPort, 0, count)
+	for i := 0; i < count; i++ {
+		port := int32(1000 + i)
+		ports = append(ports, juneauv1alpha1.SecurityGroupPort{Port: &port})
+	}
+	return ports
+}

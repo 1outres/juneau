@@ -56,6 +56,8 @@ func SetupSecurityGroupWebhookWithManager(mgr ctrl.Manager) error {
 //   - CIDRs parse as IPv4 prefixes.
 //   - Port ranges have from <= to.
 //   - When Protocol is icmp/all, ports must not be set.
+//   - Each direction fits SecurityGroupMaxEntriesPerDirection expanded
+//     entries, so the data plane never has to refuse a direction.
 //   - At delete time, no NetworkInterface still references this SG.
 //
 // +kubebuilder:object:generate=false
@@ -143,6 +145,9 @@ func (v *SecurityGroupCustomValidator) validate(ctx context.Context, sg, old *ju
 			errs = append(errs, validatePeerSGsInVpc(ctx, v.Reader, field.NewPath("spec", "ingress").Index(i).Child("from"), rule.From, sg.Spec.Vpc, sg.Name)...)
 		}
 	}
+	errs = append(errs, validateSecurityGroupDirectionCapacity(field.NewPath("spec", "ingress"),
+		juneauv1alpha1.SecurityGroupIngressEntryCount(sg.Spec.Ingress))...)
+
 	if sg.Spec.Egress != nil {
 		for i, rule := range *sg.Spec.Egress {
 			errs = append(errs, validateEgressRule(field.NewPath("spec", "egress").Index(i), rule)...)
@@ -150,6 +155,8 @@ func (v *SecurityGroupCustomValidator) validate(ctx context.Context, sg, old *ju
 				errs = append(errs, validatePeerSGsInVpc(ctx, v.Reader, field.NewPath("spec", "egress").Index(i).Child("to"), rule.To, sg.Spec.Vpc, sg.Name)...)
 			}
 		}
+		errs = append(errs, validateSecurityGroupDirectionCapacity(field.NewPath("spec", "egress"),
+			juneauv1alpha1.SecurityGroupEgressEntryCount(*sg.Spec.Egress))...)
 	}
 
 	if len(errs) > 0 {
@@ -159,6 +166,23 @@ func (v *SecurityGroupCustomValidator) validate(ctx context.Context, sg, old *ju
 	}
 
 	return nil, nil
+}
+
+// validateSecurityGroupDirectionCapacity rejects a direction that does
+// not fit its data plane budget. Accepting it would leave the SG
+// degraded after admission with one direction refused by the daemon, so
+// the answer belongs here rather than in status.
+func validateSecurityGroupDirectionCapacity(path *field.Path, entries int) field.ErrorList {
+	if entries <= juneauv1alpha1.SecurityGroupMaxEntriesPerDirection {
+		return nil
+	}
+	err := field.TooMany(path, entries, juneauv1alpha1.SecurityGroupMaxEntriesPerDirection)
+	// field.TooMany counts list items, but the budget is spent in
+	// expanded entries: one rule can fill a direction on its own, so
+	// the rule count explains nothing without the expansion.
+	err.Detail = fmt.Sprintf("must have at most %d entries (a rule with P peers and N ports costs P*N entries)",
+		juneauv1alpha1.SecurityGroupMaxEntriesPerDirection)
+	return field.ErrorList{err}
 }
 
 func validateIngressRule(path *field.Path, rule juneauv1alpha1.SecurityGroupIngressRule) field.ErrorList {

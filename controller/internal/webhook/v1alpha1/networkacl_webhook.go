@@ -57,6 +57,8 @@ func SetupNetworkACLWebhookWithManager(mgr ctrl.Manager) error {
 //   - Protocol=icmp/all rules carry no ports.
 //   - Priorities are unique within each direction (so the priority
 //     order is total).
+//   - Each direction fits NetworkACLMaxEntriesPerDirection expanded
+//     entries, so the data plane never has to refuse a direction.
 //   - At delete time, no Subnet still references this ACL.
 //
 // +kubebuilder:object:generate=false
@@ -164,7 +166,27 @@ func validateNetworkACLDirection(path *field.Path, rules []juneauv1alpha1.Networ
 		}
 		seenPriorities[rule.Priority] = i
 	}
+
+	errs = append(errs, validateNetworkACLDirectionCapacity(path, rules)...)
 	return errs
+}
+
+// validateNetworkACLDirectionCapacity rejects a direction that does not
+// fit its data plane budget. Accepting it would leave the ACL degraded
+// after admission with one direction refused by the daemon, so the
+// answer belongs here rather than in status.
+func validateNetworkACLDirectionCapacity(path *field.Path, rules []juneauv1alpha1.NetworkACLRule) field.ErrorList {
+	entries := juneauv1alpha1.NetworkACLDirectionEntryCount(rules)
+	if entries <= juneauv1alpha1.NetworkACLMaxEntriesPerDirection {
+		return nil
+	}
+	err := field.TooMany(path, entries, juneauv1alpha1.NetworkACLMaxEntriesPerDirection)
+	// field.TooMany counts list items, but the budget is spent in
+	// expanded entries: a user who wrote three rules has no other way
+	// to learn why the count is eighteen.
+	err.Detail = fmt.Sprintf("must have at most %d entries (a rule with N ports costs N entries)",
+		juneauv1alpha1.NetworkACLMaxEntriesPerDirection)
+	return field.ErrorList{err}
 }
 
 func validateNetworkACLRule(path *field.Path, rule juneauv1alpha1.NetworkACLRule) field.ErrorList {
