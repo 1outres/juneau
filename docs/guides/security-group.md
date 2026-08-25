@@ -99,7 +99,7 @@ client-sg   app-vpc   1         0                  True
 web-sg      app-vpc   2         1                  True
 ```
 
-`READY: True`になればSecurityGroupは反映済みです。`INGRESS`列はspec.ingressを許可エントリに展開したあとの件数です。
+`READY: True`になればSecurityGroupは反映済みです。`INGRESS`列は`spec.ingress`に書いたルールの本数です。ピアとポートの直積に展開したあとのエントリ数は`status.ingressEntryCount`に出ます。
 詳細は[SecurityGroup](../resources/securitygroup.md)を参照してください。
 
 ### 4. backend Podをデプロイ

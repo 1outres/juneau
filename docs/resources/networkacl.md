@@ -60,6 +60,24 @@ NetworkACLはアドレスベースのルールのみを扱います (Pod単位�
 
 NetworkACLはステートフルです。許可された送信に対する応答は、戻り方向にルールが無くても通過します (CTで一致したフローを短絡します)。
 
+## ルールの上限
+
+上限はルールの本数ではなく、data planeが持つ**エントリ数**で数えます。1つのルールはポートごとに1エントリへ展開されるので、1ルールのコストは次のとおりです。
+
+```
+エントリ数 = max(1, ports の要素数)
+```
+
+`ports` を省略したルール (`protocol: all` や `icmp` のルール) は全ポートにマッチする1エントリです。`ports` を4つ書いたルールは4エントリを使います。
+
+この予算は**方向ごとに独立**しています。`ingress` と `egress` はBPFのルール配列の別々の区画を使うので、片方を使い切ってももう片方は影響を受けません。両方向の合計で数えることはありません。
+
+NetworkACLは1方向あたり**16エントリ**までです。同じ方向に `ports` を4つ書いたルールを4つ並べると、ルールは4本でも16エントリになり上限に達します。1つの `ports` に書ける要素数も16なので、1本のルールだけでその方向を埋めることはあっても、あふれさせることはありません。
+
+上限を超えるNetworkACLは、作成・更新の時点でwebhookが拒否します。つまり存在しているNetworkACLは、data planeがルールを全て保持できるものだけです。
+
+いま何エントリ使っているかは `status.ingressEntryCount` / `status.egressEntryCount` に出ます。上限に近づいているかを見たいときは、ルール本数ではなくこちらを見てください。
+
 ## Subnetへの紐付け
 
 Subnetの `spec.networkACL` にNetworkACLの名前を入れると、そのSubnetの境界で評価されるようになります。1つのSubnetに紐付けられるNetworkACLは最大1つです。
@@ -95,7 +113,9 @@ SubnetにNetworkACLが紐付いていない / Podに該当するSecurityGroupが
 
 `status.aclID` は、このNetworkACLに割り当てられたクラスタ内で一意の番号です。Subnetの `status.networkACL.aclID` に展開され、ルールの伝達に使われます。
 
-`status.ingressRuleCount` / `status.egressRuleCount` は `spec.ingress` / `spec.egress` のルール件数です。
+`status.ingressRuleCount` / `status.egressRuleCount` は `spec.ingress` / `spec.egress` に書いたルールの本数です。
+
+`status.ingressEntryCount` / `status.egressEntryCount` は、そのルールがdata planeで消費するエントリ数です。上限と突き合わせるのはこちらの値です。
 
 `status.hasIngressRules` / `status.hasEgressRules` は、各方向が `spec` に明示的に指定されているか (省略はfalse、空リストや非空リストはtrue) を示します。
 
@@ -106,12 +126,12 @@ SubnetにNetworkACLが紐付いていない / Podに該当するSecurityGroupが
 ## Conditions
 
 - `Ready`: NetworkACLが正常に解決され、ルールが適用可能な状態になっていれば `True`
-- `RulesValid`: `spec` のルールがすべて正しく解決でき、ルール件数の上限を超えていなければ `True`
+- `RulesValid`: `spec` のルールがすべて正しく解決でき、どちらの方向もエントリ数の上限に収まっていれば `True`
 
 ## 制限事項
 
 - ピアの指定はCIDRのみです。SubnetやSecurityGroupを直接参照することはできません
-- 1つのNetworkACLに記述できるルールの件数には上限があります。`status.ingressRuleCount` / `status.egressRuleCount` の合計が上限を超えると `RulesValid=False` になり、超過分は適用されません
+- 1方向に書けるエントリ数は16までです。超えるNetworkACLはwebhookが拒否するので、作成や更新そのものが失敗します。数え方は「ルールの上限」を参照してください
 - IPv6には対応していません
 - 削除を試みたNetworkACLがSubnetから参照されている場合、削除は拒否されます。先に該当Subnetの `spec.networkACL` を空にしてください
 - `spec.vpc` は変更できません
