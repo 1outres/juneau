@@ -98,8 +98,15 @@ type SecurityGroupPortRange struct {
 type SecurityGroupIngressRule struct {
 	// From lists the peers (CIDRs or SecurityGroupRefs) whose traffic
 	// is admitted by this rule. At least one peer is required.
+	//
+	// A rule costs peers × ports data plane entries, which no single
+	// item cap can express. Each list is therefore capped at
+	// SecurityGroupMaxEntriesPerDirection so neither factor alone can
+	// overflow the direction, and the webhook checks the product; see
+	// policy_capacity.go.
 	// +required
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=8
 	From []SecurityGroupPeer `json:"from"`
 
 	// Protocol selects the IP protocol. Defaults to "all" when empty.
@@ -111,6 +118,7 @@ type SecurityGroupIngressRule struct {
 	// list (or unset) matches any port for the chosen protocol. When
 	// Protocol is "icmp" or "all", Ports must be empty.
 	// +optional
+	// +kubebuilder:validation:MaxItems=8
 	Ports []SecurityGroupPort `json:"ports,omitempty"`
 
 	// Description is free-form metadata returned in API responses for
@@ -126,6 +134,7 @@ type SecurityGroupEgressRule struct {
 	// rule. At least one peer is required.
 	// +required
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=8
 	To []SecurityGroupPeer `json:"to"`
 
 	// Protocol selects the IP protocol. Defaults to "all" when empty.
@@ -135,6 +144,7 @@ type SecurityGroupEgressRule struct {
 
 	// Ports list the destination ports admitted by this rule.
 	// +optional
+	// +kubebuilder:validation:MaxItems=8
 	Ports []SecurityGroupPort `json:"ports,omitempty"`
 
 	// Description is free-form metadata.
@@ -188,12 +198,23 @@ type SecurityGroupStatus struct {
 	// rule changes.
 	RulesetVersion uint64 `json:"rulesetVersion,omitempty"`
 
-	// IngressRuleCount and EgressRuleCount report how many flat
-	// (post-expansion) BPF rule entries the controller resolved for
-	// each direction. These are observability fields; they are not a
-	// hard cap (that lives in the data plane MAX_RULES_PER_SG).
+	// IngressRuleCount and EgressRuleCount report the rule count per
+	// direction, exactly as the user wrote them in the spec.
+	// Observability; not a hard limit.
 	IngressRuleCount int32 `json:"ingressRuleCount,omitempty"`
 	EgressRuleCount  int32 `json:"egressRuleCount,omitempty"`
+
+	// IngressEntryCount and EgressEntryCount report what each direction
+	// costs in the data plane, which is what capacity is actually
+	// budgeted against: a rule expands to one entry per (peer, port)
+	// pair. See SecurityGroupIngressEntryCount and
+	// SecurityGroupMaxEntriesPerDirection.
+	//
+	// The counts are static, so they include peers whose
+	// SecurityGroupRef no longer resolves; such peers are dropped at
+	// expansion time and the installed entry count is then lower.
+	IngressEntryCount int32 `json:"ingressEntryCount,omitempty"`
+	EgressEntryCount  int32 `json:"egressEntryCount,omitempty"`
 
 	// HasEgressRules mirrors the spec choice (nil → false). Daemons
 	// use this to decide whether to apply egress allow-list semantics

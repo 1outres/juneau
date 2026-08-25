@@ -124,7 +124,12 @@ type NetworkACLRule struct {
 	// Ports list the L4 destination ports admitted by this rule. Empty
 	// matches every port for the chosen protocol. When Protocol is
 	// "icmp" or "all", Ports must be empty.
+	//
+	// The item cap matches NetworkACLMaxEntriesPerDirection because a
+	// rule costs one data plane entry per port: a single rule may fill
+	// its direction but can never overflow it on its own.
 	// +optional
+	// +kubebuilder:validation:MaxItems=16
 	Ports []NetworkACLPort `json:"ports,omitempty"`
 
 	// Description is free-form metadata returned in API responses for
@@ -190,10 +195,18 @@ type NetworkACLStatus struct {
 	RulesetVersion uint64 `json:"rulesetVersion,omitempty"`
 
 	// IngressRuleCount and EgressRuleCount report the rule count per
-	// direction (0 when the direction is nil/empty). Observability;
-	// not a hard limit.
+	// direction (0 when the direction is nil/empty), exactly as the
+	// user wrote them in the spec. Observability; not a hard limit.
 	IngressRuleCount int32 `json:"ingressRuleCount,omitempty"`
 	EgressRuleCount  int32 `json:"egressRuleCount,omitempty"`
+
+	// IngressEntryCount and EgressEntryCount report what each direction
+	// costs in the data plane, which is what capacity is actually
+	// budgeted against: a rule expands to one entry per port. See
+	// NetworkACLDirectionEntryCount and
+	// NetworkACLMaxEntriesPerDirection.
+	IngressEntryCount int32 `json:"ingressEntryCount,omitempty"`
+	EgressEntryCount  int32 `json:"egressEntryCount,omitempty"`
 
 	// HasIngressRules / HasEgressRules report whether the spec set the
 	// direction explicitly (nil → false, [] or non-empty → true).

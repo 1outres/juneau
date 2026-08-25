@@ -117,6 +117,7 @@ spec:
                             - to
                             type: object
                         type: object
+                      maxItems: 8
                       type: array
                     protocol:
                       default: all
@@ -158,6 +159,7 @@ spec:
                             - name
                             type: object
                         type: object
+                      maxItems: 8
                       minItems: 1
                       type: array
                   required:
@@ -184,6 +186,12 @@ spec:
                       description: |-
                         From lists the peers (CIDRs or SecurityGroupRefs) whose traffic
                         is admitted by this rule. At least one peer is required.
+
+                        A rule costs peers × ports data plane entries, which no single
+                        item cap can express. Each list is therefore capped at
+                        SecurityGroupMaxEntriesPerDirection so neither factor alone can
+                        overflow the direction, and the webhook checks the product; see
+                        policy_capacity.go.
                       items:
                         description: |-
                           SecurityGroupPeer expresses a single source/destination scope.
@@ -210,6 +218,7 @@ spec:
                             - name
                             type: object
                         type: object
+                      maxItems: 8
                       minItems: 1
                       type: array
                     ports:
@@ -249,6 +258,7 @@ spec:
                             - to
                             type: object
                         type: object
+                      maxItems: 8
                       type: array
                     protocol:
                       default: all
@@ -348,6 +358,9 @@ spec:
                   - type
                   type: object
                 type: array
+              egressEntryCount:
+                format: int32
+                type: integer
               egressRuleCount:
                 format: int32
                 type: integer
@@ -365,12 +378,24 @@ spec:
                   use this to decide whether to apply egress allow-list semantics
                   or default-allow.
                 type: boolean
+              ingressEntryCount:
+                description: |-
+                  IngressEntryCount and EgressEntryCount report what each direction
+                  costs in the data plane, which is what capacity is actually
+                  budgeted against: a rule expands to one entry per (peer, port)
+                  pair. See SecurityGroupIngressEntryCount and
+                  SecurityGroupMaxEntriesPerDirection.
+
+                  The counts are static, so they include peers whose
+                  SecurityGroupRef no longer resolves; such peers are dropped at
+                  expansion time and the installed entry count is then lower.
+                format: int32
+                type: integer
               ingressRuleCount:
                 description: |-
-                  IngressRuleCount and EgressRuleCount report how many flat
-                  (post-expansion) BPF rule entries the controller resolved for
-                  each direction. These are observability fields; they are not a
-                  hard cap (that lives in the data plane MAX_RULES_PER_SG).
+                  IngressRuleCount and EgressRuleCount report the rule count per
+                  direction, exactly as the user wrote them in the spec.
+                  Observability; not a hard limit.
                 format: int32
                 type: integer
               observedGeneration:
