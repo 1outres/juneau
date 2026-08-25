@@ -38,6 +38,8 @@ func RegisterPodEgress(inv *Inventory, p *program.PodEgress) error {
 		registerBackend,
 		registerServiceAffinity,
 		registerCT,
+		registerPolicyCT,
+		registerPolicyEpoch,
 		registerNAPTSrc,
 		registerVirtualService,
 		registerVirtualServiceFlow,
@@ -429,6 +431,45 @@ func registerCT(inv *Inventory, p *program.PodEgress) error {
 			FieldU8Named("flags_seen", "TCP flags OR-accumulated on this direction"),
 			FieldPadOf(5),
 			FieldU64Named("last_seen_ns"),
+		}},
+	})
+}
+
+func registerPolicyCT(inv *Inventory, p *program.PodEgress) error {
+	// Same NBO contract as ct_map: every field is written by BPF
+	// straight from the IP header.
+	return inv.Register(&Descriptor{
+		Name: "policy_ct_map",
+		Map:  p.Objs.PolicyCtMap,
+		Key: Schema{Fields: []Field{
+			FieldU32Named("epoch", "policy generation this flow was admitted under"),
+			FieldEnumNamed("scope", 4, CTScopeEnum, "vpc_id of the Pod this hook protects"),
+			FieldIPv4BENamed("saddr"),
+			FieldIPv4BENamed("daddr"),
+			FieldPortBENamed("sport"),
+			FieldPortBENamed("dport"),
+			FieldEnumNamed("proto", 1, IPProtoEnum),
+			FieldEnumNamed("hook", 1, PolicyHookEnum, "enforcement point that admitted the flow"),
+			FieldPadOf(2),
+		}},
+		Value: Schema{Fields: []Field{
+			FieldEnumNamed("state", 1, CTStateEnum),
+			FieldU8Named("flags_seen", "TCP flags OR-accumulated on this direction"),
+			FieldPadOf(6),
+			FieldU64Named("last_seen_ns"),
+		}},
+	})
+}
+
+func registerPolicyEpoch(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name: "policy_epoch_map",
+		Map:  p.Objs.PolicyEpochMap,
+		Key: Schema{Fields: []Field{
+			FieldU32Named("index", "always 0"),
+		}},
+		Value: Schema{Fields: []Field{
+			FieldU32Named("epoch", "bumping this re-evaluates every admitted flow"),
 		}},
 	})
 }

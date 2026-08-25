@@ -107,7 +107,10 @@ func (d *FlagDict) LabelOrder() []string {
 // register_test.go will catch drift in struct layout but cannot
 // detect a stale enum entry.
 
-// CTActionEnum maps ct_val.action → label.
+// CTActionEnum maps ct_val.action → label. 9 is retired: it used to be
+// CT_ACTION_POLICY_PASS, before policy admission moved to
+// policy_ct_map. The label stays so old dumps still read, and the
+// value must not be reused.
 var CTActionEnum = NewEnumDict("ct_action", map[uint64]string{
 	1: "CT_ACTION_DNAT",
 	2: "CT_ACTION_SNAT",
@@ -117,7 +120,14 @@ var CTActionEnum = NewEnumDict("ct_action", map[uint64]string{
 	6: "CT_ACTION_SVC_NAPT_IN",
 	7: "CT_ACTION_SVC_SHARED_OUT",
 	8: "CT_ACTION_SVC_SHARED_IN",
-	9: "CT_ACTION_POLICY_PASS",
+	9: "CT_ACTION_POLICY_PASS_RETIRED",
+})
+
+// PolicyHookEnum maps policy_ct_key.hook → label: the enforcement
+// point that admitted the flow.
+var PolicyHookEnum = NewEnumDict("policy_hook", map[uint64]string{
+	1: "POLICY_HOOK_POD_EGRESS",
+	2: "POLICY_HOOK_POD_INGRESS",
 })
 
 // CTStateEnum maps ct_val.state → label.
@@ -213,9 +223,9 @@ var VirtSvcFlagDict = NewFlagDict("virtsvc_flag", []FlagBit{})
 // shipped on the wire today; reserved for future use.
 func DescribeBuiltins() string {
 	enums := []*EnumDict{
-		CTActionEnum, CTStateEnum, FIBRouteTypeEnum, BackendKindEnum,
-		IPProtoEnum, SGDirEnum, SGPeerKindEnum, SGVerdictEnum,
-		ACLDirEnum, ACLVerdictEnum, CTScopeEnum,
+		CTActionEnum, CTStateEnum, PolicyHookEnum, FIBRouteTypeEnum,
+		BackendKindEnum, IPProtoEnum, SGDirEnum, SGPeerKindEnum,
+		SGVerdictEnum, ACLDirEnum, ACLVerdictEnum, CTScopeEnum,
 	}
 	flagDicts := []*FlagDict{SVCFlagDict, VirtSvcFlagDict}
 

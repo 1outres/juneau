@@ -88,6 +88,83 @@ func TestRoundTripCTKey(t *testing.T) {
 	}
 }
 
+func TestRoundTripPolicyCTKey(t *testing.T) {
+	// hook is what keeps the two enforcement points apart, so the same
+	// 5-tuple must encode to two different keys and render the hook
+	// back as a label.
+	s := schemaPolicyCTKey()
+	if w := s.Width(); w != 24 {
+		t.Fatalf("policy_ct_key width=%d, want 24", w)
+	}
+
+	tuple := []*debugpb.BPFMapField{
+		mapField("epoch", uint64(3)),
+		mapField("scope", uint64(7)),
+		mapField("saddr", "10.0.0.1"),
+		mapField("daddr", "10.0.0.2"),
+		mapField("sport", uint64(40000)),
+		mapField("dport", uint64(80)),
+		mapField("proto", uint64(6)),
+	}
+	withHook := func(hook uint64) []*debugpb.BPFMapField {
+		return append(append([]*debugpb.BPFMapField{}, tuple...), mapField("hook", hook))
+	}
+
+	egressRaw, err := EncodeFields(s, withHook(1))
+	if err != nil {
+		t.Fatalf("encode egress: %v", err)
+	}
+	ingressRaw, err := EncodeFields(s, withHook(2))
+	if err != nil {
+		t.Fatalf("encode ingress: %v", err)
+	}
+	if bytes.Equal(egressRaw, ingressRaw) {
+		t.Fatalf("egress and ingress keys collide: %x", egressRaw)
+	}
+
+	gotMap := mapByName(DecodeFields(s, ingressRaw))
+	assertField(t, gotMap["epoch"], "u64:3")
+	assertField(t, gotMap["hook"], "label:POLICY_HOOK_POD_INGRESS")
+	assertField(t, gotMap["saddr"], "ipv4:10.0.0.1")
+	assertField(t, gotMap["dport"], "u64:80")
+	assertField(t, gotMap["proto"], "label:TCP")
+
+	gotMap = mapByName(DecodeFields(s, egressRaw))
+	assertField(t, gotMap["hook"], "label:POLICY_HOOK_POD_EGRESS")
+}
+
+func TestPolicyCTKeyEpochSeparatesGenerations(t *testing.T) {
+	// A rule change bumps the epoch, and the same flow then hashes to
+	// a key nothing has written yet. That miss is what makes the data
+	// plane re-evaluate without touching the old entry.
+	s := schemaPolicyCTKey()
+
+	withEpoch := func(epoch uint64) []*debugpb.BPFMapField {
+		return []*debugpb.BPFMapField{
+			mapField("epoch", epoch),
+			mapField("scope", uint64(7)),
+			mapField("saddr", "10.0.0.1"),
+			mapField("daddr", "10.0.0.2"),
+			mapField("sport", uint64(40000)),
+			mapField("dport", uint64(80)),
+			mapField("proto", uint64(6)),
+			mapField("hook", uint64(1)),
+		}
+	}
+
+	before, err := EncodeFields(s, withEpoch(3))
+	if err != nil {
+		t.Fatalf("encode epoch 3: %v", err)
+	}
+	after, err := EncodeFields(s, withEpoch(4))
+	if err != nil {
+		t.Fatalf("encode epoch 4: %v", err)
+	}
+	if bytes.Equal(before, after) {
+		t.Fatalf("keys from two generations collide: %x", before)
+	}
+}
+
 func TestRoundTripSubnetVal(t *testing.T) {
 	s := Schema{Fields: []Field{
 		FieldU32Named("table_id"),

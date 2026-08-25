@@ -97,6 +97,20 @@ func TestSchemaLayoutMatchesGenerated(t *testing.T) {
 			valueSize: unsafe.Sizeof(bpf.PodEgressCtVal{}),
 		},
 		{
+			name:      "policy_ct_map",
+			key:       schemaPolicyCTKey(),
+			val:       schemaPolicyCTVal(),
+			keySize:   unsafe.Sizeof(bpf.PodEgressPolicyCtKey{}),
+			valueSize: unsafe.Sizeof(bpf.PodEgressPolicyCtVal{}),
+		},
+		{
+			name:      "policy_epoch_map",
+			key:       schemaPolicyEpochKey(),
+			val:       schemaPolicyEpochVal(),
+			keySize:   4,
+			valueSize: 4,
+		},
+		{
 			name:      "virtual_service_map",
 			key:       schemaVirtSvcKey(),
 			val:       schemaVirtSvcVal(),
@@ -326,6 +340,35 @@ func schemaCTVal() Schema {
 		FieldPadOf(5),
 		FieldU64Named("last_seen_ns"),
 	}}
+}
+
+func schemaPolicyCTKey() Schema {
+	return Schema{Fields: []Field{
+		FieldU32Named("epoch"),
+		FieldEnumNamed("scope", 4, CTScopeEnum),
+		FieldIPv4BENamed("saddr"),
+		FieldIPv4BENamed("daddr"),
+		FieldPortBENamed("sport"),
+		FieldPortBENamed("dport"),
+		FieldEnumNamed("proto", 1, IPProtoEnum),
+		FieldEnumNamed("hook", 1, PolicyHookEnum),
+		FieldPadOf(2),
+	}}
+}
+func schemaPolicyCTVal() Schema {
+	return Schema{Fields: []Field{
+		FieldEnumNamed("state", 1, CTStateEnum),
+		FieldU8Named("flags_seen"),
+		FieldPadOf(6),
+		FieldU64Named("last_seen_ns"),
+	}}
+}
+
+func schemaPolicyEpochKey() Schema {
+	return Schema{Fields: []Field{FieldU32Named("index")}}
+}
+func schemaPolicyEpochVal() Schema {
+	return Schema{Fields: []Field{FieldU32Named("epoch")}}
 }
 
 func schemaVirtSvcKey() Schema {
