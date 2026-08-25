@@ -9,6 +9,17 @@ import (
 	"go.uber.org/zap"
 )
 
+// ruleTable is the rotate-and-swap contract SGStore and ACLStore
+// depend on. Rotator is the only implementation the daemon runs;
+// tests bring their own because creating a BPF map needs CAP_BPF.
+type ruleTable interface {
+	Apply(id uint32, writeRules func(inner *ebpf.Map) error, writeMeta func() error) error
+	Delete(id uint32) error
+	CloseAll() error
+}
+
+var _ ruleTable = (*Rotator)(nil)
+
 // Rotator owns the inner-map lifecycle for a HASH_OF_MAPS-backed rule
 // table that supports atomic rotate-and-swap updates. Both SGStore and
 // ACLStore wrap a Rotator with a typed front-end that knows how to

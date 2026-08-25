@@ -3,6 +3,7 @@ package policy
 import (
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/cilium/ebpf"
 
@@ -19,18 +20,30 @@ import (
 // ACL-specific encoding (Rule → bpf.PodEgressAclRule) plus the
 // MaxRulesPerACL truncation policy.
 type ACLStore struct {
-	rotator *Rotator
-	meta    *ebpf.Map
+	table        ruleTable
+	meta         *ebpf.Map
+	invalidation *invalidator
 }
+
+// aclLayer labels the NetworkACL layer in logs and errors.
+const aclLayer = "networkacl"
 
 // NewACLStore wraps the ACL BPF maps owned by pod_egress.
 //
 // innerSpec is the spec of the per-ACL rule array. Rotator copies it
 // per Apply so the shared object is never mutated.
-func NewACLStore(meta, rules *ebpf.Map, innerSpec *ebpf.MapSpec) *ACLStore {
+//
+// bumper is what tells the data plane to stop trusting the flows it
+// admitted under the rules this store is about to replace.
+func NewACLStore(meta, rules *ebpf.Map, innerSpec *ebpf.MapSpec, bumper Bumper) *ACLStore {
+	return newACLStore(NewRotator(aclLayer, rules, meta, innerSpec), meta, bumper)
+}
+
+func newACLStore(table ruleTable, meta *ebpf.Map, bumper Bumper) *ACLStore {
 	return &ACLStore{
-		rotator: NewRotator("networkacl", rules, meta, innerSpec),
-		meta:    meta,
+		table:        table,
+		meta:         meta,
+		invalidation: newInvalidator(aclLayer, bumper),
 	}
 }
 
@@ -98,9 +111,16 @@ func (s *ACLStore) Apply(rs RuleSet) error {
 		return s.meta.Update(rs.GroupID, meta, ebpf.UpdateAny)
 	}
 
-	if err := s.rotator.Apply(rs.GroupID, writeRules, writeMeta); err != nil {
+	if err := s.table.Apply(rs.GroupID, writeRules, writeMeta); err != nil {
 		return err
 	}
+
+	installed := rs
+	installed.Rules = slices.Clone(rules)
+	if err := s.invalidation.applied(rs.GroupID, installed); err != nil {
+		return err
+	}
+
 	if limitExceeded {
 		return ErrACLRuleLimitExceeded
 	}
@@ -110,13 +130,16 @@ func (s *ACLStore) Apply(rs RuleSet) error {
 // Delete removes both the rule inner map handle and the meta entry.
 // Idempotent.
 func (s *ACLStore) Delete(aclID uint32) error {
-	return s.rotator.Delete(aclID)
+	if err := s.table.Delete(aclID); err != nil {
+		return err
+	}
+	return s.invalidation.deleted(aclID)
 }
 
 // CloseAll releases every retained inner-map handle. Used by Manager
 // on shutdown.
 func (s *ACLStore) CloseAll() error {
-	return s.rotator.CloseAll()
+	return s.table.CloseAll()
 }
 
 // ErrACLRuleLimitExceeded mirrors ErrRuleLimitExceeded. Apply still
