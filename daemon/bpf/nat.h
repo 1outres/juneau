@@ -123,10 +123,15 @@ static __always_inline struct iphdr *nat_load_iph(struct __sk_buff *skb) {
   return iph;
 }
 
+// A later fragment carries payload where the TCP or UDP header would
+// be, so the bytes at the port offsets are not ports. Only the first
+// fragment of a datagram has them.
 static __always_inline int nat_read_l4_ports(struct iphdr *iph, void *data_end,
                                              __be16 *sport, __be16 *dport) {
   __u32 ihl = iph->ihl;
   if (ihl < 5)
+    return -1;
+  if ((bpf_ntohs(iph->frag_off) & IP_OFFSET) != 0)
     return -1;
 
   if (iph->protocol == IPPROTO_TCP) {
@@ -435,6 +440,8 @@ static __always_inline int nat_rewrite_l4_port(struct __sk_buff *skb,
 
   __u32 ihl = iph->ihl;
   if (ihl < 5)
+    return -1;
+  if ((bpf_ntohs(iph->frag_off) & IP_OFFSET) != 0)
     return -1;
   __u32 l4_off = sizeof(struct ethhdr) + ihl * 4;
 
