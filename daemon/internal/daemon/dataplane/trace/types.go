@@ -56,6 +56,15 @@ const (
 	ReasonPolicyACLDrop Reason = 301
 	ReasonPolicySGPass  Reason = 302
 	ReasonPolicySGDrop  Reason = 303
+	// ReasonPolicyProtoDrop marks an IP protocol the policy layers
+	// cannot express. NetworkACL and SecurityGroup only carry tcp, udp
+	// and icmp rules, so anything else is dropped at the enforcement
+	// point instead of passing unchecked.
+	ReasonPolicyProtoDrop Reason = 304
+	// ReasonPolicyFragDrop marks a packet whose L4 ports the policy
+	// stage could not determine. In practice this is a later IP
+	// fragment that arrived before its first fragment.
+	ReasonPolicyFragDrop Reason = 305
 
 	ReasonServiceLookupHit       Reason = 400
 	ReasonServiceBackendSelected Reason = 401

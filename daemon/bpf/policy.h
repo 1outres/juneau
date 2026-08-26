@@ -46,6 +46,8 @@
 #define POLICY_RC_DENY_ACL -1
 #define POLICY_RC_ERROR -2
 #define POLICY_RC_DENY_SG -3
+#define POLICY_RC_PROTO_UNSUPPORTED -4
+#define POLICY_RC_L4_UNKNOWN -5
 
 // policy_trace_hook translates an enforcement point into the hook id
 // the trace plane reports. The two numbering schemes happen to agree
@@ -64,6 +66,10 @@ static __always_inline __u32 policy_drop_reason(int rc) {
     return TRACE_REASON_POLICY_ACL_DROP;
   if (rc == POLICY_RC_DENY_SG)
     return TRACE_REASON_POLICY_SG_DROP;
+  if (rc == POLICY_RC_PROTO_UNSUPPORTED)
+    return TRACE_REASON_POLICY_PROTO_DROP;
+  if (rc == POLICY_RC_L4_UNKNOWN)
+    return TRACE_REASON_POLICY_FRAG_DROP;
   return TRACE_REASON_DROP_SHOT;
 }
 
@@ -80,11 +86,18 @@ static __always_inline __u32 policy_drop_reason(int rc) {
 //   POLICY_RC_DENY_ACL: terminal DENY by NetworkACL
 //   POLICY_RC_ERROR:    internal error
 //   POLICY_RC_DENY_SG:  terminal DENY by SecurityGroup
+//   POLICY_RC_PROTO_UNSUPPORTED: IP protocol no rule can name
+//   POLICY_RC_L4_UNKNOWN:        L4 ports could not be determined
 //
 // Negative codes are split per layer so callers can attribute the
 // drop to the right policy stage in trace events. Pre-split callers
 // only checked policy_rc < 0 and emitted a generic ACL_DROP, which
 // hid SG denials behind the wrong label.
+//
+// NetworkACL and SecurityGroup rules can only name tcp, udp and icmp,
+// and `protocol: all` means those three. Any other IP protocol has no
+// rule that could admit or reject it, so it is dropped here rather
+// than passed on unchecked.
 //
 // Inlined into the caller. The state-explosion pressure that used to
 // require a separate subprogram lives now in `acl_evaluate` and
@@ -105,16 +118,17 @@ static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
   void *data_end = nat_skb_data_end(skb);
 
   __u8 proto = iph->protocol;
+  if (proto != IPPROTO_TCP && proto != IPPROTO_UDP && proto != IPPROTO_ICMP)
+    return POLICY_RC_PROTO_UNSUPPORTED;
+
   __u16 sport = 0;
   __u16 dport = 0;
-  if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
+  if (proto != IPPROTO_ICMP) {
     __be16 sp_be, dp_be;
     if (nat_read_l4_ports(iph, data_end, &sp_be, &dp_be) < 0)
-      return POLICY_RC_SKIPPED;
+      return POLICY_RC_L4_UNKNOWN;
     sport = bpf_ntohs(sp_be);
     dport = bpf_ntohs(dp_be);
-  } else if (proto != IPPROTO_ICMP) {
-    return POLICY_RC_SKIPPED;
   }
 
   int egress = (hook == POLICY_HOOK_POD_EGRESS);
