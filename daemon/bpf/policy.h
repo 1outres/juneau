@@ -38,6 +38,15 @@
 #include "sg.h"
 #include "trace.h"
 
+// POLICY_RC_* are the codes apply_policy returns. Zero and above let
+// the caller carry on; every negative code is terminal and the caller
+// must drop the packet.
+#define POLICY_RC_ADMITTED 1
+#define POLICY_RC_SKIPPED 0
+#define POLICY_RC_DENY_ACL -1
+#define POLICY_RC_ERROR -2
+#define POLICY_RC_DENY_SG -3
+
 // policy_trace_hook translates an enforcement point into the hook id
 // the trace plane reports. The two numbering schemes happen to agree
 // today; converting explicitly keeps them free to diverge.
@@ -47,6 +56,17 @@ static __always_inline __u32 policy_trace_hook(__u8 hook) {
   return TRACE_HOOK_POD_INGRESS;
 }
 
+// policy_drop_reason names the layer that rejected the packet. Both
+// enforcement points call it so one new code is labelled the same way
+// in every timeline.
+static __always_inline __u32 policy_drop_reason(int rc) {
+  if (rc == POLICY_RC_DENY_ACL)
+    return TRACE_REASON_POLICY_ACL_DROP;
+  if (rc == POLICY_RC_DENY_SG)
+    return TRACE_REASON_POLICY_SG_DROP;
+  return TRACE_REASON_DROP_SHOT;
+}
+
 // apply_policy runs the policy stage for one packet at one enforcement
 // point. `hook` is a POLICY_HOOK_* value and decides four things: the
 // ACL direction, the SG direction, which address identifies the Pod
@@ -54,11 +74,12 @@ static __always_inline __u32 policy_trace_hook(__u8 hook) {
 // ("peer"). Everything else is shared.
 //
 // Returns:
-//    1: admitted by policy and CT installed (caller continues)
-//    0: established-flow short-circuit, or no enforcement applied
-//   -1: terminal DENY by NetworkACL (caller must TC_ACT_SHOT)
-//   -2: internal error (caller must TC_ACT_SHOT)
-//   -3: terminal DENY by SecurityGroup (caller must TC_ACT_SHOT)
+//   POLICY_RC_ADMITTED: admitted by policy and CT installed
+//   POLICY_RC_SKIPPED:  established-flow short-circuit, or no
+//                       enforcement applied
+//   POLICY_RC_DENY_ACL: terminal DENY by NetworkACL
+//   POLICY_RC_ERROR:    internal error
+//   POLICY_RC_DENY_SG:  terminal DENY by SecurityGroup
 //
 // Negative codes are split per layer so callers can attribute the
 // drop to the right policy stage in trace events. Pre-split callers
@@ -80,7 +101,7 @@ static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
                                         __u32 trace_id, __u32 subnet_id) {
   struct iphdr *iph = nat_load_iph(skb);
   if (!iph)
-    return -2;
+    return POLICY_RC_ERROR;
   void *data_end = nat_skb_data_end(skb);
 
   __u8 proto = iph->protocol;
@@ -89,11 +110,11 @@ static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
   if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
     __be16 sp_be, dp_be;
     if (nat_read_l4_ports(iph, data_end, &sp_be, &dp_be) < 0)
-      return 0;
+      return POLICY_RC_SKIPPED;
     sport = bpf_ntohs(sp_be);
     dport = bpf_ntohs(dp_be);
   } else if (proto != IPPROTO_ICMP) {
-    return 0;
+    return POLICY_RC_SKIPPED;
   }
 
   int egress = (hook == POLICY_HOOK_POD_EGRESS);
@@ -133,7 +154,7 @@ static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
       if (ct_read_tcp_flags(iph, data_end, &f) == 0)
         policy_ct_observe_tcp(&ck, pv, f);
     }
-    return 0;
+    return POLICY_RC_SKIPPED;
   }
 
   // First-packet path: emit MISS_CONNTRACK so the timeline shows why
@@ -146,7 +167,7 @@ static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
   // ACL eval first (Subnet boundary), matched against the peer.
   int acl_v = acl_evaluate(acl_id, acl_dir, proto, dport, peer_ip);
   if (acl_v == ACL_VERDICT_DENY)
-    return -1;
+    return POLICY_RC_DENY_ACL;
   if (acl_id != 0)
     trace_emit_policy_pass_l3(skb, trace_id, TRACE_REASON_POLICY_ACL_PASS,
                               trace_hook, TRACE_SCOPE_VPC, vpc_id, subnet_id);
@@ -168,7 +189,7 @@ static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
       sg_v = sg_eval(self, peer, &sea);
     }
   if (sg_v == SG_VERDICT_DENY)
-    return -3;
+    return POLICY_RC_DENY_SG;
   if (self != NULL && self->count > 0)
     trace_emit_policy_pass_l3(skb, trace_id, TRACE_REASON_POLICY_SG_PASS,
                               trace_hook, TRACE_SCOPE_VPC, vpc_id, subnet_id);
@@ -185,7 +206,7 @@ static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
   int acl_enforcing = (acl_id != 0);
   int sg_enforcing = (self != NULL && self->count > 0);
   if (!acl_enforcing && !sg_enforcing)
-    return 0;
+    return POLICY_RC_SKIPPED;
 
   __u8 init_flags = 0;
   __u8 init_state = CT_STATE_ESTABLISHED;
@@ -197,7 +218,7 @@ static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
     }
   }
   policy_ct_install(&ck, init_state, init_flags);
-  return 1;
+  return POLICY_RC_ADMITTED;
 }
 
 #endif // JUNEAU_BPF_POLICY_H
