@@ -35,6 +35,7 @@
 #include "maps.h"
 #include "nat.h"
 #include "policy_ct.h"
+#include "policy_frag.h"
 #include "sg.h"
 #include "trace.h"
 
@@ -99,10 +100,16 @@ static __always_inline __u32 policy_drop_reason(int rc) {
 // rule that could admit or reject it, so it is dropped here rather
 // than passed on unchecked.
 //
+// A later fragment has no L4 header, so its ports come from
+// policy_frag_map instead. A fragment that arrives before the head of
+// its own datagram finds nothing there and is dropped: no tuple means
+// no way to tell an allowed flow from a denied one.
+//
 // Inlined into the caller. The state-explosion pressure that used to
-// require a separate subprogram lives now in `acl_evaluate` and
-// `sg_eval` (both noinline subprograms): the rule-scan loops are the
-// real source, and isolating those is enough.
+// require a separate subprogram lives now in `acl_evaluate`, `sg_eval`
+// and `policy_frag_resolve_ports` (all noinline subprograms): the
+// rule-scan loops and the fragment cases are the real source, and
+// isolating those is enough.
 //
 // trace_id / subnet_id thread the active trace session through the
 // policy stage so per-layer PASS events can fire at the same site
@@ -121,11 +128,13 @@ static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
   if (proto != IPPROTO_TCP && proto != IPPROTO_UDP && proto != IPPROTO_ICMP)
     return POLICY_RC_PROTO_UNSUPPORTED;
 
+  // ICMP has no ports to read, and every fragment of an ICMP datagram
+  // therefore builds the same tuple already.
   __u16 sport = 0;
   __u16 dport = 0;
   if (proto != IPPROTO_ICMP) {
     __be16 sp_be, dp_be;
-    if (nat_read_l4_ports(iph, data_end, &sp_be, &dp_be) < 0)
+    if (policy_frag_resolve_ports(skb, vpc_id, &sp_be, &dp_be) < 0)
       return POLICY_RC_L4_UNKNOWN;
     sport = bpf_ntohs(sp_be);
     dport = bpf_ntohs(dp_be);

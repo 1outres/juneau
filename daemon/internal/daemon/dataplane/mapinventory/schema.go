@@ -45,6 +45,9 @@ const (
 	FieldPort
 	// L4 port in network byte order (__be16).
 	FieldPortBE
+	// Numeric 16-bit in network byte order, for __be16 fields that are
+	// not ports (the IP identification, for one).
+	FieldU16BE
 	// 6-byte MAC (octets in transmission order).
 	FieldMAC
 
@@ -166,6 +169,10 @@ func FieldPortNamed(name string, desc ...string) Field {
 }
 func FieldPortBENamed(name string, desc ...string) Field {
 	return Field{Name: name, Type: FieldPortBE, Width: 2, Description: optDesc(desc)}
+}
+
+func FieldU16BENamed(name string, desc ...string) Field {
+	return Field{Name: name, Type: FieldU16BE, Width: 2, Description: optDesc(desc)}
 }
 
 func FieldMACNamed(name string, desc ...string) Field {

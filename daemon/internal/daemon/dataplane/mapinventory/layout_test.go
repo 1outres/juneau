@@ -104,6 +104,13 @@ func TestSchemaLayoutMatchesGenerated(t *testing.T) {
 			valueSize: unsafe.Sizeof(bpf.PodEgressPolicyCtVal{}),
 		},
 		{
+			name:      "policy_frag_map",
+			key:       schemaPolicyFragKey(),
+			val:       schemaPolicyFragVal(),
+			keySize:   unsafe.Sizeof(bpf.PodEgressPolicyFragKey{}),
+			valueSize: unsafe.Sizeof(bpf.PodEgressPolicyFragVal{}),
+		},
+		{
 			name:      "policy_epoch_map",
 			key:       schemaPolicyEpochKey(),
 			val:       schemaPolicyEpochVal(),
@@ -360,6 +367,25 @@ func schemaPolicyCTVal() Schema {
 		FieldEnumNamed("state", 1, CTStateEnum),
 		FieldU8Named("flags_seen"),
 		FieldPadOf(6),
+		FieldU64Named("last_seen_ns"),
+	}}
+}
+
+func schemaPolicyFragKey() Schema {
+	return Schema{Fields: []Field{
+		FieldEnumNamed("scope", 4, CTScopeEnum),
+		FieldIPv4BENamed("saddr"),
+		FieldIPv4BENamed("daddr"),
+		FieldU16BENamed("ip_id"),
+		FieldEnumNamed("proto", 1, IPProtoEnum),
+		FieldPadOf(1),
+	}}
+}
+func schemaPolicyFragVal() Schema {
+	return Schema{Fields: []Field{
+		FieldPortBENamed("sport"),
+		FieldPortBENamed("dport"),
+		FieldPadOf(4),
 		FieldU64Named("last_seen_ns"),
 	}}
 }

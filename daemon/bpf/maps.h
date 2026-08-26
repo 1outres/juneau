@@ -104,6 +104,16 @@
 #define MAX_POLICY_CT_MAP 262144
 #endif
 
+#ifndef MAX_POLICY_FRAG_MAP
+// MAX_POLICY_FRAG_MAP bounds policy_frag_map. Only fragmented
+// datagrams get an entry, and one entry covers the whole datagram at
+// both hooks, so this needs far less room than policy_ct_map. An entry
+// is useful only until the rest of the fragments arrive, and a
+// receiver gives up reassembling after 30 seconds, so the number of
+// entries worth keeping at any moment is small.
+#define MAX_POLICY_FRAG_MAP 65536
+#endif
+
 #ifndef MAX_NAPT_SRC
 #define MAX_NAPT_SRC 4096
 #endif
@@ -788,6 +798,43 @@ struct {
   __type(value, struct policy_ct_val);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } policy_ct_map SEC(".maps");
+
+// policy_frag_map remembers the L4 ports the first fragment of an IP
+// datagram carried, so later fragments — which start with payload, not
+// a TCP or UDP header — can still be matched against the policy rules.
+//
+// The key holds no epoch. This records what the wire actually carried,
+// not a policy decision, so a rule change is no reason to forget it.
+// It holds no hook either: every fragment of one datagram crosses both
+// enforcement points, so a single entry serves them both. It does hold
+// the vpc_id, because Pod addresses repeat across Vpcs.
+//
+// LRU_HASH, unlike policy_ct_map: entries are only useful while the
+// rest of a datagram is in flight, and letting the kernel evict the
+// oldest ones saves adding a reclaim pass to reconciler.Conntrack.
+struct policy_frag_key {
+  __u32 scope;             // vpc_id of the Pod this hook enforces for
+  __u32 saddr;             // network byte order
+  __u32 daddr;             // network byte order
+  __u16 ip_id;             // network byte order (iph->id, unswapped)
+  __u8 proto;
+  __u8 _pad;
+};
+
+struct policy_frag_val {
+  __u16 sport;             // network byte order
+  __u16 dport;             // network byte order
+  __u8 _pad[4];
+  __u64 last_seen_ns;
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_LRU_HASH);
+  __uint(max_entries, MAX_POLICY_FRAG_MAP);
+  __type(key, struct policy_frag_key);
+  __type(value, struct policy_frag_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} policy_frag_map SEC(".maps");
 
 // policy_epoch_map holds one counter at index 0: the generation of the
 // policy rules the data plane is enforcing. Every policy_ct_key starts

@@ -39,6 +39,7 @@ func RegisterPodEgress(inv *Inventory, p *program.PodEgress) error {
 		registerServiceAffinity,
 		registerCT,
 		registerPolicyCT,
+		registerPolicyFrag,
 		registerPolicyEpoch,
 		registerNAPTSrc,
 		registerVirtualService,
@@ -456,6 +457,29 @@ func registerPolicyCT(inv *Inventory, p *program.PodEgress) error {
 			FieldEnumNamed("state", 1, CTStateEnum),
 			FieldU8Named("flags_seen", "TCP flags OR-accumulated on this direction"),
 			FieldPadOf(6),
+			FieldU64Named("last_seen_ns"),
+		}},
+	})
+}
+
+func registerPolicyFrag(inv *Inventory, p *program.PodEgress) error {
+	// Same NBO contract as policy_ct_map, plus ip_id, which BPF copies
+	// out of the IP header without swapping it.
+	return inv.Register(&Descriptor{
+		Name: "policy_frag_map",
+		Map:  p.Objs.PolicyFragMap,
+		Key: Schema{Fields: []Field{
+			FieldEnumNamed("scope", 4, CTScopeEnum, "vpc_id of the Pod this hook protects"),
+			FieldIPv4BENamed("saddr"),
+			FieldIPv4BENamed("daddr"),
+			FieldU16BENamed("ip_id", "IP identification shared by every fragment of one datagram"),
+			FieldEnumNamed("proto", 1, IPProtoEnum),
+			FieldPadOf(1),
+		}},
+		Value: Schema{Fields: []Field{
+			FieldPortBENamed("sport", "port the first fragment carried"),
+			FieldPortBENamed("dport", "port the first fragment carried"),
+			FieldPadOf(4),
 			FieldU64Named("last_seen_ns"),
 		}},
 	})

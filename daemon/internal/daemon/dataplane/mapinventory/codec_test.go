@@ -133,6 +133,45 @@ func TestRoundTripPolicyCTKey(t *testing.T) {
 	assertField(t, gotMap["hook"], "label:POLICY_HOOK_POD_EGRESS")
 }
 
+func TestRoundTripPolicyFragKey(t *testing.T) {
+	// ip_id is FieldU16BE — the BPF side stores iph->id untouched, so a
+	// decimal id has to survive the trip without being byte-swapped.
+	s := schemaPolicyFragKey()
+	if w := s.Width(); w != 16 {
+		t.Fatalf("policy_frag_key width=%d, want 16", w)
+	}
+
+	got := roundTrip(t, s, []*debugpb.BPFMapField{
+		mapField("scope", uint64(7)),
+		mapField("saddr", "10.0.0.1"),
+		mapField("daddr", "10.0.0.2"),
+		mapField("ip_id", uint64(4660)),
+		mapField("proto", uint64(17)),
+	})
+	gotMap := mapByName(got)
+	assertField(t, gotMap["ip_id"], "u64:4660")
+	assertField(t, gotMap["saddr"], "ipv4:10.0.0.1")
+	assertField(t, gotMap["proto"], "label:UDP")
+}
+
+func TestPolicyFragKeyStoresIPIDInNetworkOrder(t *testing.T) {
+	// The BPF side never swaps iph->id, so the encoder must lay the id
+	// down big-endian or a dumped key will not match a live entry.
+	raw, err := EncodeFields(schemaPolicyFragKey(), []*debugpb.BPFMapField{
+		mapField("scope", uint64(0)),
+		mapField("saddr", "0.0.0.0"),
+		mapField("daddr", "0.0.0.0"),
+		mapField("ip_id", uint64(0x1234)),
+		mapField("proto", uint64(6)),
+	})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if raw[12] != 0x12 || raw[13] != 0x34 {
+		t.Fatalf("ip_id bytes = %02x %02x, want 12 34", raw[12], raw[13])
+	}
+}
+
 func TestPolicyCTKeyEpochSeparatesGenerations(t *testing.T) {
 	// A rule change bumps the epoch, and the same flow then hashes to
 	// a key nothing has written yet. That miss is what makes the data

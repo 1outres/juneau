@@ -13,6 +13,10 @@
 #define IP_OFFSET 0x1FFF
 #endif
 
+#ifndef IP_MF
+#define IP_MF 0x2000
+#endif
+
 #ifndef NAT_TC_ACT_OK
 #define NAT_TC_ACT_OK 0
 #endif

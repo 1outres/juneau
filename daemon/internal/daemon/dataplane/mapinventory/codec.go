@@ -210,7 +210,7 @@ func encodeField(f Field, v *debugpb.BPFMapField, dst []byte) error {
 			return fmt.Errorf("%w: %s = %d", ErrFieldOverflow, f.Name, x)
 		}
 		binary.LittleEndian.PutUint16(dst, uint16(x))
-	case FieldPortBE:
+	case FieldPortBE, FieldU16BE:
 		x, err := numericValue(v)
 		if err != nil {
 			return err
@@ -283,7 +283,7 @@ func decodeField(f Field, src []byte) *debugpb.BPFMapField {
 		out.Value = &debugpb.BPFMapField_Ipv4{Ipv4: net.IPv4(src[0], src[1], src[2], src[3]).String()}
 	case FieldPort:
 		out.Value = &debugpb.BPFMapField_U64{U64: uint64(binary.LittleEndian.Uint16(src))}
-	case FieldPortBE:
+	case FieldPortBE, FieldU16BE:
 		out.Value = &debugpb.BPFMapField_U64{U64: uint64(binary.BigEndian.Uint16(src))}
 	case FieldMAC:
 		out.Value = &debugpb.BPFMapField_Mac{Mac: net.HardwareAddr(src).String()}
@@ -327,7 +327,7 @@ func readUint(src []byte, width int) uint64 {
 
 func fieldEquals(t FieldType, want, got *debugpb.BPFMapField) bool {
 	switch t {
-	case FieldU8, FieldU16, FieldU32, FieldU64, FieldPort, FieldPortBE:
+	case FieldU8, FieldU16, FieldU32, FieldU64, FieldPort, FieldPortBE, FieldU16BE:
 		return got.GetU64() == coerceToU64(want)
 	case FieldIPv4, FieldIPv4BE:
 		// Allow numeric, ipv4-string, and label forms.
@@ -400,7 +400,7 @@ func normaliseIP(f *debugpb.BPFMapField) ([]byte, bool) {
 // ValidateFilter so the failure surfaces cleanly to kubectl users.
 func fieldShapeMatches(t FieldType, f *debugpb.BPFMapField) bool {
 	switch t {
-	case FieldU8, FieldU16, FieldU32, FieldU64, FieldPort, FieldPortBE,
+	case FieldU8, FieldU16, FieldU32, FieldU64, FieldPort, FieldPortBE, FieldU16BE,
 		FieldEnum, FieldFlags:
 		_, ok := f.Value.(*debugpb.BPFMapField_U64)
 		if ok {
@@ -426,7 +426,7 @@ func fieldShapeMatches(t FieldType, f *debugpb.BPFMapField) bool {
 
 func fieldTypeWireHint(t FieldType) string {
 	switch t {
-	case FieldU8, FieldU16, FieldU32, FieldU64, FieldPort, FieldPortBE,
+	case FieldU8, FieldU16, FieldU32, FieldU64, FieldPort, FieldPortBE, FieldU16BE,
 		FieldEnum, FieldFlags:
 		return "uint64"
 	case FieldIPv4, FieldIPv4BE:

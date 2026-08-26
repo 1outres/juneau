@@ -197,6 +197,8 @@ func fieldTypeName(f Field) string {
 		return "port"
 	case FieldPortBE:
 		return "portbe"
+	case FieldU16BE:
+		return "u16be"
 	case FieldMAC:
 		return "mac"
 	case FieldEnum:

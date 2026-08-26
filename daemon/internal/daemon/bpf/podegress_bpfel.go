@@ -234,6 +234,24 @@ type PodEgressPolicyCtVal struct {
 	LastSeenNs uint64
 }
 
+type PodEgressPolicyFragKey struct {
+	_     structs.HostLayout
+	Scope uint32
+	Saddr uint32
+	Daddr uint32
+	IpId  uint16
+	Proto uint8
+	Pad   uint8
+}
+
+type PodEgressPolicyFragVal struct {
+	_          structs.HostLayout
+	Sport      uint16
+	Dport      uint16
+	Pad        [4]uint8
+	LastSeenNs uint64
+}
+
 type PodEgressServiceAclKey struct {
 	_           structs.HostLayout
 	ClusterIp   uint32
@@ -527,6 +545,7 @@ type PodEgressMapSpecs struct {
 	PodEgressNatScratch   *ebpf.MapSpec `ebpf:"pod_egress_nat_scratch"`
 	PolicyCtMap           *ebpf.MapSpec `ebpf:"policy_ct_map"`
 	PolicyEpochMap        *ebpf.MapSpec `ebpf:"policy_epoch_map"`
+	PolicyFragMap         *ebpf.MapSpec `ebpf:"policy_frag_map"`
 	ServiceAclMap         *ebpf.MapSpec `ebpf:"service_acl_map"`
 	ServiceAffinityMap    *ebpf.MapSpec `ebpf:"service_affinity_map"`
 	ServiceMap            *ebpf.MapSpec `ebpf:"service_map"`
@@ -600,6 +619,7 @@ type PodEgressMaps struct {
 	PodEgressNatScratch   *ebpf.Map `ebpf:"pod_egress_nat_scratch"`
 	PolicyCtMap           *ebpf.Map `ebpf:"policy_ct_map"`
 	PolicyEpochMap        *ebpf.Map `ebpf:"policy_epoch_map"`
+	PolicyFragMap         *ebpf.Map `ebpf:"policy_frag_map"`
 	ServiceAclMap         *ebpf.Map `ebpf:"service_acl_map"`
 	ServiceAffinityMap    *ebpf.Map `ebpf:"service_affinity_map"`
 	ServiceMap            *ebpf.Map `ebpf:"service_map"`
@@ -647,6 +667,7 @@ func (m *PodEgressMaps) Close() error {
 		m.PodEgressNatScratch,
 		m.PolicyCtMap,
 		m.PolicyEpochMap,
+		m.PolicyFragMap,
 		m.ServiceAclMap,
 		m.ServiceAffinityMap,
 		m.ServiceMap,
