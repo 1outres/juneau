@@ -1,10 +1,11 @@
 package policy
 
 import (
+	"cmp"
 	"encoding/binary"
 	"fmt"
 	"net/netip"
-	"sort"
+	"slices"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
@@ -40,9 +41,9 @@ func (m MapPeerResolver) ResolveSG(name string) (uint32, bool) {
 //
 // GroupID and RulesetVersion are taken from sg.Status.
 //
-// The expanded rule order is stable: ingress rules first, in CRD order,
-// then egress; within each rule, peers cycle outermost and ports
-// innermost. Stable order keeps BPF map updates idempotent.
+// The expanded rule order is stable: each direction keeps CRD order,
+// and within each rule, peers cycle outermost and ports innermost.
+// Stable order keeps BPF map updates idempotent.
 func ExpandSecurityGroup(sg *juneauv1alpha1.SecurityGroup, peers PeerResolver) (RuleSet, error) {
 	rs := RuleSet{
 		GroupID:        sg.Status.GroupID,
@@ -58,8 +59,7 @@ func ExpandSecurityGroup(sg *juneauv1alpha1.SecurityGroup, peers PeerResolver) (
 		if err != nil {
 			return rs, err
 		}
-		rs.IngressCount += len(expanded)
-		rs.Rules = append(rs.Rules, expanded...)
+		rs.Ingress = append(rs.Ingress, expanded...)
 	}
 	if sg.Spec.Egress != nil {
 		for _, rule := range *sg.Spec.Egress {
@@ -67,8 +67,7 @@ func ExpandSecurityGroup(sg *juneauv1alpha1.SecurityGroup, peers PeerResolver) (
 			if err != nil {
 				return rs, err
 			}
-			rs.EgressCount += len(expanded)
-			rs.Rules = append(rs.Rules, expanded...)
+			rs.Egress = append(rs.Egress, expanded...)
 		}
 	}
 	return rs, nil
@@ -133,10 +132,11 @@ func portsToRanges(ports []juneauv1alpha1.SecurityGroupPort) []portRange {
 
 // ExpandNetworkACL flattens a NetworkACL CRD into a RuleSet. Each
 // user-facing rule is expanded across its port list (CIDR is a single
-// scalar). The output Rules slice is sorted by (Direction asc,
-// Priority asc) so ACLStore can write the BPF inner array in scan
-// order — first match wins, with deny rules participating in the
-// priority order alongside allow rules.
+// scalar). Each direction is sorted by priority asc on its own, so
+// ACLStore can write that direction's window in scan order — first
+// match wins, with deny rules participating in the priority order
+// alongside allow rules. The directions never need to be ordered
+// against each other: they live in separate windows.
 //
 // ACLID and RulesetVersion are taken from acl.Status. Returns an
 // error when the resource has no ACLID yet (the daemon-side
@@ -159,8 +159,7 @@ func ExpandNetworkACL(acl *juneauv1alpha1.NetworkACL) (RuleSet, error) {
 			if err != nil {
 				return rs, fmt.Errorf("ACL %q ingress: %w", acl.Name, err)
 			}
-			rs.IngressCount += len(expanded)
-			rs.Rules = append(rs.Rules, expanded...)
+			rs.Ingress = append(rs.Ingress, expanded...)
 		}
 	}
 	if acl.Spec.Egress != nil {
@@ -169,22 +168,24 @@ func ExpandNetworkACL(acl *juneauv1alpha1.NetworkACL) (RuleSet, error) {
 			if err != nil {
 				return rs, fmt.Errorf("ACL %q egress: %w", acl.Name, err)
 			}
-			rs.EgressCount += len(expanded)
-			rs.Rules = append(rs.Rules, expanded...)
+			rs.Egress = append(rs.Egress, expanded...)
 		}
 	}
 
-	// Stable sort: same (direction, priority) keeps original peer/port
-	// expansion order, which makes the on-wire BPF layout
-	// deterministic for diff/debug.
-	sort.SliceStable(rs.Rules, func(i, j int) bool {
-		if rs.Rules[i].Direction != rs.Rules[j].Direction {
-			return rs.Rules[i].Direction < rs.Rules[j].Direction
-		}
-		return rs.Rules[i].Priority < rs.Rules[j].Priority
-	})
+	sortByPriority(rs.Ingress)
+	sortByPriority(rs.Egress)
 
 	return rs, nil
+}
+
+// sortByPriority orders one direction's window for the evaluator. The
+// sort is stable so rules sharing a priority keep their port expansion
+// order, which makes the on-wire BPF layout deterministic for
+// diff/debug.
+func sortByPriority(rules []Rule) {
+	slices.SortStableFunc(rules, func(a, b Rule) int {
+		return cmp.Compare(a.Priority, b.Priority)
+	})
 }
 
 func expandACLRule(dir Direction, rule juneauv1alpha1.NetworkACLRule) ([]Rule, error) {

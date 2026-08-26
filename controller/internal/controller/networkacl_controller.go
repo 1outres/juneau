@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -38,15 +39,7 @@ import (
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
-const (
-	networkACLRequeueAfter = 200 * time.Millisecond
-
-	// networkACLRuleHardCap is a controller-side guardrail on the rule
-	// count per direction. The data plane enforces a strict ceiling
-	// (MAX_RULES_PER_ACL); this surfaces a clean Reason on status
-	// before the daemon truncates. Keep in lockstep with maps.h.
-	networkACLRuleHardCap = 16
-)
+const networkACLRequeueAfter = 200 * time.Millisecond
 
 // NetworkACLReconciler reconciles a NetworkACL object.
 //
@@ -146,8 +139,8 @@ func (r *NetworkACLReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// 3. Ruleset summary.
-	ingressCount, egressCount, hasIngress, hasEgress := summarizeNetworkACLRules(&resource.Spec)
-	limitExceeded := ingressCount > networkACLRuleHardCap || egressCount > networkACLRuleHardCap
+	summary := summarizeNetworkACLRules(&resource.Spec)
+	overBudget := summary.overBudgetMessage()
 
 	// 4. Track attached Subnets (observability + so AttachedSubnets fan-
 	// out reaches the daemon side via the controller's informer).
@@ -157,7 +150,7 @@ func (r *NetworkACLReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// 5. Ruleset version + status write.
-	rulesetVersion := r.nextRulesetVersion(&resource, ingressCount, egressCount, hasIngress, hasEgress)
+	rulesetVersion := r.nextRulesetVersion(&resource, summary)
 
 	rulesValidCondition := metav1.Condition{
 		Type:    juneauv1alpha1.NetworkACLConditionRulesValid,
@@ -171,25 +164,21 @@ func (r *NetworkACLReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		Reason:  juneauv1alpha1.NetworkACLReasonReconcileSucceeded,
 		Message: "",
 	}
-	if limitExceeded {
+	if overBudget != "" {
 		rulesValidCondition.Status = metav1.ConditionFalse
 		rulesValidCondition.Reason = juneauv1alpha1.NetworkACLReasonRuleLimitExceeded
-		rulesValidCondition.Message = fmt.Sprintf("rule count exceeds limit (%d): ingress=%d egress=%d",
-			networkACLRuleHardCap, ingressCount, egressCount)
+		rulesValidCondition.Message = overBudget
 		readyCondition.Status = metav1.ConditionFalse
 		readyCondition.Reason = juneauv1alpha1.NetworkACLReasonRuleLimitExceeded
-		readyCondition.Message = rulesValidCondition.Message
+		readyCondition.Message = overBudget
 	}
 
 	return ctrl.Result{}, r.updateStatus(ctx, &resource, networkACLStatusUpdate{
-		aclID:           aclID,
-		ingressCount:    ingressCount,
-		egressCount:     egressCount,
-		hasIngressRules: hasIngress,
-		hasEgressRules:  hasEgress,
-		rulesetVersion:  rulesetVersion,
-		attached:        attached,
-		conditions:      []metav1.Condition{rulesValidCondition, readyCondition},
+		aclID:          aclID,
+		summary:        summary,
+		rulesetVersion: rulesetVersion,
+		attached:       attached,
+		conditions:     []metav1.Condition{rulesValidCondition, readyCondition},
 	})
 }
 
@@ -205,36 +194,84 @@ func (r *NetworkACLReconciler) ensureACLIDClaim(ctx context.Context, resource *j
 	return claim, nil
 }
 
-// summarizeNetworkACLRules returns the per-direction rule count and the
-// has*Rules booleans that distinguish "spec omitted the direction"
-// (default-allow) from "spec set the direction explicitly, even if
-// empty" (default-deny). Mirrors the SG summarize helper.
-func summarizeNetworkACLRules(spec *juneauv1alpha1.NetworkACLSpec) (ingress int32, egress int32, hasIngress bool, hasEgress bool) {
+// networkACLRuleSummary is everything the controller publishes about a
+// spec's rules. It separates the two numbers that used to be conflated:
+// the rule count is what the user wrote, the entry count is what those
+// rules cost in the data plane. Capacity is budgeted against the entry
+// count alone.
+type networkACLRuleSummary struct {
+	ingressRuleCount  int32
+	egressRuleCount   int32
+	ingressEntryCount int32
+	egressEntryCount  int32
+	hasIngressRules   bool
+	hasEgressRules    bool
+}
+
+// summarizeNetworkACLRules counts both rules and entries per direction
+// and records the has*Rules booleans that distinguish "spec omitted the
+// direction" (default-allow) from "spec set the direction explicitly,
+// even if empty" (default-deny). Mirrors the SG summarize helper.
+func summarizeNetworkACLRules(spec *juneauv1alpha1.NetworkACLSpec) networkACLRuleSummary {
+	var summary networkACLRuleSummary
 	if spec.Ingress != nil {
-		hasIngress = true
-		ingress = int32(len(*spec.Ingress))
+		summary.hasIngressRules = true
+		summary.ingressRuleCount = int32(len(*spec.Ingress))
+		summary.ingressEntryCount = int32(juneauv1alpha1.NetworkACLDirectionEntryCount(*spec.Ingress))
 	}
 	if spec.Egress != nil {
-		hasEgress = true
-		egress = int32(len(*spec.Egress))
+		summary.hasEgressRules = true
+		summary.egressRuleCount = int32(len(*spec.Egress))
+		summary.egressEntryCount = int32(juneauv1alpha1.NetworkACLDirectionEntryCount(*spec.Egress))
 	}
-	return
+	return summary
+}
+
+// overBudgetMessage describes every direction whose entries do not fit
+// NetworkACLMaxEntriesPerDirection, or "" when the spec fits. The
+// message names the direction, its entry count and the limit, and
+// spells out how rules turn into entries: an operator who wrote two
+// rules cannot otherwise tell why the count is thirty-two.
+func (s networkACLRuleSummary) overBudgetMessage() string {
+	var over []string
+	if s.ingressEntryCount > juneauv1alpha1.NetworkACLMaxEntriesPerDirection {
+		over = append(over, fmt.Sprintf("ingress rule count %d needs %d entries", s.ingressRuleCount, s.ingressEntryCount))
+	}
+	if s.egressEntryCount > juneauv1alpha1.NetworkACLMaxEntriesPerDirection {
+		over = append(over, fmt.Sprintf("egress rule count %d needs %d entries", s.egressRuleCount, s.egressEntryCount))
+	}
+	if len(over) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s, but a direction holds at most %d entries; a rule costs one entry per port, so drop ports or move rules to another NetworkACL",
+		strings.Join(over, " and "), juneauv1alpha1.NetworkACLMaxEntriesPerDirection)
 }
 
 // nextRulesetVersion returns the version to record on status. We bump on
-// any observable summary change (counts, has*Rules flags, generation)
-// so daemons can detect "the ruleset I have differs from the published
-// one" without a deep diff.
-func (r *NetworkACLReconciler) nextRulesetVersion(resource *juneauv1alpha1.NetworkACL, ingress, egress int32, hasIngress, hasEgress bool) uint64 {
-	if resource.Status.IngressRuleCount == ingress &&
-		resource.Status.EgressRuleCount == egress &&
-		resource.Status.HasIngressRules == hasIngress &&
-		resource.Status.HasEgressRules == hasEgress &&
+// any observable summary change (rule counts, entry counts, has*Rules
+// flags, generation) so daemons can detect "the ruleset I have differs
+// from the published one" without a deep diff.
+func (r *NetworkACLReconciler) nextRulesetVersion(resource *juneauv1alpha1.NetworkACL, summary networkACLRuleSummary) uint64 {
+	if networkACLSummaryFromStatus(resource.Status) == summary &&
 		resource.Status.ObservedGeneration == resource.Generation &&
 		resource.Status.RulesetVersion > 0 {
 		return resource.Status.RulesetVersion
 	}
 	return resource.Status.RulesetVersion + 1
+}
+
+// networkACLSummaryFromStatus reads back the summary a previous
+// reconcile published, so error and pending paths can rewrite status
+// without inventing new counts.
+func networkACLSummaryFromStatus(status juneauv1alpha1.NetworkACLStatus) networkACLRuleSummary {
+	return networkACLRuleSummary{
+		ingressRuleCount:  status.IngressRuleCount,
+		egressRuleCount:   status.EgressRuleCount,
+		ingressEntryCount: status.IngressEntryCount,
+		egressEntryCount:  status.EgressEntryCount,
+		hasIngressRules:   status.HasIngressRules,
+		hasEgressRules:    status.HasEgressRules,
+	}
 }
 
 // listAttachedSubnets enumerates Subnets whose spec.networkACL points
@@ -263,24 +300,23 @@ func (r *NetworkACLReconciler) listAttachedSubnets(ctx context.Context, resource
 }
 
 type networkACLStatusUpdate struct {
-	aclID           uint32
-	ingressCount    int32
-	egressCount     int32
-	hasIngressRules bool
-	hasEgressRules  bool
-	rulesetVersion  uint64
-	attached        []string
-	conditions      []metav1.Condition
+	aclID          uint32
+	summary        networkACLRuleSummary
+	rulesetVersion uint64
+	attached       []string
+	conditions     []metav1.Condition
 }
 
 func (r *NetworkACLReconciler) updateStatus(ctx context.Context, resource *juneauv1alpha1.NetworkACL, u networkACLStatusUpdate) error {
 	updated := resource.DeepCopy()
 	updated.Status.ObservedGeneration = resource.Generation
 	updated.Status.ACLID = u.aclID
-	updated.Status.IngressRuleCount = u.ingressCount
-	updated.Status.EgressRuleCount = u.egressCount
-	updated.Status.HasIngressRules = u.hasIngressRules
-	updated.Status.HasEgressRules = u.hasEgressRules
+	updated.Status.IngressRuleCount = u.summary.ingressRuleCount
+	updated.Status.EgressRuleCount = u.summary.egressRuleCount
+	updated.Status.IngressEntryCount = u.summary.ingressEntryCount
+	updated.Status.EgressEntryCount = u.summary.egressEntryCount
+	updated.Status.HasIngressRules = u.summary.hasIngressRules
+	updated.Status.HasEgressRules = u.summary.hasEgressRules
 	updated.Status.RulesetVersion = u.rulesetVersion
 	updated.Status.AttachedSubnets = u.attached
 
@@ -310,14 +346,11 @@ func (r *NetworkACLReconciler) updateStatusError(ctx context.Context, resource *
 		Message: message,
 	}
 	return r.updateStatus(ctx, resource, networkACLStatusUpdate{
-		aclID:           resource.Status.ACLID,
-		ingressCount:    resource.Status.IngressRuleCount,
-		egressCount:     resource.Status.EgressRuleCount,
-		hasIngressRules: resource.Status.HasIngressRules,
-		hasEgressRules:  resource.Status.HasEgressRules,
-		rulesetVersion:  resource.Status.RulesetVersion,
-		attached:        resource.Status.AttachedSubnets,
-		conditions:      []metav1.Condition{rulesValid, ready},
+		aclID:          resource.Status.ACLID,
+		summary:        networkACLSummaryFromStatus(resource.Status),
+		rulesetVersion: resource.Status.RulesetVersion,
+		attached:       resource.Status.AttachedSubnets,
+		conditions:     []metav1.Condition{rulesValid, ready},
 	})
 }
 
@@ -329,14 +362,11 @@ func (r *NetworkACLReconciler) updateStatusPending(ctx context.Context, resource
 		Message: message,
 	}
 	return r.updateStatus(ctx, resource, networkACLStatusUpdate{
-		aclID:           resource.Status.ACLID,
-		ingressCount:    resource.Status.IngressRuleCount,
-		egressCount:     resource.Status.EgressRuleCount,
-		hasIngressRules: resource.Status.HasIngressRules,
-		hasEgressRules:  resource.Status.HasEgressRules,
-		rulesetVersion:  resource.Status.RulesetVersion,
-		attached:        resource.Status.AttachedSubnets,
-		conditions:      []metav1.Condition{ready},
+		aclID:          resource.Status.ACLID,
+		summary:        networkACLSummaryFromStatus(resource.Status),
+		rulesetVersion: resource.Status.RulesetVersion,
+		attached:       resource.Status.AttachedSubnets,
+		conditions:     []metav1.Condition{ready},
 	})
 }
 

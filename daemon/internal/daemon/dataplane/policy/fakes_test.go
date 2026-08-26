@@ -30,21 +30,51 @@ func (b *fakeBumper) count() int {
 	return b.bumps
 }
 
+// fakeRuleArray stands in for one per-resource inner rule map. It
+// keeps the slot each rule was written to, which is how the tests
+// check that egress really lands in the high window.
+type fakeRuleArray struct {
+	slots map[uint32]any
+}
+
+func newFakeRuleArray() *fakeRuleArray {
+	return &fakeRuleArray{slots: make(map[uint32]any)}
+}
+
+func (a *fakeRuleArray) Update(key, value any, _ ebpf.MapUpdateFlags) error {
+	a.slots[key.(uint32)] = value
+	return nil
+}
+
 // fakeRuleTable stands in for Rotator. It records the ids it was
-// asked to rotate without touching a BPF map, so the callbacks the
-// stores build are never run.
+// asked to rotate and runs the write callbacks against in-memory
+// tables, so tests can read back the exact slots and meta values a
+// store publishes without needing CAP_BPF.
 type fakeRuleTable struct {
 	applies   []uint32
 	deletes   []uint32
 	applyErr  error
 	deleteErr error
+
+	// inner holds the rules written by the latest Apply. Rotator
+	// mints a fresh inner map per rotation, so this is replaced
+	// rather than added to.
+	inner *fakeRuleArray
 }
 
-func (t *fakeRuleTable) Apply(id uint32, _ func(inner *ebpf.Map) error, _ func() error) error {
+func (t *fakeRuleTable) Apply(id uint32, writeRules func(inner ruleArray) error, writeMeta func() error) error {
 	if t.applyErr != nil {
 		return t.applyErr
 	}
+	inner := newFakeRuleArray()
+	if err := writeRules(inner); err != nil {
+		return err
+	}
+	// Rotator only logs a meta write failure because the outer swap
+	// already happened; mirror that so stores see the same contract.
+	_ = writeMeta()
 	t.applies = append(t.applies, id)
+	t.inner = inner
 	return nil
 }
 
@@ -57,6 +87,24 @@ func (t *fakeRuleTable) Delete(id uint32) error {
 }
 
 func (t *fakeRuleTable) CloseAll() error { return nil }
+
+// fakeMetaTable stands in for acl_meta_map / sg_meta_map.
+type fakeMetaTable struct {
+	values    map[uint32]any
+	updateErr error
+}
+
+func newFakeMetaTable() *fakeMetaTable {
+	return &fakeMetaTable{values: make(map[uint32]any)}
+}
+
+func (t *fakeMetaTable) Update(key, value any, _ ebpf.MapUpdateFlags) error {
+	if t.updateErr != nil {
+		return t.updateErr
+	}
+	t.values[key.(uint32)] = value
+	return nil
+}
 
 // fakeMembershipTable stands in for sg_membership_map.
 type fakeMembershipTable struct {

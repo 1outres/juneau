@@ -1,12 +1,11 @@
 package policy
 
 import (
-	"errors"
 	"fmt"
-	"slices"
 
 	"github.com/cilium/ebpf"
 
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	bpf "github.com/1outres/juneau/daemon/internal/daemon/bpf"
 )
 
@@ -17,10 +16,10 @@ import (
 // SGStore delegates the inner-map create/swap/close dance to a Rotator
 // so the same machinery is reused by ACLStore. SGStore itself only
 // owns the SG-specific encoding (Rule → bpf.PodEgressSgRule) and the
-// MaxRulesPerSG truncation policy.
+// placement of each direction in its own window.
 type SGStore struct {
 	table        ruleTable
-	meta         *ebpf.Map
+	meta         metaTable
 	invalidation *invalidator
 }
 
@@ -39,7 +38,7 @@ func NewSGStore(meta, rules *ebpf.Map, innerSpec *ebpf.MapSpec, bumper Bumper) *
 	return newSGStore(NewRotator(sgLayer, rules, meta, innerSpec), meta, bumper)
 }
 
-func newSGStore(table ruleTable, meta *ebpf.Map, bumper Bumper) *SGStore {
+func newSGStore(table ruleTable, meta metaTable, bumper Bumper) *SGStore {
 	return &SGStore{
 		table:        table,
 		meta:         meta,
@@ -47,53 +46,62 @@ func newSGStore(table ruleTable, meta *ebpf.Map, bumper Bumper) *SGStore {
 	}
 }
 
-// MaxRulesPerSG mirrors MAX_RULES_PER_SG in maps.h. Callers that
-// pre-validate rule counts should compare against this constant.
-const MaxRulesPerSG = 8
+// MaxSGEntriesPerDirection is how many expanded entries ONE direction
+// of a SecurityGroup can hold, so sg_rules_inner_proto is twice this.
+// It is lower than the NetworkACL budget because SG rules expand over
+// peers as well as ports, and the evaluator scans every SG attached to
+// the interface. See MaxACLEntriesPerDirection for where the number
+// comes from.
+const MaxSGEntriesPerDirection = juneauv1alpha1.SecurityGroupMaxEntriesPerDirection
 
-// Apply writes (or rewrites) the rules + meta for one SG. If
-// len(rs.Rules) exceeds MaxRulesPerSG, Apply truncates and returns
-// ErrRuleLimitExceeded; the prefix that fit is still installed so
-// traffic does not stall on a half-published ruleset.
+// Apply writes (or rewrites) the rules + meta for one SG.
+//
+// A direction holding more than MaxSGEntriesPerDirection entries is
+// installed fail-closed (see fitRuleSet) and reported as a
+// *CapacityError. Those errors are returned only after the write, so
+// the data plane is already consistent by the time a caller sees one.
 func (s *SGStore) Apply(rs RuleSet) error {
 	if rs.GroupID == 0 {
 		return fmt.Errorf("policy: cannot apply RuleSet with GroupID=0")
 	}
 
-	limitExceeded := false
-	rules := rs.Rules
-	if len(rules) > MaxRulesPerSG {
-		rules = rules[:MaxRulesPerSG]
-		limitExceeded = true
-	}
+	installed, capacityErr := fitRuleSet(sgLayer, rs, MaxSGEntriesPerDirection)
 
-	writeRules := func(inner *ebpf.Map) error {
-		for i, r := range rules {
-			v := bpf.PodEgressSgRule{
-				Direction:     uint8(r.Direction),
-				Proto:         r.Proto,
-				PortLo:        r.PortLo,
-				PortHi:        r.PortHi,
-				PeerKind:      uint8(r.PeerKind),
-				PeerPrefixlen: r.PeerPrefixlen,
-				PeerV4:        r.PeerV4,
-				Verdict:       uint8(r.Verdict),
-			}
-			key := uint32(i)
-			if err := inner.Update(key, v, ebpf.UpdateAny); err != nil {
-				return fmt.Errorf("write sg %d rule %d: %w", rs.GroupID, i, err)
+	writeRules := func(inner ruleArray) error {
+		for _, window := range installed.windows(MaxSGEntriesPerDirection) {
+			for i, r := range window.Rules {
+				v := bpf.PodEgressSgRule{
+					Direction:     uint8(r.Direction),
+					Proto:         r.Proto,
+					PortLo:        r.PortLo,
+					PortHi:        r.PortHi,
+					PeerKind:      uint8(r.PeerKind),
+					PeerPrefixlen: r.PeerPrefixlen,
+					PeerV4:        r.PeerV4,
+					Verdict:       uint8(r.Verdict),
+				}
+				slot := window.Base + uint32(i)
+				if err := inner.Update(slot, v, ebpf.UpdateAny); err != nil {
+					return fmt.Errorf("write sg %d %s rule %d: %w", rs.GroupID, window.Direction, i, err)
+				}
 			}
 		}
 		return nil
 	}
 
 	writeMeta := func() error {
+		// sg_meta_val carries no has_ingress_rules flag and needs
+		// none: SecurityGroup ingress is deny-by-default, so an
+		// ingress count of 0 already denies the direction, whether
+		// the user wrote no ingress rules or the direction was
+		// installed fail-closed. Egress defaults to allow-all, so
+		// only egress needs a flag to say "enforce a rule list".
 		meta := bpf.PodEgressSgMetaVal{
-			IngressCount:   uint32(rs.IngressCount),
-			EgressCount:    uint32(rs.EgressCount),
-			RulesetVersion: uint32(rs.RulesetVersion),
+			IngressCount:   uint32(len(installed.Ingress)),
+			EgressCount:    uint32(len(installed.Egress)),
+			RulesetVersion: uint32(installed.RulesetVersion),
 		}
-		if rs.HasEgressRules {
+		if installed.HasEgressRules {
 			meta.HasEgressRules = 1
 		}
 		return s.meta.Update(rs.GroupID, meta, ebpf.UpdateAny)
@@ -103,16 +111,11 @@ func (s *SGStore) Apply(rs RuleSet) error {
 		return err
 	}
 
-	installed := rs
-	installed.Rules = slices.Clone(rules)
-	if err := s.invalidation.applied(rs.GroupID, installed); err != nil {
+	if err := s.invalidation.applied(rs.GroupID, installed.clone()); err != nil {
 		return err
 	}
 
-	if limitExceeded {
-		return ErrRuleLimitExceeded
-	}
-	return nil
+	return capacityErr
 }
 
 // Delete removes both the rule inner map handle and the meta entry.
@@ -129,8 +132,3 @@ func (s *SGStore) Delete(groupID uint32) error {
 func (s *SGStore) CloseAll() error {
 	return s.table.CloseAll()
 }
-
-// ErrRuleLimitExceeded indicates the ruleset overflowed MaxRulesPerSG.
-// Apply still wrote the prefix that fit, so traffic should not stall;
-// callers should set Status.RulesValid=False and surface a clear reason.
-var ErrRuleLimitExceeded = errors.New("policy: rule count exceeds MaxRulesPerSG")

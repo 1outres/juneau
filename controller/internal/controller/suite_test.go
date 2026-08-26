@@ -167,6 +167,10 @@ var _ = BeforeSuite(func() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr)).To(Succeed())
+	Expect((&NetworkACLReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr)).To(Succeed())
 	// The ServiceLoadBalancer Sync reconciler is exercised through
 	// the manager so that Service updates propagate to SLB state in
 	// tests without requiring each spec to call Reconcile manually.

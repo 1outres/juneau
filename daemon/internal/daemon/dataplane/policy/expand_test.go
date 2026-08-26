@@ -36,18 +36,18 @@ func TestExpandSecurityGroup_PortsAndPeers(t *testing.T) {
 	}
 
 	// 2 peers × 2 ports = 4 ingress entries
-	if rs.IngressCount != 4 {
-		t.Errorf("ingress count = %d, want 4", rs.IngressCount)
+	if len(rs.Ingress) != 4 {
+		t.Errorf("ingress entries = %d, want 4", len(rs.Ingress))
 	}
-	if rs.EgressCount != 0 {
-		t.Errorf("egress count = %d, want 0", rs.EgressCount)
+	if len(rs.Egress) != 0 {
+		t.Errorf("egress entries = %d, want 0", len(rs.Egress))
 	}
 	if rs.HasEgressRules {
 		t.Errorf("hasEgressRules should be false when spec.egress is nil")
 	}
 
 	// Sanity check: first rule is CIDR + port 80
-	r0 := rs.Rules[0]
+	r0 := rs.Ingress[0]
 	if r0.Direction != DirIngress || r0.Proto != ProtoTCP {
 		t.Errorf("r0 direction/proto wrong: %+v", r0)
 	}
@@ -64,7 +64,7 @@ func TestExpandSecurityGroup_PortsAndPeers(t *testing.T) {
 
 	// Find a rule with PeerKindSG; PeerV4 should be the GroupID.
 	var sawSGPeer bool
-	for _, r := range rs.Rules {
+	for _, r := range rs.Ingress {
 		if r.PeerKind == PeerKindSG {
 			sawSGPeer = true
 			if r.PeerV4 != 200 {
@@ -96,8 +96,8 @@ func TestExpandSecurityGroup_DropsUnresolvedSGPeer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expand: %v", err)
 	}
-	if rs.IngressCount != 1 {
-		t.Errorf("ingress count = %d, want 1 (unresolved SG peer dropped)", rs.IngressCount)
+	if len(rs.Ingress) != 1 {
+		t.Errorf("ingress entries = %d, want 1 (unresolved SG peer dropped)", len(rs.Ingress))
 	}
 }
 
@@ -117,8 +117,8 @@ func TestExpandSecurityGroup_EgressEmptyMeansAllowAll(t *testing.T) {
 	if !rs.HasEgressRules {
 		t.Error("HasEgressRules should be true when spec.egress is non-nil")
 	}
-	if rs.EgressCount != 0 {
-		t.Errorf("egress count = %d, want 0", rs.EgressCount)
+	if len(rs.Egress) != 0 {
+		t.Errorf("egress entries = %d, want 0", len(rs.Egress))
 	}
 
 	sg2 := &juneauv1alpha1.SecurityGroup{
@@ -160,12 +160,20 @@ func TestExpandNetworkACL_PrioritySortAndPortExpansion(t *testing.T) {
 			},
 		},
 	}
-	egress := []juneauv1alpha1.NetworkACLRule{{
-		Priority: 50,
-		Action:   juneauv1alpha1.NetworkACLActionAllow,
-		Protocol: juneauv1alpha1.NetworkACLProtocolAll,
-		CIDR:     "0.0.0.0/0",
-	}}
+	egress := []juneauv1alpha1.NetworkACLRule{
+		{
+			Priority: 50,
+			Action:   juneauv1alpha1.NetworkACLActionAllow,
+			Protocol: juneauv1alpha1.NetworkACLProtocolAll,
+			CIDR:     "0.0.0.0/0",
+		},
+		{
+			Priority: 10,
+			Action:   juneauv1alpha1.NetworkACLActionDeny,
+			Protocol: juneauv1alpha1.NetworkACLProtocolAll,
+			CIDR:     "198.51.100.0/24",
+		},
+	}
 
 	acl := &juneauv1alpha1.NetworkACL{
 		Status: juneauv1alpha1.NetworkACLStatus{ACLID: 42, RulesetVersion: 7},
@@ -187,39 +195,38 @@ func TestExpandNetworkACL_PrioritySortAndPortExpansion(t *testing.T) {
 		t.Errorf("Has*Rules should be true when both directions are non-nil")
 	}
 	// Ingress: 1 (priority=200, port-any) + 2 (priority=100, two ports) = 3
-	if rs.IngressCount != 3 {
-		t.Errorf("ingress count = %d, want 3", rs.IngressCount)
+	if len(rs.Ingress) != 3 {
+		t.Errorf("ingress entries = %d, want 3", len(rs.Ingress))
 	}
-	if rs.EgressCount != 1 {
-		t.Errorf("egress count = %d, want 1", rs.EgressCount)
+	if len(rs.Egress) != 2 {
+		t.Errorf("egress entries = %d, want 2", len(rs.Egress))
 	}
 
-	// Direction asc + Priority asc: ingress rules come before egress
-	// (DirIngress=0 < DirEgress=1) and within ingress, priority=100
-	// rules precede priority=200.
-	if rs.Rules[0].Direction != DirIngress || rs.Rules[0].Priority != 100 {
-		t.Errorf("rule[0] = %+v, want ingress priority 100", rs.Rules[0])
+	// Each direction is sorted by priority asc on its own, so the
+	// evaluator can scan that direction's window front-to-back.
+	wantIngress := []uint16{100, 100, 200}
+	for i, want := range wantIngress {
+		if rs.Ingress[i].Direction != DirIngress || rs.Ingress[i].Priority != want {
+			t.Errorf("ingress[%d] = %+v, want ingress priority %d", i, rs.Ingress[i], want)
+		}
 	}
-	if rs.Rules[1].Direction != DirIngress || rs.Rules[1].Priority != 100 {
-		t.Errorf("rule[1] = %+v, want ingress priority 100", rs.Rules[1])
-	}
-	if rs.Rules[2].Direction != DirIngress || rs.Rules[2].Priority != 200 {
-		t.Errorf("rule[2] = %+v, want ingress priority 200", rs.Rules[2])
-	}
-	if rs.Rules[3].Direction != DirEgress || rs.Rules[3].Priority != 50 {
-		t.Errorf("rule[3] = %+v, want egress priority 50", rs.Rules[3])
+	wantEgress := []uint16{10, 50}
+	for i, want := range wantEgress {
+		if rs.Egress[i].Direction != DirEgress || rs.Egress[i].Priority != want {
+			t.Errorf("egress[%d] = %+v, want egress priority %d", i, rs.Egress[i], want)
+		}
 	}
 
 	// Verdict mapping: deny rule (priority 200) carries VerdictDeny.
-	if rs.Rules[2].Verdict != VerdictDeny {
-		t.Errorf("rule[2] verdict = %d, want VerdictDeny", rs.Rules[2].Verdict)
+	if rs.Ingress[2].Verdict != VerdictDeny {
+		t.Errorf("ingress[2] verdict = %d, want VerdictDeny", rs.Ingress[2].Verdict)
 	}
 
 	// CIDR encoding sanity: 10.0.0.0/8 is little-endian-encoded so the
 	// in-memory bytes line up with the BPF __be32 view.
 	expectedAddr := binary.LittleEndian.Uint32(net.IPv4(10, 0, 0, 0).To4())
-	if rs.Rules[0].PeerV4 != expectedAddr || rs.Rules[0].PeerPrefixlen != 8 {
-		t.Errorf("rule[0] CIDR encoding wrong: %+v (expected %#x)", rs.Rules[0], expectedAddr)
+	if rs.Ingress[0].PeerV4 != expectedAddr || rs.Ingress[0].PeerPrefixlen != 8 {
+		t.Errorf("ingress[0] CIDR encoding wrong: %+v (expected %#x)", rs.Ingress[0], expectedAddr)
 	}
 }
 
@@ -235,8 +242,8 @@ func TestExpandNetworkACL_NilDirectionDefaults(t *testing.T) {
 	if rs.HasIngressRules || rs.HasEgressRules {
 		t.Errorf("Has*Rules must be false when both directions are nil: %+v", rs)
 	}
-	if len(rs.Rules) != 0 {
-		t.Errorf("expected zero rules, got %d", len(rs.Rules))
+	if len(rs.Ingress) != 0 || len(rs.Egress) != 0 {
+		t.Errorf("expected zero rules, got %d ingress and %d egress", len(rs.Ingress), len(rs.Egress))
 	}
 
 	// Explicit empty list = deny-all (HasRules=true, count=0)
@@ -291,10 +298,10 @@ func TestExpandSecurityGroup_AnyPort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expand: %v", err)
 	}
-	if len(rs.Rules) != 1 {
-		t.Fatalf("got %d rules, want 1", len(rs.Rules))
+	if len(rs.Ingress) != 1 {
+		t.Fatalf("got %d ingress entries, want 1", len(rs.Ingress))
 	}
-	r := rs.Rules[0]
+	r := rs.Ingress[0]
 	if r.PortLo != 0 || r.PortHi != 0xFFFF {
 		t.Errorf("port range = %d-%d want any", r.PortLo, r.PortHi)
 	}

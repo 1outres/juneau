@@ -177,3 +177,103 @@ var _ = Describe("NetworkACL webhook", func() {
 		Expect(err.Error()).To(ContainSubstring("referenced by Subnet"))
 	})
 })
+
+var _ = Describe("NetworkACL webhook entry capacity", func() {
+	It("accepts a direction that expands to exactly the entry limit", func() {
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.NetworkACL{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("acl")},
+			Spec: juneauv1alpha1.NetworkACLSpec{
+				Vpc:     "default",
+				Ingress: webhookACLRules(juneauv1alpha1.NetworkACLMaxEntriesPerDirection),
+				Egress:  webhookACLRules(juneauv1alpha1.NetworkACLMaxEntriesPerDirection),
+			},
+		})).To(Succeed())
+	})
+
+	It("rejects an ingress direction one entry over the limit", func() {
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.NetworkACL{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("acl")},
+			Spec: juneauv1alpha1.NetworkACLSpec{
+				Vpc:     "default",
+				Ingress: webhookACLRules(juneauv1alpha1.NetworkACLMaxEntriesPerDirection + 1),
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.ingress"))
+		Expect(err.Error()).To(ContainSubstring("Too many: 17"))
+		Expect(err.Error()).To(ContainSubstring("must have at most 16 entries"))
+		Expect(err.Error()).To(ContainSubstring("costs"))
+	})
+
+	It("rejects an egress direction one entry over the limit", func() {
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.NetworkACL{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("acl")},
+			Spec: juneauv1alpha1.NetworkACLSpec{
+				Vpc:    "default",
+				Egress: webhookACLRules(juneauv1alpha1.NetworkACLMaxEntriesPerDirection + 1),
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.egress"))
+		Expect(err.Error()).To(ContainSubstring("Too many: 17"))
+	})
+
+	It("counts ports rather than rules against the entry limit", func() {
+		rules := webhookACLRules(2)
+		for i := range *rules {
+			(*rules)[i].Protocol = juneauv1alpha1.NetworkACLProtocolTCP
+			(*rules)[i].Ports = webhookACLPorts(9)
+		}
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.NetworkACL{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("acl")},
+			Spec:       juneauv1alpha1.NetworkACLSpec{Vpc: "default", Ingress: rules},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("Too many: 18"))
+	})
+
+	It("accepts a single rule whose ports fill the whole direction budget", func() {
+		rules := webhookACLRules(1)
+		(*rules)[0].Protocol = juneauv1alpha1.NetworkACLProtocolTCP
+		(*rules)[0].Ports = webhookACLPorts(juneauv1alpha1.NetworkACLMaxEntriesPerDirection)
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.NetworkACL{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("acl")},
+			Spec:       juneauv1alpha1.NetworkACLSpec{Vpc: "default", Ingress: rules},
+		})).To(Succeed())
+	})
+
+	It("rejects a single rule carrying more ports than the whole direction budget", func() {
+		rules := webhookACLRules(1)
+		(*rules)[0].Protocol = juneauv1alpha1.NetworkACLProtocolTCP
+		(*rules)[0].Ports = webhookACLPorts(juneauv1alpha1.NetworkACLMaxEntriesPerDirection + 1)
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.NetworkACL{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("acl")},
+			Spec:       juneauv1alpha1.NetworkACLSpec{Vpc: "default", Ingress: rules},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("at most 16 items"))
+	})
+})
+
+// webhookACLRules returns count port-less rules, so the direction costs
+// exactly count entries.
+func webhookACLRules(count int) *[]juneauv1alpha1.NetworkACLRule {
+	rules := make([]juneauv1alpha1.NetworkACLRule, 0, count)
+	for i := 0; i < count; i++ {
+		rules = append(rules, juneauv1alpha1.NetworkACLRule{
+			Priority: int32(i + 1),
+			Action:   juneauv1alpha1.NetworkACLActionAllow,
+			CIDR:     "10.0.0.0/24",
+		})
+	}
+	return &rules
+}
+
+func webhookACLPorts(count int) []juneauv1alpha1.NetworkACLPort {
+	ports := make([]juneauv1alpha1.NetworkACLPort, 0, count)
+	for i := 0; i < count; i++ {
+		port := int32(1000 + i)
+		ports = append(ports, juneauv1alpha1.NetworkACLPort{Port: &port})
+	}
+	return ports
+}

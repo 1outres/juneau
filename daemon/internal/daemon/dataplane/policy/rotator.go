@@ -13,12 +13,28 @@ import (
 // depend on. Rotator is the only implementation the daemon runs;
 // tests bring their own because creating a BPF map needs CAP_BPF.
 type ruleTable interface {
-	Apply(id uint32, writeRules func(inner *ebpf.Map) error, writeMeta func() error) error
+	Apply(id uint32, writeRules func(inner ruleArray) error, writeMeta func() error) error
 	Delete(id uint32) error
 	CloseAll() error
 }
 
-var _ ruleTable = (*Rotator)(nil)
+// ruleArray is the write side of one resource's inner rule map, and
+// metaTable the write side of acl_meta_map / sg_meta_map. *ebpf.Map
+// implements both; tests bring their own so they can read back which
+// slot each rule landed in and what meta the store published.
+type ruleArray interface {
+	Update(key, value any, flags ebpf.MapUpdateFlags) error
+}
+
+type metaTable interface {
+	Update(key, value any, flags ebpf.MapUpdateFlags) error
+}
+
+var (
+	_ ruleTable = (*Rotator)(nil)
+	_ ruleArray = (*ebpf.Map)(nil)
+	_ metaTable = (*ebpf.Map)(nil)
+)
 
 // Rotator owns the inner-map lifecycle for a HASH_OF_MAPS-backed rule
 // table that supports atomic rotate-and-swap updates. Both SGStore and
@@ -81,7 +97,7 @@ func NewRotator(name string, outer, meta *ebpf.Map, innerSpec *ebpf.MapSpec) *Ro
 // error is logged but not returned, mirroring the original SGStore
 // behaviour: the outer was already swapped, so rolling back would be
 // racier than letting the next reconcile reconverge.
-func (r *Rotator) Apply(id uint32, writeRules func(inner *ebpf.Map) error, writeMeta func() error) error {
+func (r *Rotator) Apply(id uint32, writeRules func(inner ruleArray) error, writeMeta func() error) error {
 	if id == 0 {
 		return fmt.Errorf("policy/%s: cannot apply with id=0", r.name)
 	}

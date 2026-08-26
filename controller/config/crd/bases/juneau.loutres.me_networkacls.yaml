@@ -114,6 +114,10 @@ spec:
                         Ports list the L4 destination ports admitted by this rule. Empty
                         matches every port for the chosen protocol. When Protocol is
                         "icmp" or "all", Ports must be empty.
+
+                        The item cap matches NetworkACLMaxEntriesPerDirection because a
+                        rule costs one data plane entry per port: a single rule may fill
+                        its direction but can never overflow it on its own.
                       items:
                         description: |-
                           NetworkACLPort selects an L4 destination port (or range).
@@ -147,6 +151,7 @@ spec:
                             - to
                             type: object
                         type: object
+                      maxItems: 16
                       type: array
                     priority:
                       description: |-
@@ -212,6 +217,10 @@ spec:
                         Ports list the L4 destination ports admitted by this rule. Empty
                         matches every port for the chosen protocol. When Protocol is
                         "icmp" or "all", Ports must be empty.
+
+                        The item cap matches NetworkACLMaxEntriesPerDirection because a
+                        rule costs one data plane entry per port: a single rule may fill
+                        its direction but can never overflow it on its own.
                       items:
                         description: |-
                           NetworkACLPort selects an L4 destination port (or range).
@@ -245,6 +254,7 @@ spec:
                             - to
                             type: object
                         type: object
+                      maxItems: 16
                       type: array
                     priority:
                       description: |-
@@ -354,6 +364,9 @@ spec:
                   - type
                   type: object
                 type: array
+              egressEntryCount:
+                format: int32
+                type: integer
               egressRuleCount:
                 format: int32
                 type: integer
@@ -367,11 +380,20 @@ spec:
                   enforcement at all) and default-deny (rule list applies, fall
                   through to deny).
                 type: boolean
+              ingressEntryCount:
+                description: |-
+                  IngressEntryCount and EgressEntryCount report what each direction
+                  costs in the data plane, which is what capacity is actually
+                  budgeted against: a rule expands to one entry per port. See
+                  NetworkACLDirectionEntryCount and
+                  NetworkACLMaxEntriesPerDirection.
+                format: int32
+                type: integer
               ingressRuleCount:
                 description: |-
                   IngressRuleCount and EgressRuleCount report the rule count per
-                  direction (0 when the direction is nil/empty). Observability;
-                  not a hard limit.
+                  direction (0 when the direction is nil/empty), exactly as the
+                  user wrote them in the spec. Observability; not a hard limit.
                 format: int32
                 type: integer
               observedGeneration:

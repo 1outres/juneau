@@ -22,6 +22,7 @@ import (
 	"net/netip"
 	"reflect"
 	"sort"
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -40,15 +41,7 @@ import (
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
-const (
-	securityGroupRequeueAfter = 200 * time.Millisecond
-
-	// securityGroupRuleHardCap is a controller-side guardrail on the
-	// expanded rule count per direction. The data plane enforces a
-	// strict ceiling (MAX_RULES_PER_SG); we surface a clean Reason
-	// before pushing too much down. Keep in lockstep with maps.h.
-	securityGroupRuleHardCap = 8
-)
+const securityGroupRequeueAfter = 200 * time.Millisecond
 
 // SecurityGroupReconciler reconciles a SecurityGroup object.
 //
@@ -152,9 +145,9 @@ func (r *SecurityGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// 4. Ruleset projection + summary.
-	ingressCount, egressCount, hasEgress := summarizeRules(&resource.Spec)
+	summary := summarizeRules(&resource.Spec)
 	rulesValid := len(peerErrs) == 0
-	limitExceeded := ingressCount > securityGroupRuleHardCap || egressCount > securityGroupRuleHardCap
+	overBudget := summary.overBudgetMessage()
 
 	// 5. Track attached NetworkInterfaces (observability only).
 	attached, err := r.listAttachedInterfaces(ctx, &resource)
@@ -163,7 +156,7 @@ func (r *SecurityGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// 6. Compute desired status and write.
-	rulesetVersion := r.nextRulesetVersion(&resource, ingressCount, egressCount, hasEgress)
+	rulesetVersion := r.nextRulesetVersion(&resource, summary)
 
 	rulesValidCondition := metav1.Condition{
 		Type:    juneauv1alpha1.SecurityGroupConditionRulesValid,
@@ -185,21 +178,18 @@ func (r *SecurityGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		readyCondition.Status = metav1.ConditionFalse
 		readyCondition.Reason = juneauv1alpha1.SecurityGroupReasonRulesInvalid
 		readyCondition.Message = peerErrs[0]
-	case limitExceeded:
+	case overBudget != "":
 		rulesValidCondition.Status = metav1.ConditionFalse
 		rulesValidCondition.Reason = juneauv1alpha1.SecurityGroupReasonRuleLimitExceeded
-		rulesValidCondition.Message = fmt.Sprintf("expanded rule count exceeds limit (%d): ingress=%d egress=%d",
-			securityGroupRuleHardCap, ingressCount, egressCount)
+		rulesValidCondition.Message = overBudget
 		readyCondition.Status = metav1.ConditionFalse
 		readyCondition.Reason = juneauv1alpha1.SecurityGroupReasonRuleLimitExceeded
-		readyCondition.Message = rulesValidCondition.Message
+		readyCondition.Message = overBudget
 	}
 
 	return ctrl.Result{}, r.updateStatus(ctx, &resource, securityGroupStatusUpdate{
 		groupID:        groupID,
-		ingressCount:   ingressCount,
-		egressCount:    egressCount,
-		hasEgress:      hasEgress,
+		summary:        summary,
 		rulesetVersion: rulesetVersion,
 		attached:       attached,
 		conditions:     []metav1.Condition{rulesValidCondition, readyCondition},
@@ -259,46 +249,80 @@ func (r *SecurityGroupReconciler) validatePeerRefs(ctx context.Context, resource
 	return errs
 }
 
-// summarizeRules computes the post-expansion (peer × port) flat rule
-// count without actually expanding to a slice. This mirrors the
-// daemon-side expansion exactly so the status counts match the BPF map
-// counts.
-func summarizeRules(spec *juneauv1alpha1.SecurityGroupSpec) (ingress int32, egress int32, hasEgress bool) {
-	for _, rule := range spec.Ingress {
-		ingress += int32(expandedRuleCount(len(rule.From), len(rule.Ports)))
-	}
-	if spec.Egress != nil {
-		hasEgress = true
-		for _, rule := range *spec.Egress {
-			egress += int32(expandedRuleCount(len(rule.To), len(rule.Ports)))
-		}
-	}
-	return
+// securityGroupRuleSummary is everything the controller publishes about
+// a spec's rules. It separates the two numbers that used to share the
+// name "rule count": the rule count is what the user wrote, the entry
+// count is what those rules cost in the data plane once they expand
+// over peers and ports. Capacity is budgeted against the entry count
+// alone. Mirrors the NetworkACL summary.
+type securityGroupRuleSummary struct {
+	ingressRuleCount  int32
+	egressRuleCount   int32
+	ingressEntryCount int32
+	egressEntryCount  int32
+	hasEgressRules    bool
 }
 
-func expandedRuleCount(peers, ports int) int {
-	if peers == 0 {
-		return 0
+// summarizeRules counts both rules and entries per direction and
+// records whether the spec declared egress at all (nil → allow-all,
+// non-nil → allow-list).
+func summarizeRules(spec *juneauv1alpha1.SecurityGroupSpec) securityGroupRuleSummary {
+	summary := securityGroupRuleSummary{
+		ingressRuleCount:  int32(len(spec.Ingress)),
+		ingressEntryCount: int32(juneauv1alpha1.SecurityGroupIngressEntryCount(spec.Ingress)),
 	}
-	if ports == 0 {
-		// "any port" still emits one rule per peer.
-		return peers
+	if spec.Egress != nil {
+		summary.hasEgressRules = true
+		summary.egressRuleCount = int32(len(*spec.Egress))
+		summary.egressEntryCount = int32(juneauv1alpha1.SecurityGroupEgressEntryCount(*spec.Egress))
 	}
-	return peers * ports
+	return summary
+}
+
+// overBudgetMessage describes every direction whose entries do not fit
+// SecurityGroupMaxEntriesPerDirection, or "" when the spec fits. The
+// message names the direction, its entry count and the limit, and
+// spells out how rules turn into entries: a single rule can blow the
+// budget on its own, so the rule count alone explains nothing.
+func (s securityGroupRuleSummary) overBudgetMessage() string {
+	var over []string
+	if s.ingressEntryCount > juneauv1alpha1.SecurityGroupMaxEntriesPerDirection {
+		over = append(over, fmt.Sprintf("ingress rule count %d needs %d entries", s.ingressRuleCount, s.ingressEntryCount))
+	}
+	if s.egressEntryCount > juneauv1alpha1.SecurityGroupMaxEntriesPerDirection {
+		over = append(over, fmt.Sprintf("egress rule count %d needs %d entries", s.egressRuleCount, s.egressEntryCount))
+	}
+	if len(over) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s, but a direction holds at most %d entries; a rule costs one entry per (peer, port) pair, so drop peers or ports or split the SecurityGroup",
+		strings.Join(over, " and "), juneauv1alpha1.SecurityGroupMaxEntriesPerDirection)
 }
 
 // nextRulesetVersion returns the version to record in status. We bump on
-// any observable summary change so that daemons can detect "the ruleset
-// I have differs from the published one" without a deep diff.
-func (r *SecurityGroupReconciler) nextRulesetVersion(resource *juneauv1alpha1.SecurityGroup, ingress, egress int32, hasEgress bool) uint64 {
-	if resource.Status.IngressRuleCount == ingress &&
-		resource.Status.EgressRuleCount == egress &&
-		resource.Status.HasEgressRules == hasEgress &&
+// any observable summary change (rule counts, entry counts, egress mode,
+// generation) so that daemons can detect "the ruleset I have differs
+// from the published one" without a deep diff.
+func (r *SecurityGroupReconciler) nextRulesetVersion(resource *juneauv1alpha1.SecurityGroup, summary securityGroupRuleSummary) uint64 {
+	if securityGroupSummaryFromStatus(resource.Status) == summary &&
 		resource.Status.ObservedGeneration == resource.Generation &&
 		resource.Status.RulesetVersion > 0 {
 		return resource.Status.RulesetVersion
 	}
 	return resource.Status.RulesetVersion + 1
+}
+
+// securityGroupSummaryFromStatus reads back the summary a previous
+// reconcile published, so error and pending paths can rewrite status
+// without inventing new counts.
+func securityGroupSummaryFromStatus(status juneauv1alpha1.SecurityGroupStatus) securityGroupRuleSummary {
+	return securityGroupRuleSummary{
+		ingressRuleCount:  status.IngressRuleCount,
+		egressRuleCount:   status.EgressRuleCount,
+		ingressEntryCount: status.IngressEntryCount,
+		egressEntryCount:  status.EgressEntryCount,
+		hasEgressRules:    status.HasEgressRules,
+	}
 }
 
 // listAttachedInterfaces enumerates NetworkInterfaces that name this SG.
@@ -332,9 +356,7 @@ func (r *SecurityGroupReconciler) listAttachedInterfaces(ctx context.Context, re
 
 type securityGroupStatusUpdate struct {
 	groupID        uint32
-	ingressCount   int32
-	egressCount    int32
-	hasEgress      bool
+	summary        securityGroupRuleSummary
 	rulesetVersion uint64
 	attached       []juneauv1alpha1.SecurityGroupAttachedInterface
 	conditions     []metav1.Condition
@@ -344,9 +366,11 @@ func (r *SecurityGroupReconciler) updateStatus(ctx context.Context, resource *ju
 	updated := resource.DeepCopy()
 	updated.Status.ObservedGeneration = resource.Generation
 	updated.Status.GroupID = u.groupID
-	updated.Status.IngressRuleCount = u.ingressCount
-	updated.Status.EgressRuleCount = u.egressCount
-	updated.Status.HasEgressRules = u.hasEgress
+	updated.Status.IngressRuleCount = u.summary.ingressRuleCount
+	updated.Status.EgressRuleCount = u.summary.egressRuleCount
+	updated.Status.IngressEntryCount = u.summary.ingressEntryCount
+	updated.Status.EgressEntryCount = u.summary.egressEntryCount
+	updated.Status.HasEgressRules = u.summary.hasEgressRules
 	updated.Status.RulesetVersion = u.rulesetVersion
 	updated.Status.AttachedInterfaces = u.attached
 
@@ -377,9 +401,7 @@ func (r *SecurityGroupReconciler) updateStatusError(ctx context.Context, resourc
 	}
 	return r.updateStatus(ctx, resource, securityGroupStatusUpdate{
 		groupID:        resource.Status.GroupID,
-		ingressCount:   resource.Status.IngressRuleCount,
-		egressCount:    resource.Status.EgressRuleCount,
-		hasEgress:      resource.Status.HasEgressRules,
+		summary:        securityGroupSummaryFromStatus(resource.Status),
 		rulesetVersion: resource.Status.RulesetVersion,
 		attached:       resource.Status.AttachedInterfaces,
 		conditions:     []metav1.Condition{rulesValid, ready},
@@ -395,9 +417,7 @@ func (r *SecurityGroupReconciler) updateStatusPending(ctx context.Context, resou
 	}
 	return r.updateStatus(ctx, resource, securityGroupStatusUpdate{
 		groupID:        resource.Status.GroupID,
-		ingressCount:   resource.Status.IngressRuleCount,
-		egressCount:    resource.Status.EgressRuleCount,
-		hasEgress:      resource.Status.HasEgressRules,
+		summary:        securityGroupSummaryFromStatus(resource.Status),
 		rulesetVersion: resource.Status.RulesetVersion,
 		attached:       resource.Status.AttachedInterfaces,
 		conditions:     []metav1.Condition{ready},

@@ -45,7 +45,7 @@ NetworkACLはSubnetに紐付いていて、`subnet_map.acl_id`から引きます
 
 - `acl_id == 0` (Subnetに紐付いていない) ならPASS。mapは一切引きません
 - そのdirectionにルールが1つも無い (`has_ingress_rules` / `has_egress_rules`が0) ならdefault-allowでPASS
-- ルールがある場合はpriority昇順に前から走査し、最初にマッチしたルールのverdictで確定します。どれにもマッチしなければ暗黙のdeny
+- ルールがある場合はそのdirectionの区画をpriority昇順に前から走査し、最初にマッチしたルールのverdictで確定します。どれにもマッチしなければ暗黙のdeny
 
 SecurityGroupはNICに紐付いていて、`sg_membership_map`を`(vpc_id, pod_ip)`で引きます。
 
@@ -57,6 +57,36 @@ SecurityGroupはNICに紐付いていて、`sg_membership_map`を`(vpc_id, pod_i
 ルールが0件のときの結論が層で違う点に注意してください。ACLはdirectionごとにルールの有無でdefaultが変わります。SGのingressはルールが0件でもdenyのままで、egressだけがAWSのdefault-allowに合わせてあります。
 
 マッチ条件も層で違います。ACLはpeerのIPとdportとprotocolだけを見ます。SGはCIDRに加えてpeerのSecurityGroup参照 (`securityGroupRef`) をマッチできます。peerのSG集合は`sg_membership_map`をpeerのIPで引いて得るので、peerがPodでなければSG参照ルールはマッチしません。
+
+## ルール配列と方向ごとの区画
+
+ユーザが書くルールと、data planeが持つエントリは1対1ではありません。ルール配列に入るのは「1つのprotocol、1つのport (または範囲)、1つのpeer」だけを見る平坦なエントリで、daemonはルールをその直積に展開してから書き込みます。
+
+- NetworkACLのルールはCIDRを1つとportのリストを持つので、portの数だけ展開されます
+- SecurityGroupのルールはpeerのリストとportのリストを持つので、その両方で展開されます
+
+portを省略したルールは「全port」の1エントリ、peerを省略したルールは「全peer」の1エントリになります。どちらも0にはならないので、コストは`max(1, ...)`を掛け合わせた値です。
+
+配列はdirectionごとに区画が分かれています。ingressがスロット`[0, PER_DIR)`、egressが`[PER_DIR, PER_DIR * 2)`です。
+
+| | 1directionあたり | 配列全体 |
+|---|---|---|
+| NetworkACL (`MAX_ACL_RULES_PER_DIR`) | 16 | 32 |
+| SecurityGroup (`MAX_SG_RULES_PER_DIR`) | 8 | 16 |
+
+`acl_evaluate`と`sg_eval_one_sg`はdirectionから`base`を決めて、`base + i`のスロットを`meta`のdirection別カウントの分だけ走査します。自分の区画しか見ないので、エントリ側の`direction`フィールドを見て弾く必要はありません (フィールド自体は`bpftool map dump`の可読性のために残してあります)。ループの上限は`MAX_*_PER_DIR`のままなので、配列が倍になってもverifierが歩く経路の数は増えていません。
+
+区画に分ける前は1本の配列を両方向で共有していました。`ExpandNetworkACL`がdirection昇順に並べるのでingressが先に埋まり、ingressが16エントリ使うとegressのエントリは配列に入りきらずに切り落とされます。それでも`egress_count`は元の値のままなので、評価側はegressのルールを1つも見つけられないまま終端のdenyに落ちます。CRDは`Ready=True`のまま、そのSubnetのegressだけが黙って全遮断になる、というのがissue #52です。
+
+いまは3か所で塞いであります。
+
+1. 上限を超えるNetworkACL / SecurityGroupは、作成・更新の時点でwebhookが拒否します。数え方は`controller/api/v1alpha1/policy_capacity.go`に1つだけ置いてあり、webhookもcontrollerもdaemonも同じ関数を見ます
+2. storeは切り落としをしません。区画に入らないdirectionはfail-closedで入れます。エントリは0本、ただし「このdirectionはルールを持っている」という状態にするので、評価側はそのdirectionだけ終端のdenyに落ちます。もう片方のdirectionは普通に入ります
+3. `Apply`は書き込んだあとに`CapacityError`を返します。reconcilerはError levelでログに出してから`nil`を返します。入らない仕様は恒久的な状態で、rate limiterで再試行しても直らないからです
+
+SGのegressをfail-closedにするには`has_egress_rules = 1`と`egress_count = 0`の組が要ります。`sg_meta_val`にingress側のフラグは無いのですが、SGのingressは元からdeny-by-defaultなので`ingress_count = 0`がそのままfail-closedになります。
+
+SGの1directionあたり8という数字は測って決めたものです。16に上げると`tc_pod_egress`が1,000,000命令を超えてロード自体に失敗します。1つのNICには`MAX_SGS_PER_NIC`個のSGを付けられるので、SGの走査量は`MAX_SGS_PER_NIC * MAX_SG_RULES_PER_DIR`で効きます。Subnetに紐付くACLは1つなので、ACL側は16でも収まる、という差です。上げたくなったらまず`make -C daemon verifier-check`を回してください。
 
 ## policy_ct_mapによるステートフル化
 
@@ -137,9 +167,22 @@ daemonの再起動時は`Manager.Start`がpin pathごと消してからprogram�
 
 BPFのverifierは1プログラムあたり1,000,000命令まで探索します。`tc_pod_egress`はIssue #51に着手する前の時点で643,497命令、hookごとのkeyspaceを入れて662,664命令なので、余裕はもともと3割ほどしかありません。ここに「古いエントリを引いた」というフラグを足すと、ACLとSGの評価区間を通してそのフラグが生きるため、verifierがその区間を2回歩きます。`tc_pod_ingress`が364,672から704,657に増えました。削除処理をnoinlineのsubprogramに切り出す形も試しましたが、こちらは`tc_pod_egress`が1,000,000を超えてロード自体に失敗しました。巨大な`tc_pod_egress`にインライン展開された経路の途中から、スタックポインタを引数に取るBPF-to-BPF callを出すと状態探索が爆発します。e2eクラスタではCNI daemonがcrashloopしました。
 
-epochをkeyに移すと、古い世代のエントリはlookupがそのままmissします。比較も削除も要らないので、data planeの分岐は1つも増えません。この形での実測は`tc_pod_egress`が662,664命令、`tc_pod_ingress`が366,103命令で、value側epochを入れる前と変わりません。引き換えに到達不能なエントリが残りますが、その回収はGCに任せました。
+epochをkeyに移すと、古い世代のエントリはlookupがそのままmissします。比較も削除も要らないので、data planeの分岐は1つも増えません。当時の実測は`tc_pod_egress`が662,664命令、`tc_pod_ingress`が366,103命令で、value側epochを入れる前と変わりませんでした。引き換えに到達不能なエントリが残りますが、その回収はGCに任せました。
 
 「ここで消した方が綺麗では」と思ったら、先に数字を測ってください。`make -C daemon verifier-check`が4つのプログラムを実機カーネルにロードして、消費した命令数を出します。`bpf/`以下を触ったら実行してください。
+
+## いまのverifier予算
+
+directionごとの区画に分けたあとの実測です。上限は1プログラムあたり1,000,000命令です。
+
+| object | 命令数 | 上限に対する割合 |
+|---|---|---|
+| `pod_egress` | 682,460 | 68.2% |
+| `pod_ingress` | 247,476 | 24.7% |
+| `vxlan_ingress` | 3,760 | 0.4% |
+| `node_ingress` | 70,965 | 7.1% |
+
+`pod_egress`が一番きつく、ここが天井に当たるかどうかで判断します。`MAX_SG_RULES_PER_DIR`を8から16に上げる案はこの数字で落ちました。
 
 ## エントリの寿命
 
@@ -205,9 +248,10 @@ policyの層ごとのイベント (`acl pass`、`acl drop`、`sg pass`、`sg dro
 
 - `daemon/bpf/policy.h`: `apply_policy`。ACL → SG → CT installの本体
 - `daemon/bpf/policy_ct.h`: `policy_ct_map`の読み書き。key構築、両方向install、TCP観測とCLOSE時の削除
-- `daemon/bpf/maps.h`: `policy_ct_key` / `policy_ct_val` / `policy_epoch_map`の定義と`POLICY_HOOK_*`
+- `daemon/bpf/maps.h`: `policy_ct_key` / `policy_ct_val` / `policy_epoch_map`の定義と`POLICY_HOOK_*`、`MAX_ACL_RULES_PER_DIR` / `MAX_SG_RULES_PER_DIR`
 - `daemon/bpf/acl.h`、`daemon/bpf/sg.h`: 層ごとのルール走査
-- `daemon/internal/daemon/dataplane/policy/`: ルールの反映 (`aclstore.go`、`sgstore.go`、`membership.go`、`rotator.go`) と世代管理 (`epoch.go`、`invalidator.go`)
+- `controller/api/v1alpha1/policy_capacity.go`: エントリ数の数え方とdirectionごとの上限。webhook、controller、daemonが共有する唯一の定義
+- `daemon/internal/daemon/dataplane/policy/`: ルールの反映 (`aclstore.go`、`sgstore.go`、`membership.go`、`rotator.go`)、容量判定とfail-closed (`capacity.go`)、世代管理 (`epoch.go`、`invalidator.go`)
 - `daemon/internal/daemon/dataplane/reconciler/conntrack.go`、`daemon/internal/daemon/dataplane/ctstate/ttl.go`: GC、TTL、世代の外れたエントリの回収
 - `daemon/internal/daemon/dataplane/mapinventory/register.go`: `kubectl juneau bpf`に見せているスキーマ
 - `daemon/cmd/verifiercheck/`: `make -C daemon verifier-check`の中身。verifierの命令数を実機で測る

@@ -55,6 +55,26 @@ spec:
 
 ステートフルなので、許可された送信に対する応答は受信ルールに無くても通過します。受信側についても同様です。
 
+## ルールの上限
+
+上限はルールの本数ではなく、data planeが持つ**エントリ数**で数えます。SecurityGroupのルールはピアとポートの直積に展開されるので、1ルールのコストは次のとおりです。
+
+```
+エントリ数 = max(1, from / to の要素数) * max(1, ports の要素数)
+```
+
+`ports`を省略したルールは全ポートにマッチする1エントリ分として数えます。ピアを3つ、ポートを2つ書いたルールは6エントリを使います。
+
+この予算は**方向ごとに独立**しています。`ingress`と`egress`はBPFのルール配列の別々の区画を使うので、片方を使い切ってももう片方は影響を受けません。両方向の合計で数えることはありません。
+
+SecurityGroupは1方向あたり**8エントリ**までです。NetworkACLの16より小さいのは、1つのPodに複数のSecurityGroupを付けられるからです。1パケットあたりの走査量は付いているSecurityGroupの数だけ増えるので、1つあたりの本数を抑えてあります。Subnetに紐付くNetworkACLは最大1つなので、そちらは倍を許せます。
+
+`from` / `to` / `ports`に書ける要素数もそれぞれ8までです。ただしこれは1つのリストの上限なので、ピアを8つとポートを8つ書いたルールは64エントリになり、1本だけで上限を超えます。
+
+上限を超えるSecurityGroupは、作成・更新の時点でwebhookが拒否します。つまり存在しているSecurityGroupは、data planeがルールを全て保持できるものだけです。
+
+`securityGroupRef`で指定したピアが解決できなかった場合、そのピアは展開時に落とされます。実際に使われるエントリ数はここで数えた値以下になり、超えることはありません。
+
 ## Podへの付与
 
 PodのannotationでSecurityGroupを指定します。複数のSecurityGroupはカンマ区切りで列挙できます。
@@ -87,8 +107,9 @@ Vpcに`spec.enforceSecurityGroups: true`を設定すると、そのVpc配下のS
 
 `status.groupID`は、このSecurityGroupに割り当てられたクラスタ内で一意の番号です。Pod側 (NetworkInterfaceのstatus) に展開され、ルールの伝達に使われます。
 
-`status.ingressRuleCount` / `status.egressRuleCount`は、`spec.ingress` / `spec.egress`を実際の許可エントリに展開したあとの件数です。
-ピアやポートのリストを書くと自動的に直積に展開されるため、spec上の見かけよりも数が増えます。
+`status.ingressRuleCount` / `status.egressRuleCount`は、`spec.ingress` / `spec.egress`に書いたルールの本数です。
+
+`status.ingressEntryCount` / `status.egressEntryCount`は、そのルールをピアとポートの直積に展開したあとのエントリ数です。上限と突き合わせるのはこちらの値です。
 
 `status.hasEgressRules`は、`spec.egress`が明示的に指定されているかを示します。指定されていない場合は送信が全許可 (default-allow) として扱われます。
 
@@ -99,12 +120,12 @@ Vpcに`spec.enforceSecurityGroups: true`を設定すると、そのVpc配下のS
 ## Conditions
 
 - `Ready`: SecurityGroupが正常に解決され、ルールが適用可能な状態になっていれば`True`
-- `RulesValid`: `spec`のルールがすべて正しく解決できていれば`True`。参照したSecurityGroupが存在しない、ルール件数が上限を超えているなどの場合に`False`になります
+- `RulesValid`: `spec`のルールがすべて正しく解決できていれば`True`。参照したSecurityGroupが存在しない、どちらかの方向がエントリ数の上限を超えているなどの場合に`False`になります
 
 ## 制限事項
 
 - ルールはallow-listです。明示的なdeny指定は現在サポートしていません
 - ルールの優先度はありません。複数SecurityGroupおよび複数ルールの評価結果はORで合成されます
-- 1つのSecurityGroupに記述できるルールの件数 (展開後) には上限があります。`status.ingressRuleCount` / `status.egressRuleCount`が上限を超えると`RulesValid=False`になり、超過分は適用されません
+- 1方向に書けるエントリ数は8までです。超えるSecurityGroupはwebhookが拒否するので、作成や更新そのものが失敗します。数え方は「ルールの上限」を参照してください
 - IPv6には対応していません
 - 削除を試みたSecurityGroupがNetworkInterfaceから参照されている場合、削除は拒否されます。先に該当Podを削除してください
