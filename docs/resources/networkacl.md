@@ -44,6 +44,7 @@ spec:
 `action` は `allow` か `deny` のいずれかです。`deny` を明示的に書けるため、特定の宛先だけを除外したい場合や、優先度の高いdenyで例外を作りたい場合に便利です。
 
 `protocol` は `tcp` / `udp` / `icmp` / `all` から選びます。`all` または `icmp` を指定したルールでは `ports` を空にする必要があります。
+`all` が指すのはTCPとUDPとICMPの3つだけです。それ以外のIPプロトコルはルールに書けず、PodのNICで落ちます ([NetworkACLでSubnet境界を制御する](../guides/network-acl.md))。
 
 `cidr` はIPv4のCIDR表記で、ピアアドレスを指定します。`0.0.0.0/0` で任意のアドレスにマッチします。
 NetworkACLはアドレスベースのルールのみを扱います (Pod単位の指定はSecurityGroupで行ってください)。

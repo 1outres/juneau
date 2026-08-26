@@ -26,6 +26,11 @@ import (
 // empty). icmp accepts only protocol-level matching; ICMP type/code is not
 // expressed by SecurityGroup rules in v1alpha1.
 //
+// "all" means tcp, udp and icmp, and nothing else. No rule can name SCTP,
+// GRE, ESP or any other IP protocol, so the data plane drops packets that
+// use one at the Pod NIC. It drops them even when the Pod has no
+// SecurityGroup and its Subnet has no NetworkACL.
+//
 // +kubebuilder:validation:Enum=tcp;udp;icmp;all
 type SecurityGroupProtocol string
 
@@ -110,6 +115,8 @@ type SecurityGroupIngressRule struct {
 	From []SecurityGroupPeer `json:"from"`
 
 	// Protocol selects the IP protocol. Defaults to "all" when empty.
+	// "all" means tcp, udp and icmp; traffic using any other IP
+	// protocol is dropped and no rule can admit it.
 	// +optional
 	// +kubebuilder:default=all
 	Protocol SecurityGroupProtocol `json:"protocol,omitempty"`
@@ -138,6 +145,8 @@ type SecurityGroupEgressRule struct {
 	To []SecurityGroupPeer `json:"to"`
 
 	// Protocol selects the IP protocol. Defaults to "all" when empty.
+	// "all" means tcp, udp and icmp; traffic using any other IP
+	// protocol is dropped and no rule can admit it.
 	// +optional
 	// +kubebuilder:default=all
 	Protocol SecurityGroupProtocol `json:"protocol,omitempty"`

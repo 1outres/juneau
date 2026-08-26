@@ -229,6 +229,16 @@ spec:
 
 `spec.egress`を一度でも書くと、明示していない宛先への送信は全て遮断されます。クラスタ内DNSや外部APIに到達したい場合は、必要なピアもルールに追加してください。
 
+## ルールに書けるプロトコル
+
+`protocol`に指定できるのは`tcp` / `udp` / `icmp` / `all`の4つです。`all`はこの3つをまとめて指す書き方で、それ以外のIPプロトコルは含みません。SCTP、GRE、ESP、AH、IPIP、OSPF、IGMP、VRRPをルールで名指しすることはできません。`protocol: all`が通すのはTCPとUDPとICMPの3つだけで、名前から受ける印象より狭いので気をつけてください。
+
+書けないプロトコルのパケットは、PodのNICで落ちます。SecurityGroupを付けていないPodでも、Subnetに何のNetworkACLも紐付けていない場合でも落ちます。Pod間でIPsecやGREのトンネルを張る構成は、JuneauのVpc上では成立しません。
+
+以前のJuneauはこれらを素通りさせていました。アップグレードすると、いままで通っていたSCTPやESPが落ちるようになります。
+
+落ちたことを`kubectl juneau trace`で確かめる手段は、いまのところありません。TraceSessionの`protocol`が`TCP` / `UDP` / `ICMP`しか受け付けないので、SCTPやESPのパケットを掴むセッションを作れないからです。daemon側には`policy protocol drop`というイベントを用意してありますが、それを出せるセッションが作れない状態です。プロトコルを疑うときは、送信元Podで`tcpdump -ni eth0 ip proto 132`のように、パケットの側から見てください。
+
 ## Vpcで強制する
 
 「このVpcのPodには必ずSecurityGroupを付ける」運用を徹底したい場合、Vpcに`spec.enforceSecurityGroups: true`を設定します。
@@ -260,6 +270,10 @@ spec:
     - SecurityGroupを付与していないPodはSecurityGroupによる制限を受けません。全Podに付与を強制したい場合は`spec.enforceSecurityGroups: true`を検討
 4. **`securityGroupRef`が見つからない旨のエラー**
     - 参照先のSecurityGroupがまだ作られていない、もしくは別のVpcに属しています。`spec.vpc`を揃えて作り直してください
+5. **TCPとUDPとICMPは通るのに、別のプロトコルだけ通らない**
+    - ルールに書けるプロトコルは`tcp` / `udp` / `icmp` / `all`だけで、`all`もこの3つを指します。SCTPやESPを許可する方法はありません。上の「ルールに書けるプロトコル」を参照してください
+6. **フラグメント化したUDPだけが届かない**
+    - 後続フラグメントが先頭より先に着くと、ポートを復元できないので落ちます。ルールにポートを書いているかどうかは関係ありません。NATGateway越しやClusterIP宛てのフラグメントも落ちます。詳しくは[NetworkACLとSecurityGroupの評価を追う](../developer/policy-data-plane.md)を参照してください
 
 ## 参照
 

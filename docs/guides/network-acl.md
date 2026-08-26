@@ -189,6 +189,16 @@ spec:
 `priority: 50` のdenyが先に評価されるため、後続のallowルールにかかわらず `10.80.1.42` からの通信は遮断されます。
 このようにdenyを優先度の小さい値で先頭に置くと、広めの許可ルールに対する例外を簡潔に表現できます。
 
+## ルールに書けるプロトコル
+
+`protocol` に指定できるのは `tcp` / `udp` / `icmp` / `all` の4つです。`all` はこの3つをまとめて指す書き方なので、SCTPやGRE、ESP、AH、IPIP、OSPF、IGMP、VRRPには、allowもdenyも書けません。
+
+書けないプロトコルのパケットは、SubnetにNetworkACLを紐付けているかどうかに関係なく、PodのNICで落ちます。`spec.ingress` を省略してdefault-allowにしておいても通りません。SecurityGroupも同じ4つしか受け付けないので、そちらで拾い直すこともできません。
+
+以前のJuneauは、両方の層とも素通りさせていました。アップグレードすると、`protocol: all` のallowルールで通っていたつもりのSCTPやESPが落ちるようになります。
+
+落ちたことを `kubectl juneau trace` で確かめる手段は、いまのところありません。TraceSessionの `protocol` が `TCP` / `UDP` / `ICMP` しか受け付けないので、SCTPやESPのパケットを掴むセッションを作れないからです。パケットの側から `tcpdump -ni eth0 ip proto 132` のように見てください。
+
 ## NetworkACLを外す
 
 Subnetの `spec.networkACL` を空にすると、そのSubnetは再びdefault-allowに戻ります。
@@ -230,6 +240,10 @@ NetworkACLとSecurityGroupは同時に有効化できます。
     - 参照しているSubnetが残っているとwebhookで拒否されます。`kubectl get subnet -o jsonpath='{range .items[?(@.spec.networkACL=="<name>")]}{.metadata.name}{"\n"}{end}'` で参照Subnetを洗い出し、`spec.networkACL` を空にしてから削除してください
 5. **priorityで意図しないルールがマッチする**
     - 同じ方向内でpriorityが重複しているとwebhookで拒否されます。マッチ順を厳密に固定したい場合は十分に間隔を空けた priority (10, 20, 30 など) を使うと後から間に挿入しやすくなります
+6. **TCPとUDPとICMPは通るのに、別のプロトコルだけ通らない**
+    - ルールに書けるプロトコルは `tcp` / `udp` / `icmp` / `all` だけで、`all` もこの3つを指します。SCTPやESPを許可する方法はありません。上の「ルールに書けるプロトコル」を参照してください
+7. **フラグメント化したUDPだけが届かない**
+    - 後続フラグメントが先頭より先に着くと、ポートを復元できないので落ちます。ルールにポートを書いているかどうかは関係ありません。NATGateway越しやClusterIP宛てのフラグメントも落ちます。詳しくは[NetworkACLとSecurityGroupの評価を追う](../developer/policy-data-plane.md)を参照してください
 
 ## 参照
 

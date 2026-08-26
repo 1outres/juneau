@@ -43,6 +43,7 @@ spec:
 
 `protocol`は`tcp` / `udp` / `icmp` / `all`から選びます。
 `all`または`icmp`を指定したルールでは`ports`を空にする必要があります。
+`all`が指すのはTCPとUDPとICMPの3つだけです。それ以外のIPプロトコルはルールに書けず、PodのNICで落ちます ([SecurityGroupでPodの通信を制限する](../guides/security-group.md))。
 
 `ports[].port`で単一ポート、`ports[].portRange.from` / `to`で範囲を指定できます。
 `ports`を省略した場合は、そのプロトコルの全ポートにマッチします。

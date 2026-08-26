@@ -1,6 +1,6 @@
 # NetworkACLとSecurityGroupの評価を追う
 
-JuneauのNetworkACLとSecurityGroupは、どちらもPodのNICのところでeBPFが評価します。このドキュメントでは、その評価がどこで何回走るのか、conntrackがどうステートフル性を作っているのか、ルールを書き換えたときに既存フローがどう扱われるのかを説明します。
+JuneauのNetworkACLとSecurityGroupは、どちらもPodのNICのところでeBPFが評価します。このドキュメントでは、どのパケットが評価に入るのか、その評価がどこで何回走るのか、conntrackがどうステートフル性を作っているのか、ルールを書き換えたときに既存フローがどう扱われるのかを説明します。
 
 利用者向けの手順は[SecurityGroupでPodの通信を制限する](../guides/security-group.md)と[NetworkACLでSubnet境界を制御する](../guides/network-acl.md)にあります。ここではその下で動いているものだけを扱います。
 
@@ -37,6 +37,18 @@ Pod間の通信では、1つのパケットが送信元Podのegressと宛先Pod�
 
 hookは呼び出し側で定数なので、この分岐はコンパイル時に畳まれます。生成されるのはhookごとの分岐の無い一本道のコードで、実行時にhookを見て分かれることはありません。
 
+## ルールを引く前に落とすプロトコル
+
+`apply_policy`が最初にやるのは、IPヘッダの`protocol`を見ることです。TCP、UDP、ICMPのどれでもなければ、mapを1つも引かずに`POLICY_RC_PROTO_UNSUPPORTED`で戻り、呼び出し側が`TC_ACT_SHOT`します。
+
+ルールに書けるprotocolは`tcp` / `udp` / `icmp` / `all`の4つで、`all`はこの3つを指します。SCTPやGRE、ESP、AH、IPIP、OSPF、IGMP、VRRPを名指しする方法はありません。以前はそういうパケットが両方の層を素通りしていました。SecurityGroupを付けたPodでも、NetworkACLを紐付けたSubnetでも、ESPは何のチェックも受けずに出入りできる、というのがissue #53です。
+
+いまは落とす側に倒してあります。allow-listを名乗っている以上、名指しできないプロトコルを黙って通すのは筋が通りません。ゲートはACLもSGも見ないので、何も付いていないPodでもSCTPは落ちます。これらを通したくなったときは、`SecurityGroupProtocol`と`NetworkACLProtocol`のenumを増やして`acl.h`と`sg.h`のマッチにも足してください。ゲートを外すだけにするとissue #53に戻ります。
+
+ゲートはCTのlookupより手前にあります。`policy_ct_map`にはTCPとUDPとICMPのエントリしか入りません。
+
+`apply_policy`の戻り値には`POLICY_RC_*`という名前が付いています。0以上は呼び出し側が処理を続けてよい値で、負の値はすべて終端です。どのtrace reasonに変換するかは`policy_drop_reason`が1か所で決めるので、rcを足したときにhookごとに表示がずれることはありません。
+
 ## 評価順とdefaultの違い
 
 `apply_policy`はNetworkACLを先に、SecurityGroupを後に評価します。粗い方から順に落とす形です。どちらかがDENYを返した時点でパケットは捨てられ、trace上ではACLとSGのどちらが落としたかが区別されます。
@@ -57,6 +69,33 @@ SecurityGroupはNICに紐付いていて、`sg_membership_map`を`(vpc_id, pod_i
 ルールが0件のときの結論が層で違う点に注意してください。ACLはdirectionごとにルールの有無でdefaultが変わります。SGのingressはルールが0件でもdenyのままで、egressだけがAWSのdefault-allowに合わせてあります。
 
 マッチ条件も層で違います。ACLはpeerのIPとdportとprotocolだけを見ます。SGはCIDRに加えてpeerのSecurityGroup参照 (`securityGroupRef`) をマッチできます。peerのSG集合は`sg_membership_map`をpeerのIPで引いて得るので、peerがPodでなければSG参照ルールはマッチしません。
+
+## IPフラグメントの扱い
+
+L4ヘッダを持っているのは先頭フラグメントだけです。2つ目以降はdatagramの途中から始まるので、ヘッダがあるはずの位置にはペイロードが乗っています。dportを見るルールは、そのままでは判定できません。
+
+以前は`nat_read_l4_ports`が`IP_OFFSET`を見ていませんでした。後続フラグメントでもペイロードのバイト列をポートとして読み、成功を返します。結果は2通りに分かれます。ポートを指定したallowルールの下では、先頭フラグメントだけが許可されて後続が落ち、datagramは再組み立てされません。MTUを超えるUDPを投げるアプリケーションが、理由の分からないまま止まります。ポートを指定していないルールの下では通りますが、`policy_ct_map`にはゴミのポートを持つエントリが、後続フラグメント1つにつき2つ積まれます。
+
+いまは`policy_frag_map`を挟みます。先頭フラグメントが読んだポートをそこに置き、後続フラグメントはそれを引いてから通常の評価に入ります。復元したあとは普通のパケットと同じ扱いで、ACLもSGもCTも同じコードを通ります。
+
+keyは`(vpc_id, saddr, daddr, ip_id, proto)`です。`policy_ct_key`と比べて、入れなかったフィールドが2つあります。
+
+- epochを入れていません。ここに記録するのはwireに載っていた事実で、ポリシーの判定結果ではありません。ルールを書き換えても、飛んでいるdatagramのポート番号は変わらないので、世代で捨てる理由がありません
+- hookを入れていません。同じdatagramの全フラグメントは、送信側の`pod_egress`と受信側の`pod_ingress`の両方を通ります。どちらが先に書いても中身は同じなので、1エントリあれば両方で使えます
+
+vpc_idは入れます。PodのアドレスはVpcをまたぐと重複するので、これが無いと別のVpcのdatagramが置いたポートを拾ってしまいます。
+
+mapは`BPF_MAP_TYPE_LRU_HASH`で65536エントリです。`policy_ct_map`はHASHなのに、こちらをLRUにしたのはエントリの寿命が短いからです。残りのフラグメントが届けば用済みで、届かなければ受信側のIP層が30秒で再組み立てを諦めます。カーネルに古い方から追い出させておけば足ります。`reconciler.Conntrack`のGCに回収パスを足していないのはそのためです。
+
+先頭より先に後続フラグメントが着くと、まだ誰もポートを書いていないので落とします。traceには`policy fragment drop`が出ます。LRUの追い出しで先頭のエントリが消えたあとに後続が着いた場合も同じです。経路で並べ替えが起きるとフラグメント化したUDPが落ちることがある、と考えてください。
+
+このチェックはどの層もenforcingでないPodにも効きます。ポートの復元はCTのlookupより手前、つまり`acl_id`やSGのmembershipを見るより手前にあるからです。SecurityGroupを1つも付けていないPodでも、順番の狂ったフラグメントは落ちます。
+
+ICMPはこの経路を通りません。ポートが無いので、どのフラグメントも同じtupleを組み立てます。
+
+NAT側も同じ穴を持っていました。`nat_rewrite_l4_port`にも`IP_OFFSET`のガードが無く、NAPTやServiceのDNATを通る後続フラグメントは、ペイロードの4バイトをポートとして書き換えられていました。`nat_update_l4_csum`の方は`IP_OFFSET`を見るのでチェックサムを更新せず、壊れたバイト列に合わないチェックサムが付いたまま相手に届きます。受信側のUDPチェックサム検証で捨てられるので、実質は動いていませんでした。
+
+いまは`nat_read_l4_ports`と`nat_rewrite_l4_port`の両方が後続フラグメントで失敗を返し、`handle_napt`と`apply_conntrack_dnat`の呼び出し側が`TC_ACT_SHOT`します。NATGateway越しやClusterIP宛てのフラグメント化されたUDPは、尾部が落ちて再組み立てされません。壊れたパケットを送るのをやめただけで、通るようにはなっていません。NAT越しにフラグメントを通すにはNAT側にもポートの記憶が要るので、それは別の作業です。`policy_frag_map`は`apply_policy`からしか引いていません。
 
 ## ルール配列と方向ごとの区画
 
@@ -171,16 +210,28 @@ epochをkeyに移すと、古い世代のエントリはlookupがそのままmis
 
 「ここで消した方が綺麗では」と思ったら、先に数字を測ってください。`make -C daemon verifier-check`が4つのプログラムを実機カーネルにロードして、消費した命令数を出します。`bpf/`以下を触ったら実行してください。
 
+## なぜポートの復元をsubprogramにしたのか
+
+`policy_frag_resolve_ports`は`__juneau_bpf_subprog`、つまりnoinlineのBPF-to-BPF subprogramです。最初は`__always_inline`で書きました。`tc_pod_egress`が1,000,001命令になって、ロードに失敗しました。上限は1,000,000です。
+
+原因は分岐の数です。この関数は3つに分かれます。後続フラグメントで`policy_frag_map`を引く経路、先頭フラグメントでヘッダを読んでmapに書く経路、フラグメントでないパケットでヘッダを読むだけの経路。インライン展開すると、この3つがそれぞれ`tc_pod_egress`の残り全体、つまりCTのlookupからACLとSGの評価を経てCTのinstallまでに合流します。verifierはその尾部を3回歩きます。
+
+subprogramにすると出口が1つになり、呼び出し側は直線のまま残ります。`acl_evaluate`と`sg_eval`を切り出したのと同じ理由です。`apply_policy`本体は今もインライン展開したままにしてあります。状態爆発を起こすのはループと分岐を持つ部品の側なので、そこだけ切り出せば足ります。
+
+packet pointerを引数で渡さず、subprogramの中で`skb`から引き直しているのも意図的です。巨大な`tc_pod_egress`に展開された経路の途中からスタックポインタを引数に取るBPF-to-BPF callを出すと、前節と同じ理由で状態探索が爆発します。`nat_rewrite_l4_port`が同じ形を取っています。
+
 ## いまのverifier予算
 
-directionごとの区画に分けたあとの実測です。上限は1プログラムあたり1,000,000命令です。
+プロトコルのゲートとフラグメントのポート復元を入れたあとの実測です。上限は1プログラムあたり1,000,000命令です。
 
 | object | 命令数 | 上限に対する割合 |
 |---|---|---|
-| `pod_egress` | 682,460 | 68.2% |
-| `pod_ingress` | 247,476 | 24.7% |
-| `vxlan_ingress` | 3,760 | 0.4% |
-| `node_ingress` | 70,965 | 7.1% |
+| `pod_egress` | 674,690 | 67.5% |
+| `pod_ingress` | 248,252 | 24.8% |
+| `vxlan_ingress` | 3,570 | 0.4% |
+| `node_ingress` | 72,644 | 7.3% |
+
+`pod_egress`は前回の682,460から7,770命令減りました。フラグメントの分岐を足したのに減っているのは、プロトコルのゲートがCTのlookupより手前でreturnするようになったからです。TCPとUDPとICMP以外の値を持つ経路が、ACLとSGの評価区間に入らなくなりました。
 
 `pod_egress`が一番きつく、ここが天井に当たるかどうかで判断します。`MAX_SG_RULES_PER_DIR`を8から16に上げる案はこの数字で落ちました。
 
@@ -233,6 +284,14 @@ $ kubectl juneau bpf dump policy_epoch_map
 
 index 0のエントリが1つ出るだけです。ルールを変更したあとにこの値が動いていなければ、daemonがbumpしていません。値が動いているのに古い判定のままなら、`policy_ct_map`のdumpでkeyの`epoch`列を見てください。短絡に使われているエントリは必ず現在の世代の値を持っています。
 
+`policy_frag_map`も同じようにdumpできます。
+
+```console
+$ kubectl juneau bpf dump policy_frag_map --node worker-1
+```
+
+`sport`と`dport`は先頭フラグメントが運んできた値です。`ip_id`はIPヘッダの識別子で、BPFがbyte orderを変えずにコピーしています。エントリを消す経路はLRUの追い出しだけです。`last_seen_ns`は後続フラグメントが引くたびに更新していますが、GCはこのmapを走査しません。
+
 パケット単位で追いたい場合はTraceSessionを使います。
 
 ```console
@@ -244,11 +303,18 @@ policyの層ごとのイベント (`acl pass`、`acl drop`、`sg pass`、`sg dro
 
 1つ落とし穴があります。`apply_policy`はCTで短絡した時点で戻るので、admission済みのフローではpolicyのイベントが1つも出ません。層の評価を見たいときは新しいフローを張ってください。評価パスに入ったことは`conntrack miss`イベントで確認できます。
 
+policyがパケットを落としたときのreasonは4種類あります。`acl drop`と`sg drop`はルールを走査して落としたもので、`policy protocol drop`と`policy fragment drop`は走査に入る前に落としたものです。後ろの2つが出ているなら、ルールをいくら足しても通りません。
+
+ただし`policy protocol drop`は、いまのところtraceに出せません。`trace_id`はTraceSessionが登録したtupleとの一致で決まり、tupleの`proto`にはTCPとUDPとICMPしか入らないからです (`TraceProtocol`のenum)。SCTPやESPのパケットを掴むセッションを作る方法が無いので、reason番号と表示名は用意してあるのに発火する経路がありません。プロトコルのenumを増やすときは`TraceProtocol`も一緒に見てください。
+
+`policy fragment drop`は出ることがあります。後続フラグメントのポートはtrace側も読めません (`trace_read_l4_ports`も`IP_OFFSET`を見ていません) が、classifyはdport=0でもう一度引き直します。kubectlは応答方向のtupleをdport=0で登録するので、応答がフラグメント化するフローならそこで拾えます。要求方向のtupleはdportが埋まっているため拾えません。
+
 ## 実装の入口
 
-- `daemon/bpf/policy.h`: `apply_policy`。ACL → SG → CT installの本体
+- `daemon/bpf/policy.h`: `apply_policy`。プロトコルのゲート、ACL → SG → CT installの本体、`POLICY_RC_*`と`policy_drop_reason`
 - `daemon/bpf/policy_ct.h`: `policy_ct_map`の読み書き。key構築、両方向install、TCP観測とCLOSE時の削除
-- `daemon/bpf/maps.h`: `policy_ct_key` / `policy_ct_val` / `policy_epoch_map`の定義と`POLICY_HOOK_*`、`MAX_ACL_RULES_PER_DIR` / `MAX_SG_RULES_PER_DIR`
+- `daemon/bpf/policy_frag.h`: 後続フラグメントのポート復元。`policy_frag_map`の読み書きとnoinlineの`policy_frag_resolve_ports`
+- `daemon/bpf/maps.h`: `policy_ct_key` / `policy_ct_val` / `policy_frag_key` / `policy_frag_val` / `policy_epoch_map`の定義と`POLICY_HOOK_*`、`MAX_ACL_RULES_PER_DIR` / `MAX_SG_RULES_PER_DIR`
 - `daemon/bpf/acl.h`、`daemon/bpf/sg.h`: 層ごとのルール走査
 - `controller/api/v1alpha1/policy_capacity.go`: エントリ数の数え方とdirectionごとの上限。webhook、controller、daemonが共有する唯一の定義
 - `daemon/internal/daemon/dataplane/policy/`: ルールの反映 (`aclstore.go`、`sgstore.go`、`membership.go`、`rotator.go`)、容量判定とfail-closed (`capacity.go`)、世代管理 (`epoch.go`、`invalidator.go`)

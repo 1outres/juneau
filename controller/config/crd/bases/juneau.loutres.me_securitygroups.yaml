@@ -121,8 +121,10 @@ spec:
                       type: array
                     protocol:
                       default: all
-                      description: Protocol selects the IP protocol. Defaults to "all"
-                        when empty.
+                      description: |-
+                        Protocol selects the IP protocol. Defaults to "all" when empty.
+                        "all" means tcp, udp and icmp; traffic using any other IP
+                        protocol is dropped and no rule can admit it.
                       enum:
                       - tcp
                       - udp
@@ -262,8 +264,10 @@ spec:
                       type: array
                     protocol:
                       default: all
-                      description: Protocol selects the IP protocol. Defaults to "all"
-                        when empty.
+                      description: |-
+                        Protocol selects the IP protocol. Defaults to "all" when empty.
+                        "all" means tcp, udp and icmp; traffic using any other IP
+                        protocol is dropped and no rule can admit it.
                       enum:
                       - tcp
                       - udp

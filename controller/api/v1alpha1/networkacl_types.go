@@ -26,6 +26,11 @@ import (
 // empty). icmp accepts only protocol-level matching; ICMP type/code is not
 // expressed by NetworkACL rules in v1alpha1.
 //
+// "all" means tcp, udp and icmp, and nothing else. No rule can name SCTP,
+// GRE, ESP or any other IP protocol, so the data plane drops packets that
+// use one at the Pod NIC. It drops them even when the Subnet has no
+// NetworkACL and the Pod has no SecurityGroup.
+//
 // The values intentionally line up with SecurityGroupProtocol so the same
 // BPF matching primitives (policy_match.h) handle both layers. The Go
 // types are kept separate so mixing an SG rule with an ACL rule fails at
@@ -111,6 +116,8 @@ type NetworkACLRule struct {
 	Action NetworkACLAction `json:"action"`
 
 	// Protocol selects the IP protocol. Defaults to "all" when empty.
+	// "all" means tcp, udp and icmp; traffic using any other IP
+	// protocol is dropped and no rule can admit it.
 	// +optional
 	// +kubebuilder:default=all
 	Protocol NetworkACLProtocol `json:"protocol,omitempty"`
