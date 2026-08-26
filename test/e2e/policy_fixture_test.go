@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
@@ -329,10 +330,19 @@ func entryCountText(entries int) string {
 
 // --- Pod manifests ---------------------------------------------------
 
-const busyboxImage = "busybox:1.37"
+const (
+	busyboxImage  = "busybox:1.37"
+	netshootImage = "nicolaka/netshoot:v0.16"
+)
 
 const curlClientContainer = `    - name: client
       image: curlimages/curl:8.12.1
+      command: ["sleep", "3600"]`
+
+// netshootClientContainer is the client for specs that need more than
+// curl: netshoot carries ping and a python3 that can open raw sockets.
+const netshootClientContainer = `    - name: client
+      image: ` + netshootImage + `
       command: ["sleep", "3600"]`
 
 const nginxServerContainer = `    - name: server
@@ -429,4 +439,145 @@ metadata:
   containers:
 %s
 `, namespace, name, name, annBlock, nodeName, containers)
+}
+
+// --- Protocol and fragment probes ------------------------------------
+
+// NetworkACL and SecurityGroup rules can only name tcp, udp and icmp,
+// so `protocol: all` covers those three and nothing more. The specs
+// below observe the rest of the IP protocols through raw sockets,
+// because a protocol the kernel has no stack for leaves no other sign
+// that it arrived.
+const (
+	// policyRawProbeCount is how many packets a raw probe sends. More
+	// than one so a single lost packet cannot pass for a drop.
+	policyRawProbeCount = 3
+
+	policyGRESinkContainer  = "gre-sink"
+	policyICMPSinkContainer = "icmp-sink"
+	policyUDPSinkContainer  = "udp-sink"
+
+	// policySinkReadyLine is what a sink prints once its socket is
+	// open. Waiting for it keeps a spec from sending into a Pod that
+	// is Ready but not yet listening.
+	policySinkReadyLine = "listening"
+
+	// policySinkPacketPrefix starts every line a sink prints for a
+	// packet it received.
+	policySinkPacketPrefix = "packet"
+)
+
+const (
+	// policyUDPSinkPort is the destination port the fragment spec
+	// names in its rules and binds its sink to.
+	policyUDPSinkPort = 9099
+
+	// The fragment spec sizes its datagrams from the Pod's own MTU:
+	// one that fits in a single IP packet and one the sender has to
+	// split. Both margins are wide enough that the 28 bytes of IP and
+	// UDP headers cannot move a datagram to the other side.
+	policyUDPFitMargin      = 128
+	policyUDPOversizeMargin = 512
+
+	// Each datagram leaves from its own source port. The policy stage
+	// keys its conntrack on the whole tuple, so a shared source port
+	// would let the verdict on the first datagram stand in for the
+	// second one and the rules would never run again.
+	policyUDPFittingSourcePort   = 40001
+	policyUDPOversizedSourcePort = 40002
+)
+
+// rawProtocolSinkContainer builds a listener that records every IP
+// packet of one protocol the Pod receives.
+func rawProtocolSinkContainer(name string, protocol int) string {
+	return fmt.Sprintf(`    - name: %s
+      image: %s
+      command:
+        - python3
+        - -u
+        - -c
+        - |
+          import socket
+          sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, %d)
+          print("%s")
+          while True:
+              data, addr = sock.recvfrom(65535)
+              print("%s", addr[0], len(data))`,
+		name, netshootImage, protocol, policySinkReadyLine, policySinkPacketPrefix)
+}
+
+// udpSinkContainer builds a listener that records the size of every UDP
+// datagram delivered to one port. The size is the point: a datagram
+// that travelled in fragments is whole only if every fragment arrived.
+func udpSinkContainer(name string, port int) string {
+	return fmt.Sprintf(`    - name: %s
+      image: %s
+      command:
+        - python3
+        - -u
+        - -c
+        - |
+          import socket
+          sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          sock.bind(("0.0.0.0", %d))
+          print("%s")
+          while True:
+              data, addr = sock.recvfrom(65535)
+              print("%s", addr[0], len(data))`,
+		name, netshootImage, port, policySinkReadyLine, policySinkPacketPrefix)
+}
+
+// unsupportedProtocolServerContainers gives the destination Pod the
+// nginx listener the tcp control needs and one raw sink per protocol
+// the spec has to watch.
+func unsupportedProtocolServerContainers() string {
+	return strings.Join([]string{
+		nginxServerContainer,
+		rawProtocolSinkContainer(policyGRESinkContainer, greProtocol),
+		rawProtocolSinkContainer(policyICMPSinkContainer, icmpProtocol),
+	}, "\n")
+}
+
+// sinkPacketRecord renders the line a sink prints for a packet of a
+// known size.
+func sinkPacketRecord(sourceIP string, size int) string {
+	return fmt.Sprintf("%s %s %d", policySinkPacketPrefix, sourceIP, size)
+}
+
+// sinkPacketFrom renders what every sink line for one sender starts
+// with, for specs that care that a packet arrived but not how big it
+// was.
+func sinkPacketFrom(sourceIP string) string {
+	return fmt.Sprintf("%s %s ", policySinkPacketPrefix, sourceIP)
+}
+
+// assertPolicyDropsUnsupportedProtocol checks what `protocol: all`
+// means: it covers tcp, udp and icmp, and no allow rule can widen it
+// past those three. The server Pod must carry the containers
+// unsupportedProtocolServerContainers builds, and the client must be a
+// netshoot Pod.
+//
+// The icmp probe goes out after the GRE one so it doubles as a
+// barrier: once a sink has recorded a packet that left later, a GRE
+// packet that never shows up is not one still in flight.
+func assertPolicyDropsUnsupportedProtocol(namespace string) {
+	waitContainerLogLine(namespace, serverPodName, policyGRESinkContainer, policySinkReadyLine)
+	waitContainerLogLine(namespace, serverPodName, policyICMPSinkContainer, policySinkReadyLine)
+
+	clientIP := mustPodIP(namespace, clientPodName)
+	serverIP := mustPodIP(namespace, serverPodName)
+
+	By("admitting tcp under the allow rule")
+	assertPodConnectivity(namespace, clientPodName, serverPodName)
+
+	By("sending GRE packets the allow rule would cover if `all` meant every protocol")
+	sendGREPackets(namespace, clientPodName, serverIP, policyRawProbeCount)
+
+	By("admitting icmp under the same allow rule")
+	assertPodPing(namespace, clientPodName, serverIP)
+	waitContainerLogLine(namespace, serverPodName, policyICMPSinkContainer, sinkPacketFrom(clientIP))
+
+	By("dropping the GRE packets")
+	Expect(containerLog(namespace, serverPodName, policyGRESinkContainer)).
+		NotTo(ContainSubstring(policySinkPacketPrefix))
 }

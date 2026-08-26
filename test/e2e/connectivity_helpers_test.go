@@ -3,6 +3,7 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -286,9 +287,9 @@ metadata:
   terminationGracePeriodSeconds: 0
   containers:
     - name: client
-      image: nicolaka/netshoot:v0.16
+      image: %s
       command: ["sleep", "3600"]
-`, namespace, name, annotation, nodeName)
+`, namespace, name, annotation, nodeName, netshootImage)
 }
 
 func createServerService(ctx caseContext, vpcAnnotation string) {
@@ -709,6 +710,79 @@ func assertServiceConnectivity(namespace string, clientPod string, serviceName s
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(strings.ToLower(out)).To(ContainSubstring("welcome to nginx"))
 	}).Should(Succeed())
+}
+
+// greProtocol is the IP protocol number of GRE (RFC 2784) and
+// icmpProtocol that of ICMP. The policy suites use GRE as the stand-in
+// for every protocol outside tcp, udp and icmp.
+const (
+	greProtocol  = 47
+	icmpProtocol = 1
+)
+
+// podInterfaceMTU reads the MTU the CNI gave a Pod's primary
+// interface. A spec that needs a datagram the sender has to fragment
+// sizes it from this rather than from a guess.
+func podInterfaceMTU(namespace string, podName string) int {
+	out, err := kubectlOutput(repoRoot, "exec", "-n", namespace, podName, "--",
+		"cat", "/sys/class/net/eth0/mtu")
+	Expect(err).NotTo(HaveOccurred(), "reading the Pod MTU: %s", out)
+	mtu, err := strconv.Atoi(strings.TrimSpace(out))
+	Expect(err).NotTo(HaveOccurred(), "unexpected MTU text: %s", out)
+	return mtu
+}
+
+// sendGREPackets sends `count` GRE packets from clientPod to target.
+// They go out over a raw socket because no ordinary tool speaks a
+// protocol the kernel has no stack for, and they carry a real GRE
+// header so nothing on the path can turn them away as malformed.
+func sendGREPackets(namespace string, clientPod string, target string, count int) {
+	script := fmt.Sprintf(`import socket, struct
+sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, %d)
+packet = struct.pack("!HH", 0, 0x0800) + b"juneau-gre-probe"
+for _ in range(%d):
+    if sock.sendto(packet, ("%s", 0)) != len(packet):
+        raise SystemExit("short send")
+print("sent", %d)
+`, greProtocol, count, target, count)
+
+	out, err := kubectlOutput(repoRoot, "exec", "-n", namespace, clientPod, "--", "python3", "-c", script)
+	Expect(err).NotTo(HaveOccurred(), "sending GRE packets: %s", out)
+	Expect(out).To(ContainSubstring(fmt.Sprintf("sent %d", count)))
+}
+
+// sendUDPDatagram sends one UDP datagram of exactly `size` payload
+// bytes from clientPod:sourcePort to target:destPort.
+func sendUDPDatagram(namespace string, clientPod string, target string, sourcePort int, destPort int, size int) {
+	script := fmt.Sprintf(`import socket
+payload = b"j" * %d
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.bind(("0.0.0.0", %d))
+if sock.sendto(payload, ("%s", %d)) != len(payload):
+    raise SystemExit("short send")
+print("sent", len(payload))
+`, size, sourcePort, target, destPort)
+
+	out, err := kubectlOutput(repoRoot, "exec", "-n", namespace, clientPod, "--", "python3", "-c", script)
+	Expect(err).NotTo(HaveOccurred(), "sending a %d-byte datagram: %s", size, out)
+	Expect(out).To(ContainSubstring(fmt.Sprintf("sent %d", size)))
+}
+
+// waitContainerLogLine waits until one container of a Pod has printed
+// a line containing want.
+func waitContainerLogLine(namespace string, podName string, container string, want string) {
+	Eventually(func(g Gomega) {
+		out, err := kubectlOutput(repoRoot, "logs", "-n", namespace, podName, "-c", container)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(out).To(ContainSubstring(want))
+	}).Should(Succeed())
+}
+
+// containerLog returns everything one container of a Pod has printed.
+func containerLog(namespace string, podName string, container string) string {
+	out, err := kubectlOutput(repoRoot, "logs", "-n", namespace, podName, "-c", container)
+	Expect(err).NotTo(HaveOccurred())
+	return out
 }
 
 func cleanupCaseResources(ctx caseContext) {

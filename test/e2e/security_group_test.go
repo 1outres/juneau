@@ -34,6 +34,11 @@ import (
 //    and nothing else.
 // 10. Both directions (issue #52): a SG whose ingress sits at its entry
 //    budget still enforces the egress rules it declares.
+// 11. Protocols (issue #53): `protocol: all` covers tcp, udp and
+//    icmp. Every other IP protocol is dropped however wide the allow
+//    rule is written.
+// 12. Fragments (issue #53): a rule that names a UDP port admits a
+//    datagram the sender had to fragment, not only its first packet.
 //
 // Every spec creates an isolated namespace + Vpc + Subnets so they can
 // run in parallel under Ginkgo --procs.
@@ -345,6 +350,107 @@ var _ = Describe("Juneau SecurityGroup", func() {
 		assertPodConnectivity(fix.namespace, clientPodName, serverPodName)
 		By("keeping in the port it does not")
 		assertNoPodPortConnectivity(fix.namespace, clientPodName, serverPodName, policyBlockedPort)
+	})
+
+	It("protocols: `all` covers tcp, udp and icmp, and nothing else", func() {
+		base := sanitizeName("sg-protocol-gate")
+		fix := newSGFixture(base)
+		DeferCleanup(fix.Cleanup)
+		fix.CreateNetwork()
+
+		// This is issue #53. Both Pods carry a SG that admits every
+		// peer on `all` in both directions, so no rule is left that
+		// could turn a packet away: a protocol that still does not
+		// arrive was stopped by what `all` means, not by a rule.
+		fix.CreateSG("server-sg", `
+  ingress:
+    - from:
+        - cidr: 0.0.0.0/0
+      protocol: all`)
+		fix.CreateSG("client-sg", `
+  ingress:
+    - from:
+        - cidr: 0.0.0.0/0
+      protocol: all
+  egress:
+    - to:
+        - cidr: 0.0.0.0/0
+      protocol: all`)
+		waitPolicyEntryCounts("securitygroup", fix.SGName("server-sg"), 1, 0)
+		waitPolicyEntryCounts("securitygroup", fix.SGName("client-sg"), 1, 1)
+		waitResourceReady("securitygroup", fix.SGName("server-sg"))
+		waitResourceReady("securitygroup", fix.SGName("client-sg"))
+
+		fix.CreatePodWithContainers(serverPodName, fix.serverSubnet, fix.serverNode,
+			unsupportedProtocolServerContainers(), []string{"server-sg"})
+		fix.CreatePodWithContainers(clientPodName, fix.clientSubnet, fix.clientNode,
+			netshootClientContainer, []string{"client-sg"})
+		waitPodsReady(fix.namespace, serverPodName, clientPodName)
+
+		assertPolicyDropsUnsupportedProtocol(fix.namespace)
+	})
+
+	It("fragments: a port rule admits a UDP datagram larger than the MTU", func() {
+		base := sanitizeName("sg-udp-fragments")
+		fix := newSGFixture(base)
+		DeferCleanup(fix.Cleanup)
+		fix.CreateNetwork()
+
+		// Both directions name the port, so both enforcement points
+		// have to know the ports of every fragment and not only of
+		// the one that carries the UDP header.
+		fix.CreateSG("server-sg", fmt.Sprintf(`
+  ingress:
+    - from:
+        - cidr: 0.0.0.0/0
+      protocol: udp
+      ports:
+        - port: %d`, policyUDPSinkPort))
+		fix.CreateSG("client-sg", fmt.Sprintf(`
+  ingress:
+    - from:
+        - cidr: 0.0.0.0/0
+      protocol: udp
+      ports:
+        - port: %d
+  egress:
+    - to:
+        - cidr: 0.0.0.0/0
+      protocol: udp
+      ports:
+        - port: %d`, policyUDPSinkPort, policyUDPSinkPort))
+		waitPolicyEntryCounts("securitygroup", fix.SGName("server-sg"), 1, 0)
+		waitPolicyEntryCounts("securitygroup", fix.SGName("client-sg"), 1, 1)
+		waitResourceReady("securitygroup", fix.SGName("server-sg"))
+		waitResourceReady("securitygroup", fix.SGName("client-sg"))
+
+		fix.CreatePodWithContainers(serverPodName, fix.serverSubnet, fix.serverNode,
+			udpSinkContainer(policyUDPSinkContainer, policyUDPSinkPort), []string{"server-sg"})
+		fix.CreatePodWithContainers(clientPodName, fix.clientSubnet, fix.clientNode,
+			netshootClientContainer, []string{"client-sg"})
+		waitPodsReady(fix.namespace, serverPodName, clientPodName)
+		waitContainerLogLine(fix.namespace, serverPodName, policyUDPSinkContainer, policySinkReadyLine)
+
+		clientIP := mustPodIP(fix.namespace, clientPodName)
+		serverIP := mustPodIP(fix.namespace, serverPodName)
+		mtu := podInterfaceMTU(fix.namespace, clientPodName)
+
+		By("delivering a datagram that fits in one IP packet")
+		fitting := mtu - policyUDPFitMargin
+		sendUDPDatagram(fix.namespace, clientPodName, serverIP,
+			policyUDPFittingSourcePort, policyUDPSinkPort, fitting)
+		waitContainerLogLine(fix.namespace, serverPodName, policyUDPSinkContainer,
+			sinkPacketRecord(clientIP, fitting))
+
+		// Before the fragment map, a later fragment had no UDP
+		// header, so the policy stage read its payload as ports and
+		// no port rule matched.
+		By("delivering a datagram the sender has to fragment")
+		oversized := mtu + policyUDPOversizeMargin
+		sendUDPDatagram(fix.namespace, clientPodName, serverIP,
+			policyUDPOversizedSourcePort, policyUDPSinkPort, oversized)
+		waitContainerLogLine(fix.namespace, serverPodName, policyUDPSinkContainer,
+			sinkPacketRecord(clientIP, oversized))
 	})
 })
 

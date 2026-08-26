@@ -30,6 +30,9 @@ import (
 //    egress enforces both, including when one of them sits at its
 //    entry budget.
 // 9. Ports — one rule admits every port it lists, and nothing else.
+// 10. Protocols (issue #53) — `protocol: all` covers tcp, udp and
+//    icmp. Every other IP protocol is dropped however wide the allow
+//    rule is written.
 //
 // Every spec creates an isolated namespace + Vpc + Subnets so they can
 // run in parallel under Ginkgo --procs.
@@ -294,6 +297,41 @@ var _ = Describe("Juneau NetworkACL", func() {
 		// the end, and the whole egress direction of the Subnet
 		// blackholed while the ACL still reported Ready=True.
 		runACLBothDirections(fix, aclEntriesPerDirection-aclBothDirectionsAllowEntries)
+	})
+
+	It("protocols: `all` covers tcp, udp and icmp, and nothing else", func() {
+		base := sanitizeName("acl-protocol-gate")
+		fix := newPolicyFixture(base)
+		DeferCleanup(fix.Cleanup)
+		fix.CreateNetwork()
+
+		// This is issue #53. One ACL on both Subnets admits every
+		// peer on `all` in both directions, so no rule is left that
+		// could turn a packet away: a protocol that still does not
+		// arrive was stopped by what `all` means, not by a rule.
+		fix.CreateACL("policy-acl", `
+  ingress:
+    - priority: 100
+      action: allow
+      protocol: all
+      cidr: 0.0.0.0/0
+  egress:
+    - priority: 100
+      action: allow
+      protocol: all
+      cidr: 0.0.0.0/0`)
+		fix.AttachACL(fix.serverSubnet, "policy-acl")
+		fix.AttachACL(fix.clientSubnet, "policy-acl")
+		waitPolicyEntryCounts("networkacl", fix.ACLName("policy-acl"), 1, 1)
+		waitResourceReady("networkacl", fix.ACLName("policy-acl"))
+
+		fix.CreatePodWithContainers(serverPodName, fix.serverSubnet, fix.serverNode,
+			unsupportedProtocolServerContainers(), nil)
+		fix.CreatePodWithContainers(clientPodName, fix.clientSubnet, fix.clientNode,
+			netshootClientContainer, nil)
+		waitPodsReady(fix.namespace, serverPodName, clientPodName)
+
+		assertPolicyDropsUnsupportedProtocol(fix.namespace)
 	})
 })
 
