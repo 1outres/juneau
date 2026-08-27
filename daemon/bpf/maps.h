@@ -992,10 +992,12 @@ struct {
 #define SG_VERDICT_DENY  0
 #define SG_VERDICT_ALLOW 1
 
-// SG rules use POLICY_PROTO_ANY (defined in policy_match.h) for the
-// "protocol=all" wildcard, and IPPROTO_TCP / IPPROTO_UDP / IPPROTO_ICMP
-// for concrete protocols. The BPF evaluator therefore compares the
-// stored proto byte directly against iph->protocol.
+// SG and ACL rules store the protocol in 16 bits: 0..255 are real IP
+// protocol numbers compared straight against iph->protocol, and
+// POLICY_PROTO_ANY (0xFFFF, defined in policy_match.h) is the
+// "protocol=all" wildcard. The extra byte exists only to keep the
+// wildcard out of the protocol number space, so protocol 0 (HOPOPT)
+// stays expressible.
 
 struct sg_membership_key {
   __u32 vpc_id;
@@ -1040,15 +1042,15 @@ struct {
 // (bpftool dumps); the eval loop selects the direction by slot window,
 // not by this field.
 struct sg_rule {
-  __u8  direction;          // SG_DIR_*
-  __u8  proto;              // POLICY_PROTO_ANY or IPPROTO_*
+  __u16 proto;              // IP protocol number, or POLICY_PROTO_ANY
   __u16 port_lo;            // host byte order
   __u16 port_hi;            // host byte order
+  __u8  direction;          // SG_DIR_*
   __u8  peer_kind;          // SG_PEER_KIND_*
-  __u8  peer_prefixlen;     // CIDR prefix length (0..32)
   __be32 peer_v4;           // CIDR base (NBO) or peer sg_id (host order if SG)
+  __u8  peer_prefixlen;     // CIDR prefix length (0..32)
   __u8  verdict;            // SG_VERDICT_*
-  __u8  _pad[3];
+  __u8  _pad[2];
 };
 
 struct sg_rules_inner {
@@ -1130,15 +1132,15 @@ struct {
 // observability / debuggability (bpftool dumps); the eval loop relies
 // on the slot order and the slot window, not on those two fields.
 struct acl_rule {
-  __u8  direction;          // ACL_DIR_*
-  __u8  proto;              // POLICY_PROTO_ANY or IPPROTO_*
+  __u16 proto;              // IP protocol number, or POLICY_PROTO_ANY
   __u16 port_lo;            // host byte order
   __u16 port_hi;            // host byte order
+  __u16 priority;           // host byte order; lower runs first
+  __be32 peer_v4;           // CIDR base, network byte order
+  __u8  direction;          // ACL_DIR_*
   __u8  prefixlen;          // CIDR prefix length (0..32)
   __u8  verdict;            // ACL_VERDICT_ALLOW or ACL_VERDICT_DENY
-  __u16 priority;           // host byte order; lower runs first
-  __u8  _pad[2];
-  __be32 peer_v4;           // CIDR base, network byte order
+  __u8  _pad;
 };
 
 struct acl_rules_inner {

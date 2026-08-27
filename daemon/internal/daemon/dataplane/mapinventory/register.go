@@ -589,15 +589,15 @@ func registerSGRule(inv *Inventory, p *program.PodEgress) error {
 		Value:    Schema{},
 		InnerKey: Schema{Fields: []Field{FieldU32Named("slot")}},
 		InnerValue: Schema{Fields: []Field{
-			FieldEnumNamed("direction", 1, SGDirEnum),
-			FieldEnumNamed("proto", 1, IPProtoEnum),
+			FieldEnumNamed("proto", 2, PolicyProtoEnum),
 			FieldU16Named("port_lo"),
 			FieldU16Named("port_hi"),
+			FieldEnumNamed("direction", 1, SGDirEnum),
 			FieldEnumNamed("peer_kind", 1, SGPeerKindEnum),
-			FieldU8Named("peer_prefixlen"),
 			FieldIPv4BENamed("peer_v4", "CIDR base (NBO) or peer sg_id"),
+			FieldU8Named("peer_prefixlen"),
 			FieldEnumNamed("verdict", 1, SGVerdictEnum),
-			FieldPadOf(3),
+			FieldPadOf(2),
 		}},
 	})
 }
@@ -636,15 +636,15 @@ func registerACLRule(inv *Inventory, p *program.PodEgress) error {
 		Value:    Schema{},
 		InnerKey: Schema{Fields: []Field{FieldU32Named("slot")}},
 		InnerValue: Schema{Fields: []Field{
-			FieldEnumNamed("direction", 1, ACLDirEnum),
-			FieldEnumNamed("proto", 1, IPProtoEnum),
+			FieldEnumNamed("proto", 2, PolicyProtoEnum),
 			FieldU16Named("port_lo"),
 			FieldU16Named("port_hi"),
+			FieldU16Named("priority"),
+			FieldIPv4BENamed("peer_v4"),
+			FieldEnumNamed("direction", 1, ACLDirEnum),
 			FieldU8Named("prefixlen"),
 			FieldEnumNamed("verdict", 1, ACLVerdictEnum),
-			FieldU16Named("priority"),
-			FieldPadOf(2),
-			FieldIPv4BENamed("peer_v4"),
+			FieldPadOf(1),
 		}},
 	})
 }

@@ -74,7 +74,10 @@ func ExpandSecurityGroup(sg *juneauv1alpha1.SecurityGroup, peers PeerResolver) (
 }
 
 func expandRule(dir Direction, peerSpec []juneauv1alpha1.SecurityGroupPeer, proto juneauv1alpha1.SecurityGroupProtocol, ports []juneauv1alpha1.SecurityGroupPort, resolver PeerResolver) ([]Rule, error) {
-	protoNum := protoToNum(proto)
+	protoNum, err := protoToNum(proto)
+	if err != nil {
+		return nil, err
+	}
 	portRanges := portsToRanges(ports)
 
 	var out []Rule
@@ -96,16 +99,18 @@ func expandRule(dir Direction, peerSpec []juneauv1alpha1.SecurityGroupPeer, prot
 	return out, nil
 }
 
-func protoToNum(p juneauv1alpha1.SecurityGroupProtocol) uint8 {
+func protoToNum(p juneauv1alpha1.SecurityGroupProtocol) (uint16, error) {
 	switch p {
 	case juneauv1alpha1.SecurityGroupProtocolTCP:
-		return ProtoTCP
+		return ProtoTCP, nil
 	case juneauv1alpha1.SecurityGroupProtocolUDP:
-		return ProtoUDP
+		return ProtoUDP, nil
 	case juneauv1alpha1.SecurityGroupProtocolICMP:
-		return ProtoICMP
+		return ProtoICMP, nil
+	case juneauv1alpha1.SecurityGroupProtocolAll:
+		return ProtoAny, nil
 	default:
-		return ProtoAny
+		return 0, fmt.Errorf("unsupported protocol %q", p)
 	}
 }
 
@@ -200,7 +205,10 @@ func expandACLRule(dir Direction, rule juneauv1alpha1.NetworkACLRule) ([]Rule, e
 	peerV4 := binary.LittleEndian.Uint32(addr4[:])
 	peerPrefix := uint8(prefix.Bits())
 
-	protoNum := networkACLProtoToNum(rule.Protocol)
+	protoNum, err := networkACLProtoToNum(rule.Protocol)
+	if err != nil {
+		return nil, fmt.Errorf("rule priority=%d: %w", rule.Priority, err)
+	}
 	portRanges := networkACLPortsToRanges(rule.Ports)
 	verdict := networkACLActionToVerdict(rule.Action)
 
@@ -221,16 +229,18 @@ func expandACLRule(dir Direction, rule juneauv1alpha1.NetworkACLRule) ([]Rule, e
 	return out, nil
 }
 
-func networkACLProtoToNum(p juneauv1alpha1.NetworkACLProtocol) uint8 {
+func networkACLProtoToNum(p juneauv1alpha1.NetworkACLProtocol) (uint16, error) {
 	switch p {
 	case juneauv1alpha1.NetworkACLProtocolTCP:
-		return ProtoTCP
+		return ProtoTCP, nil
 	case juneauv1alpha1.NetworkACLProtocolUDP:
-		return ProtoUDP
+		return ProtoUDP, nil
 	case juneauv1alpha1.NetworkACLProtocolICMP:
-		return ProtoICMP
+		return ProtoICMP, nil
+	case juneauv1alpha1.NetworkACLProtocolAll:
+		return ProtoAny, nil
 	default:
-		return ProtoAny
+		return 0, fmt.Errorf("unsupported protocol %q", p)
 	}
 }
 

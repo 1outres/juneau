@@ -38,7 +38,7 @@ hookが決めるのは4つだけで、残りは両hook共通:
 | SG direction | SG_DIR_EGRESS | SG_DIR_INGRESS |
 
 1. iphを読む。読めなければ-2
-2. TCP/UDPならsport/dportを読む。読めなければ0(policy対象外)。TCP/UDP/ICMP以外も0
+2. TCP/UDPならsport/dportを読む。読めなければ0(policy対象外)。portを持たないprotocol (ICMP、GRE、ESPなど) はsport/dportが0のまま評価に進むので、port範囲がwildcardのruleだけが当たる
 3. policy_epoch_map[0]を読み、policy_ct_mapを (epoch, hook, vpc_id, saddr, daddr, sport, dport, proto) で引く
 4. ヒットしたら短絡する。last_seen_nsを更新し、TCPならflagsを取り込んで状態を進め(CLOSEDになったらこのhookが入れた2エントリを消す)、0を返す
 5. missなら以下の評価に進む

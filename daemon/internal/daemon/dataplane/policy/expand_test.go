@@ -312,3 +312,101 @@ func TestExpandSecurityGroup_AnyPort(t *testing.T) {
 		t.Errorf("prefixlen = %d want 0 for /0", r.PeerPrefixlen)
 	}
 }
+
+func TestProtoAnyIsOutsideTheProtocolNumberRange(t *testing.T) {
+	if ProtoAny != 0xFFFF {
+		t.Errorf("ProtoAny = %#x, want 0xFFFF so protocol number 0 stays usable as a rule", ProtoAny)
+	}
+}
+
+func TestExpandSecurityGroup_ProtocolAllIsWildcard(t *testing.T) {
+	sg := &juneauv1alpha1.SecurityGroup{
+		Status: juneauv1alpha1.SecurityGroupStatus{GroupID: 1},
+		Spec: juneauv1alpha1.SecurityGroupSpec{
+			Vpc: "test",
+			Ingress: []juneauv1alpha1.SecurityGroupIngressRule{{
+				From:     []juneauv1alpha1.SecurityGroupPeer{{CIDR: "10.0.0.0/8"}},
+				Protocol: juneauv1alpha1.SecurityGroupProtocolAll,
+			}},
+		},
+	}
+	rs, err := ExpandSecurityGroup(sg, MapPeerResolver{})
+	if err != nil {
+		t.Fatalf("expand: %v", err)
+	}
+	if len(rs.Ingress) != 1 {
+		t.Fatalf("ingress entries = %d, want 1", len(rs.Ingress))
+	}
+	if rs.Ingress[0].Proto != ProtoAny {
+		t.Errorf("proto = %#x want ProtoAny (%#x)", rs.Ingress[0].Proto, ProtoAny)
+	}
+}
+
+func TestExpandSecurityGroup_UnsupportedProtocol(t *testing.T) {
+	for name, proto := range map[string]juneauv1alpha1.SecurityGroupProtocol{
+		"unknown": "sctp",
+		"empty":   "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			sg := &juneauv1alpha1.SecurityGroup{
+				Status: juneauv1alpha1.SecurityGroupStatus{GroupID: 1},
+				Spec: juneauv1alpha1.SecurityGroupSpec{
+					Vpc: "test",
+					Ingress: []juneauv1alpha1.SecurityGroupIngressRule{{
+						From:     []juneauv1alpha1.SecurityGroupPeer{{CIDR: "10.0.0.0/8"}},
+						Protocol: proto,
+					}},
+				},
+			}
+			if _, err := ExpandSecurityGroup(sg, MapPeerResolver{}); err == nil {
+				t.Errorf("expected error for protocol %q", proto)
+			}
+		})
+	}
+}
+
+func TestExpandNetworkACL_ProtocolAllIsWildcard(t *testing.T) {
+	ingress := []juneauv1alpha1.NetworkACLRule{{
+		Priority: 100,
+		Action:   juneauv1alpha1.NetworkACLActionAllow,
+		Protocol: juneauv1alpha1.NetworkACLProtocolAll,
+		CIDR:     "0.0.0.0/0",
+	}}
+	acl := &juneauv1alpha1.NetworkACL{
+		Status: juneauv1alpha1.NetworkACLStatus{ACLID: 1},
+		Spec:   juneauv1alpha1.NetworkACLSpec{Vpc: "test", Ingress: &ingress},
+	}
+	rs, err := ExpandNetworkACL(acl)
+	if err != nil {
+		t.Fatalf("expand: %v", err)
+	}
+	if len(rs.Ingress) != 1 {
+		t.Fatalf("ingress entries = %d, want 1", len(rs.Ingress))
+	}
+	if rs.Ingress[0].Proto != ProtoAny {
+		t.Errorf("proto = %#x want ProtoAny (%#x)", rs.Ingress[0].Proto, ProtoAny)
+	}
+}
+
+func TestExpandNetworkACL_UnsupportedProtocol(t *testing.T) {
+	for name, proto := range map[string]juneauv1alpha1.NetworkACLProtocol{
+		"unknown": "sctp",
+		"empty":   "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			ingress := []juneauv1alpha1.NetworkACLRule{{
+				Priority: 100,
+				Action:   juneauv1alpha1.NetworkACLActionAllow,
+				Protocol: proto,
+				CIDR:     "0.0.0.0/0",
+			}}
+			acl := &juneauv1alpha1.NetworkACL{
+				Status: juneauv1alpha1.NetworkACLStatus{ACLID: 1},
+				Spec:   juneauv1alpha1.NetworkACLSpec{Vpc: "test", Ingress: &ingress},
+			}
+			if _, err := ExpandNetworkACL(acl); err == nil {
+				t.Errorf("expected error for protocol %q", proto)
+			}
+		})
+	}
+}

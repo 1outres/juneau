@@ -83,6 +83,10 @@ static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
     return -2;
   void *data_end = nat_skb_data_end(skb);
 
+  // Protocols with no L4 ports (ICMP, GRE, ESP, ...) leave sport and
+  // dport at 0, so only rules whose port range is the wildcard can
+  // match them. A rule that names ports is asking about a port-bearing
+  // protocol and must not admit a protocol that has none.
   __u8 proto = iph->protocol;
   __u16 sport = 0;
   __u16 dport = 0;
@@ -92,8 +96,6 @@ static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
       return 0;
     sport = bpf_ntohs(sp_be);
     dport = bpf_ntohs(dp_be);
-  } else if (proto != IPPROTO_ICMP) {
-    return 0;
   }
 
   int egress = (hook == POLICY_HOOK_POD_EGRESS);

@@ -25,15 +25,15 @@ type NodeIngressAclMetaVal struct {
 
 type NodeIngressAclRule struct {
 	_         structs.HostLayout
-	Direction uint8
-	Proto     uint8
+	Proto     uint16
 	PortLo    uint16
 	PortHi    uint16
+	Priority  uint16
+	PeerV4    uint32
+	Direction uint8
 	Prefixlen uint8
 	Verdict   uint8
-	Priority  uint16
-	Pad       [2]uint8
-	PeerV4    uint32
+	Pad       uint8
 }
 
 type NodeIngressArpTableKey struct {
@@ -300,15 +300,15 @@ type NodeIngressSgMetaVal struct {
 
 type NodeIngressSgRule struct {
 	_             structs.HostLayout
-	Direction     uint8
-	Proto         uint8
+	Proto         uint16
 	PortLo        uint16
 	PortHi        uint16
+	Direction     uint8
 	PeerKind      uint8
-	PeerPrefixlen uint8
 	PeerV4        uint32
+	PeerPrefixlen uint8
 	Verdict       uint8
-	Pad           [3]uint8
+	Pad           [2]uint8
 }
 
 type NodeIngressSubnetKey struct {
