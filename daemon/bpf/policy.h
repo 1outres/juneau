@@ -48,6 +48,39 @@ static __always_inline __u32 policy_trace_hook(__u8 hook) {
   return TRACE_HOOK_POD_INGRESS;
 }
 
+// policy_enforced reports whether this direction is actually policed
+// for the Pod at self_ip. It answers the question the fail-closed paths
+// ask: is there a rule here that this packet is escaping?
+//
+// Only a Pod that answers yes is dropped when the data plane cannot
+// judge a packet. juneau does not require a SecurityGroup on the
+// management Pods it runs itself, and dropping their traffic because a
+// packet was fragmented or was not IPv4 would take the cluster down.
+//
+// The ACL side asks acl_meta_map rather than stopping at acl_id != 0.
+// An ACL that only carries egress rules leaves ingress in default-allow
+// mode, and treating "an ACL is attached" as "both directions are
+// policed" would drop that Subnet's inbound fragments for no rule at
+// all.
+//
+// Marked as a BPF-to-BPF subprogram (noinline): the two map lookups are
+// walked once here instead of at every call site.
+static __juneau_bpf_subprog int policy_enforced(__u32 vpc_id, __u32 acl_id,
+                                                __u8 acl_dir, __be32 self_ip) {
+  if (acl_id != 0) {
+    struct acl_meta_val *meta = bpf_map_lookup_elem(&acl_meta_map, &acl_id);
+    if (meta) {
+      __u8 has_rules = (acl_dir == ACL_DIR_INGRESS) ? meta->has_ingress_rules
+                                                    : meta->has_egress_rules;
+      if (has_rules)
+        return 1;
+    }
+  }
+
+  struct sg_membership_val *self = sg_membership_lookup(vpc_id, self_ip);
+  return self != NULL && self->count > 0;
+}
+
 // apply_policy runs the policy stage for one packet at one enforcement
 // point. `hook` is a POLICY_HOOK_* value and decides four things: the
 // ACL direction, the SG direction, which address identifies the Pod
@@ -60,11 +93,15 @@ static __always_inline __u32 policy_trace_hook(__u8 hook) {
 //   -1: terminal DENY by NetworkACL (caller must TC_ACT_SHOT)
 //   -2: internal error (caller must TC_ACT_SHOT)
 //   -3: terminal DENY by SecurityGroup (caller must TC_ACT_SHOT)
+//   -4: this direction is policed but the L4 tuple could not be read,
+//       so no layer could judge the packet (caller must TC_ACT_SHOT)
 //
 // Negative codes are split per layer so callers can attribute the
 // drop to the right policy stage in trace events. Pre-split callers
 // only checked policy_rc < 0 and emitted a generic ACL_DROP, which
-// hid SG denials behind the wrong label.
+// hid SG denials behind the wrong label. -4 is kept apart from -1 and
+// -3 for the same reason: no rule rejected the packet, the data plane
+// simply had nothing to match it on.
 //
 // Inlined into the caller. The state-explosion pressure that used to
 // require a separate subprogram lives now in `acl_evaluate` and
@@ -107,7 +144,7 @@ static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
   if (t.status == POLICY_TUPLE_DEGRADED)
     policy_frag_recover(vpc_id, iph, &t);
   if (t.status == POLICY_TUPLE_DEGRADED)
-    return 0;
+    return policy_enforced(vpc_id, acl_id, acl_dir, self_ip) ? -4 : 0;
 
   // Recorded before the CT short-circuit below. A flow that is already
   // established can start fragmenting at any point, and behind the

@@ -156,12 +156,15 @@ static __always_inline int handle(struct __sk_buff *skb) {
       apply_policy(skb, POLICY_HOOK_POD_INGRESS, subnet->vpc_id,
                    subnet->acl_id, __trace_id, isv->subnet_id);
   if (policy_rc < 0) {
-    // -1 = ACL deny, -3 = SG deny, -2 = internal error.
+    // -1 = ACL deny, -3 = SG deny, -4 = L4 unreadable, -2 = internal
+    // error.
     __u32 reason = TRACE_REASON_DROP_SHOT;
     if (policy_rc == -1)
       reason = TRACE_REASON_POLICY_ACL_DROP;
     else if (policy_rc == -3)
       reason = TRACE_REASON_POLICY_SG_DROP;
+    else if (policy_rc == -4)
+      reason = TRACE_REASON_POLICY_PARSE_DROP;
     trace_emit_drop_l3(skb, __trace_id, reason, TRACE_HOOK_POD_INGRESS,
                        TRACE_SCOPE_VPC, subnet->vpc_id, isv->subnet_id);
     return TC_ACT_SHOT;
