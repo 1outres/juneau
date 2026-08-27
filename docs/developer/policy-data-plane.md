@@ -58,6 +58,64 @@ SecurityGroupはNICに紐付いていて、`sg_membership_map`を`(vpc_id, pod_i
 
 マッチ条件も層で違います。ACLはpeerのIPとdportとprotocolだけを見ます。SGはCIDRに加えてpeerのSecurityGroup参照 (`securityGroupRef`) をマッチできます。peerのSG集合は`sg_membership_map`をpeerのIPで引いて得るので、peerがPodでなければSG参照ルールはマッチしません。
 
+## protocolとportのマッチ
+
+`apply_policy`はIPv4ヘッダの`protocol`をそのまま取り出して、ルールの`proto`と比べます。以前はここにTCPとUDPとICMP以外を弾く早期returnがあり、GREもESPもSCTPも評価器に入らないままPodに届いていました。これがissue #53です。いまは全てのIPプロトコルが評価に入ります。
+
+ルールの`proto`は16bitです。0から255はどれも実在するIPプロトコル番号なので、ワイルドカードをこの範囲の中に置くと、その番号のプロトコルを名指しできなくなります。以前は`POLICY_PROTO_ANY`が0で、プロトコル番号0 (HOPOPT) を書く手段がありませんでした。いまは0xFFFFにして範囲の外へ逃がしてあります。ユーザが書く`protocol: all`は、展開のときにこの値になります。
+
+ポートを持たないプロトコルは、sportとdportが0のまま評価に入ります。一致できるのはポート範囲がワイルドカード (0〜65535) のルールだけです。`protocol: gre`のようにポートを書けないルールはこの形になるので普通に効きます。逆に、ポートを名指ししたルールがポートを持たないプロトコルを通すことはありません。ポートを名指しするのはポートを持つプロトコルを想定しているときなので、そちらに倒してあります。
+
+## ポートを読めなかったパケット
+
+TCPとUDPでも、パケットからポートを読めないことがあります。ヘッダの途中で切れているか、fragmentの2つ目以降でそもそもL4ヘッダを積んでいないかのどちらかです。以前はこの場合`apply_policy`が0 (PASS) を返していたので、ACLもSGも一度も見ないままPodに届いていました。
+
+いまは`policy_parse_tuple`が`struct policy_tuple`を組み立てて、読めなかったことを`POLICY_TUPLE_DEGRADED`という状態にして返します。後述のfragment復元でも埋まらなかったら、そのdirectionにpolicyが効いているかどうかで結論が分かれます。
+
+- 効いていれば`-4`を返して落とします。ルールが拒否したわけではないので、ACLの`-1`ともSGの`-3`とも別の番号にしてあります
+- 効いていなければ0を返して、従来どおり通します
+
+判定は`policy.h`の`policy_enforced`です。次のどちらかが成り立てば、そのdirectionは効いている扱いになります。
+
+- selfのNICに`sg_membership_map`のエントリがあって`count > 0`
+- `acl_id != 0`で、かつ`acl_meta_map`のそのdirectionの`has_ingress_rules` / `has_egress_rules`が立っている
+
+ACL側を`acl_id != 0`だけで済ませていません。egressルールしか書いていないNetworkACLを紐付けたSubnetは、ingressがdefault-allowのままです。そこに入ってくるfragmentを「ACLが付いているから」という理由で落とすと、誰も書いていないルールのために通信が切れます。
+
+fail-closedにするのは、実際にルールが効いているdirectionだけです。juneauは自分が動かすPodにSecurityGroupを要求していないので、範囲を広く取るとそちらを巻き込みます。
+
+落としたパケットはtrace reason 304 (`POLICY_PARSE_DROP`) になります。`kubectl juneau trace`のタイムラインには`policy drop (l4 header unreadable)`と出ます。
+
+## fragmentのポートを引き継ぐ
+
+MTUを超えるdatagramは分割されて、L4ヘッダを積むのは先頭のfragmentだけです。2つ目以降を上の判定にそのまま任せると、SGを付けたPod同士でMTUを超えるUDPが一切通らなくなります。そこで先頭のfragmentが通るときにポートを`ipv4_frag_map`へ控えておいて、後続のfragmentがそこから復元します。Ciliumのfragment trackingと同じやり方です。
+
+keyは`(vpc_id, saddr, daddr, iphdr.id, protocol)`、valueは`(sport, dport, last_seen_ns)`です。書くのが`policy_frag_record`、読むのが`policy_frag_recover`で、どちらも`daemon/bpf/policy_tuple.h`にあります。map inventoryに登録してあるので、`kubectl juneau bpf dump ipv4_frag_map`でそのまま覗けます。
+
+書き込みは`policy_ct_map`の短絡より前に置いてあります。確立済みのフローは途中からfragmentし始めることがあります。短絡の後ろに置くと、そのhookは先頭のfragmentを一度も見ないまま後続のfragmentを迎えることになって、復元する材料がありません。
+
+keyにhookは入れていません。ポートはパケットが持っているものであって、それを読むenforcement pointのものではないからです。`policy_ct_map`とは逆の判断で、同一Node上の`pod_egress`と`pod_ingress`は同じエントリを共有します。ただしmap自体はNodeごとに独立なので、送信側Nodeと受信側Nodeはそれぞれ自分のところを通った先頭fragmentから控えます。
+
+mapは`BPF_MAP_TYPE_LRU_HASH`で4096エントリです。`policy_ct_map`と違ってユーザ空間のGCを足していません。エントリが要るのは再構成にかかる数ミリ秒だけで、その後はすぐ死んだ値になります。埋まったときにカーネルが追い出すのは、放っておいても用済みになるエントリです。
+
+代わりに読む側が年齢を見ます。`POLICY_FRAG_MAX_AGE_NS` (5秒) より古いエントリは無かったことにします。LRUのスロットはdatagramが終わったあともしばらく残るので、そのまま信じるわけにはいきません。これ以上長くしない理由はkeyの`iphdr.id`にあって、16bitのカウンタは忙しい送信元だとすぐ一周します。寿命の長いエントリが、たまたまidを再利用した無関係なdatagramにポートを渡してしまいます。
+
+前提が2つあります。1つは先頭のfragmentが先に着くことです。順番が入れ替わって後続が先に着いた場合、そのパケットは復元できずに落ちます。もう1つは、重なったfragmentを使った回避に対応していないことです。先頭のfragmentで通るポートを申告しておいて、後続のfragmentでその位置を上書きする細工は、このtrackingでは止まりません。止めるにはdata plane側で再構成するしかないので、そこまではやっていません。
+
+ポートを持たないプロトコルは、このtrackingを通りません。ICMPやGREやESPは先頭でも後続でもsportとdportが0のまま同じtupleになるので、控えるものも復元するものもないからです。後続のfragmentも先頭と同じルールに当たります。
+
+## IPv4以外のethertype
+
+`pod_egress`と`pod_ingress`は、`eth->h_proto`が`ETH_P_IP`でなければIPv4ヘッダを読む処理に入れません。以前はそこで`TC_ACT_OK`を返していたので、同じSubnet内のIPv6はfdbで転送されるだけで、ルールを一度も見ませんでした。
+
+いまは、policyが効いているPodについてはARP以外を落とします。判定はL4を読めなかった場合と同じ`policy_enforced`です。
+
+ARPを外してあるのは、juneau自身のdata planeがARPでPodとgatewayのMACを解決しているからです。ここで落とすと、そのPodはネットワークを丸ごと失います。`pod_egress`のARP応答は`handle_arp`が組み立てて送信元のvethに`bpf_redirect`で返すので、その応答は同じPodの`pod_ingress`を通って戻ってきます。`pod_ingress`側でもARPを外していないと、この折り返しが落ちます。
+
+非IPv4のフレームには、policyが引けるアドレスがありません。selfのIPはパケットからではなく`ifindex_subnet`から取ります。`pod_ingress`ではこのlookupをethertypeの判定より前に動かしてあります。
+
+落としたフレームはtrace reason 305 (`POLICY_ETHERTYPE_DROP`) で記録します。ただし当面タイムラインには出てきません。traceのclassifyがIPv4の5-tupleでセッションを引くので、非IPv4のフレームでは`trace_id`が0のままになり、emitが何もせずに戻ります。classifyがIPv4以外を扱えるようになったときに繋がるよう、呼び出し側だけ先に置いてあります。
+
 ## ルール配列と方向ごとの区画
 
 ユーザが書くルールと、data planeが持つエントリは1対1ではありません。ルール配列に入るのは「1つのprotocol、1つのport (または範囲)、1つのpeer」だけを見る平坦なエントリで、daemonはルールをその直積に展開してから書き込みます。
@@ -173,16 +231,22 @@ epochをkeyに移すと、古い世代のエントリはlookupがそのままmis
 
 ## いまのverifier予算
 
-directionごとの区画に分けたあとの実測です。上限は1プログラムあたり1,000,000命令です。
+L4を読めなかったパケットと非IPv4のフレームをfail-closedにしたあとの実測です。上限は1プログラムあたり1,000,000命令です。
 
 | object | 命令数 | 上限に対する割合 |
 |---|---|---|
-| `pod_egress` | 682,460 | 68.2% |
-| `pod_ingress` | 247,476 | 24.7% |
+| `pod_egress` | 581,483 | 58.1% |
+| `pod_ingress` | 101,533 | 10.2% |
 | `vxlan_ingress` | 3,760 | 0.4% |
 | `node_ingress` | 70,965 | 7.1% |
 
-`pod_egress`が一番きつく、ここが天井に当たるかどうかで判断します。`MAX_SG_RULES_PER_DIR`を8から16に上げる案はこの数字で落ちました。
+処理を足したのに`pod_egress`は699,965から、`pod_ingress`は247,688から減りました。理由は2つあると見ていますが、どちらも切り分けて確かめたわけではありません。
+
+1つ目は、ACLとSGの走査区間に入る経路が1つ減ったことです。以前はポートを読めなかったTCPとUDPがsport=dport=0のまま区間に入っていたので、verifierはその状態でも走査を歩いていました。いまは区間の手前でreturnするので、入り口が1つ消えます。
+
+2つ目は、ポートを`struct policy_tuple`に置いてスタックに載せたことです。verifierはスタック上の値をレジスタほど細かく追わないので、精度が落ちて状態の枝分かれが減ったのかもしれません。
+
+`pod_egress`が一番きついのは変わらないので、天井に当たるかどうかはここで判断します。`MAX_SG_RULES_PER_DIR`を8から16に上げると載らない、という判断はこれより前の数字で出したものです。余裕が増えたので、測り直せば結論が変わるかもしれません。
 
 ## エントリの寿命
 
@@ -248,10 +312,12 @@ policyの層ごとのイベント (`acl pass`、`acl drop`、`sg pass`、`sg dro
 ## 実装の入口
 
 - `daemon/bpf/policy.h`: `apply_policy`。ACL → SG → CT installの本体
+- `daemon/bpf/policy_tuple.h`: policyがマッチするtupleの組み立てと、`ipv4_frag_map`によるfragmentのポート復元
 - `daemon/bpf/policy_ct.h`: `policy_ct_map`の読み書き。key構築、両方向install、TCP観測とCLOSE時の削除
 - `daemon/bpf/maps.h`: `policy_ct_key` / `policy_ct_val` / `policy_epoch_map`の定義と`POLICY_HOOK_*`、`MAX_ACL_RULES_PER_DIR` / `MAX_SG_RULES_PER_DIR`
 - `daemon/bpf/acl.h`、`daemon/bpf/sg.h`: 層ごとのルール走査
 - `controller/api/v1alpha1/policy_capacity.go`: エントリ数の数え方とdirectionごとの上限。webhook、controller、daemonが共有する唯一の定義
+- `controller/api/v1alpha1/protocol.go`: protocolのキーワード表と番号への解決。ここも3者が共有します
 - `daemon/internal/daemon/dataplane/policy/`: ルールの反映 (`aclstore.go`、`sgstore.go`、`membership.go`、`rotator.go`)、容量判定とfail-closed (`capacity.go`)、世代管理 (`epoch.go`、`invalidator.go`)
 - `daemon/internal/daemon/dataplane/reconciler/conntrack.go`、`daemon/internal/daemon/dataplane/ctstate/ttl.go`: GC、TTL、世代の外れたエントリの回収
 - `daemon/internal/daemon/dataplane/mapinventory/register.go`: `kubectl juneau bpf`に見せているスキーマ
