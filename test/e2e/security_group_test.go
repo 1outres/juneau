@@ -34,6 +34,19 @@ import (
 //    and nothing else.
 // 10. Both directions (issue #52): a SG whose ingress sits at its entry
 //    budget still enforces the egress rules it declares.
+// 11. Protocols without ports (issue #53): GRE reaches the evaluator
+//    the same way TCP does, so a SG that never names it drops it, and
+//    a SG that names it (by number or through "all") admits it.
+// 12. Fragments (issue #53): only the first fragment of a datagram
+//    carries the L4 header, so a policed Pod has to recover the ports
+//    of the ones after it. A datagram past the MTU still arrives whole,
+//    including when the flow was already established when it started
+//    fragmenting.
+// 13. Fragments with no first fragment: nothing can be recovered, no
+//    layer can judge the packet, and a policed Pod drops it.
+// 14. Non-IPv4 frames: a policed Pod cannot send one, because the
+//    policy stage has no address to look a rule up by. ARP is the
+//    exception and keeps working.
 //
 // Every spec creates an isolated namespace + Vpc + Subnets so they can
 // run in parallel under Ginkgo --procs.
@@ -293,6 +306,292 @@ var _ = Describe("Juneau SecurityGroup", func() {
 		assertNoPodPortConnectivity(fix.namespace, clientPodName, serverPodName, policyBlockedPort)
 	})
 
+	It("ingress: a TCP rule does not admit GRE (issue #53)", func() {
+		base := sanitizeName("sg-gre-denied")
+		fix := newSGFixture(base)
+		DeferCleanup(fix.Cleanup)
+		fix.CreateNetwork()
+
+		// The rule admits every peer and only names the wrong
+		// protocol, so a GRE packet that still arrives can only mean
+		// the evaluator never saw it. That is issue #53: apply_policy
+		// returned early for every protocol other than TCP, UDP and
+		// ICMP, and those packets reached the Pod whatever the SG
+		// said.
+		fix.CreateSG("server-sg", fmt.Sprintf(`
+  ingress:
+    - from:
+        - cidr: 0.0.0.0/0
+      protocol: tcp
+      ports:
+        - port: %d`, policyOpenPort))
+
+		fix.CreatePodWithContainers(serverPodName, fix.serverSubnet, fix.serverNode,
+			greSinkContainer(), []string{"server-sg"})
+		fix.CreatePodWithContainers(clientPodName, fix.clientSubnet, fix.clientNode,
+			probeSourceContainer(), nil)
+		waitPodsReady(fix.namespace, serverPodName, clientPodName)
+		assertNoPodGREConnectivity(fix.namespace, clientPodName, serverPodName)
+	})
+
+	It("ingress: a rule naming the protocol number admits GRE", func() {
+		base := sanitizeName("sg-gre-numeric-protocol")
+		fix := newSGFixture(base)
+		DeferCleanup(fix.Cleanup)
+		fix.CreateNetwork()
+
+		// The rule writes GRE as a number rather than as its keyword.
+		// That is the form the CRD has to accept and the daemon has to
+		// match on; the keyword is only a name for the same number.
+		fix.CreateSG("server-sg", fmt.Sprintf(`
+  ingress:
+    - from:
+        - cidr: 0.0.0.0/0
+      protocol: %d`, greProtocolNumber))
+		waitPolicyEntryCounts("securitygroup", fix.SGName("server-sg"), 1, 0)
+
+		fix.CreatePodWithContainers(serverPodName, fix.serverSubnet, fix.serverNode,
+			greSinkContainer(), []string{"server-sg"})
+		fix.CreatePodWithContainers(clientPodName, fix.clientSubnet, fix.clientNode,
+			probeSourceContainer(), nil)
+		waitPodsReady(fix.namespace, serverPodName, clientPodName)
+		assertPodGREConnectivity(fix.namespace, clientPodName, serverPodName)
+	})
+
+	It("ingress: protocol all admits GRE", func() {
+		base := sanitizeName("sg-gre-protocol-all")
+		fix := newSGFixture(base)
+		DeferCleanup(fix.Cleanup)
+		fix.CreateNetwork()
+
+		fix.CreateSG("server-sg", `
+  ingress:
+    - from:
+        - cidr: 0.0.0.0/0
+      protocol: all`)
+
+		fix.CreatePodWithContainers(serverPodName, fix.serverSubnet, fix.serverNode,
+			greSinkContainer(), []string{"server-sg"})
+		fix.CreatePodWithContainers(clientPodName, fix.clientSubnet, fix.clientNode,
+			probeSourceContainer(), nil)
+		waitPodsReady(fix.namespace, serverPodName, clientPodName)
+		assertPodGREConnectivity(fix.namespace, clientPodName, serverPodName)
+	})
+
+	It("default: no SG attached → GRE flows", func() {
+		base := sanitizeName("sg-gre-default-allow")
+		fix := newSGFixture(base)
+		DeferCleanup(fix.Cleanup)
+		fix.CreateNetwork()
+
+		// Pods nobody put a SG on keep the behaviour they had before
+		// issue #53. Widening the evaluator must not take tunnel or
+		// management traffic away from them.
+		fix.CreatePodWithContainers(serverPodName, fix.serverSubnet, fix.serverNode,
+			greSinkContainer(), nil)
+		fix.CreatePodWithContainers(clientPodName, fix.clientSubnet, fix.clientNode,
+			probeSourceContainer(), nil)
+		waitPodsReady(fix.namespace, serverPodName, clientPodName)
+		assertPodGREConnectivity(fix.namespace, clientPodName, serverPodName)
+	})
+
+	DescribeTable("fragments: a datagram past the MTU reaches a Pod both ends police",
+		func(placement placementMode) {
+			base := sanitizeName("sg-frag-udp-" + string(placement))
+			fix := newSGFixture(base)
+			DeferCleanup(fix.Cleanup)
+			fix.applyPlacement(placement)
+			fix.CreateNetwork()
+
+			// Only the first fragment of the datagram carries the UDP
+			// header. Every fragment after it borrows the ports the
+			// first one left in ipv4_frag_map; without that both hooks
+			// see a tuple they cannot judge and drop it, and the
+			// receiver puts nothing back together.
+			fix.CreateSG("client-sg", sgUDPProbeEgress())
+			fix.CreateSG("server-sg", sgUDPProbeIngress())
+
+			fix.CreatePodWithContainers(serverPodName, fix.serverSubnet, fix.serverNode,
+				udpSinkContainer(fragUDPPort), []string{"server-sg"})
+			fix.CreatePodWithContainers(clientPodName, fix.clientSubnet, fix.clientNode,
+				probeSourceContainer(), []string{"client-sg"})
+			waitPodsReady(fix.namespace, serverPodName, clientPodName)
+
+			assertPodUDPDatagrams(fix.namespace, clientPodName, serverPodName, fragDatagramSize)
+		},
+		Entry("same Node", placementSameNode),
+		Entry("different Nodes", placementDifferentNodes),
+	)
+
+	It("fragments: an established flow may start fragmenting mid-stream", func() {
+		base := sanitizeName("sg-frag-established")
+		fix := newSGFixture(base)
+		DeferCleanup(fix.Cleanup)
+		fix.CreateNetwork()
+
+		fix.CreateSG("client-sg", sgUDPProbeEgress())
+		fix.CreateSG("server-sg", sgUDPProbeIngress())
+
+		fix.CreatePodWithContainers(serverPodName, fix.serverSubnet, fix.serverNode,
+			udpSinkContainer(fragUDPPort), []string{"server-sg"})
+		fix.CreatePodWithContainers(clientPodName, fix.clientSubnet, fix.clientNode,
+			probeSourceContainer(), []string{"client-sg"})
+		waitPodsReady(fix.namespace, serverPodName, clientPodName)
+
+		// The order of the two datagrams is the whole spec. The small
+		// one puts the flow in the policy conntrack, so the first
+		// fragment of the big one takes the established-flow
+		// short-circuit — and its ports are remembered only because
+		// the record sits before that short-circuit. Send the big one
+		// first and the ports get recorded on the evaluated path
+		// instead, which proves nothing about the order.
+		assertPodUDPDatagrams(fix.namespace, clientPodName, serverPodName,
+			fragWarmupSize, fragDatagramSize)
+	})
+
+	It("fragments: an icmp rule admits an echo that had to be split", func() {
+		base := sanitizeName("sg-frag-icmp")
+		fix := newSGFixture(base)
+		DeferCleanup(fix.Cleanup)
+		fix.CreateNetwork()
+
+		// ICMP carries no ports, so nothing is recorded for it and
+		// nothing has to be recovered. Every fragment parses to the
+		// tuple the first one did and meets the same rule.
+		fix.CreateSG("client-sg", `
+  egress:
+    - to:
+        - cidr: 0.0.0.0/0
+      protocol: icmp`)
+		fix.CreateSG("server-sg", `
+  ingress:
+    - from:
+        - cidr: 0.0.0.0/0
+      protocol: icmp`)
+
+		fix.CreatePod(serverPodName, fix.serverSubnet, true, []string{"server-sg"})
+		fix.CreatePodWithContainers(clientPodName, fix.clientSubnet, fix.clientNode,
+			probeSourceContainer(), []string{"client-sg"})
+		waitPodsReady(fix.namespace, serverPodName, clientPodName)
+
+		assertPodFragmentedPing(fix.namespace, clientPodName,
+			mustPodIP(fix.namespace, serverPodName), fragEchoPayload)
+	})
+
+	It("default: no SG attached → a datagram past the MTU still flows", func() {
+		base := sanitizeName("sg-frag-default-allow")
+		fix := newSGFixture(base)
+		DeferCleanup(fix.Cleanup)
+		fix.CreateNetwork()
+
+		// Pods nobody polices keep what they had before the
+		// fail-closed change. A fragment whose ports cannot be read is
+		// forwarded, because no rule was going to judge it anyway.
+		fix.CreatePodWithContainers(serverPodName, fix.serverSubnet, fix.serverNode,
+			udpSinkContainer(fragUDPPort), nil)
+		fix.CreatePodWithContainers(clientPodName, fix.clientSubnet, fix.clientNode,
+			probeSourceContainer(), nil)
+		waitPodsReady(fix.namespace, serverPodName, clientPodName)
+
+		assertPodUDPDatagrams(fix.namespace, clientPodName, serverPodName, fragDatagramSize)
+	})
+
+	It("fragments: a policed Pod drops one that no first fragment preceded", func() {
+		base := sanitizeName("sg-frag-orphan-denied")
+		fix := newSGFixture(base)
+		DeferCleanup(fix.Cleanup)
+		fix.CreateNetwork()
+
+		// The rule admits every peer and every protocol, so no rule is
+		// what rejects this packet. Its ports are unreadable and
+		// ipv4_frag_map has nothing to fill them with, which leaves
+		// both layers unable to judge it at all.
+		fix.CreateSG("server-sg", `
+  ingress:
+    - from:
+        - cidr: 0.0.0.0/0
+      protocol: all`)
+
+		fix.CreatePodWithContainers(serverPodName, fix.serverSubnet, fix.serverNode,
+			captureSinkContainer(laterFragmentFilter), []string{"server-sg"})
+		fix.CreatePodWithContainers(clientPodName, fix.clientSubnet, fix.clientNode,
+			probeSourceContainer(), nil)
+		waitPodsReady(fix.namespace, serverPodName, clientPodName)
+
+		assertNoPodOrphanFragment(fix.namespace, clientPodName, serverPodName)
+	})
+
+	It("ethertype: a policed Pod cannot put a non-IPv4 frame on the wire", func() {
+		base := sanitizeName("sg-ethertype-denied")
+		fix := newSGFixture(base)
+		DeferCleanup(fix.Cleanup)
+		fix.CreateNetwork()
+
+		// The egress rule admits every IP packet this Pod could send,
+		// so what stops the frame is not a rule: it is that the frame
+		// is not IPv4, and the policy stage then has no address to look
+		// a rule up by. Both Pods sit in one Subnet because the frame
+		// is switched on its destination MAC and the fdb is per Subnet.
+		fix.CreateSG("client-sg", `
+  egress:
+    - to:
+        - cidr: 0.0.0.0/0
+      protocol: all`)
+
+		fix.CreatePodWithContainers(serverPodName, fix.serverSubnet, fix.serverNode,
+			ipv6SinkContainer(), nil)
+		fix.CreatePodWithContainers(clientPodName, fix.serverSubnet, fix.clientNode,
+			probeSourceContainer(), []string{"client-sg"})
+		waitPodsReady(fix.namespace, serverPodName, clientPodName)
+
+		assertNoPodIPv6Frame(fix.namespace, clientPodName, serverPodName)
+	})
+
+	It("default: no SG attached → a non-IPv4 frame is still forwarded", func() {
+		base := sanitizeName("sg-ethertype-default-allow")
+		fix := newSGFixture(base)
+		DeferCleanup(fix.Cleanup)
+		fix.CreateNetwork()
+
+		fix.CreatePodWithContainers(serverPodName, fix.serverSubnet, fix.serverNode,
+			ipv6SinkContainer(), nil)
+		fix.CreatePodWithContainers(clientPodName, fix.serverSubnet, fix.clientNode,
+			probeSourceContainer(), nil)
+		waitPodsReady(fix.namespace, serverPodName, clientPodName)
+
+		assertPodIPv6Frame(fix.namespace, clientPodName, serverPodName)
+	})
+
+	It("arp: a Pod whose SG admits nothing still resolves its peers", func() {
+		base := sanitizeName("sg-arp-survives")
+		fix := newSGFixture(base)
+		DeferCleanup(fix.Cleanup)
+		fix.CreateNetwork()
+
+		// The data plane answers ARP itself, and it answers before the
+		// policy stage runs. It has to stay that way: a Pod that
+		// cannot resolve a MAC has no network at all, whatever its
+		// rules say. Both Pods sit in one Subnet because that is the
+		// range the data plane answers ARP for.
+		fix.CreateSG("client-sg", fmt.Sprintf(`
+  egress:
+    - to:
+        - cidr: %s
+      protocol: tcp
+      ports:
+        - port: %d`, policyElsewhereCIDR, policyOpenPort))
+
+		fix.CreatePod(serverPodName, fix.serverSubnet, true, nil)
+		fix.CreatePodWithContainers(clientPodName, fix.serverSubnet, fix.clientNode,
+			probeSourceContainer(), []string{"client-sg"})
+		waitPodsReady(fix.namespace, serverPodName, clientPodName)
+
+		By("holding egress rules that admit nothing this Pod sends")
+		assertNoPodConnectivity(fix.namespace, clientPodName, serverPodName)
+		By("still answering the ARP requests it makes")
+		assertPodARP(fix.namespace, clientPodName, mustPodIP(fix.namespace, serverPodName))
+	})
+
 	It("directions: a full ingress budget still leaves egress installed", func() {
 		base := sanitizeName("sg-full-ingress-budget")
 		fix := newSGFixture(base)
@@ -384,6 +683,31 @@ func sgFillerPorts(count int) string {
 }
 
 // --- helpers ---------------------------------------------------------
+
+// sgUDPProbeIngress admits the fragment probe's UDP port from any peer.
+// The rule names a port on purpose: a fragment whose recovered ports
+// are wrong misses it, so the spec fails the same way it would if the
+// fragment had been dropped outright.
+func sgUDPProbeIngress() string {
+	return fmt.Sprintf(`
+  ingress:
+    - from:
+        - cidr: 0.0.0.0/0
+      protocol: udp
+      ports:
+        - port: %d`, fragUDPPort)
+}
+
+// sgUDPProbeEgress is the same rule on the sending side.
+func sgUDPProbeEgress() string {
+	return fmt.Sprintf(`
+  egress:
+    - to:
+        - cidr: 0.0.0.0/0
+      protocol: udp
+      ports:
+        - port: %d`, fragUDPPort)
+}
 
 // sgFixture is policyFixture plus the Vpc-level enforcement switch this
 // suite is the only user of.

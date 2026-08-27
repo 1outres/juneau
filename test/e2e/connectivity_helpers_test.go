@@ -3,6 +3,7 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -12,6 +13,9 @@ import (
 const (
 	serverPodName = "server"
 	clientPodName = "client"
+
+	// podIfaceName is the NIC juneau's CNI gives every Pod.
+	podIfaceName = "eth0"
 )
 
 type trafficTarget string
@@ -286,9 +290,9 @@ metadata:
   terminationGracePeriodSeconds: 0
   containers:
     - name: client
-      image: nicolaka/netshoot:v0.16
+      image: %s
       command: ["sleep", "3600"]
-`, namespace, name, annotation, nodeName)
+`, namespace, name, annotation, nodeName, netshootImage)
 }
 
 func createServerService(ctx caseContext, vpcAnnotation string) {
@@ -638,11 +642,39 @@ func assertNoPodHTTP(namespace string, clientPod string, address string) {
 // check honest for NAPT: the identifier allocated for the first request
 // has to keep matching for the ones that follow.
 func assertPodPing(namespace string, podName string, target string) {
+	assertPodEcho(namespace, podName, target)
+}
+
+// assertPodFragmentedPing is assertPodPing with a payload larger than
+// the Pod NIC carries in one packet, so every request and every reply
+// leaves as several IPv4 fragments. Zero loss then means each datagram
+// was reassembled, not just that its first fragment arrived.
+func assertPodFragmentedPing(namespace string, podName string, target string, payload int) {
+	assertPodEcho(namespace, podName, target, "-s", strconv.Itoa(payload))
+}
+
+func assertPodEcho(namespace string, podName string, target string, extra ...string) {
+	args := []string{"exec", "-n", namespace, podName, "--", "ping", "-c", "3", "-W", "2"}
+	args = append(args, extra...)
+	args = append(args, target)
+
 	Eventually(func(g Gomega) {
-		out, err := kubectlOutput(repoRoot, "exec", "-n", namespace, podName, "--",
-			"ping", "-c", "3", "-W", "2", target)
+		out, err := kubectlOutput(repoRoot, args...)
 		g.Expect(err).NotTo(HaveOccurred(), "ping output: %s", out)
 		g.Expect(out).To(ContainSubstring("0% packet loss"), "ping output: %s", out)
+	}).Should(Succeed())
+}
+
+// assertPodARP requires the Pod to resolve target's link-layer address.
+// The data plane answers these requests itself, and it answers them
+// before the policy stage runs, so this holds for a Pod whose rules
+// permit nothing at all.
+func assertPodARP(namespace string, podName string, target string) {
+	Eventually(func(g Gomega) {
+		out, err := kubectlOutput(repoRoot, "exec", "-n", namespace, podName, "--",
+			"arping", "-c", "2", "-w", "3", "-I", podIfaceName, target)
+		g.Expect(err).NotTo(HaveOccurred(), "arping output: %s", out)
+		g.Expect(out).To(ContainSubstring("Unicast reply from "+target), "arping output: %s", out)
 	}).Should(Succeed())
 }
 

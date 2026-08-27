@@ -30,6 +30,13 @@ import (
 //    egress enforces both, including when one of them sits at its
 //    entry budget.
 // 9. Ports — one rule admits every port it lists, and nothing else.
+// 10. Protocols without ports (issue #53) — GRE reaches the evaluator
+//    the same way TCP does, so a deny-by-default direction drops it
+//    and an allow rule naming it lets it through.
+// 11. Enforcement per direction (issue #53) — an ACL that carries only
+//    egress rules leaves ingress at default-allow, so nothing polices
+//    what enters the Subnet and a packet the data plane cannot judge
+//    is still forwarded.
 //
 // Every spec creates an isolated namespace + Vpc + Subnets so they can
 // run in parallel under Ginkgo --procs.
@@ -271,6 +278,80 @@ var _ = Describe("Juneau NetworkACL", func() {
 		assertPodPortConnectivity(fix.namespace, clientPodName, serverPodName, policyThirdPort, policyThirdBody)
 		By("dropping the port the rule leaves out")
 		assertNoPodPortConnectivity(fix.namespace, clientPodName, serverPodName, policyBlockedPort)
+	})
+
+	It("ingress: an empty rule list drops GRE (issue #53)", func() {
+		base := sanitizeName("acl-gre-denied")
+		fix := newPolicyFixture(base)
+		DeferCleanup(fix.Cleanup)
+		fix.CreateNetwork()
+
+		// An explicitly empty ingress is deny-by-default, so nothing
+		// at all may enter the Subnet. Before issue #53 the evaluator
+		// only ever saw TCP, UDP and ICMP, and every other protocol
+		// walked past this ACL untouched.
+		fix.CreateACL("server-acl", `
+  ingress: []`)
+		fix.AttachACL(fix.serverSubnet, "server-acl")
+
+		fix.CreatePodWithContainers(serverPodName, fix.serverSubnet, fix.serverNode, greSinkContainer(), nil)
+		fix.CreatePodWithContainers(clientPodName, fix.clientSubnet, fix.clientNode, probeSourceContainer(), nil)
+		waitPodsReady(fix.namespace, serverPodName, clientPodName)
+		assertNoPodGREConnectivity(fix.namespace, clientPodName, serverPodName)
+	})
+
+	It("ingress: an allow rule naming gre admits it", func() {
+		base := sanitizeName("acl-gre-keyword-allow")
+		fix := newPolicyFixture(base)
+		DeferCleanup(fix.Cleanup)
+		fix.CreateNetwork()
+
+		// GRE carries no ports, so the rule names none. It still costs
+		// one entry, the same as any other rule that matches a whole
+		// protocol.
+		fix.CreateACL("server-acl", `
+  ingress:
+    - priority: 100
+      action: allow
+      protocol: gre
+      cidr: 0.0.0.0/0`)
+		fix.AttachACL(fix.serverSubnet, "server-acl")
+		waitPolicyEntryCounts("networkacl", fix.ACLName("server-acl"), 1, 0)
+
+		fix.CreatePodWithContainers(serverPodName, fix.serverSubnet, fix.serverNode, greSinkContainer(), nil)
+		fix.CreatePodWithContainers(clientPodName, fix.clientSubnet, fix.clientNode, probeSourceContainer(), nil)
+		waitPodsReady(fix.namespace, serverPodName, clientPodName)
+		assertPodGREConnectivity(fix.namespace, clientPodName, serverPodName)
+	})
+
+	It("directions: an egress-only ACL leaves the inbound direction alone", func() {
+		base := sanitizeName("acl-egress-only-fragment")
+		fix := newPolicyFixture(base)
+		DeferCleanup(fix.Cleanup)
+		fix.CreateNetwork()
+
+		// The ACL names egress rules only, so ingress keeps its
+		// default-allow and no rule polices what enters the Subnet.
+		// The probe is a fragment whose ports no layer can read: a data
+		// plane that took "an ACL is attached" to mean "both directions
+		// are policed" would drop it, having decided it could not judge
+		// a packet it was never asked to judge.
+		fix.CreateACL("server-acl", `
+  egress:
+    - priority: 100
+      action: allow
+      protocol: all
+      cidr: 0.0.0.0/0`)
+		fix.AttachACL(fix.serverSubnet, "server-acl")
+		waitPolicyEntryCounts("networkacl", fix.ACLName("server-acl"), 0, 1)
+
+		fix.CreatePodWithContainers(serverPodName, fix.serverSubnet, fix.serverNode,
+			captureSinkContainer(laterFragmentFilter), nil)
+		fix.CreatePodWithContainers(clientPodName, fix.clientSubnet, fix.clientNode,
+			probeSourceContainer(), nil)
+		waitPodsReady(fix.namespace, serverPodName, clientPodName)
+
+		assertPodOrphanFragment(fix.namespace, clientPodName, serverPodName)
 	})
 
 	It("directions: one ACL enforces its ingress and its egress rules", func() {
