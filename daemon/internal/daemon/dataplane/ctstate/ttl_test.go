@@ -6,8 +6,12 @@ import (
 )
 
 const (
-	protoTCP uint8 = 6
-	protoUDP uint8 = 17
+	protoICMP uint8 = 1
+	protoTCP  uint8 = 6
+	protoUDP  uint8 = 17
+	protoGRE  uint8 = 47
+	protoESP  uint8 = 50
+	protoRaw  uint8 = 253
 )
 
 func TestShouldEvict(t *testing.T) {
@@ -39,6 +43,19 @@ func TestShouldEvict(t *testing.T) {
 		{"UDP at TTL stays", StateEstablished, protoUDP, TTLUDP, false},
 		{"UDP past TTL evicts", StateEstablished, protoUDP, TTLUDP + time.Second, true},
 		{"UDP NEW past UDP TTL evicts (state is irrelevant for UDP)", StateNew, protoUDP, TTLUDP + time.Second, true},
+
+		{"ICMP under TTL stays even if state ESTABLISHED", StateEstablished, protoICMP, 29 * time.Second, false},
+		{"ICMP at TTL stays", StateEstablished, protoICMP, TTLICMP, false},
+		{"ICMP past TTL evicts", StateEstablished, protoICMP, TTLICMP + time.Second, true},
+
+		{"GRE under TTL stays", StateEstablished, protoGRE, 60 * time.Second, false},
+		{"GRE at TTL stays", StateEstablished, protoGRE, TTLOther, false},
+		{"GRE past TTL evicts", StateEstablished, protoGRE, TTLOther + time.Second, true},
+		{"GRE never gets the TCP ESTABLISHED hour", StateEstablished, protoGRE, 30 * time.Minute, true},
+		{"GRE NEW past TTL evicts (state is irrelevant for GRE)", StateNew, protoGRE, TTLOther + time.Second, true},
+
+		{"ESP past TTL evicts", StateEstablished, protoESP, TTLOther + time.Second, true},
+		{"a protocol number with no keyword still gets a TTL", StateEstablished, protoRaw, TTLOther + time.Second, true},
 
 		{"future last_seen treated as now (not evicted)", StateEstablished, protoTCP, -time.Second, false},
 	}

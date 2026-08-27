@@ -200,6 +200,7 @@ GCは`ConntrackGCInterval` (30秒) ごとに`ct_map`と`policy_ct_map`の両方�
 | TCP `CT_STATE_FIN_WAIT` | 60秒 |
 | UDP | 60秒 (stateによらず) |
 | ICMP | 30秒 |
+| その他 (GRE、ESPなど) | 120秒 (stateによらず) |
 
 `last_seen_ns`は`bpf_ktime_get_ns`、GC側は`clock_gettime(CLOCK_MONOTONIC)`で、同じ時計を見ています。短絡するたびに`last_seen_ns`が更新されるので、流れているフローがTTLで消えることはありません。
 
