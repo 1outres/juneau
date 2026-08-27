@@ -111,6 +111,13 @@ func TestSchemaLayoutMatchesGenerated(t *testing.T) {
 			valueSize: 4,
 		},
 		{
+			name:      "ipv4_frag_map",
+			key:       schemaIPv4FragKey(),
+			val:       schemaIPv4FragVal(),
+			keySize:   unsafe.Sizeof(bpf.PodEgressIpv4FragKey{}),
+			valueSize: unsafe.Sizeof(bpf.PodEgressIpv4FragVal{}),
+		},
+		{
 			name:      "virtual_service_map",
 			key:       schemaVirtSvcKey(),
 			val:       schemaVirtSvcVal(),
@@ -211,6 +218,25 @@ func schemaSubnetVal() Schema {
 		FieldIPv4BENamed("gw_addr"),
 		FieldU32Named("mask"),
 		FieldU32Named("acl_id"),
+	}}
+}
+
+func schemaIPv4FragKey() Schema {
+	return Schema{Fields: []Field{
+		FieldU32Named("vpc_id"),
+		FieldIPv4BENamed("saddr"),
+		FieldIPv4BENamed("daddr"),
+		FieldPortBENamed("id"),
+		FieldEnumNamed("proto", 1, IPProtoEnum),
+		FieldPadOf(1),
+	}}
+}
+func schemaIPv4FragVal() Schema {
+	return Schema{Fields: []Field{
+		FieldPortBENamed("sport"),
+		FieldPortBENamed("dport"),
+		FieldPadOf(4),
+		FieldU64Named("last_seen_ns"),
 	}}
 }
 

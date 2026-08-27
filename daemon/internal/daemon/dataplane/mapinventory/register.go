@@ -40,6 +40,7 @@ func RegisterPodEgress(inv *Inventory, p *program.PodEgress) error {
 		registerCT,
 		registerPolicyCT,
 		registerPolicyEpoch,
+		registerIPv4Frag,
 		registerNAPTSrc,
 		registerVirtualService,
 		registerVirtualServiceFlow,
@@ -470,6 +471,29 @@ func registerPolicyEpoch(inv *Inventory, p *program.PodEgress) error {
 		}},
 		Value: Schema{Fields: []Field{
 			FieldU32Named("epoch", "bumping this re-evaluates every admitted flow"),
+		}},
+	})
+}
+
+func registerIPv4Frag(inv *Inventory, p *program.PodEgress) error {
+	// Written by BPF straight from the IP header, so every address and
+	// port is already in network byte order.
+	return inv.Register(&Descriptor{
+		Name: "ipv4_frag_map",
+		Map:  p.Objs.Ipv4FragMap,
+		Key: Schema{Fields: []Field{
+			FieldU32Named("vpc_id"),
+			FieldIPv4BENamed("saddr"),
+			FieldIPv4BENamed("daddr"),
+			FieldPortBENamed("id", "iphdr.id of the fragmented datagram"),
+			FieldEnumNamed("proto", 1, IPProtoEnum),
+			FieldPadOf(1),
+		}},
+		Value: Schema{Fields: []Field{
+			FieldPortBENamed("sport", "read from the first fragment"),
+			FieldPortBENamed("dport", "read from the first fragment"),
+			FieldPadOf(4),
+			FieldU64Named("last_seen_ns"),
 		}},
 	})
 }

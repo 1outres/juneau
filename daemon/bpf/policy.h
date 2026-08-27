@@ -35,6 +35,7 @@
 #include "maps.h"
 #include "nat.h"
 #include "policy_ct.h"
+#include "policy_tuple.h"
 #include "sg.h"
 #include "trace.h"
 
@@ -87,16 +88,8 @@ static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
   // dport at 0, so only rules whose port range is the wildcard can
   // match them. A rule that names ports is asking about a port-bearing
   // protocol and must not admit a protocol that has none.
-  __u8 proto = iph->protocol;
-  __u16 sport = 0;
-  __u16 dport = 0;
-  if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
-    __be16 sp_be, dp_be;
-    if (nat_read_l4_ports(iph, data_end, &sp_be, &dp_be) < 0)
-      return 0;
-    sport = bpf_ntohs(sp_be);
-    dport = bpf_ntohs(dp_be);
-  }
+  struct policy_tuple t;
+  policy_parse_tuple(iph, data_end, &t);
 
   int egress = (hook == POLICY_HOOK_POD_EGRESS);
   __be32 self_ip = egress ? iph->saddr : iph->daddr;
@@ -104,6 +97,24 @@ static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
   __u8 acl_dir = egress ? ACL_DIR_EGRESS : ACL_DIR_INGRESS;
   __u8 sg_dir = egress ? SG_DIR_EGRESS : SG_DIR_INGRESS;
   __u32 trace_hook = policy_trace_hook(hook);
+
+  // A tuple with no ports is settled here, before the ACL and SG scans
+  // start. Carrying "the ports are unknown" into the evaluation as a
+  // flag would keep a register live across both scans, and the verifier
+  // answers that by walking the whole region twice — the same shape
+  // that took pod_ingress from 364,672 to 704,657 instructions when the
+  // CT epoch was handled that way.
+  if (t.status == POLICY_TUPLE_DEGRADED)
+    policy_frag_recover(vpc_id, iph, &t);
+  if (t.status == POLICY_TUPLE_DEGRADED)
+    return 0;
+
+  // Recorded before the CT short-circuit below. A flow that is already
+  // established can start fragmenting at any point, and behind the
+  // short-circuit this hook would never see the first fragment that its
+  // later fragments need.
+  if (policy_frag_is_first(iph))
+    policy_frag_record(vpc_id, iph, &t);
 
   // Established-flow short-circuit. The epoch is part of the key, so a
   // rule change moves every later lookup onto keys nobody has written:
@@ -126,11 +137,11 @@ static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
   __u32 epoch = policy_ct_epoch();
   struct policy_ct_key ck =
       policy_ct_build_key(hook, epoch, vpc_id, iph->saddr, iph->daddr,
-                          bpf_htons(sport), bpf_htons(dport), proto);
+                          bpf_htons(t.sport), bpf_htons(t.dport), t.proto);
   struct policy_ct_val *pv = bpf_map_lookup_elem(&policy_ct_map, &ck);
   if (pv) {
     pv->last_seen_ns = bpf_ktime_get_ns();
-    if (proto == IPPROTO_TCP) {
+    if (t.proto == IPPROTO_TCP) {
       __u8 f;
       if (ct_read_tcp_flags(iph, data_end, &f) == 0)
         policy_ct_observe_tcp(&ck, pv, f);
@@ -146,7 +157,7 @@ static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
                          trace_hook, TRACE_SCOPE_VPC, vpc_id, subnet_id, 0);
 
   // ACL eval first (Subnet boundary), matched against the peer.
-  int acl_v = acl_evaluate(acl_id, acl_dir, proto, dport, peer_ip);
+  int acl_v = acl_evaluate(acl_id, acl_dir, t.proto, t.dport, peer_ip);
   if (acl_v == ACL_VERDICT_DENY)
     return -1;
   if (acl_id != 0)
@@ -163,9 +174,9 @@ static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
     {
       struct sg_eval_args sea = {
           .peer_ip = peer_ip,
-          .dport = dport,
+          .dport = t.dport,
           .direction = sg_dir,
-          .proto = proto,
+          .proto = t.proto,
       };
       sg_v = sg_eval(self, peer, &sea);
     }
@@ -191,7 +202,7 @@ static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
 
   __u8 init_flags = 0;
   __u8 init_state = CT_STATE_ESTABLISHED;
-  if (proto == IPPROTO_TCP) {
+  if (t.proto == IPPROTO_TCP) {
     __u8 f;
     if (ct_read_tcp_flags(iph, data_end, &f) == 0) {
       init_flags = f & TCP_FLAG_TRACKED;

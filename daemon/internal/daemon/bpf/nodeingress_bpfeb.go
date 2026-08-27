@@ -158,6 +158,24 @@ type NodeIngressIfindexSubnetVal struct {
 	SubnetId uint32
 }
 
+type NodeIngressIpv4FragKey struct {
+	_     structs.HostLayout
+	VpcId uint32
+	Saddr uint32
+	Daddr uint32
+	Id    uint16
+	Proto uint8
+	Pad   uint8
+}
+
+type NodeIngressIpv4FragVal struct {
+	_          structs.HostLayout
+	Sport      uint16
+	Dport      uint16
+	_          [4]byte
+	LastSeenNs uint64
+}
+
 type NodeIngressLbBackendKey struct {
 	_     structs.HostLayout
 	Vip   uint32
@@ -473,6 +491,7 @@ type NodeIngressMapSpecs struct {
 	HostUnderlay          *ebpf.MapSpec `ebpf:"host_underlay"`
 	IfindexHostMac        *ebpf.MapSpec `ebpf:"ifindex_host_mac"`
 	IfindexSubnet         *ebpf.MapSpec `ebpf:"ifindex_subnet"`
+	Ipv4FragMap           *ebpf.MapSpec `ebpf:"ipv4_frag_map"`
 	LbBackendMap          *ebpf.MapSpec `ebpf:"lb_backend_map"`
 	LbServiceMap          *ebpf.MapSpec `ebpf:"lb_service_map"`
 	NaptSrc               *ebpf.MapSpec `ebpf:"napt_src"`
@@ -542,6 +561,7 @@ type NodeIngressMaps struct {
 	HostUnderlay          *ebpf.Map `ebpf:"host_underlay"`
 	IfindexHostMac        *ebpf.Map `ebpf:"ifindex_host_mac"`
 	IfindexSubnet         *ebpf.Map `ebpf:"ifindex_subnet"`
+	Ipv4FragMap           *ebpf.Map `ebpf:"ipv4_frag_map"`
 	LbBackendMap          *ebpf.Map `ebpf:"lb_backend_map"`
 	LbServiceMap          *ebpf.Map `ebpf:"lb_service_map"`
 	NaptSrc               *ebpf.Map `ebpf:"napt_src"`
@@ -587,6 +607,7 @@ func (m *NodeIngressMaps) Close() error {
 		m.HostUnderlay,
 		m.IfindexHostMac,
 		m.IfindexSubnet,
+		m.Ipv4FragMap,
 		m.LbBackendMap,
 		m.LbServiceMap,
 		m.NaptSrc,

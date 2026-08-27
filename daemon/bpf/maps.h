@@ -104,6 +104,15 @@
 #define MAX_POLICY_CT_MAP 262144
 #endif
 
+#ifndef MAX_IPV4_FRAG
+// MAX_IPV4_FRAG bounds ipv4_frag_map, the table that carries the L4
+// ports of a fragmented datagram from its first fragment to the later
+// ones. Only datagrams that are really fragmented take a slot, and a
+// slot is useful for the few milliseconds the reassembly takes, so a
+// few thousand cover far more concurrent reassemblies than a Node sees.
+#define MAX_IPV4_FRAG 4096
+#endif
+
 #ifndef MAX_NAPT_SRC
 #define MAX_NAPT_SRC 4096
 #endif
@@ -803,6 +812,46 @@ struct {
   __type(value, __u32);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } policy_epoch_map SEC(".maps");
+
+// ipv4_frag_map carries the L4 ports of a fragmented datagram from its
+// first fragment to the later ones. Only the first fragment holds the
+// L4 header, so without this table the policy stage has no ports to
+// match a later fragment on and has to drop it — which breaks any
+// policed flow whose datagrams exceed the MTU.
+//
+// The key has no hook field on purpose: the ports belong to the packet,
+// not to the enforcement point that reads them. pod_egress on the
+// sending Node and pod_ingress on the receiving Node see the same
+// datagram and share the entry.
+//
+// LRU_HASH, and no user-space GC like policy_ct_map has. An entry is
+// wanted for the milliseconds a reassembly takes and is dead right
+// after, so eviction under pressure drops entries that were about to
+// expire anyway. Readers still check last_seen_ns (see
+// POLICY_FRAG_MAX_AGE_NS) because an LRU slot can sit around long
+// after the datagram is gone.
+struct ipv4_frag_key {
+  __u32  vpc_id;
+  __be32 saddr;
+  __be32 daddr;
+  __be16 id;               // iphdr.id, network byte order
+  __u8   proto;
+  __u8   _pad;
+};
+
+struct ipv4_frag_val {
+  __be16 sport;
+  __be16 dport;
+  __u64  last_seen_ns;
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_LRU_HASH);
+  __uint(max_entries, MAX_IPV4_FRAG);
+  __type(key, struct ipv4_frag_key);
+  __type(value, struct ipv4_frag_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} ipv4_frag_map SEC(".maps");
 
 // napt_src maps a NATGWID (overloaded into fib_val.subnet_id when
 // fib_val.type == FIB_ROUTE_TYPE_NAPT) to the host_napt_ip the local
