@@ -5,6 +5,9 @@ import (
 	"net"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
+
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
@@ -20,7 +23,7 @@ func TestExpandSecurityGroup_PortsAndPeers(t *testing.T) {
 					{CIDR: "10.0.0.0/8"},
 					{SecurityGroupRef: &juneauv1alpha1.SecurityGroupPeerRef{Name: "client-sg"}},
 				},
-				Protocol: juneauv1alpha1.SecurityGroupProtocolTCP,
+				Protocol: ptr.To(intstr.FromString("tcp")),
 				Ports: []juneauv1alpha1.SecurityGroupPort{
 					{Port: ptrInt32(80)},
 					{PortRange: &juneauv1alpha1.SecurityGroupPortRange{From: 8000, To: 8009}},
@@ -87,7 +90,7 @@ func TestExpandSecurityGroup_DropsUnresolvedSGPeer(t *testing.T) {
 					{SecurityGroupRef: &juneauv1alpha1.SecurityGroupPeerRef{Name: "missing-sg"}},
 					{CIDR: "192.168.0.0/16"},
 				},
-				Protocol: juneauv1alpha1.SecurityGroupProtocolTCP,
+				Protocol: ptr.To(intstr.FromString("tcp")),
 				Ports:    []juneauv1alpha1.SecurityGroupPort{{Port: ptrInt32(443)}},
 			}},
 		},
@@ -146,13 +149,13 @@ func TestExpandNetworkACL_PrioritySortAndPortExpansion(t *testing.T) {
 		{
 			Priority: 200,
 			Action:   juneauv1alpha1.NetworkACLActionDeny,
-			Protocol: juneauv1alpha1.NetworkACLProtocolAll,
+			Protocol: ptr.To(intstr.FromString("all")),
 			CIDR:     "192.0.2.0/24",
 		},
 		{
 			Priority: 100,
 			Action:   juneauv1alpha1.NetworkACLActionAllow,
-			Protocol: juneauv1alpha1.NetworkACLProtocolTCP,
+			Protocol: ptr.To(intstr.FromString("tcp")),
 			CIDR:     "10.0.0.0/8",
 			Ports: []juneauv1alpha1.NetworkACLPort{
 				{Port: ptrInt32(80)},
@@ -164,13 +167,13 @@ func TestExpandNetworkACL_PrioritySortAndPortExpansion(t *testing.T) {
 		{
 			Priority: 50,
 			Action:   juneauv1alpha1.NetworkACLActionAllow,
-			Protocol: juneauv1alpha1.NetworkACLProtocolAll,
+			Protocol: ptr.To(intstr.FromString("all")),
 			CIDR:     "0.0.0.0/0",
 		},
 		{
 			Priority: 10,
 			Action:   juneauv1alpha1.NetworkACLActionDeny,
-			Protocol: juneauv1alpha1.NetworkACLProtocolAll,
+			Protocol: ptr.To(intstr.FromString("all")),
 			CIDR:     "198.51.100.0/24",
 		},
 	}
@@ -271,7 +274,7 @@ func TestExpandNetworkACL_InvalidCIDR(t *testing.T) {
 	ingress := []juneauv1alpha1.NetworkACLRule{{
 		Priority: 100,
 		Action:   juneauv1alpha1.NetworkACLActionAllow,
-		Protocol: juneauv1alpha1.NetworkACLProtocolAll,
+		Protocol: ptr.To(intstr.FromString("all")),
 		CIDR:     "not-a-cidr",
 	}}
 	acl := &juneauv1alpha1.NetworkACL{
@@ -290,7 +293,7 @@ func TestExpandSecurityGroup_AnyPort(t *testing.T) {
 			Vpc: "test",
 			Ingress: []juneauv1alpha1.SecurityGroupIngressRule{{
 				From:     []juneauv1alpha1.SecurityGroupPeer{{CIDR: "0.0.0.0/0"}},
-				Protocol: juneauv1alpha1.SecurityGroupProtocolAll,
+				Protocol: ptr.To(intstr.FromString("all")),
 			}},
 		},
 	}
@@ -326,7 +329,7 @@ func TestExpandSecurityGroup_ProtocolAllIsWildcard(t *testing.T) {
 			Vpc: "test",
 			Ingress: []juneauv1alpha1.SecurityGroupIngressRule{{
 				From:     []juneauv1alpha1.SecurityGroupPeer{{CIDR: "10.0.0.0/8"}},
-				Protocol: juneauv1alpha1.SecurityGroupProtocolAll,
+				Protocol: ptr.To(intstr.FromString("all")),
 			}},
 		},
 	}
@@ -342,10 +345,52 @@ func TestExpandSecurityGroup_ProtocolAllIsWildcard(t *testing.T) {
 	}
 }
 
+func TestExpandSecurityGroup_ProtocolNumber(t *testing.T) {
+	tests := []struct {
+		name  string
+		proto *intstr.IntOrString
+		want  uint16
+	}{
+		{"number", ptr.To(intstr.FromInt32(47)), 47},
+		{"keyword for the same number", ptr.To(intstr.FromString("gre")), 47},
+		{"lowest protocol number", ptr.To(intstr.FromInt32(0)), 0},
+		{"highest protocol number", ptr.To(intstr.FromInt32(255)), 255},
+		{"number for a protocol with a keyword", ptr.To(intstr.FromInt32(6)), ProtoTCP},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sg := &juneauv1alpha1.SecurityGroup{
+				Status: juneauv1alpha1.SecurityGroupStatus{GroupID: 1},
+				Spec: juneauv1alpha1.SecurityGroupSpec{
+					Vpc: "test",
+					Ingress: []juneauv1alpha1.SecurityGroupIngressRule{{
+						From:     []juneauv1alpha1.SecurityGroupPeer{{CIDR: "10.0.0.0/8"}},
+						Protocol: tt.proto,
+					}},
+				},
+			}
+			rs, err := ExpandSecurityGroup(sg, MapPeerResolver{})
+			if err != nil {
+				t.Fatalf("expand: %v", err)
+			}
+			if len(rs.Ingress) != 1 {
+				t.Fatalf("ingress entries = %d, want 1", len(rs.Ingress))
+			}
+			if rs.Ingress[0].Proto != tt.want {
+				t.Errorf("proto = %d, want %d", rs.Ingress[0].Proto, tt.want)
+			}
+		})
+	}
+}
+
 func TestExpandSecurityGroup_UnsupportedProtocol(t *testing.T) {
-	for name, proto := range map[string]juneauv1alpha1.SecurityGroupProtocol{
-		"unknown": "sctp",
-		"empty":   "",
+	for name, proto := range map[string]*intstr.IntOrString{
+		"unset":                  nil,
+		"unknown keyword":        ptr.To(intstr.FromString("quic")),
+		"number as a string":     ptr.To(intstr.FromString("47")),
+		"empty":                  ptr.To(intstr.FromString("")),
+		"number above the range": ptr.To(intstr.FromInt32(256)),
+		"negative number":        ptr.To(intstr.FromInt32(-1)),
 	} {
 		t.Run(name, func(t *testing.T) {
 			sg := &juneauv1alpha1.SecurityGroup{
@@ -359,7 +404,7 @@ func TestExpandSecurityGroup_UnsupportedProtocol(t *testing.T) {
 				},
 			}
 			if _, err := ExpandSecurityGroup(sg, MapPeerResolver{}); err == nil {
-				t.Errorf("expected error for protocol %q", proto)
+				t.Errorf("expected error for protocol %v", proto)
 			}
 		})
 	}
@@ -369,7 +414,7 @@ func TestExpandNetworkACL_ProtocolAllIsWildcard(t *testing.T) {
 	ingress := []juneauv1alpha1.NetworkACLRule{{
 		Priority: 100,
 		Action:   juneauv1alpha1.NetworkACLActionAllow,
-		Protocol: juneauv1alpha1.NetworkACLProtocolAll,
+		Protocol: ptr.To(intstr.FromString("all")),
 		CIDR:     "0.0.0.0/0",
 	}}
 	acl := &juneauv1alpha1.NetworkACL{
@@ -388,10 +433,51 @@ func TestExpandNetworkACL_ProtocolAllIsWildcard(t *testing.T) {
 	}
 }
 
+func TestExpandNetworkACL_ProtocolNumber(t *testing.T) {
+	tests := []struct {
+		name  string
+		proto *intstr.IntOrString
+		want  uint16
+	}{
+		{"number", ptr.To(intstr.FromInt32(50)), 50},
+		{"keyword for the same number", ptr.To(intstr.FromString("esp")), 50},
+		{"lowest protocol number", ptr.To(intstr.FromInt32(0)), 0},
+		{"highest protocol number", ptr.To(intstr.FromInt32(255)), 255},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ingress := []juneauv1alpha1.NetworkACLRule{{
+				Priority: 100,
+				Action:   juneauv1alpha1.NetworkACLActionAllow,
+				Protocol: tt.proto,
+				CIDR:     "0.0.0.0/0",
+			}}
+			acl := &juneauv1alpha1.NetworkACL{
+				Status: juneauv1alpha1.NetworkACLStatus{ACLID: 1},
+				Spec:   juneauv1alpha1.NetworkACLSpec{Vpc: "test", Ingress: &ingress},
+			}
+			rs, err := ExpandNetworkACL(acl)
+			if err != nil {
+				t.Fatalf("expand: %v", err)
+			}
+			if len(rs.Ingress) != 1 {
+				t.Fatalf("ingress entries = %d, want 1", len(rs.Ingress))
+			}
+			if rs.Ingress[0].Proto != tt.want {
+				t.Errorf("proto = %d, want %d", rs.Ingress[0].Proto, tt.want)
+			}
+		})
+	}
+}
+
 func TestExpandNetworkACL_UnsupportedProtocol(t *testing.T) {
-	for name, proto := range map[string]juneauv1alpha1.NetworkACLProtocol{
-		"unknown": "sctp",
-		"empty":   "",
+	for name, proto := range map[string]*intstr.IntOrString{
+		"unset":                  nil,
+		"unknown keyword":        ptr.To(intstr.FromString("quic")),
+		"number as a string":     ptr.To(intstr.FromString("47")),
+		"empty":                  ptr.To(intstr.FromString("")),
+		"number above the range": ptr.To(intstr.FromInt32(256)),
+		"negative number":        ptr.To(intstr.FromInt32(-1)),
 	} {
 		t.Run(name, func(t *testing.T) {
 			ingress := []juneauv1alpha1.NetworkACLRule{{
@@ -405,7 +491,7 @@ func TestExpandNetworkACL_UnsupportedProtocol(t *testing.T) {
 				Spec:   juneauv1alpha1.NetworkACLSpec{Vpc: "test", Ingress: &ingress},
 			}
 			if _, err := ExpandNetworkACL(acl); err == nil {
-				t.Errorf("expected error for protocol %q", proto)
+				t.Errorf("expected error for protocol %v", proto)
 			}
 		})
 	}

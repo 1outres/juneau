@@ -83,8 +83,9 @@ spec:
                       description: Description is free-form metadata.
                       type: string
                     ports:
-                      description: Ports list the destination ports admitted by this
-                        rule.
+                      description: |-
+                        Ports list the destination ports admitted by this rule. Ports
+                        may only be set when Protocol is tcp or udp.
                       items:
                         description: |-
                           SecurityGroupPort selects an L4 destination port (or range).
@@ -120,15 +121,23 @@ spec:
                       maxItems: 8
                       type: array
                     protocol:
+                      anyOf:
+                      - type: integer
+                      - type: string
                       default: all
-                      description: Protocol selects the IP protocol. Defaults to "all"
-                        when empty.
-                      enum:
-                      - tcp
-                      - udp
-                      - icmp
-                      - all
-                      type: string
+                      description: |-
+                        Protocol selects the IP protocol this rule matches. Accepts a
+                        keyword (all, icmp, tcp, udp, sctp, gre, esp, ah) or an integer
+                        IP protocol number in [0, 255]. "all" matches every protocol.
+                        Ports are only valid for tcp and udp.
+                      x-kubernetes-int-or-string: true
+                      x-kubernetes-validations:
+                      - message: protocol must be a keyword (all, icmp, tcp, udp,
+                          sctp, gre, esp, ah) or an integer IP protocol number in
+                          [0, 255]
+                        rule: 'type(self) == int ? (self >= 0 && self <= 255) : self
+                          in [''all'', ''icmp'', ''tcp'', ''udp'', ''sctp'', ''gre'',
+                          ''esp'', ''ah'']'
                     to:
                       description: |-
                         To lists the peers (CIDRs or SecurityGroupRefs) admitted by this
@@ -165,12 +174,18 @@ spec:
                   required:
                   - to
                   type: object
+                maxItems: 8
                 nullable: true
                 type: array
               ingress:
                 description: |-
                   Ingress lists rules permitting inbound traffic. Empty/omitted
                   means "deny all ingress".
+
+                  The item cap is SecurityGroupMaxEntriesPerDirection because every
+                  rule costs at least one entry, so a longer list can never fit the
+                  direction anyway. The webhook still checks the expanded cost; see
+                  policy_capacity.go.
                 items:
                   description: |-
                     SecurityGroupIngressRule allows ingress traffic that matches the
@@ -224,8 +239,8 @@ spec:
                     ports:
                       description: |-
                         Ports list the destination ports admitted by this rule. Empty
-                        list (or unset) matches any port for the chosen protocol. When
-                        Protocol is "icmp" or "all", Ports must be empty.
+                        list (or unset) matches any port for the chosen protocol. Ports
+                        may only be set when Protocol is tcp or udp.
                       items:
                         description: |-
                           SecurityGroupPort selects an L4 destination port (or range).
@@ -261,18 +276,27 @@ spec:
                       maxItems: 8
                       type: array
                     protocol:
+                      anyOf:
+                      - type: integer
+                      - type: string
                       default: all
-                      description: Protocol selects the IP protocol. Defaults to "all"
-                        when empty.
-                      enum:
-                      - tcp
-                      - udp
-                      - icmp
-                      - all
-                      type: string
+                      description: |-
+                        Protocol selects the IP protocol this rule matches. Accepts a
+                        keyword (all, icmp, tcp, udp, sctp, gre, esp, ah) or an integer
+                        IP protocol number in [0, 255]. "all" matches every protocol.
+                        Ports are only valid for tcp and udp.
+                      x-kubernetes-int-or-string: true
+                      x-kubernetes-validations:
+                      - message: protocol must be a keyword (all, icmp, tcp, udp,
+                          sctp, gre, esp, ah) or an integer IP protocol number in
+                          [0, 255]
+                        rule: 'type(self) == int ? (self >= 0 && self <= 255) : self
+                          in [''all'', ''icmp'', ''tcp'', ''udp'', ''sctp'', ''gre'',
+                          ''esp'', ''ah'']'
                   required:
                   - from
                   type: object
+                maxItems: 8
                 type: array
               vpc:
                 description: Vpc names the Vpc this SecurityGroup belongs to. Immutable.

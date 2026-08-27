@@ -25,6 +25,7 @@ import (
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -54,7 +55,8 @@ func SetupNetworkACLWebhookWithManager(mgr ctrl.Manager) error {
 //   - Vpc reference exists and is immutable.
 //   - Each rule's CIDR parses as an IPv4 prefix.
 //   - Each rule's port range has from <= to.
-//   - Protocol=icmp/all rules carry no ports.
+//   - Each rule's protocol resolves to an IP protocol number, and ports
+//     are set only on protocols that carry them (tcp and udp).
 //   - Priorities are unique within each direction (so the priority
 //     order is total).
 //   - Each direction fits NetworkACLMaxEntriesPerDirection expanded
@@ -217,13 +219,16 @@ func validateNetworkACLRule(path *field.Path, rule juneauv1alpha1.NetworkACLRule
 	return errs
 }
 
-func validateNetworkACLProtocolPorts(path *field.Path, proto juneauv1alpha1.NetworkACLProtocol, ports []juneauv1alpha1.NetworkACLPort) field.ErrorList {
+func validateNetworkACLProtocolPorts(path *field.Path, protocol *intstr.IntOrString, ports []juneauv1alpha1.NetworkACLPort) field.ErrorList {
 	var errs field.ErrorList
 
-	if proto == juneauv1alpha1.NetworkACLProtocolICMP || proto == juneauv1alpha1.NetworkACLProtocolAll {
-		if len(ports) > 0 {
-			errs = append(errs, field.Invalid(path.Child("ports"), ports, "ports must be empty when protocol is icmp or all"))
-		}
+	proto, err := juneauv1alpha1.ResolveIPProtocol(protocol)
+	if err != nil {
+		errs = append(errs, field.Invalid(path.Child("protocol"), protocol, err.Error()))
+	} else if len(ports) > 0 && !juneauv1alpha1.IPProtocolHasPorts(proto) {
+		errs = append(errs, field.Invalid(path.Child("ports"), ports,
+			fmt.Sprintf("ports are only valid when protocol is tcp or udp, but protocol is %s",
+				juneauv1alpha1.FormatIPProtocol(proto))))
 	}
 
 	for i, port := range ports {

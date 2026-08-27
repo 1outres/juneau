@@ -18,27 +18,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-)
-
-// NetworkACLProtocol selects which IP protocol a rule matches.
-//
-// "all" is a wildcard that suppresses any L4 port match (ports list must be
-// empty). icmp accepts only protocol-level matching; ICMP type/code is not
-// expressed by NetworkACL rules in v1alpha1.
-//
-// The values intentionally line up with SecurityGroupProtocol so the same
-// BPF matching primitives (policy_match.h) handle both layers. The Go
-// types are kept separate so mixing an SG rule with an ACL rule fails at
-// compile time rather than at the BPF write path.
-//
-// +kubebuilder:validation:Enum=tcp;udp;icmp;all
-type NetworkACLProtocol string
-
-const (
-	NetworkACLProtocolTCP  NetworkACLProtocol = "tcp"
-	NetworkACLProtocolUDP  NetworkACLProtocol = "udp"
-	NetworkACLProtocolICMP NetworkACLProtocol = "icmp"
-	NetworkACLProtocolAll  NetworkACLProtocol = "all"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 // NetworkACLAction is the verdict of a matching rule.
@@ -110,10 +90,15 @@ type NetworkACLRule struct {
 	// +required
 	Action NetworkACLAction `json:"action"`
 
-	// Protocol selects the IP protocol. Defaults to "all" when empty.
+	// Protocol selects the IP protocol this rule matches. Accepts a
+	// keyword (all, icmp, tcp, udp, sctp, gre, esp, ah) or an integer
+	// IP protocol number in [0, 255]. "all" matches every protocol.
+	// Ports are only valid for tcp and udp.
 	// +optional
 	// +kubebuilder:default=all
-	Protocol NetworkACLProtocol `json:"protocol,omitempty"`
+	// +kubebuilder:validation:XIntOrString
+	// +kubebuilder:validation:XValidation:rule="type(self) == int ? (self >= 0 && self <= 255) : self in ['all', 'icmp', 'tcp', 'udp', 'sctp', 'gre', 'esp', 'ah']",message="protocol must be a keyword (all, icmp, tcp, udp, sctp, gre, esp, ah) or an integer IP protocol number in [0, 255]"
+	Protocol *intstr.IntOrString `json:"protocol,omitempty"`
 
 	// CIDR is the peer address scope this rule matches. IPv4 only.
 	// "0.0.0.0/0" matches any address.
@@ -122,8 +107,8 @@ type NetworkACLRule struct {
 	CIDR string `json:"cidr"`
 
 	// Ports list the L4 destination ports admitted by this rule. Empty
-	// matches every port for the chosen protocol. When Protocol is
-	// "icmp" or "all", Ports must be empty.
+	// matches every port for the chosen protocol. Ports may only be set
+	// when Protocol is tcp or udp.
 	//
 	// The item cap matches NetworkACLMaxEntriesPerDirection because a
 	// rule costs one data plane entry per port: a single rule may fill
@@ -167,14 +152,21 @@ type NetworkACLSpec struct {
 	// Ingress lists rules controlling traffic entering Subnets that
 	// reference this ACL. Per-direction defaults follow the
 	// NetworkACLSpec nil-vs-[] convention.
+	//
+	// The item cap is NetworkACLMaxEntriesPerDirection because every
+	// rule costs at least one entry, so a longer list can never fit the
+	// direction anyway. The webhook still checks the expanded cost; see
+	// policy_capacity.go.
 	// +optional
 	// +nullable
+	// +kubebuilder:validation:MaxItems=16
 	Ingress *[]NetworkACLRule `json:"ingress,omitempty"`
 
 	// Egress lists rules controlling traffic leaving Subnets that
 	// reference this ACL.
 	// +optional
 	// +nullable
+	// +kubebuilder:validation:MaxItems=16
 	Egress *[]NetworkACLRule `json:"egress,omitempty"`
 }
 

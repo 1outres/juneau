@@ -6,6 +6,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
@@ -80,14 +82,82 @@ var _ = Describe("NetworkACL webhook", func() {
 				Ingress: &[]juneauv1alpha1.NetworkACLRule{{
 					Priority: 100,
 					Action:   juneauv1alpha1.NetworkACLActionAllow,
-					Protocol: juneauv1alpha1.NetworkACLProtocolAll,
+					Protocol: ptr.To(intstr.FromString("all")),
 					CIDR:     "10.0.0.0/24",
 					Ports:    []juneauv1alpha1.NetworkACLPort{{Port: &port80}},
 				}},
 			},
 		})
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("ports must be empty when protocol is icmp or all"))
+		Expect(err.Error()).To(ContainSubstring("ports are only valid when protocol is tcp or udp"))
+	})
+
+	It("accepts a rule written with an IP protocol number", func() {
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.NetworkACL{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("acl")},
+			Spec: juneauv1alpha1.NetworkACLSpec{
+				Vpc: "default",
+				Ingress: &[]juneauv1alpha1.NetworkACLRule{{
+					Priority: 100,
+					Action:   juneauv1alpha1.NetworkACLActionAllow,
+					Protocol: ptr.To(intstr.FromInt32(47)),
+					CIDR:     "10.0.0.0/24",
+				}},
+			},
+		})).To(Succeed())
+	})
+
+	It("rejects ports on a protocol that has none", func() {
+		port80 := int32(80)
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.NetworkACL{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("acl")},
+			Spec: juneauv1alpha1.NetworkACLSpec{
+				Vpc: "default",
+				Ingress: &[]juneauv1alpha1.NetworkACLRule{{
+					Priority: 100,
+					Action:   juneauv1alpha1.NetworkACLActionAllow,
+					Protocol: ptr.To(intstr.FromString("gre")),
+					CIDR:     "10.0.0.0/24",
+					Ports:    []juneauv1alpha1.NetworkACLPort{{Port: &port80}},
+				}},
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("ports are only valid when protocol is tcp or udp"))
+	})
+
+	It("rejects a protocol number outside [0, 255]", func() {
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.NetworkACL{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("acl")},
+			Spec: juneauv1alpha1.NetworkACLSpec{
+				Vpc: "default",
+				Ingress: &[]juneauv1alpha1.NetworkACLRule{{
+					Priority: 100,
+					Action:   juneauv1alpha1.NetworkACLActionAllow,
+					Protocol: ptr.To(intstr.FromInt32(256)),
+					CIDR:     "10.0.0.0/24",
+				}},
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("IP protocol number in [0, 255]"))
+	})
+
+	It("rejects an unknown protocol keyword", func() {
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.NetworkACL{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("acl")},
+			Spec: juneauv1alpha1.NetworkACLSpec{
+				Vpc: "default",
+				Ingress: &[]juneauv1alpha1.NetworkACLRule{{
+					Priority: 100,
+					Action:   juneauv1alpha1.NetworkACLActionAllow,
+					Protocol: ptr.To(intstr.FromString("quic")),
+					CIDR:     "10.0.0.0/24",
+				}},
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("IP protocol number in [0, 255]"))
 	})
 
 	It("rejects port range with from > to", func() {
@@ -98,7 +168,7 @@ var _ = Describe("NetworkACL webhook", func() {
 				Ingress: &[]juneauv1alpha1.NetworkACLRule{{
 					Priority: 100,
 					Action:   juneauv1alpha1.NetworkACLActionAllow,
-					Protocol: juneauv1alpha1.NetworkACLProtocolTCP,
+					Protocol: ptr.To(intstr.FromString("tcp")),
 					CIDR:     "10.0.0.0/24",
 					Ports: []juneauv1alpha1.NetworkACLPort{{
 						PortRange: &juneauv1alpha1.NetworkACLPortRange{From: 8000, To: 1000},
@@ -195,7 +265,7 @@ var _ = Describe("NetworkACL webhook entry capacity", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("acl")},
 			Spec: juneauv1alpha1.NetworkACLSpec{
 				Vpc:     "default",
-				Ingress: webhookACLRules(juneauv1alpha1.NetworkACLMaxEntriesPerDirection + 1),
+				Ingress: webhookACLRulesOneEntryOverTheLimit(),
 			},
 		})
 		Expect(err).To(HaveOccurred())
@@ -210,18 +280,32 @@ var _ = Describe("NetworkACL webhook entry capacity", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("acl")},
 			Spec: juneauv1alpha1.NetworkACLSpec{
 				Vpc:    "default",
-				Egress: webhookACLRules(juneauv1alpha1.NetworkACLMaxEntriesPerDirection + 1),
+				Egress: webhookACLRulesOneEntryOverTheLimit(),
 			},
 		})
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("spec.egress"))
 		Expect(err.Error()).To(ContainSubstring("Too many: 17"))
+		Expect(err.Error()).To(ContainSubstring("must have at most 16 entries"))
+	})
+
+	It("rejects more rules than a direction can ever hold", func() {
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.NetworkACL{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("acl")},
+			Spec: juneauv1alpha1.NetworkACLSpec{
+				Vpc:     "default",
+				Ingress: webhookACLRules(juneauv1alpha1.NetworkACLMaxEntriesPerDirection + 1),
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.ingress"))
+		Expect(err.Error()).To(ContainSubstring("must have at most 16 items"))
 	})
 
 	It("counts ports rather than rules against the entry limit", func() {
 		rules := webhookACLRules(2)
 		for i := range *rules {
-			(*rules)[i].Protocol = juneauv1alpha1.NetworkACLProtocolTCP
+			(*rules)[i].Protocol = ptr.To(intstr.FromString("tcp"))
 			(*rules)[i].Ports = webhookACLPorts(9)
 		}
 		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.NetworkACL{
@@ -234,7 +318,7 @@ var _ = Describe("NetworkACL webhook entry capacity", func() {
 
 	It("accepts a single rule whose ports fill the whole direction budget", func() {
 		rules := webhookACLRules(1)
-		(*rules)[0].Protocol = juneauv1alpha1.NetworkACLProtocolTCP
+		(*rules)[0].Protocol = ptr.To(intstr.FromString("tcp"))
 		(*rules)[0].Ports = webhookACLPorts(juneauv1alpha1.NetworkACLMaxEntriesPerDirection)
 		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.NetworkACL{
 			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("acl")},
@@ -244,7 +328,7 @@ var _ = Describe("NetworkACL webhook entry capacity", func() {
 
 	It("rejects a single rule carrying more ports than the whole direction budget", func() {
 		rules := webhookACLRules(1)
-		(*rules)[0].Protocol = juneauv1alpha1.NetworkACLProtocolTCP
+		(*rules)[0].Protocol = ptr.To(intstr.FromString("tcp"))
 		(*rules)[0].Ports = webhookACLPorts(juneauv1alpha1.NetworkACLMaxEntriesPerDirection + 1)
 		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.NetworkACL{
 			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("acl")},
@@ -267,6 +351,18 @@ func webhookACLRules(count int) *[]juneauv1alpha1.NetworkACLRule {
 		})
 	}
 	return &rules
+}
+
+// webhookACLRulesOneEntryOverTheLimit fills a direction with the most
+// rules the schema allows and then adds one port to the first rule, so
+// the direction costs one entry more than it may hold. Going one rule
+// over instead would trip the schema item cap and never reach the
+// entry check.
+func webhookACLRulesOneEntryOverTheLimit() *[]juneauv1alpha1.NetworkACLRule {
+	rules := webhookACLRules(juneauv1alpha1.NetworkACLMaxEntriesPerDirection)
+	(*rules)[0].Protocol = ptr.To(intstr.FromString("tcp"))
+	(*rules)[0].Ports = webhookACLPorts(2)
+	return rules
 }
 
 func webhookACLPorts(count int) []juneauv1alpha1.NetworkACLPort {

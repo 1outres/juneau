@@ -18,22 +18,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-)
-
-// SecurityGroupProtocol selects which IP protocol a rule matches.
-//
-// "all" is a wildcard that suppresses any L4 port match (ports list must be
-// empty). icmp accepts only protocol-level matching; ICMP type/code is not
-// expressed by SecurityGroup rules in v1alpha1.
-//
-// +kubebuilder:validation:Enum=tcp;udp;icmp;all
-type SecurityGroupProtocol string
-
-const (
-	SecurityGroupProtocolTCP  SecurityGroupProtocol = "tcp"
-	SecurityGroupProtocolUDP  SecurityGroupProtocol = "udp"
-	SecurityGroupProtocolICMP SecurityGroupProtocol = "icmp"
-	SecurityGroupProtocolAll  SecurityGroupProtocol = "all"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 // SecurityGroupPeer expresses a single source/destination scope.
@@ -109,14 +94,19 @@ type SecurityGroupIngressRule struct {
 	// +kubebuilder:validation:MaxItems=8
 	From []SecurityGroupPeer `json:"from"`
 
-	// Protocol selects the IP protocol. Defaults to "all" when empty.
+	// Protocol selects the IP protocol this rule matches. Accepts a
+	// keyword (all, icmp, tcp, udp, sctp, gre, esp, ah) or an integer
+	// IP protocol number in [0, 255]. "all" matches every protocol.
+	// Ports are only valid for tcp and udp.
 	// +optional
 	// +kubebuilder:default=all
-	Protocol SecurityGroupProtocol `json:"protocol,omitempty"`
+	// +kubebuilder:validation:XIntOrString
+	// +kubebuilder:validation:XValidation:rule="type(self) == int ? (self >= 0 && self <= 255) : self in ['all', 'icmp', 'tcp', 'udp', 'sctp', 'gre', 'esp', 'ah']",message="protocol must be a keyword (all, icmp, tcp, udp, sctp, gre, esp, ah) or an integer IP protocol number in [0, 255]"
+	Protocol *intstr.IntOrString `json:"protocol,omitempty"`
 
 	// Ports list the destination ports admitted by this rule. Empty
-	// list (or unset) matches any port for the chosen protocol. When
-	// Protocol is "icmp" or "all", Ports must be empty.
+	// list (or unset) matches any port for the chosen protocol. Ports
+	// may only be set when Protocol is tcp or udp.
 	// +optional
 	// +kubebuilder:validation:MaxItems=8
 	Ports []SecurityGroupPort `json:"ports,omitempty"`
@@ -137,12 +127,18 @@ type SecurityGroupEgressRule struct {
 	// +kubebuilder:validation:MaxItems=8
 	To []SecurityGroupPeer `json:"to"`
 
-	// Protocol selects the IP protocol. Defaults to "all" when empty.
+	// Protocol selects the IP protocol this rule matches. Accepts a
+	// keyword (all, icmp, tcp, udp, sctp, gre, esp, ah) or an integer
+	// IP protocol number in [0, 255]. "all" matches every protocol.
+	// Ports are only valid for tcp and udp.
 	// +optional
 	// +kubebuilder:default=all
-	Protocol SecurityGroupProtocol `json:"protocol,omitempty"`
+	// +kubebuilder:validation:XIntOrString
+	// +kubebuilder:validation:XValidation:rule="type(self) == int ? (self >= 0 && self <= 255) : self in ['all', 'icmp', 'tcp', 'udp', 'sctp', 'gre', 'esp', 'ah']",message="protocol must be a keyword (all, icmp, tcp, udp, sctp, gre, esp, ah) or an integer IP protocol number in [0, 255]"
+	Protocol *intstr.IntOrString `json:"protocol,omitempty"`
 
-	// Ports list the destination ports admitted by this rule.
+	// Ports list the destination ports admitted by this rule. Ports
+	// may only be set when Protocol is tcp or udp.
 	// +optional
 	// +kubebuilder:validation:MaxItems=8
 	Ports []SecurityGroupPort `json:"ports,omitempty"`
@@ -170,7 +166,13 @@ type SecurityGroupSpec struct {
 
 	// Ingress lists rules permitting inbound traffic. Empty/omitted
 	// means "deny all ingress".
+	//
+	// The item cap is SecurityGroupMaxEntriesPerDirection because every
+	// rule costs at least one entry, so a longer list can never fit the
+	// direction anyway. The webhook still checks the expanded cost; see
+	// policy_capacity.go.
 	// +optional
+	// +kubebuilder:validation:MaxItems=8
 	Ingress []SecurityGroupIngressRule `json:"ingress,omitempty"`
 
 	// Egress lists rules permitting outbound traffic. nil (the field
@@ -179,6 +181,7 @@ type SecurityGroupSpec struct {
 	// "deny-by-default, allow-by-rule".
 	// +optional
 	// +nullable
+	// +kubebuilder:validation:MaxItems=8
 	Egress *[]SecurityGroupEgressRule `json:"egress,omitempty"`
 }
 
