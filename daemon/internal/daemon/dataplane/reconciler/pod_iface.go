@@ -26,9 +26,10 @@ import (
 // attachment disappears. Kind-agnostic: any endpoint with a real local
 // veth (Pod, Node, …) is handled here.
 type PodIface struct {
-	client    client.Client
-	podEgress *program.PodEgress
-	nodeName  string
+	client         client.Client
+	ifindexSubnet  bpfMap
+	ifindexHostMac bpfMap
+	nodeName       string
 
 	mu        sync.Mutex
 	snapshots map[string]uint32 // NWEP key -> ifindex we last wrote for
@@ -36,10 +37,11 @@ type PodIface struct {
 
 func NewPodIface(cl client.Client, podEgress *program.PodEgress, nodeName string) *PodIface {
 	return &PodIface{
-		client:    cl,
-		podEgress: podEgress,
-		nodeName:  nodeName,
-		snapshots: make(map[string]uint32),
+		client:         cl,
+		ifindexSubnet:  podEgress.Objs.IfindexSubnet,
+		ifindexHostMac: podEgress.Objs.IfindexHostMac,
+		nodeName:       nodeName,
+		snapshots:      make(map[string]uint32),
 	}
 }
 
@@ -81,6 +83,11 @@ func (r *PodIface) upsert(ctx context.Context, key string, nwep *juneauv1alpha1.
 		return err
 	}
 
+	ipv4BE, err := endpointAddressToBE(nwep.Spec.Address)
+	if err != nil {
+		return fmt.Errorf("endpoint %s: %w", key, err)
+	}
+
 	newIfindex := uint32(nwep.Spec.Attachment.Ifindex)
 
 	r.mu.Lock()
@@ -93,15 +100,15 @@ func (r *PodIface) upsert(ctx context.Context, key string, nwep *juneauv1alpha1.
 		}
 	}
 
-	if err := r.podEgress.Objs.IfindexSubnet.Update(
+	if err := r.ifindexSubnet.Update(
 		&bpf.PodEgressIfindexSubnetKey{Ifindex: newIfindex},
-		&bpf.PodEgressIfindexSubnetVal{SubnetId: subnet.Status.VNI},
+		&bpf.PodEgressIfindexSubnetVal{SubnetId: subnet.Status.VNI, Ipv4: ipv4BE},
 		ebpf.UpdateAny,
 	); err != nil {
 		return fmt.Errorf("update IfindexSubnet: %w", err)
 	}
 
-	if err := r.podEgress.Objs.IfindexHostMac.Update(
+	if err := r.ifindexHostMac.Update(
 		&bpf.PodEgressIfindexHostMacKey{Ifindex: newIfindex},
 		&bpf.PodEgressIfindexHostMacVal{Mac: hostMACArray},
 		ebpf.UpdateAny,
@@ -113,6 +120,30 @@ func (r *PodIface) upsert(ctx context.Context, key string, nwep *juneauv1alpha1.
 	r.snapshots[key] = newIfindex
 	r.mu.Unlock()
 	return nil
+}
+
+// endpointAddressToBE turns a NetworkEndpoint L3 identity into the
+// __be32 the data plane compares against iph->saddr / iph->daddr. The
+// identity is written in CIDR form ("10.0.0.5/24"), so the host part
+// names the NIC; a bare address is accepted too.
+//
+// An endpoint the data plane cannot name by address cannot be looked
+// up in sg_membership_map, so an unusable value is an error and not a
+// zero entry. A zero would read as a different NIC and let the policy
+// stage skip the rules this one is behind.
+func endpointAddressToBE(address string) (uint32, error) {
+	if address == "" {
+		return 0, errors.New("endpoint has no address")
+	}
+	ip := net.ParseIP(address)
+	if ip == nil {
+		hostIP, _, err := net.ParseCIDR(address)
+		if err != nil {
+			return 0, fmt.Errorf("parse endpoint address %q: %w", address, err)
+		}
+		ip = hostIP
+	}
+	return convert.IPv4ToBPFNetworkOrder(ip)
 }
 
 func (r *PodIface) delete(key string) error {
@@ -134,10 +165,10 @@ func (r *PodIface) delete(key string) error {
 }
 
 func (r *PodIface) deleteEntries(ifindex uint32) error {
-	if err := r.podEgress.Objs.IfindexSubnet.Delete(&bpf.PodEgressIfindexSubnetKey{Ifindex: ifindex}); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+	if err := r.ifindexSubnet.Delete(&bpf.PodEgressIfindexSubnetKey{Ifindex: ifindex}); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 		return fmt.Errorf("delete IfindexSubnet: %w", err)
 	}
-	if err := r.podEgress.Objs.IfindexHostMac.Delete(&bpf.PodEgressIfindexHostMacKey{Ifindex: ifindex}); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+	if err := r.ifindexHostMac.Delete(&bpf.PodEgressIfindexHostMacKey{Ifindex: ifindex}); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 		return fmt.Errorf("delete IfindexHostMac: %w", err)
 	}
 	return nil

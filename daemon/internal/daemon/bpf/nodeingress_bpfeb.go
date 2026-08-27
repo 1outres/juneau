@@ -156,6 +156,7 @@ type NodeIngressIfindexSubnetKey struct {
 type NodeIngressIfindexSubnetVal struct {
 	_        structs.HostLayout
 	SubnetId uint32
+	Ipv4     uint32
 }
 
 type NodeIngressIpv4FragKey struct {

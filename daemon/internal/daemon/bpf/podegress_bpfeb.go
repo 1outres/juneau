@@ -156,6 +156,7 @@ type PodEgressIfindexSubnetKey struct {
 type PodEgressIfindexSubnetVal struct {
 	_        structs.HostLayout
 	SubnetId uint32
+	Ipv4     uint32
 }
 
 type PodEgressIpv4FragKey struct {

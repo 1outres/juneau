@@ -276,6 +276,10 @@ struct ifindex_subnet_key {
 
 struct ifindex_subnet_val {
   __u32 subnet_id;
+  // ipv4 is the Pod's address on this NIC, in network byte order. A
+  // non-IPv4 frame carries no address the policy stage could look up,
+  // so the address has to come from the NIC instead of the packet.
+  __be32 ipv4;
 };
 
 struct {

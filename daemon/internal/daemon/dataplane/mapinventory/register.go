@@ -93,6 +93,7 @@ func registerIfindexSubnet(inv *Inventory, p *program.PodEgress) error {
 		}},
 		Value: Schema{Fields: []Field{
 			FieldU32Named("subnet_id"),
+			FieldIPv4BENamed("ipv4", "the Pod's address on this NIC"),
 		}},
 	})
 }

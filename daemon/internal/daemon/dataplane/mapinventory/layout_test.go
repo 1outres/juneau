@@ -32,6 +32,13 @@ func TestSchemaLayoutMatchesGenerated(t *testing.T) {
 			valueSize: unsafe.Sizeof(bpf.PodEgressSubnetVal{}),
 		},
 		{
+			name:      "ifindex_subnet",
+			key:       schemaIfindexSubnetKey(),
+			val:       schemaIfindexSubnetVal(),
+			keySize:   unsafe.Sizeof(bpf.PodEgressIfindexSubnetKey{}),
+			valueSize: unsafe.Sizeof(bpf.PodEgressIfindexSubnetVal{}),
+		},
+		{
 			name:      "arp_table",
 			key:       schemaArpKey(),
 			val:       schemaArpVal(),
@@ -218,6 +225,16 @@ func schemaSubnetVal() Schema {
 		FieldIPv4BENamed("gw_addr"),
 		FieldU32Named("mask"),
 		FieldU32Named("acl_id"),
+	}}
+}
+
+func schemaIfindexSubnetKey() Schema {
+	return Schema{Fields: []Field{FieldU32Named("ifindex")}}
+}
+func schemaIfindexSubnetVal() Schema {
+	return Schema{Fields: []Field{
+		FieldU32Named("subnet_id"),
+		FieldIPv4BENamed("ipv4"),
 	}}
 }
 

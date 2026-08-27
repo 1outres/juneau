@@ -18,6 +18,9 @@
 #include "trace.h"
 
 #define ETH_P_IP 0x0800
+#ifndef ETH_P_ARP
+#define ETH_P_ARP 0x0806
+#endif
 
 #define TC_ACT_OK 0
 #define TC_ACT_SHOT 2
@@ -110,11 +113,15 @@ static __always_inline int handle(struct __sk_buff *skb) {
   if ((void *)(eth + 1) > data_end)
     return TC_ACT_OK;
 
-  if (bpf_ntohs(eth->h_proto) != ETH_P_IP)
-    return TC_ACT_OK;
+  __u16 h_proto = bpf_ntohs(eth->h_proto);
 
   // Resolve the receiving Pod's Subnet (and thus VPC) so the conntrack
   // key matches the forward entry installed by pod_egress on this node.
+  //
+  // This used to sit behind the ethertype check. It runs first now
+  // because the ethertype decision needs the Pod's own address, and a
+  // frame that is not IPv4 carries nothing the policy stage could look
+  // the Pod up by.
   struct ifindex_subnet_key isk = {.ifindex = skb->ifindex};
   const struct ifindex_subnet_val *isv =
       bpf_map_lookup_elem(&ifindex_subnet, &isk);
@@ -138,6 +145,21 @@ static __always_inline int handle(struct __sk_buff *skb) {
         .scope = TRACE_SCOPE_VPC,
     };
     __trace_id = trace_classify_and_emit_enter(skb, &__ctx);
+  }
+
+  if (h_proto != ETH_P_IP) {
+    // ARP is let through whatever the policy says: juneau's own data
+    // plane resolves Pod and gateway MACs with it, so a Pod that cannot
+    // ARP has no working network at all.
+    if (h_proto != ETH_P_ARP &&
+        policy_enforced(subnet->vpc_id, subnet->acl_id, ACL_DIR_INGRESS,
+                        isv->ipv4)) {
+      trace_emit_drop_l3(skb, __trace_id, TRACE_REASON_POLICY_ETHERTYPE_DROP,
+                         TRACE_HOOK_POD_INGRESS, TRACE_SCOPE_VPC,
+                         subnet->vpc_id, isv->subnet_id);
+      return TC_ACT_SHOT;
+    }
+    return TC_ACT_OK;
   }
 
   if (apply_reverse_snat(skb, subnet->vpc_id, isv->subnet_id) < 0) {

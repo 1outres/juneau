@@ -156,6 +156,7 @@ type VxlanIngressIfindexSubnetKey struct {
 type VxlanIngressIfindexSubnetVal struct {
 	_        structs.HostLayout
 	SubnetId uint32
+	Ipv4     uint32
 }
 
 type VxlanIngressIpv4FragKey struct {
