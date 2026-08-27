@@ -56,6 +56,13 @@ const (
 	ReasonPolicyACLDrop Reason = 301
 	ReasonPolicySGPass  Reason = 302
 	ReasonPolicySGDrop  Reason = 303
+	// ReasonPolicyParseDrop and ReasonPolicyEthertypeDrop mean the packet
+	// was dropped without any rule rejecting it: the direction is policed
+	// and the data plane could not read what it needed to judge the
+	// packet — an unreadable L4 header for the first, a frame that is not
+	// IPv4 for the second.
+	ReasonPolicyParseDrop     Reason = 304
+	ReasonPolicyEthertypeDrop Reason = 305
 
 	ReasonServiceLookupHit       Reason = 400
 	ReasonServiceBackendSelected Reason = 401

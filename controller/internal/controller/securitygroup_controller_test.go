@@ -8,6 +8,8 @@ import (
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
@@ -18,7 +20,7 @@ var _ = Describe("SecurityGroup controller", func() {
 		vpcName := createControllerVpc()
 		sgName := createControllerSecurityGroup(vpcName, []juneauv1alpha1.SecurityGroupIngressRule{{
 			From:     controllerSGPeers(2),
-			Protocol: juneauv1alpha1.SecurityGroupProtocolTCP,
+			Protocol: ptr.To(intstr.FromString("tcp")),
 			Ports:    controllerSGPorts(3),
 		}}, nil)
 
@@ -39,7 +41,7 @@ var _ = Describe("SecurityGroup controller", func() {
 		vpcName := createControllerVpc()
 		sgName := createControllerSecurityGroup(vpcName, []juneauv1alpha1.SecurityGroupIngressRule{{
 			From:     controllerSGPeers(4),
-			Protocol: juneauv1alpha1.SecurityGroupProtocolTCP,
+			Protocol: ptr.To(intstr.FromString("tcp")),
 			Ports:    controllerSGPorts(4),
 		}}, nil)
 

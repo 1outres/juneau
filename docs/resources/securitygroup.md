@@ -41,8 +41,11 @@ spec:
 - `cidr`: IPv4 CIDRで対向アドレス範囲を指定
 - `securityGroupRef.name`: 対向側に付与されたSecurityGroupの名前を指定。同じVpcに属するSecurityGroupだけが参照できます
 
-`protocol`は`tcp` / `udp` / `icmp` / `all`から選びます。
-`all`または`icmp`を指定したルールでは`ports`を空にする必要があります。
+`protocol`には、キーワードか0から255のIPプロトコル番号を書きます。キーワードは`all` / `icmp` / `tcp` / `udp` / `sctp` / `gre` / `esp` / `ah`の8つです。
+
+キーワードは番号に名前を付けただけのもので、`tcp`と`6`は同じルールになります。番号は引用符を付けずに整数で書いてください。`"47"`のように引用符を付けると文字列として読まれ、その綴りのキーワードは無いので拒否されます。`all`は全てのIPプロトコルにマッチします。
+
+`ports`を書けるのは`tcp`と`udp`のルールだけです。他のプロトコルにポートを書くと、作成や更新の時点でwebhookが拒否します。SCTPにもポート番号はありますが、data planeがSCTPヘッダを読まないので、書けても効かないルールになります。それで`sctp`はポートを書けない側に入れてあります。
 
 `ports[].port`で単一ポート、`ports[].portRange.from` / `to`で範囲を指定できます。
 `ports`を省略した場合は、そのプロトコルの全ポートにマッチします。
@@ -54,6 +57,14 @@ spec:
 - どのSecurityGroupにも属さないPodは、SecurityGroupによる制限を受けません
 
 ステートフルなので、許可された送信に対する応答は受信ルールに無くても通過します。受信側についても同様です。
+
+以前は、TCPとUDPとICMP以外のIPプロトコルがSecurityGroupの評価を素通りしていました。いまは全てのIPプロトコルが評価されます。TCPのルールしか書いていないSecurityGroupを付けたPodには、GREやESPは届きません。トンネルやIPsecを張っているPodがあれば、そのプロトコルを許可するルールを足してください。SecurityGroupを付けていないPodは以前と変わりません。
+
+SecurityGroupを付けたPodは、L4ヘッダを読めないパケットも落とします。ポートが分からないと、ルールと突き合わせようがないからです。fragmentに分かれたTCPとUDPは、先頭のfragmentが持っていたポートを使って後続のfragmentも判定するので、普段はこれに当たりません。当たるのは、fragmentが順番どおりに着かなかった場合です。
+
+IPv4以外のフレームも落とします。juneauが扱うのはIPv4だけなので、SecurityGroupを付けたPodの間でIPv6は使えません。ARPだけは例外で、落とすとPodのネットワークが成立しないため常に通します。
+
+これらはどれも、SecurityGroupを付けていないPodには関係ありません。SubnetにNetworkACLも紐付いていなければ、これまでどおりの動きです。
 
 ## ルールの上限
 

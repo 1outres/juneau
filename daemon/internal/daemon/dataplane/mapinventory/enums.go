@@ -165,6 +165,21 @@ var IPProtoEnum = NewEnumDict("ip_proto", map[uint64]string{
 	17: "UDP",
 })
 
+// PolicyProtoEnum maps sg_rule.proto / acl_rule.proto → label. Those
+// fields are 16 bits wide and reserve 0xFFFF for the "protocol=all"
+// wildcard, so they cannot share IPProtoEnum with the maps that store
+// iph->protocol verbatim.
+var PolicyProtoEnum = NewEnumDict("policy_proto", map[uint64]string{
+	1:      "ICMP",
+	6:      "TCP",
+	17:     "UDP",
+	47:     "GRE",
+	50:     "ESP",
+	51:     "AH",
+	132:    "SCTP",
+	0xFFFF: "ANY",
+})
+
 // SGDirEnum maps sg_rule.direction → label.
 var SGDirEnum = NewEnumDict("sg_dir", map[uint64]string{
 	0: "SG_DIR_INGRESS",
@@ -224,8 +239,9 @@ var VirtSvcFlagDict = NewFlagDict("virtsvc_flag", []FlagBit{})
 func DescribeBuiltins() string {
 	enums := []*EnumDict{
 		CTActionEnum, CTStateEnum, PolicyHookEnum, FIBRouteTypeEnum,
-		BackendKindEnum, IPProtoEnum, SGDirEnum, SGPeerKindEnum,
-		SGVerdictEnum, ACLDirEnum, ACLVerdictEnum, CTScopeEnum,
+		BackendKindEnum, IPProtoEnum, PolicyProtoEnum, SGDirEnum,
+		SGPeerKindEnum, SGVerdictEnum, ACLDirEnum, ACLVerdictEnum,
+		CTScopeEnum,
 	}
 	flagDicts := []*FlagDict{SVCFlagDict, VirtSvcFlagDict}
 

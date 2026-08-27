@@ -2477,6 +2477,21 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
   if (h_proto == ETH_P_ARP)
     return handle_arp(skb, data_end, eth, val->subnet_id, subnet);
 
+  // Everything past this point reads an IPv4 header, so a frame of any
+  // other ethertype walks around the policy stage. Same-Subnet IPv6 in
+  // particular is forwarded by fdb without a rule ever being consulted,
+  // and a policed Pod must not keep that exit. ARP returned above and is
+  // deliberately never dropped here: juneau's own data plane resolves
+  // Pod and gateway MACs with it.
+  if (h_proto != ETH_P_IP &&
+      policy_enforced(subnet->vpc_id, subnet->acl_id, ACL_DIR_EGRESS,
+                      val->ipv4)) {
+    trace_emit_drop_l3(skb, __trace_id, TRACE_REASON_POLICY_ETHERTYPE_DROP,
+                       TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, subnet->vpc_id,
+                       val->subnet_id);
+    return TC_ACT_SHOT;
+  }
+
   // Apply forward DNAT recorded in conntrack for established Service
   // flows. DNAT rewrites the destination IP and must re-route via FIB to
   // find the new next-hop. Reverse SNAT lives in pod_ingress on the
@@ -2552,14 +2567,16 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
         apply_policy(skb, POLICY_HOOK_POD_EGRESS, subnet->vpc_id,
                      subnet->acl_id, __trace_id, val->subnet_id);
     if (policy_rc < 0) {
-      // -1 = ACL deny, -3 = SG deny, -2 = internal error.
-      // Each maps to its own trace reason so the timeline names the
-      // policy layer that actually rejected the packet.
+      // -1 = ACL deny, -3 = SG deny, -4 = L4 unreadable, -2 = internal
+      // error. Each maps to its own trace reason so the timeline names
+      // the policy layer that actually rejected the packet.
       __u32 reason = TRACE_REASON_DROP_SHOT;
       if (policy_rc == -1)
         reason = TRACE_REASON_POLICY_ACL_DROP;
       else if (policy_rc == -3)
         reason = TRACE_REASON_POLICY_SG_DROP;
+      else if (policy_rc == -4)
+        reason = TRACE_REASON_POLICY_PARSE_DROP;
       trace_emit_drop_l3(skb, __trace_id, reason, TRACE_HOOK_POD_EGRESS,
                          TRACE_SCOPE_VPC, subnet->vpc_id, val->subnet_id);
       return TC_ACT_SHOT;

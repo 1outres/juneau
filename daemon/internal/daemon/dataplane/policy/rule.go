@@ -49,12 +49,15 @@ const (
 	VerdictAllow Verdict = 1
 )
 
-// Proto values mirror IP protocol numbers, with 0 used as "any".
+// Proto values mirror IP protocol numbers. Every value in 0..255 is a
+// real protocol number, so the wildcard has to sit outside that range:
+// ProtoAny is 0xFFFF, which keeps protocol number 0 (HOPOPT) usable as
+// an ordinary rule.
 const (
-	ProtoAny  uint8 = 0
-	ProtoICMP uint8 = 1
-	ProtoTCP  uint8 = 6
-	ProtoUDP  uint8 = 17
+	ProtoAny  uint16 = 0xFFFF
+	ProtoICMP uint16 = 1
+	ProtoTCP  uint16 = 6
+	ProtoUDP  uint16 = 17
 )
 
 // PortAny is a sentinel range matching every L4 destination port.
@@ -77,7 +80,7 @@ type Rule struct {
 	Direction Direction
 
 	// Proto is an IP protocol number, or ProtoAny for protocol="all".
-	Proto uint8
+	Proto uint16
 
 	// PortLo / PortHi specify an inclusive port range. Use
 	// (PortAnyLo, PortAnyHi) for "any port".

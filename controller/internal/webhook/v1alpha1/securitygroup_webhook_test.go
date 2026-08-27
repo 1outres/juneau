@@ -7,6 +7,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
@@ -58,13 +60,73 @@ var _ = Describe("SecurityGroup webhook", func() {
 				Vpc: "default",
 				Ingress: []juneauv1alpha1.SecurityGroupIngressRule{{
 					From:     []juneauv1alpha1.SecurityGroupPeer{{CIDR: "10.0.0.0/8"}},
-					Protocol: juneauv1alpha1.SecurityGroupProtocolAll,
+					Protocol: ptr.To(intstr.FromString("all")),
 					Ports:    []juneauv1alpha1.SecurityGroupPort{{Port: &port80}},
 				}},
 			},
 		})
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("ports must be empty when protocol is icmp or all"))
+		Expect(err.Error()).To(ContainSubstring("ports are only valid when protocol is tcp or udp"))
+	})
+
+	It("accepts a rule written with an IP protocol number", func() {
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.SecurityGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("sg")},
+			Spec: juneauv1alpha1.SecurityGroupSpec{
+				Vpc: "default",
+				Ingress: []juneauv1alpha1.SecurityGroupIngressRule{{
+					From:     []juneauv1alpha1.SecurityGroupPeer{{CIDR: "10.0.0.0/8"}},
+					Protocol: ptr.To(intstr.FromInt32(47)),
+				}},
+			},
+		})).To(Succeed())
+	})
+
+	It("rejects ports on a protocol that has none", func() {
+		port80 := int32(80)
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.SecurityGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("sg")},
+			Spec: juneauv1alpha1.SecurityGroupSpec{
+				Vpc: "default",
+				Ingress: []juneauv1alpha1.SecurityGroupIngressRule{{
+					From:     []juneauv1alpha1.SecurityGroupPeer{{CIDR: "10.0.0.0/8"}},
+					Protocol: ptr.To(intstr.FromString("gre")),
+					Ports:    []juneauv1alpha1.SecurityGroupPort{{Port: &port80}},
+				}},
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("ports are only valid when protocol is tcp or udp"))
+	})
+
+	It("rejects a protocol number outside [0, 255]", func() {
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.SecurityGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("sg")},
+			Spec: juneauv1alpha1.SecurityGroupSpec{
+				Vpc: "default",
+				Ingress: []juneauv1alpha1.SecurityGroupIngressRule{{
+					From:     []juneauv1alpha1.SecurityGroupPeer{{CIDR: "10.0.0.0/8"}},
+					Protocol: ptr.To(intstr.FromInt32(256)),
+				}},
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("IP protocol number in [0, 255]"))
+	})
+
+	It("rejects an unknown protocol keyword", func() {
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.SecurityGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("sg")},
+			Spec: juneauv1alpha1.SecurityGroupSpec{
+				Vpc: "default",
+				Ingress: []juneauv1alpha1.SecurityGroupIngressRule{{
+					From:     []juneauv1alpha1.SecurityGroupPeer{{CIDR: "10.0.0.0/8"}},
+					Protocol: ptr.To(intstr.FromString("quic")),
+				}},
+			},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("IP protocol number in [0, 255]"))
 	})
 
 	It("rejects port range with from > to", func() {
@@ -74,7 +136,7 @@ var _ = Describe("SecurityGroup webhook", func() {
 				Vpc: "default",
 				Ingress: []juneauv1alpha1.SecurityGroupIngressRule{{
 					From:     []juneauv1alpha1.SecurityGroupPeer{{CIDR: "10.0.0.0/8"}},
-					Protocol: juneauv1alpha1.SecurityGroupProtocolTCP,
+					Protocol: ptr.To(intstr.FromString("tcp")),
 					Ports: []juneauv1alpha1.SecurityGroupPort{{
 						PortRange: &juneauv1alpha1.SecurityGroupPortRange{From: 200, To: 100},
 					}},
@@ -156,11 +218,11 @@ var _ = Describe("SecurityGroup webhook entry capacity", func() {
 			Spec: juneauv1alpha1.SecurityGroupSpec{
 				Vpc: "default",
 				Ingress: []juneauv1alpha1.SecurityGroupIngressRule{
-					{From: webhookSGPeers(2), Protocol: juneauv1alpha1.SecurityGroupProtocolTCP, Ports: webhookSGPorts(2)},
-					{From: webhookSGPeers(2), Protocol: juneauv1alpha1.SecurityGroupProtocolTCP, Ports: webhookSGPorts(2)},
+					{From: webhookSGPeers(2), Protocol: ptr.To(intstr.FromString("tcp")), Ports: webhookSGPorts(2)},
+					{From: webhookSGPeers(2), Protocol: ptr.To(intstr.FromString("tcp")), Ports: webhookSGPorts(2)},
 				},
 				Egress: &[]juneauv1alpha1.SecurityGroupEgressRule{
-					{To: webhookSGPeers(4), Protocol: juneauv1alpha1.SecurityGroupProtocolTCP, Ports: webhookSGPorts(2)},
+					{To: webhookSGPeers(4), Protocol: ptr.To(intstr.FromString("tcp")), Ports: webhookSGPorts(2)},
 				},
 			},
 		})).To(Succeed())
@@ -172,7 +234,7 @@ var _ = Describe("SecurityGroup webhook entry capacity", func() {
 			Spec: juneauv1alpha1.SecurityGroupSpec{
 				Vpc: "default",
 				Ingress: []juneauv1alpha1.SecurityGroupIngressRule{
-					{From: webhookSGPeers(3), Protocol: juneauv1alpha1.SecurityGroupProtocolTCP, Ports: webhookSGPorts(3)},
+					{From: webhookSGPeers(3), Protocol: ptr.To(intstr.FromString("tcp")), Ports: webhookSGPorts(3)},
 				},
 			},
 		})
@@ -189,7 +251,7 @@ var _ = Describe("SecurityGroup webhook entry capacity", func() {
 			Spec: juneauv1alpha1.SecurityGroupSpec{
 				Vpc: "default",
 				Egress: &[]juneauv1alpha1.SecurityGroupEgressRule{
-					{To: webhookSGPeers(3), Protocol: juneauv1alpha1.SecurityGroupProtocolTCP, Ports: webhookSGPorts(3)},
+					{To: webhookSGPeers(3), Protocol: ptr.To(intstr.FromString("tcp")), Ports: webhookSGPorts(3)},
 				},
 			},
 		})
@@ -204,13 +266,27 @@ var _ = Describe("SecurityGroup webhook entry capacity", func() {
 			Spec: juneauv1alpha1.SecurityGroupSpec{
 				Vpc: "default",
 				Ingress: []juneauv1alpha1.SecurityGroupIngressRule{
-					{From: webhookSGPeers(4), Protocol: juneauv1alpha1.SecurityGroupProtocolTCP, Ports: webhookSGPorts(4)},
+					{From: webhookSGPeers(4), Protocol: ptr.To(intstr.FromString("tcp")), Ports: webhookSGPorts(4)},
 				},
 			},
 		})
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("Too many: 16"))
 		Expect(err.Error()).To(ContainSubstring("peers"))
+	})
+
+	It("rejects more rules than a direction can ever hold", func() {
+		rules := make([]juneauv1alpha1.SecurityGroupIngressRule, 0, juneauv1alpha1.SecurityGroupMaxEntriesPerDirection+1)
+		for i := 0; i <= juneauv1alpha1.SecurityGroupMaxEntriesPerDirection; i++ {
+			rules = append(rules, juneauv1alpha1.SecurityGroupIngressRule{From: webhookSGPeers(1)})
+		}
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.SecurityGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("sg")},
+			Spec:       juneauv1alpha1.SecurityGroupSpec{Vpc: "default", Ingress: rules},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.ingress"))
+		Expect(err.Error()).To(ContainSubstring("must have at most 8 items"))
 	})
 })
 

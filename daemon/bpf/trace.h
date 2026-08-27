@@ -66,6 +66,16 @@
 #define TRACE_REASON_POLICY_ACL_DROP 301
 #define TRACE_REASON_POLICY_SG_PASS  302
 #define TRACE_REASON_POLICY_SG_DROP  303
+// The last two mean the packet was dropped without any rule rejecting
+// it: the direction is policed, and the data plane could not read what
+// it needed to judge the packet.
+//
+// ETHERTYPE_DROP only ever reaches a timeline once the trace plane can
+// classify something other than IPv4. It keys sessions on the IPv4
+// 5-tuple, so a non-IPv4 frame resolves no trace id and the emit is a
+// no-op. It is emitted anyway so the site is already in place.
+#define TRACE_REASON_POLICY_PARSE_DROP     304
+#define TRACE_REASON_POLICY_ETHERTYPE_DROP 305
 
 #define TRACE_REASON_SERVICE_LOOKUP_HIT       400
 #define TRACE_REASON_SERVICE_BACKEND_SELECTED 401

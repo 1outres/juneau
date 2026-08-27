@@ -14,10 +14,12 @@
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 
-// POLICY_PROTO_ANY matches any IP protocol. Distinct from real protocol
-// numbers (TCP=6, UDP=17, ICMP=1) so a stored rule_proto of 0 is
-// unambiguously "wildcard" rather than the literal IP-in-IP number.
-#define POLICY_PROTO_ANY 0
+// POLICY_PROTO_ANY matches any IP protocol. A rule's proto field is 16
+// bits wide so the wildcard can live outside the 0..255 range that real
+// IP protocol numbers occupy. That is why the sentinel is 0xFFFF and
+// not 0: protocol number 0 is HOPOPT, and a rule must be able to name
+// it like any other protocol.
+#define POLICY_PROTO_ANY 0xFFFF
 
 // POLICY_PORT_ANY_LO / POLICY_PORT_ANY_HI is the inclusive range that
 // matches every L4 destination port. Stored in the rule when the user
@@ -28,7 +30,7 @@
 
 // policy_proto_matches returns 1 when a rule's protocol field admits a
 // packet's IP protocol number, 0 otherwise.
-static __always_inline int policy_proto_matches(__u8 rule_proto, __u8 pkt_proto) {
+static __always_inline int policy_proto_matches(__u16 rule_proto, __u8 pkt_proto) {
   if (rule_proto == POLICY_PROTO_ANY)
     return 1;
   return rule_proto == pkt_proto;

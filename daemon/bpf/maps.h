@@ -104,6 +104,15 @@
 #define MAX_POLICY_CT_MAP 262144
 #endif
 
+#ifndef MAX_IPV4_FRAG
+// MAX_IPV4_FRAG bounds ipv4_frag_map, the table that carries the L4
+// ports of a fragmented datagram from its first fragment to the later
+// ones. Only datagrams that are really fragmented take a slot, and a
+// slot is useful for the few milliseconds the reassembly takes, so a
+// few thousand cover far more concurrent reassemblies than a Node sees.
+#define MAX_IPV4_FRAG 4096
+#endif
+
 #ifndef MAX_NAPT_SRC
 #define MAX_NAPT_SRC 4096
 #endif
@@ -267,6 +276,10 @@ struct ifindex_subnet_key {
 
 struct ifindex_subnet_val {
   __u32 subnet_id;
+  // ipv4 is the Pod's address on this NIC, in network byte order. A
+  // non-IPv4 frame carries no address the policy stage could look up,
+  // so the address has to come from the NIC instead of the packet.
+  __be32 ipv4;
 };
 
 struct {
@@ -804,6 +817,46 @@ struct {
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } policy_epoch_map SEC(".maps");
 
+// ipv4_frag_map carries the L4 ports of a fragmented datagram from its
+// first fragment to the later ones. Only the first fragment holds the
+// L4 header, so without this table the policy stage has no ports to
+// match a later fragment on and has to drop it — which breaks any
+// policed flow whose datagrams exceed the MTU.
+//
+// The key has no hook field on purpose: the ports belong to the packet,
+// not to the enforcement point that reads them. pod_egress on the
+// sending Node and pod_ingress on the receiving Node see the same
+// datagram and share the entry.
+//
+// LRU_HASH, and no user-space GC like policy_ct_map has. An entry is
+// wanted for the milliseconds a reassembly takes and is dead right
+// after, so eviction under pressure drops entries that were about to
+// expire anyway. Readers still check last_seen_ns (see
+// POLICY_FRAG_MAX_AGE_NS) because an LRU slot can sit around long
+// after the datagram is gone.
+struct ipv4_frag_key {
+  __u32  vpc_id;
+  __be32 saddr;
+  __be32 daddr;
+  __be16 id;               // iphdr.id, network byte order
+  __u8   proto;
+  __u8   _pad;
+};
+
+struct ipv4_frag_val {
+  __be16 sport;
+  __be16 dport;
+  __u64  last_seen_ns;
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_LRU_HASH);
+  __uint(max_entries, MAX_IPV4_FRAG);
+  __type(key, struct ipv4_frag_key);
+  __type(value, struct ipv4_frag_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} ipv4_frag_map SEC(".maps");
+
 // napt_src maps a NATGWID (overloaded into fib_val.subnet_id when
 // fib_val.type == FIB_ROUTE_TYPE_NAPT) to the host_napt_ip the local
 // node should rewrite the source IP to. Populated by the daemon's NAPT
@@ -992,10 +1045,12 @@ struct {
 #define SG_VERDICT_DENY  0
 #define SG_VERDICT_ALLOW 1
 
-// SG rules use POLICY_PROTO_ANY (defined in policy_match.h) for the
-// "protocol=all" wildcard, and IPPROTO_TCP / IPPROTO_UDP / IPPROTO_ICMP
-// for concrete protocols. The BPF evaluator therefore compares the
-// stored proto byte directly against iph->protocol.
+// SG and ACL rules store the protocol in 16 bits: 0..255 are real IP
+// protocol numbers compared straight against iph->protocol, and
+// POLICY_PROTO_ANY (0xFFFF, defined in policy_match.h) is the
+// "protocol=all" wildcard. The extra byte exists only to keep the
+// wildcard out of the protocol number space, so protocol 0 (HOPOPT)
+// stays expressible.
 
 struct sg_membership_key {
   __u32 vpc_id;
@@ -1040,15 +1095,15 @@ struct {
 // (bpftool dumps); the eval loop selects the direction by slot window,
 // not by this field.
 struct sg_rule {
-  __u8  direction;          // SG_DIR_*
-  __u8  proto;              // POLICY_PROTO_ANY or IPPROTO_*
+  __u16 proto;              // IP protocol number, or POLICY_PROTO_ANY
   __u16 port_lo;            // host byte order
   __u16 port_hi;            // host byte order
+  __u8  direction;          // SG_DIR_*
   __u8  peer_kind;          // SG_PEER_KIND_*
-  __u8  peer_prefixlen;     // CIDR prefix length (0..32)
   __be32 peer_v4;           // CIDR base (NBO) or peer sg_id (host order if SG)
+  __u8  peer_prefixlen;     // CIDR prefix length (0..32)
   __u8  verdict;            // SG_VERDICT_*
-  __u8  _pad[3];
+  __u8  _pad[2];
 };
 
 struct sg_rules_inner {
@@ -1130,15 +1185,15 @@ struct {
 // observability / debuggability (bpftool dumps); the eval loop relies
 // on the slot order and the slot window, not on those two fields.
 struct acl_rule {
-  __u8  direction;          // ACL_DIR_*
-  __u8  proto;              // POLICY_PROTO_ANY or IPPROTO_*
+  __u16 proto;              // IP protocol number, or POLICY_PROTO_ANY
   __u16 port_lo;            // host byte order
   __u16 port_hi;            // host byte order
+  __u16 priority;           // host byte order; lower runs first
+  __be32 peer_v4;           // CIDR base, network byte order
+  __u8  direction;          // ACL_DIR_*
   __u8  prefixlen;          // CIDR prefix length (0..32)
   __u8  verdict;            // ACL_VERDICT_ALLOW or ACL_VERDICT_DENY
-  __u16 priority;           // host byte order; lower runs first
-  __u8  _pad[2];
-  __be32 peer_v4;           // CIDR base, network byte order
+  __u8  _pad;
 };
 
 struct acl_rules_inner {

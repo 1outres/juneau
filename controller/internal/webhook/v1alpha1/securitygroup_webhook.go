@@ -25,6 +25,7 @@ import (
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -55,7 +56,8 @@ func SetupSecurityGroupWebhookWithManager(mgr ctrl.Manager) error {
 //   - Each peer is exclusively a CIDR or a securityGroupRef (never both).
 //   - CIDRs parse as IPv4 prefixes.
 //   - Port ranges have from <= to.
-//   - When Protocol is icmp/all, ports must not be set.
+//   - Each rule's protocol resolves to an IP protocol number, and ports
+//     are set only on protocols that carry them (tcp and udp).
 //   - Each direction fits SecurityGroupMaxEntriesPerDirection expanded
 //     entries, so the data plane never has to refuse a direction.
 //   - At delete time, no NetworkInterface still references this SG.
@@ -233,13 +235,18 @@ func validatePeer(path *field.Path, peer juneauv1alpha1.SecurityGroupPeer) field
 	return errs
 }
 
-func validateProtocolPorts(path *field.Path, proto juneauv1alpha1.SecurityGroupProtocol, ports []juneauv1alpha1.SecurityGroupPort) field.ErrorList {
+func validateProtocolPorts(path *field.Path, protocol *intstr.IntOrString, ports []juneauv1alpha1.SecurityGroupPort) field.ErrorList {
 	var errs field.ErrorList
-	if proto == juneauv1alpha1.SecurityGroupProtocolICMP || proto == juneauv1alpha1.SecurityGroupProtocolAll {
-		if len(ports) > 0 {
-			errs = append(errs, field.Invalid(path.Child("ports"), ports, "ports must be empty when protocol is icmp or all"))
-		}
+
+	proto, err := juneauv1alpha1.ResolveIPProtocol(protocol)
+	if err != nil {
+		errs = append(errs, field.Invalid(path.Child("protocol"), protocol, err.Error()))
+	} else if len(ports) > 0 && !juneauv1alpha1.IPProtocolHasPorts(proto) {
+		errs = append(errs, field.Invalid(path.Child("ports"), ports,
+			fmt.Sprintf("ports are only valid when protocol is tcp or udp, but protocol is %s",
+				juneauv1alpha1.FormatIPProtocol(proto))))
 	}
+
 	for i, port := range ports {
 		hasPort := port.Port != nil
 		hasRange := port.PortRange != nil

@@ -35,6 +35,7 @@
 #include "maps.h"
 #include "nat.h"
 #include "policy_ct.h"
+#include "policy_tuple.h"
 #include "sg.h"
 #include "trace.h"
 
@@ -45,6 +46,39 @@ static __always_inline __u32 policy_trace_hook(__u8 hook) {
   if (hook == POLICY_HOOK_POD_EGRESS)
     return TRACE_HOOK_POD_EGRESS;
   return TRACE_HOOK_POD_INGRESS;
+}
+
+// policy_enforced reports whether this direction is actually policed
+// for the Pod at self_ip. It answers the question the fail-closed paths
+// ask: is there a rule here that this packet is escaping?
+//
+// Only a Pod that answers yes is dropped when the data plane cannot
+// judge a packet. juneau does not require a SecurityGroup on the
+// management Pods it runs itself, and dropping their traffic because a
+// packet was fragmented or was not IPv4 would take the cluster down.
+//
+// The ACL side asks acl_meta_map rather than stopping at acl_id != 0.
+// An ACL that only carries egress rules leaves ingress in default-allow
+// mode, and treating "an ACL is attached" as "both directions are
+// policed" would drop that Subnet's inbound fragments for no rule at
+// all.
+//
+// Marked as a BPF-to-BPF subprogram (noinline): the two map lookups are
+// walked once here instead of at every call site.
+static __juneau_bpf_subprog int policy_enforced(__u32 vpc_id, __u32 acl_id,
+                                                __u8 acl_dir, __be32 self_ip) {
+  if (acl_id != 0) {
+    struct acl_meta_val *meta = bpf_map_lookup_elem(&acl_meta_map, &acl_id);
+    if (meta) {
+      __u8 has_rules = (acl_dir == ACL_DIR_INGRESS) ? meta->has_ingress_rules
+                                                    : meta->has_egress_rules;
+      if (has_rules)
+        return 1;
+    }
+  }
+
+  struct sg_membership_val *self = sg_membership_lookup(vpc_id, self_ip);
+  return self != NULL && self->count > 0;
 }
 
 // apply_policy runs the policy stage for one packet at one enforcement
@@ -59,11 +93,15 @@ static __always_inline __u32 policy_trace_hook(__u8 hook) {
 //   -1: terminal DENY by NetworkACL (caller must TC_ACT_SHOT)
 //   -2: internal error (caller must TC_ACT_SHOT)
 //   -3: terminal DENY by SecurityGroup (caller must TC_ACT_SHOT)
+//   -4: this direction is policed but the L4 tuple could not be read,
+//       so no layer could judge the packet (caller must TC_ACT_SHOT)
 //
 // Negative codes are split per layer so callers can attribute the
 // drop to the right policy stage in trace events. Pre-split callers
 // only checked policy_rc < 0 and emitted a generic ACL_DROP, which
-// hid SG denials behind the wrong label.
+// hid SG denials behind the wrong label. -4 is kept apart from -1 and
+// -3 for the same reason: no rule rejected the packet, the data plane
+// simply had nothing to match it on.
 //
 // Inlined into the caller. The state-explosion pressure that used to
 // require a separate subprogram lives now in `acl_evaluate` and
@@ -83,18 +121,12 @@ static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
     return -2;
   void *data_end = nat_skb_data_end(skb);
 
-  __u8 proto = iph->protocol;
-  __u16 sport = 0;
-  __u16 dport = 0;
-  if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
-    __be16 sp_be, dp_be;
-    if (nat_read_l4_ports(iph, data_end, &sp_be, &dp_be) < 0)
-      return 0;
-    sport = bpf_ntohs(sp_be);
-    dport = bpf_ntohs(dp_be);
-  } else if (proto != IPPROTO_ICMP) {
-    return 0;
-  }
+  // Protocols with no L4 ports (ICMP, GRE, ESP, ...) leave sport and
+  // dport at 0, so only rules whose port range is the wildcard can
+  // match them. A rule that names ports is asking about a port-bearing
+  // protocol and must not admit a protocol that has none.
+  struct policy_tuple t;
+  policy_parse_tuple(iph, data_end, &t);
 
   int egress = (hook == POLICY_HOOK_POD_EGRESS);
   __be32 self_ip = egress ? iph->saddr : iph->daddr;
@@ -102,6 +134,24 @@ static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
   __u8 acl_dir = egress ? ACL_DIR_EGRESS : ACL_DIR_INGRESS;
   __u8 sg_dir = egress ? SG_DIR_EGRESS : SG_DIR_INGRESS;
   __u32 trace_hook = policy_trace_hook(hook);
+
+  // A tuple with no ports is settled here, before the ACL and SG scans
+  // start. Carrying "the ports are unknown" into the evaluation as a
+  // flag would keep a register live across both scans, and the verifier
+  // answers that by walking the whole region twice — the same shape
+  // that took pod_ingress from 364,672 to 704,657 instructions when the
+  // CT epoch was handled that way.
+  if (t.status == POLICY_TUPLE_DEGRADED)
+    policy_frag_recover(vpc_id, iph, &t);
+  if (t.status == POLICY_TUPLE_DEGRADED)
+    return policy_enforced(vpc_id, acl_id, acl_dir, self_ip) ? -4 : 0;
+
+  // Recorded before the CT short-circuit below. A flow that is already
+  // established can start fragmenting at any point, and behind the
+  // short-circuit this hook would never see the first fragment that its
+  // later fragments need.
+  if (policy_frag_is_first(iph))
+    policy_frag_record(vpc_id, iph, &t);
 
   // Established-flow short-circuit. The epoch is part of the key, so a
   // rule change moves every later lookup onto keys nobody has written:
@@ -124,11 +174,11 @@ static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
   __u32 epoch = policy_ct_epoch();
   struct policy_ct_key ck =
       policy_ct_build_key(hook, epoch, vpc_id, iph->saddr, iph->daddr,
-                          bpf_htons(sport), bpf_htons(dport), proto);
+                          bpf_htons(t.sport), bpf_htons(t.dport), t.proto);
   struct policy_ct_val *pv = bpf_map_lookup_elem(&policy_ct_map, &ck);
   if (pv) {
     pv->last_seen_ns = bpf_ktime_get_ns();
-    if (proto == IPPROTO_TCP) {
+    if (t.proto == IPPROTO_TCP) {
       __u8 f;
       if (ct_read_tcp_flags(iph, data_end, &f) == 0)
         policy_ct_observe_tcp(&ck, pv, f);
@@ -144,7 +194,7 @@ static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
                          trace_hook, TRACE_SCOPE_VPC, vpc_id, subnet_id, 0);
 
   // ACL eval first (Subnet boundary), matched against the peer.
-  int acl_v = acl_evaluate(acl_id, acl_dir, proto, dport, peer_ip);
+  int acl_v = acl_evaluate(acl_id, acl_dir, t.proto, t.dport, peer_ip);
   if (acl_v == ACL_VERDICT_DENY)
     return -1;
   if (acl_id != 0)
@@ -161,9 +211,9 @@ static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
     {
       struct sg_eval_args sea = {
           .peer_ip = peer_ip,
-          .dport = dport,
+          .dport = t.dport,
           .direction = sg_dir,
-          .proto = proto,
+          .proto = t.proto,
       };
       sg_v = sg_eval(self, peer, &sea);
     }
@@ -189,7 +239,7 @@ static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
 
   __u8 init_flags = 0;
   __u8 init_state = CT_STATE_ESTABLISHED;
-  if (proto == IPPROTO_TCP) {
+  if (t.proto == IPPROTO_TCP) {
     __u8 f;
     if (ct_read_tcp_flags(iph, data_end, &f) == 0) {
       init_flags = f & TCP_FLAG_TRACKED;

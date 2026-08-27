@@ -17,6 +17,8 @@ func TestReasonToProtoMatchesEnum(t *testing.T) {
 		trace.ReasonEnterNodeIngress:    debugpb.TraceEventReason_TRACE_EVENT_REASON_ENTER_NODE_INGRESS,
 		trace.ReasonMissConntrack:       debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_CONNTRACK,
 		trace.ReasonPolicySGDrop:        debugpb.TraceEventReason_TRACE_EVENT_REASON_POLICY_SG_DROP,
+		trace.ReasonPolicyParseDrop:     debugpb.TraceEventReason_TRACE_EVENT_REASON_POLICY_PARSE_DROP,
+		trace.ReasonPolicyEthertypeDrop: debugpb.TraceEventReason_TRACE_EVENT_REASON_POLICY_ETHERTYPE_DROP,
 		trace.ReasonDNATApplied:         debugpb.TraceEventReason_TRACE_EVENT_REASON_DNAT_APPLIED,
 		trace.ReasonSNATApplied:         debugpb.TraceEventReason_TRACE_EVENT_REASON_SNAT_APPLIED,
 		trace.ReasonNAPTAllocated:       debugpb.TraceEventReason_TRACE_EVENT_REASON_NAPT_ALLOCATED,

@@ -40,6 +40,7 @@ func RegisterPodEgress(inv *Inventory, p *program.PodEgress) error {
 		registerCT,
 		registerPolicyCT,
 		registerPolicyEpoch,
+		registerIPv4Frag,
 		registerNAPTSrc,
 		registerVirtualService,
 		registerVirtualServiceFlow,
@@ -92,6 +93,7 @@ func registerIfindexSubnet(inv *Inventory, p *program.PodEgress) error {
 		}},
 		Value: Schema{Fields: []Field{
 			FieldU32Named("subnet_id"),
+			FieldIPv4BENamed("ipv4", "the Pod's address on this NIC"),
 		}},
 	})
 }
@@ -474,6 +476,29 @@ func registerPolicyEpoch(inv *Inventory, p *program.PodEgress) error {
 	})
 }
 
+func registerIPv4Frag(inv *Inventory, p *program.PodEgress) error {
+	// Written by BPF straight from the IP header, so every address and
+	// port is already in network byte order.
+	return inv.Register(&Descriptor{
+		Name: "ipv4_frag_map",
+		Map:  p.Objs.Ipv4FragMap,
+		Key: Schema{Fields: []Field{
+			FieldU32Named("vpc_id"),
+			FieldIPv4BENamed("saddr"),
+			FieldIPv4BENamed("daddr"),
+			FieldPortBENamed("id", "iphdr.id of the fragmented datagram"),
+			FieldEnumNamed("proto", 1, IPProtoEnum),
+			FieldPadOf(1),
+		}},
+		Value: Schema{Fields: []Field{
+			FieldPortBENamed("sport", "read from the first fragment"),
+			FieldPortBENamed("dport", "read from the first fragment"),
+			FieldPadOf(4),
+			FieldU64Named("last_seen_ns"),
+		}},
+	})
+}
+
 func registerNAPTSrc(inv *Inventory, p *program.PodEgress) error {
 	return inv.Register(&Descriptor{
 		Name: "napt_src",
@@ -589,15 +614,15 @@ func registerSGRule(inv *Inventory, p *program.PodEgress) error {
 		Value:    Schema{},
 		InnerKey: Schema{Fields: []Field{FieldU32Named("slot")}},
 		InnerValue: Schema{Fields: []Field{
-			FieldEnumNamed("direction", 1, SGDirEnum),
-			FieldEnumNamed("proto", 1, IPProtoEnum),
+			FieldEnumNamed("proto", 2, PolicyProtoEnum),
 			FieldU16Named("port_lo"),
 			FieldU16Named("port_hi"),
+			FieldEnumNamed("direction", 1, SGDirEnum),
 			FieldEnumNamed("peer_kind", 1, SGPeerKindEnum),
-			FieldU8Named("peer_prefixlen"),
 			FieldIPv4BENamed("peer_v4", "CIDR base (NBO) or peer sg_id"),
+			FieldU8Named("peer_prefixlen"),
 			FieldEnumNamed("verdict", 1, SGVerdictEnum),
-			FieldPadOf(3),
+			FieldPadOf(2),
 		}},
 	})
 }
@@ -636,15 +661,15 @@ func registerACLRule(inv *Inventory, p *program.PodEgress) error {
 		Value:    Schema{},
 		InnerKey: Schema{Fields: []Field{FieldU32Named("slot")}},
 		InnerValue: Schema{Fields: []Field{
-			FieldEnumNamed("direction", 1, ACLDirEnum),
-			FieldEnumNamed("proto", 1, IPProtoEnum),
+			FieldEnumNamed("proto", 2, PolicyProtoEnum),
 			FieldU16Named("port_lo"),
 			FieldU16Named("port_hi"),
+			FieldU16Named("priority"),
+			FieldIPv4BENamed("peer_v4"),
+			FieldEnumNamed("direction", 1, ACLDirEnum),
 			FieldU8Named("prefixlen"),
 			FieldEnumNamed("verdict", 1, ACLVerdictEnum),
-			FieldU16Named("priority"),
-			FieldPadOf(2),
-			FieldIPv4BENamed("peer_v4"),
+			FieldPadOf(1),
 		}},
 	})
 }

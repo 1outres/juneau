@@ -32,6 +32,13 @@ func TestSchemaLayoutMatchesGenerated(t *testing.T) {
 			valueSize: unsafe.Sizeof(bpf.PodEgressSubnetVal{}),
 		},
 		{
+			name:      "ifindex_subnet",
+			key:       schemaIfindexSubnetKey(),
+			val:       schemaIfindexSubnetVal(),
+			keySize:   unsafe.Sizeof(bpf.PodEgressIfindexSubnetKey{}),
+			valueSize: unsafe.Sizeof(bpf.PodEgressIfindexSubnetVal{}),
+		},
+		{
 			name:      "arp_table",
 			key:       schemaArpKey(),
 			val:       schemaArpVal(),
@@ -109,6 +116,13 @@ func TestSchemaLayoutMatchesGenerated(t *testing.T) {
 			val:       schemaPolicyEpochVal(),
 			keySize:   4,
 			valueSize: 4,
+		},
+		{
+			name:      "ipv4_frag_map",
+			key:       schemaIPv4FragKey(),
+			val:       schemaIPv4FragVal(),
+			keySize:   unsafe.Sizeof(bpf.PodEgressIpv4FragKey{}),
+			valueSize: unsafe.Sizeof(bpf.PodEgressIpv4FragVal{}),
 		},
 		{
 			name:      "virtual_service_map",
@@ -211,6 +225,35 @@ func schemaSubnetVal() Schema {
 		FieldIPv4BENamed("gw_addr"),
 		FieldU32Named("mask"),
 		FieldU32Named("acl_id"),
+	}}
+}
+
+func schemaIfindexSubnetKey() Schema {
+	return Schema{Fields: []Field{FieldU32Named("ifindex")}}
+}
+func schemaIfindexSubnetVal() Schema {
+	return Schema{Fields: []Field{
+		FieldU32Named("subnet_id"),
+		FieldIPv4BENamed("ipv4"),
+	}}
+}
+
+func schemaIPv4FragKey() Schema {
+	return Schema{Fields: []Field{
+		FieldU32Named("vpc_id"),
+		FieldIPv4BENamed("saddr"),
+		FieldIPv4BENamed("daddr"),
+		FieldPortBENamed("id"),
+		FieldEnumNamed("proto", 1, IPProtoEnum),
+		FieldPadOf(1),
+	}}
+}
+func schemaIPv4FragVal() Schema {
+	return Schema{Fields: []Field{
+		FieldPortBENamed("sport"),
+		FieldPortBENamed("dport"),
+		FieldPadOf(4),
+		FieldU64Named("last_seen_ns"),
 	}}
 }
 
@@ -461,15 +504,15 @@ func schemaSlotKey() Schema { return Schema{Fields: []Field{FieldU32Named("slot"
 
 func schemaSGRuleInner() Schema {
 	return Schema{Fields: []Field{
-		FieldEnumNamed("direction", 1, SGDirEnum),
-		FieldEnumNamed("proto", 1, IPProtoEnum),
+		FieldEnumNamed("proto", 2, PolicyProtoEnum),
 		FieldU16Named("port_lo"),
 		FieldU16Named("port_hi"),
+		FieldEnumNamed("direction", 1, SGDirEnum),
 		FieldEnumNamed("peer_kind", 1, SGPeerKindEnum),
-		FieldU8Named("peer_prefixlen"),
 		FieldIPv4BENamed("peer_v4"),
+		FieldU8Named("peer_prefixlen"),
 		FieldEnumNamed("verdict", 1, SGVerdictEnum),
-		FieldPadOf(3),
+		FieldPadOf(2),
 	}}
 }
 
@@ -487,15 +530,15 @@ func schemaACLMetaVal() Schema {
 
 func schemaACLRuleInner() Schema {
 	return Schema{Fields: []Field{
-		FieldEnumNamed("direction", 1, ACLDirEnum),
-		FieldEnumNamed("proto", 1, IPProtoEnum),
+		FieldEnumNamed("proto", 2, PolicyProtoEnum),
 		FieldU16Named("port_lo"),
 		FieldU16Named("port_hi"),
+		FieldU16Named("priority"),
+		FieldIPv4BENamed("peer_v4"),
+		FieldEnumNamed("direction", 1, ACLDirEnum),
 		FieldU8Named("prefixlen"),
 		FieldEnumNamed("verdict", 1, ACLVerdictEnum),
-		FieldU16Named("priority"),
-		FieldPadOf(2),
-		FieldIPv4BENamed("peer_v4"),
+		FieldPadOf(1),
 	}}
 }
 

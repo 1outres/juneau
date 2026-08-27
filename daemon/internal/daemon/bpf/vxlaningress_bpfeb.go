@@ -25,15 +25,15 @@ type VxlanIngressAclMetaVal struct {
 
 type VxlanIngressAclRule struct {
 	_         structs.HostLayout
-	Direction uint8
-	Proto     uint8
+	Proto     uint16
 	PortLo    uint16
 	PortHi    uint16
+	Priority  uint16
+	PeerV4    uint32
+	Direction uint8
 	Prefixlen uint8
 	Verdict   uint8
-	Priority  uint16
-	Pad       [2]uint8
-	PeerV4    uint32
+	Pad       uint8
 }
 
 type VxlanIngressArpTableKey struct {
@@ -156,6 +156,25 @@ type VxlanIngressIfindexSubnetKey struct {
 type VxlanIngressIfindexSubnetVal struct {
 	_        structs.HostLayout
 	SubnetId uint32
+	Ipv4     uint32
+}
+
+type VxlanIngressIpv4FragKey struct {
+	_     structs.HostLayout
+	VpcId uint32
+	Saddr uint32
+	Daddr uint32
+	Id    uint16
+	Proto uint8
+	Pad   uint8
+}
+
+type VxlanIngressIpv4FragVal struct {
+	_          structs.HostLayout
+	Sport      uint16
+	Dport      uint16
+	_          [4]byte
+	LastSeenNs uint64
 }
 
 type VxlanIngressLbBackendKey struct {
@@ -300,15 +319,15 @@ type VxlanIngressSgMetaVal struct {
 
 type VxlanIngressSgRule struct {
 	_             structs.HostLayout
-	Direction     uint8
-	Proto         uint8
+	Proto         uint16
 	PortLo        uint16
 	PortHi        uint16
+	Direction     uint8
 	PeerKind      uint8
-	PeerPrefixlen uint8
 	PeerV4        uint32
+	PeerPrefixlen uint8
 	Verdict       uint8
-	Pad           [3]uint8
+	Pad           [2]uint8
 }
 
 type VxlanIngressSubnetKey struct {
@@ -473,6 +492,7 @@ type VxlanIngressMapSpecs struct {
 	HostUnderlay          *ebpf.MapSpec `ebpf:"host_underlay"`
 	IfindexHostMac        *ebpf.MapSpec `ebpf:"ifindex_host_mac"`
 	IfindexSubnet         *ebpf.MapSpec `ebpf:"ifindex_subnet"`
+	Ipv4FragMap           *ebpf.MapSpec `ebpf:"ipv4_frag_map"`
 	LbBackendMap          *ebpf.MapSpec `ebpf:"lb_backend_map"`
 	LbServiceMap          *ebpf.MapSpec `ebpf:"lb_service_map"`
 	NaptSrc               *ebpf.MapSpec `ebpf:"napt_src"`
@@ -542,6 +562,7 @@ type VxlanIngressMaps struct {
 	HostUnderlay          *ebpf.Map `ebpf:"host_underlay"`
 	IfindexHostMac        *ebpf.Map `ebpf:"ifindex_host_mac"`
 	IfindexSubnet         *ebpf.Map `ebpf:"ifindex_subnet"`
+	Ipv4FragMap           *ebpf.Map `ebpf:"ipv4_frag_map"`
 	LbBackendMap          *ebpf.Map `ebpf:"lb_backend_map"`
 	LbServiceMap          *ebpf.Map `ebpf:"lb_service_map"`
 	NaptSrc               *ebpf.Map `ebpf:"napt_src"`
@@ -587,6 +608,7 @@ func (m *VxlanIngressMaps) Close() error {
 		m.HostUnderlay,
 		m.IfindexHostMac,
 		m.IfindexSubnet,
+		m.Ipv4FragMap,
 		m.LbBackendMap,
 		m.LbServiceMap,
 		m.NaptSrc,

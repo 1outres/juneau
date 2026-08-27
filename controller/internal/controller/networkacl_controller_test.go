@@ -7,6 +7,8 @@ import (
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
@@ -18,7 +20,7 @@ var _ = Describe("NetworkACL controller", func() {
 		aclName := createControllerNetworkACL(vpcName, &[]juneauv1alpha1.NetworkACLRule{{
 			Priority: 100,
 			Action:   juneauv1alpha1.NetworkACLActionAllow,
-			Protocol: juneauv1alpha1.NetworkACLProtocolTCP,
+			Protocol: ptr.To(intstr.FromString("tcp")),
 			CIDR:     "10.0.0.0/24",
 			Ports:    controllerACLPorts(3),
 		}}, nil)
@@ -42,14 +44,14 @@ var _ = Describe("NetworkACL controller", func() {
 			{
 				Priority: 100,
 				Action:   juneauv1alpha1.NetworkACLActionAllow,
-				Protocol: juneauv1alpha1.NetworkACLProtocolTCP,
+				Protocol: ptr.To(intstr.FromString("tcp")),
 				CIDR:     "10.0.0.0/24",
 				Ports:    controllerACLPorts(juneauv1alpha1.NetworkACLMaxEntriesPerDirection),
 			},
 			{
 				Priority: 200,
 				Action:   juneauv1alpha1.NetworkACLActionAllow,
-				Protocol: juneauv1alpha1.NetworkACLProtocolTCP,
+				Protocol: ptr.To(intstr.FromString("tcp")),
 				CIDR:     "10.0.1.0/24",
 				Ports:    controllerACLPorts(juneauv1alpha1.NetworkACLMaxEntriesPerDirection),
 			},
@@ -78,7 +80,7 @@ var _ = Describe("NetworkACL controller", func() {
 		egress := []juneauv1alpha1.NetworkACLRule{{
 			Priority: 100,
 			Action:   juneauv1alpha1.NetworkACLActionAllow,
-			Protocol: juneauv1alpha1.NetworkACLProtocolTCP,
+			Protocol: ptr.To(intstr.FromString("tcp")),
 			CIDR:     "0.0.0.0/0",
 			Ports:    controllerACLPorts(juneauv1alpha1.NetworkACLMaxEntriesPerDirection),
 		}}

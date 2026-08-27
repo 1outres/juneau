@@ -3,6 +3,9 @@ package policy
 import (
 	"testing"
 
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
+
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	bpf "github.com/1outres/juneau/daemon/internal/daemon/bpf"
 )
@@ -61,14 +64,14 @@ func TestACLStoreApplyFailsClosedWhenOneRuleExpandsPastTheWindow(t *testing.T) {
 	ingress := []juneauv1alpha1.NetworkACLRule{{
 		Priority: 100,
 		Action:   juneauv1alpha1.NetworkACLActionAllow,
-		Protocol: juneauv1alpha1.NetworkACLProtocolTCP,
+		Protocol: ptr.To(intstr.FromString("tcp")),
 		CIDR:     "10.0.0.0/8",
 		Ports:    ports,
 	}}
 	egress := []juneauv1alpha1.NetworkACLRule{{
 		Priority: 50,
 		Action:   juneauv1alpha1.NetworkACLActionAllow,
-		Protocol: juneauv1alpha1.NetworkACLProtocolAll,
+		Protocol: ptr.To(intstr.FromString("all")),
 		CIDR:     "0.0.0.0/0",
 	}}
 	acl := &juneauv1alpha1.NetworkACL{

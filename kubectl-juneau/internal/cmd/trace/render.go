@@ -216,6 +216,10 @@ func reasonString(r debugpb.TraceEventReason) string {
 		return "sg pass"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_POLICY_SG_DROP:
 		return "sg drop"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_POLICY_PARSE_DROP:
+		return "policy drop (l4 header unreadable)"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_POLICY_ETHERTYPE_DROP:
+		return "policy drop (not ipv4)"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_SERVICE_LOOKUP_HIT:
 		return "service lookup hit"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_SERVICE_BACKEND_SELECTED:
