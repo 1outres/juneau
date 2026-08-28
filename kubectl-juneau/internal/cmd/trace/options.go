@@ -79,7 +79,7 @@ func newOptions(f factory.Factory) *Options {
 func (o *Options) AddFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&o.SourcePod, "from-pod", "", "Source Pod (namespace/name).")
 	cmd.Flags().StringVar(&o.SourceIP, "from-ip", "", "Source IPv4. On its own it traces a raw address; with --from-pod it says which address of that Pod to trace.")
-	cmd.Flags().StringVar(&o.SourceInterface, "interface", "", "NIC of --from-pod to trace (default: the Pod's primary NIC).")
+	cmd.Flags().StringVar(&o.SourceInterface, "from-interface", "", "NIC of --from-pod to trace (default: the Pod's primary NIC).")
 
 	cmd.Flags().StringVar(&o.DestPod, "to-pod", "", "Destination Pod (namespace/name).")
 	cmd.Flags().StringVar(&o.DestService, "to-service", "", "Destination Service (namespace/name).")
@@ -161,7 +161,7 @@ func (o *Options) Validate() error {
 		return fmt.Errorf("--from-pod or --from-ip is required")
 	}
 	if o.SourceInterface != "" && o.SourcePod == "" {
-		return fmt.Errorf("--interface names a NIC of --from-pod, so --from-pod is required with it")
+		return fmt.Errorf("--from-interface names a NIC of --from-pod, so --from-pod is required with it")
 	}
 
 	if o.DestPod != "" && o.DestService != "" {
