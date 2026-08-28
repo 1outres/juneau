@@ -52,6 +52,15 @@ type l2FloodTable interface {
 	RemoveMember(vni, member uint32) error
 }
 
+// l2IfindexMap is what L2Port needs of l2_ifindex. The delete reads
+// the entry first, so it takes out only what it wrote: the kernel
+// hands veth indexes out again, and a stale delete would leave the
+// endpoint that took the index over with a NIC no network claims.
+type l2IfindexMap interface {
+	bpfMap
+	Lookup(key, valueOut any) error
+}
+
 // L2Port turns the NetworkEndpoints of an L2Network into the ports of
 // a switch.
 //
@@ -70,7 +79,7 @@ type l2FloodTable interface {
 type L2Port struct {
 	client     client.Client
 	nodeName   string
-	ifindexMap bpfMap
+	ifindexMap l2IfindexMap
 	bumLocal   l2FloodTable
 	bumRemote  l2FloodTable
 
@@ -90,7 +99,7 @@ type l2PortMember struct {
 
 func (m l2PortMember) valid() bool { return m.vni != 0 && m.member != 0 }
 
-func NewL2Port(cl client.Client, ifindexMap bpfMap, bumLocal, bumRemote l2FloodTable, nodeName string) *L2Port {
+func NewL2Port(cl client.Client, ifindexMap l2IfindexMap, bumLocal, bumRemote l2FloodTable, nodeName string) *L2Port {
 	return &L2Port{
 		client:     cl,
 		nodeName:   nodeName,
@@ -289,12 +298,35 @@ func (r *L2Port) unprogram(member l2PortMember) error {
 		return r.bumRemote.RemoveMember(member.vni, member.member)
 	}
 
-	if err := r.ifindexMap.Delete(
-		&bpf.PodEgressL2IfindexKey{Ifindex: member.member},
-	); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-		return fmt.Errorf("delete L2Ifindex: %w", err)
+	if err := r.forgetIfindex(member); err != nil {
+		return err
 	}
 	return r.bumLocal.RemoveMember(member.vni, member.member)
+}
+
+// forgetIfindex takes the veth out of l2_ifindex, but only while it
+// still names the network this endpoint was on. A veth index the
+// kernel has handed to another endpoint since names that endpoint's
+// network, and l2_egress drops every frame from a veth it cannot place.
+func (r *L2Port) forgetIfindex(member l2PortMember) error {
+	key := &bpf.PodEgressL2IfindexKey{Ifindex: member.member}
+
+	var current bpf.PodEgressL2IfindexVal
+	err := r.ifindexMap.Lookup(key, &current)
+	if errors.Is(err, ebpf.ErrKeyNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read L2Ifindex: %w", err)
+	}
+	if current.Vni != member.vni {
+		return nil
+	}
+
+	if err := r.ifindexMap.Delete(key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+		return fmt.Errorf("delete L2Ifindex: %w", err)
+	}
+	return nil
 }
 
 // FanOutL2NetworkToEndpoints re-enqueues every endpoint of the changed

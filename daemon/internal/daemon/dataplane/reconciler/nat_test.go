@@ -2,6 +2,7 @@ package reconciler
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -36,6 +37,19 @@ func (m *fakeBpfMap) Delete(key any) error {
 	}
 	delete(m.entries, key)
 	m.deletes++
+	return nil
+}
+
+func (m *fakeBpfMap) Lookup(key, valueOut any) error {
+	stored, ok := m.entries[indirectValue(key)]
+	if !ok {
+		return ebpf.ErrKeyNotExist
+	}
+	out := reflect.ValueOf(valueOut)
+	if out.Kind() != reflect.Pointer {
+		return fmt.Errorf("fakeBpfMap: Lookup needs a pointer, got %T", valueOut)
+	}
+	out.Elem().Set(reflect.ValueOf(stored))
 	return nil
 }
 

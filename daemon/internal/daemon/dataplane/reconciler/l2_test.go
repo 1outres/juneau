@@ -467,3 +467,44 @@ func TestL2PortFansOutFromATombstone(t *testing.T) {
 		t.Errorf("fan-out returned %v, want [default/pod-a]", keys)
 	}
 }
+
+// The kernel hands veth indexes out again. An endpoint that leaves
+// must not take the l2_ifindex entry of the endpoint that took its
+// index over, or l2_egress drops every frame that endpoint sends.
+func TestL2PortLeavesAVethAnotherEndpointTookOver(t *testing.T) {
+	leaving := newL2Endpoint("pod-a", "node-a", 7, "10.0.0.1")
+	arriving := newL2Endpoint("pod-b", "node-a", 7, "10.0.0.1")
+	arriving.Spec.L2Network = "other-net"
+
+	other := newL2TestNetwork(4242)
+	other.Name = "other-net"
+	other.Status.VNI = 9999
+
+	cl := fake.NewClientBuilder().WithScheme(newNatTestScheme(t)).
+		WithRuntimeObjects(leaving, arriving, newL2TestNetwork(4242), other).
+		Build()
+	ifindexMap := newFakeBpfMap()
+	r := NewL2Port(cl, ifindexMap, newFakeL2Table(), newFakeL2Table(), "node-a")
+
+	if err := r.Reconcile(context.Background(), "default/pod-a"); err != nil {
+		t.Fatalf("Reconcile pod-a: %v", err)
+	}
+	// pod-b comes up on the same veth index, on another network.
+	if err := r.Reconcile(context.Background(), "default/pod-b"); err != nil {
+		t.Fatalf("Reconcile pod-b: %v", err)
+	}
+	if err := cl.Delete(context.Background(), leaving); err != nil {
+		t.Fatalf("delete pod-a: %v", err)
+	}
+	if err := r.Reconcile(context.Background(), "default/pod-a"); err != nil {
+		t.Fatalf("Reconcile after the delete: %v", err)
+	}
+
+	got, ok := ifindexMap.entries[bpf.PodEgressL2IfindexKey{Ifindex: 7}]
+	if !ok {
+		t.Fatalf("l2_ifindex lost the entry of the endpoint that took the veth over: %v", ifindexMap.entries)
+	}
+	if want := (bpf.PodEgressL2IfindexVal{Vni: 9999}); got != want {
+		t.Errorf("l2_ifindex value = %+v, want %+v", got, want)
+	}
+}
