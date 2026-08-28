@@ -71,8 +71,8 @@ func (d *PodProbeDefaulter) Default(ctx context.Context, obj runtime.Object) err
 	if !ok {
 		return fmt.Errorf("expected a Pod object but got %T", obj)
 	}
-	subnetName := pod.Annotations[PodAnnotationSubnet]
-	if subnetName == "" || subnetName == dnsPodSubnetDefault || pod.Spec.HostNetwork {
+	subnetName := juneauv1alpha1.PodPrimaryNetworkAttachment(pod.Annotations).Subnet
+	if subnetName == juneauv1alpha1.PodDefaultSubnetName || pod.Spec.HostNetwork {
 		return nil
 	}
 	if _, isMirror := pod.Annotations["kubernetes.io/config.mirror"]; isMirror {

@@ -32,7 +32,7 @@ const (
 	DefaultNetNSDir    = "/var/run/juneau/netns"
 	maxErrorBody       = 1024
 	maxConcurrency     = 128
-	probeInterfaceName = "eth0"
+	probeInterfaceName = juneauv1alpha1.PodPrimaryInterfaceName
 )
 
 type target struct {

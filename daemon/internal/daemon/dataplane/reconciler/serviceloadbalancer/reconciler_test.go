@@ -15,8 +15,8 @@ import (
 )
 
 // newFakeClient builds a controller-runtime fake client preloaded
-// with the supplied objects and the field index the LB reconciler
-// relies on (NetworkInterface.spec.podRef.name).
+// with the supplied objects and the field indexes the LB reconciler
+// relies on (NetworkInterface.spec.podRef.{name,interface}).
 func newFakeClient(t *testing.T, objs ...client.Object) client.Client {
 	t.Helper()
 	scheme := runtime.NewScheme()
@@ -38,6 +38,13 @@ func newFakeClient(t *testing.T, objs ...client.Object) client.Client {
 				return nil
 			}
 			return []string{ni.Spec.PodRef.Name}
+		}).
+		WithIndex(&juneauv1alpha1.NetworkInterface{}, "spec.podRef.interface", func(obj client.Object) []string {
+			ni := obj.(*juneauv1alpha1.NetworkInterface)
+			if ni.Spec.PodRef.Interface == "" {
+				return nil
+			}
+			return []string{ni.Spec.PodRef.Interface}
 		}).
 		Build()
 }
@@ -262,5 +269,45 @@ func TestLBReconciler_NoEntryUntilVIPAllocated(t *testing.T) {
 	}
 	if _, ok := prog.Snapshot()[ns+"/"+svcName]; ok {
 		t.Error("expected no entry when VIP is empty")
+	}
+}
+
+func TestResolvePrimarySubnetID_PicksTheNICLoadBalancerTrafficLandsOn(t *testing.T) {
+	extra := &juneauv1alpha1.NetworkInterface{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "web.data0"},
+		Spec: juneauv1alpha1.NetworkInterfaceSpec{
+			PodRef:   juneauv1alpha1.NetworkInterfacePodReference{UID: "uid-1", Name: "web", Interface: "data0"},
+			NodeName: "node-a",
+			Subnet:   "storage",
+		},
+	}
+	primary := &juneauv1alpha1.NetworkInterface{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "web.eth0"},
+		Spec: juneauv1alpha1.NetworkInterfaceSpec{
+			PodRef:   juneauv1alpha1.NetworkInterfacePodReference{UID: "uid-1", Name: "web", Interface: "eth0"},
+			NodeName: "node-a",
+			Subnet:   "web",
+		},
+	}
+	webSubnet := &juneauv1alpha1.Subnet{
+		ObjectMeta: metav1.ObjectMeta{Name: "web"},
+		Status:     juneauv1alpha1.SubnetStatus{VNI: 11},
+	}
+	storageSubnet := &juneauv1alpha1.Subnet{
+		ObjectMeta: metav1.ObjectMeta{Name: "storage"},
+		Status:     juneauv1alpha1.SubnetStatus{VNI: 22},
+	}
+	cl := newFakeClient(t, extra, primary, webSubnet, storageSubnet)
+
+	r := &Reconciler{client: cl}
+	got, err := r.resolvePrimarySubnetID(context.Background(), localEndpoint{
+		address:   "10.16.0.5",
+		targetRef: &corev1.ObjectReference{Kind: "Pod", Namespace: "default", Name: "web"},
+	})
+	if err != nil {
+		t.Fatalf("resolvePrimarySubnetID: %v", err)
+	}
+	if got != 11 {
+		t.Fatalf("got VNI %d, want the VNI %d of the primary NIC subnet", got, 11)
 	}
 }

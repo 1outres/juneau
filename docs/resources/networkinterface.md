@@ -18,7 +18,8 @@ NetworkInterfaceは、Podに紐づく論理NICを表すリソースです。
 `status.address`は、実際に割り当てられたIPv4アドレスとプレフィックス長です。
 
 `status.routes`は、Pod側に設定すべき経路情報です。
-通常はSubnetのゲートウェイに向かうデフォルトルートが入ります。
+eth0にはSubnetのゲートウェイに向かうデフォルトルートが入ります。
+`juneau.loutres.me/networks`で足した追加NICには経路を入れません。Podのデフォルトルートを1本に保つためです。
 
 ## Phase
 

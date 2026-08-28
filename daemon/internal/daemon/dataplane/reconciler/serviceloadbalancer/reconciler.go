@@ -264,7 +264,7 @@ func (r *Reconciler) resolveLocalBackends(ctx context.Context, ports []LBService
 			if ip == nil {
 				continue
 			}
-			subnetID, err := r.resolveSubnetID(ctx, ep)
+			subnetID, err := r.resolvePrimarySubnetID(ctx, ep)
 			if err != nil {
 				return nil, err
 			}
@@ -319,15 +319,18 @@ func matchEndpointsForPort(endpoints []localEndpoint, port LBServicePort) []loca
 	return out
 }
 
-// resolveSubnetID looks up the NetworkInterface for the endpoint's
-// target Pod (TargetRef Kind=Pod) and consults the Subnet to read the
-// allocated VNI. Returns 0 when the Pod is not Juneau-managed.
-func (r *Reconciler) resolveSubnetID(ctx context.Context, ep localEndpoint) (uint32, error) {
+// resolvePrimarySubnetID looks up the primary NetworkInterface of the
+// endpoint's target Pod (TargetRef Kind=Pod) and consults the Subnet to
+// read the allocated VNI. Returns 0 when the Pod is not Juneau-managed.
+func (r *Reconciler) resolvePrimarySubnetID(ctx context.Context, ep localEndpoint) (uint32, error) {
 	if ep.targetRef == nil || ep.targetRef.Kind != "Pod" {
 		return 0, nil
 	}
 	var ifaces juneauv1alpha1.NetworkInterfaceList
-	if err := r.client.List(ctx, &ifaces, client.InNamespace(ep.targetRef.Namespace), client.MatchingFields{"spec.podRef.name": ep.targetRef.Name}); err != nil {
+	if err := r.client.List(ctx, &ifaces, client.InNamespace(ep.targetRef.Namespace), client.MatchingFields{
+		"spec.podRef.name":      ep.targetRef.Name,
+		"spec.podRef.interface": juneauv1alpha1.PodPrimaryInterfaceName,
+	}); err != nil {
 		return 0, err
 	}
 	if len(ifaces.Items) == 0 {

@@ -122,7 +122,7 @@ func (r *Reconciler) resolveBackends(ctx context.Context, svc *corev1.Service, v
 			var iface *juneauv1alpha1.NetworkInterface
 			if ep.targetRef != nil && ep.targetRef.Kind == "Pod" {
 				var err error
-				iface, err = r.findInterfaceForPod(ctx, ep.targetRef.Namespace, ep.targetRef.Name)
+				iface, err = r.findPrimaryInterfaceForPod(ctx, ep.targetRef.Namespace, ep.targetRef.Name)
 				if err != nil {
 					return nil, err
 				}
@@ -174,18 +174,16 @@ func (r *Reconciler) resolveBackends(ctx context.Context, svc *corev1.Service, v
 	return out, nil
 }
 
-func (r *Reconciler) findInterfaceForPod(ctx context.Context, namespace, podName string) (*juneauv1alpha1.NetworkInterface, error) {
+func (r *Reconciler) findPrimaryInterfaceForPod(ctx context.Context, namespace, podName string) (*juneauv1alpha1.NetworkInterface, error) {
 	var ifaceList juneauv1alpha1.NetworkInterfaceList
-	if err := r.client.List(ctx, &ifaceList, client.InNamespace(namespace), client.MatchingFields{"spec.podRef.name": podName}); err != nil {
+	if err := r.client.List(ctx, &ifaceList, client.InNamespace(namespace), client.MatchingFields{
+		"spec.podRef.name":      podName,
+		"spec.podRef.interface": juneauv1alpha1.PodPrimaryInterfaceName,
+	}); err != nil {
 		return nil, err
 	}
 	if len(ifaceList.Items) == 0 {
 		return nil, nil
-	}
-	for i := range ifaceList.Items {
-		if ifaceList.Items[i].Status.Phase == juneauv1alpha1.NetworkInterfacePhaseReady {
-			return &ifaceList.Items[i], nil
-		}
 	}
 	return &ifaceList.Items[0], nil
 }

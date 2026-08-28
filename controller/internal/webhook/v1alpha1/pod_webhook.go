@@ -13,8 +13,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
-	"sort"
-	"strings"
+	"net/netip"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -42,40 +41,10 @@ import (
 // from the daemon module — the value is fixed by Vpc bootstrapping.
 const defaultVpcName = "default"
 
-const (
-	// PodAnnotationSubnet matches the per-Pod subnet selector used by
-	// pod_controller — kept in sync rather than re-imported so this
-	// webhook stays a thin transformation layer.
-	PodAnnotationSubnet = "juneau.loutres.me/subnet"
-
-	// PodAnnotationDNSInjectSkip lets users opt a single Pod out of
-	// DNS injection (for debugging or for hostNetwork-equivalent
-	// workloads that manage resolv.conf themselves). Value is
-	// expected to be the literal string "true".
-	PodAnnotationDNSInjectSkip = "juneau.loutres.me/dns-inject-skip"
-
-	// PodAnnotationSecurityGroups carries a comma-separated list of
-	// SecurityGroup names that should be attached to the Pod's
-	// NetworkInterface. The Pod controller transcribes this onto
-	// NetworkInterface.spec.securityGroups; this webhook validates it.
-	PodAnnotationSecurityGroups = "juneau.loutres.me/security-groups"
-
-	// PodSecurityGroupsMax matches NetworkInterface.spec.securityGroups
-	// MaxItems and the BPF MAX_SGS_PER_NIC ceiling. Exceeding this is a
-	// hard reject at admission so we never silently truncate.
-	PodSecurityGroupsMax = 2
-
-	// defaultClusterSearchDomains mirrors the search list kubelet
-	// composes for ClusterFirst Pods. We assemble it explicitly so
-	// dnsPolicy=None Pods keep working with relative names like
-	// "kubernetes.default" or "demo".
-	clusterDomain = "cluster.local"
-
-	// dnsPodSubnetDefault is the implicit subnet a Pod with no
-	// PodAnnotationSubnet falls into — same default the Pod controller
-	// uses to provision NetworkInterface.
-	dnsPodSubnetDefault = "default"
-)
+// defaultClusterSearchDomains mirrors the search list kubelet composes
+// for ClusterFirst Pods. We assemble it explicitly so dnsPolicy=None Pods
+// keep working with relative names like "kubernetes.default" or "demo".
+const clusterDomain = "cluster.local"
 
 // nolint:unused
 var podlog = logf.Log.WithName("pod-resource")
@@ -139,7 +108,7 @@ func (d *PodDNSDefaulter) Default(ctx context.Context, obj runtime.Object) error
 	if pod.Spec.HostNetwork {
 		return nil
 	}
-	if pod.Annotations[PodAnnotationDNSInjectSkip] == "true" {
+	if pod.Annotations[juneauv1alpha1.PodAnnotationDNSInjectSkip] == "true" {
 		return nil
 	}
 	if _, isMirror := pod.Annotations["kubernetes.io/config.mirror"]; isMirror {
@@ -153,10 +122,7 @@ func (d *PodDNSDefaulter) Default(ctx context.Context, obj runtime.Object) error
 		return nil
 	}
 
-	subnetName := pod.Annotations[PodAnnotationSubnet]
-	if subnetName == "" {
-		subnetName = dnsPodSubnetDefault
-	}
+	subnetName := juneauv1alpha1.PodPrimaryNetworkAttachment(pod.Annotations).Subnet
 
 	var subnet juneauv1alpha1.Subnet
 	if err := d.Get(ctx, client.ObjectKey{Name: subnetName}, &subnet); err != nil {
@@ -250,16 +216,19 @@ func mergeDNSConfig(existing *corev1.PodDNSConfig, dnsVIP, podNamespace string) 
 
 // +kubebuilder:webhook:path=/validate--v1-pod,mutating=false,failurePolicy=ignore,sideEffects=None,groups="",resources=pods,verbs=create,versions=v1,name=vpod-juneau-loutres-me.kb.io,admissionReviewVersions=v1
 
-// PodSecurityGroupValidator enforces SG-related admission rules:
+// PodSecurityGroupValidator enforces the admission rules of every NIC a
+// Pod asks for, one NIC at a time:
 //
-//  1. The juneau.loutres.me/security-groups annotation, when present,
-//     parses into ≤ PodSecurityGroupsMax names.
+//  1. The NIC lists ≤ juneauv1alpha1.PodSecurityGroupsMax SGs.
 //  2. Every named SG exists.
-//  3. Every named SG belongs to the same Vpc as the Pod's Subnet.
-//  4. If the owning Vpc has spec.enforceSecurityGroups=true, the Pod
-//     must list at least one valid SG.
+//  3. Every named SG belongs to the same Vpc as the Subnet of that NIC.
+//  4. If that Vpc has spec.enforceSecurityGroups=true, the NIC must list
+//     at least one valid SG.
 //
-// Mirror Pods, hostNetwork Pods, and Pods whose Subnet cannot be
+// It also rejects a juneau.loutres.me/networks annotation Juneau cannot
+// turn into NICs, and extra NICs whose Subnet does not exist.
+//
+// Mirror Pods, hostNetwork Pods, and Pods whose primary Subnet cannot be
 // resolved are always exempt — admission must keep working when the
 // Juneau control plane is degraded.
 //
@@ -298,94 +267,170 @@ func (v *PodSecurityGroupValidator) validate(ctx context.Context, pod *corev1.Po
 		return nil, nil
 	}
 
-	annotation := pod.Annotations[PodAnnotationSecurityGroups]
-	names := parsePodSGAnnotation(annotation)
+	nics, errs := podNICsToValidate(pod)
+	subnets := make(map[string]*juneauv1alpha1.Subnet, len(nics))
+	for _, nic := range nics {
+		subnet, nicErrs, err := v.validateNIC(ctx, nic)
+		if err != nil {
+			return nil, err
+		}
+		errs = append(errs, nicErrs...)
+		if subnet != nil {
+			subnets[nic.attachment.Interface] = subnet
+		}
+	}
+	errs = append(errs, validateNICSubnetsDoNotOverlap(nics, subnets)...)
 
-	annPath := field.NewPath("metadata", "annotations").Key(PodAnnotationSecurityGroups)
-	var errs field.ErrorList
+	if len(errs) > 0 {
+		return nil, apierrors.NewInvalid(schema.GroupKind{Group: "", Kind: "Pod"}, pod.Name, errs)
+	}
+	return nil, nil
+}
 
-	if len(names) > PodSecurityGroupsMax {
-		errs = append(errs, field.Invalid(annPath, annotation,
-			fmt.Sprintf("at most %d security groups allowed (got %d)", PodSecurityGroupsMax, len(names))))
+// podNIC is one NIC as admission sees it: what the user asked for, where
+// to report a problem with it, and whether a Subnet Juneau cannot find is
+// fatal.
+type podNIC struct {
+	attachment juneauv1alpha1.PodNetworkAttachment
+	path       *field.Path
+	value      any
+
+	// subnetRequired tells a NIC whose Subnet is missing apart from one
+	// that is merely exempt. The primary NIC is exempt because admission
+	// has to keep working while the Juneau control plane is degraded; an
+	// extra NIC is not, because a Pod that silently comes up without the
+	// NIC it asked for is worse than a Pod that never starts.
+	subnetRequired bool
+}
+
+// podNICsToValidate splits a Pod into the NICs admission has to check.
+// Errors come back for entries the annotation itself cannot describe, and
+// those NICs are dropped from the returned list.
+func podNICsToValidate(pod *corev1.Pod) ([]podNIC, field.ErrorList) {
+	annotations := pod.Annotations
+	nics := []podNIC{{
+		attachment: juneauv1alpha1.PodPrimaryNetworkAttachment(annotations),
+		path:       field.NewPath("metadata", "annotations").Key(juneauv1alpha1.PodAnnotationSecurityGroups),
+		value:      annotations[juneauv1alpha1.PodAnnotationSecurityGroups],
+	}}
+
+	networksPath := field.NewPath("metadata", "annotations").Key(juneauv1alpha1.PodAnnotationNetworks)
+	networks := annotations[juneauv1alpha1.PodAnnotationNetworks]
+	extra, err := juneauv1alpha1.ParsePodNetworkAttachments(networks)
+	if err != nil {
+		return nics, field.ErrorList{field.Invalid(networksPath, networks, err.Error())}
+	}
+	if errs := juneauv1alpha1.ValidatePodNetworkAttachments(networksPath, extra); len(errs) > 0 {
+		return nics, errs
 	}
 
-	subnetName := pod.Annotations[PodAnnotationSubnet]
-	if subnetName == "" {
-		subnetName = dnsPodSubnetDefault
+	for i, attachment := range extra {
+		nics = append(nics, podNIC{
+			attachment:     attachment,
+			path:           networksPath.Index(i),
+			value:          attachment,
+			subnetRequired: true,
+		})
+	}
+	return nics, nil
+}
+
+// validateNIC checks one NIC against the cluster: its SecurityGroups have
+// to exist, they have to live in the Vpc of the NIC's own Subnet, and a
+// Vpc that enforces SecurityGroups needs at least one on this NIC.
+func (v *PodSecurityGroupValidator) validateNIC(ctx context.Context, nic podNIC) (*juneauv1alpha1.Subnet, field.ErrorList, error) {
+	if len(nic.attachment.SecurityGroups) > juneauv1alpha1.PodSecurityGroupsMax {
+		return nil, field.ErrorList{field.Invalid(nic.path, nic.value,
+			fmt.Sprintf("at most %d security groups allowed (got %d)",
+				juneauv1alpha1.PodSecurityGroupsMax, len(nic.attachment.SecurityGroups)))}, nil
 	}
 
 	var subnet juneauv1alpha1.Subnet
-	if err := v.Get(ctx, client.ObjectKey{Name: subnetName}, &subnet); err != nil {
+	if err := v.Get(ctx, client.ObjectKey{Name: nic.attachment.Subnet}, &subnet); err != nil {
 		if apierrors.IsNotFound(err) {
-			// Subnet missing → Pod controller will surface a scheduling
-			// error; do not double-reject here.
-			return nil, nil
+			return nil, nic.missingReference(fmt.Sprintf("Subnet %q does not exist", nic.attachment.Subnet)), nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
 
 	var vpc juneauv1alpha1.Vpc
 	if err := v.Get(ctx, client.ObjectKey{Name: subnet.Spec.Vpc}, &vpc); err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil, nil
+			return &subnet, nic.missingReference(fmt.Sprintf("Vpc %q of Subnet %q does not exist", subnet.Spec.Vpc, subnet.Name)), nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
 
-	resolvedNames := names
-	if len(errs) == 0 {
-		resolvedNames = nil
-		for i, name := range names {
-			var sg juneauv1alpha1.SecurityGroup
-			if err := v.Get(ctx, client.ObjectKey{Name: name}, &sg); err != nil {
-				if apierrors.IsNotFound(err) {
-					errs = append(errs, field.Invalid(annPath, annotation,
-						fmt.Sprintf("entry [%d]: SecurityGroup %q does not exist", i, name)))
-					continue
-				}
-				return nil, err
-			}
-			if sg.Spec.Vpc != vpc.Name {
-				errs = append(errs, field.Invalid(annPath, annotation,
-					fmt.Sprintf("entry [%d]: SecurityGroup %q belongs to Vpc %q (expected %q to match the Pod's Subnet)", i, name, sg.Spec.Vpc, vpc.Name)))
+	var errs field.ErrorList
+	var resolved []string
+	for i, name := range nic.attachment.SecurityGroups {
+		var sg juneauv1alpha1.SecurityGroup
+		if err := v.Get(ctx, client.ObjectKey{Name: name}, &sg); err != nil {
+			if apierrors.IsNotFound(err) {
+				errs = append(errs, field.Invalid(nic.path, nic.value,
+					fmt.Sprintf("entry [%d]: SecurityGroup %q does not exist", i, name)))
 				continue
 			}
-			resolvedNames = append(resolvedNames, name)
+			return nil, nil, err
 		}
+		if sg.Spec.Vpc != vpc.Name {
+			errs = append(errs, field.Invalid(nic.path, nic.value,
+				fmt.Sprintf("entry [%d]: SecurityGroup %q belongs to Vpc %q (expected %q to match the Subnet of interface %q)",
+					i, name, sg.Spec.Vpc, vpc.Name, nic.attachment.Interface)))
+			continue
+		}
+		resolved = append(resolved, name)
 	}
 
-	if vpc.Spec.EnforceSecurityGroups && len(resolvedNames) == 0 {
-		errs = append(errs, field.Required(annPath,
-			fmt.Sprintf("Vpc %q has enforceSecurityGroups=true; the Pod must reference at least one SecurityGroup", vpc.Name)))
+	if vpc.Spec.EnforceSecurityGroups && len(resolved) == 0 {
+		errs = append(errs, field.Required(nic.path,
+			fmt.Sprintf("Vpc %q has enforceSecurityGroups=true; interface %q must reference at least one SecurityGroup",
+				vpc.Name, nic.attachment.Interface)))
 	}
-
-	if len(errs) > 0 {
-		return nil, apierrors.NewInvalid(schema.GroupKind{Group: "", Kind: "Pod"}, pod.Name, errs)
-	}
-
-	return nil, nil
+	return &subnet, errs, nil
 }
 
-// parsePodSGAnnotation parses a comma-separated list, trimming and
-// deduplicating. Returns nil for empty input.
-func parsePodSGAnnotation(s string) []string {
-	if strings.TrimSpace(s) == "" {
+// validateNICSubnetsDoNotOverlap rejects a pod whose NICs would land on
+// overlapping prefixes. The pod would get two on-link routes for the same
+// addresses and pick one of them at random, which is impossible to debug
+// from inside the pod.
+func validateNICSubnetsDoNotOverlap(nics []podNIC, subnets map[string]*juneauv1alpha1.Subnet) field.ErrorList {
+	type nicPrefix struct {
+		nic    podNIC
+		prefix netip.Prefix
+	}
+
+	parsed := make([]nicPrefix, 0, len(nics))
+	for _, nic := range nics {
+		subnet, ok := subnets[nic.attachment.Interface]
+		if !ok {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(subnet.Spec.CIDR)
+		if err != nil {
+			continue
+		}
+		parsed = append(parsed, nicPrefix{nic: nic, prefix: prefix.Masked()})
+	}
+
+	var errs field.ErrorList
+	for i := 1; i < len(parsed); i++ {
+		for j := 0; j < i; j++ {
+			if !parsed[i].prefix.Overlaps(parsed[j].prefix) {
+				continue
+			}
+			errs = append(errs, field.Invalid(parsed[i].nic.path, parsed[i].nic.value,
+				fmt.Sprintf("Subnet %q of interface %q and Subnet %q of interface %q overlap",
+					parsed[i].nic.attachment.Subnet, parsed[i].nic.attachment.Interface,
+					parsed[j].nic.attachment.Subnet, parsed[j].nic.attachment.Interface)))
+		}
+	}
+	return errs
+}
+
+func (n podNIC) missingReference(detail string) field.ErrorList {
+	if !n.subnetRequired {
 		return nil
 	}
-	parts := strings.Split(s, ",")
-	seen := make(map[string]struct{}, len(parts))
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		name := strings.TrimSpace(p)
-		if name == "" {
-			continue
-		}
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		seen[name] = struct{}{}
-		out = append(out, name)
-	}
-	sort.Strings(out)
-	return out
+	return field.ErrorList{field.Invalid(n.path, n.value, detail)}
 }

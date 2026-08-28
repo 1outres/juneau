@@ -8,12 +8,13 @@ import (
 	"net"
 	"os"
 	"reflect"
+	"strings"
 	"syscall"
 	"time"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
@@ -35,6 +36,11 @@ const (
 	PodNamespaceKey = "K8S_POD_NAMESPACE"
 	PodUIDKey       = "K8S_POD_UID"
 )
+
+// podRefUIDIndex finds every NetworkInterface or NetworkEndpoint of one
+// pod instance. A CNI request carries one interface name but covers all
+// the NICs of the pod, so the pod UID is the key both directions use.
+const podRefUIDIndex = "spec.podRef.uid"
 
 // CNIServer keeps two clients on purpose.
 //
@@ -60,6 +66,36 @@ type ProbeRegistrar interface {
 	UnregisterPod(uid, containerID string) error
 }
 
+// rollback collects the undo of every side effect an ADD produced, so a
+// failure half way through leaves the node the way it was found.
+type rollback struct {
+	steps []func()
+}
+
+func (r *rollback) push(step func()) {
+	r.steps = append(r.steps, step)
+}
+
+func (r *rollback) run() {
+	for i := len(r.steps) - 1; i >= 0; i-- {
+		r.steps[i]()
+	}
+}
+
+// podRoute is one route of a NIC, already parsed.
+type podRoute struct {
+	dst *net.IPNet
+	gw  net.IP
+}
+
+// attachedInterface is what one attached NIC contributes to the CNI
+// result.
+type attachedInterface struct {
+	ifname  string
+	address net.IPNet
+	routes  []podRoute
+}
+
 func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb.CNIResponse, retErr error) {
 	podNamespace := req.Args[PodNamespaceKey]
 	podName := req.Args[PodNameKey]
@@ -68,88 +104,47 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 	zap.S().Infof("CNI ADD request for pod %s/%s ifname=%s containerID=%s", podNamespace, podName, req.Ifname, req.ContainerId)
 	zap.S().Debugf("CNI ADD request args: %v", req.Args)
 
-	// rollback stack: each cleanup undoes one side effect. Executed in
-	// reverse order only when Add returns an error.
-	var cleanups []func()
+	var undo rollback
 	defer func() {
 		if retErr == nil {
 			return
 		}
 		zap.S().Warnf("CNI ADD failed for pod %s/%s, rolling back: %v", podNamespace, podName, retErr)
-		for i := len(cleanups) - 1; i >= 0; i-- {
-			cleanups[i]()
-		}
+		undo.run()
 	}()
 
 	var nwifaceList juneauv1alpha1.NetworkInterfaceList
 	if err := c.cachedClient.List(ctx, &nwifaceList, client.InNamespace(podNamespace), client.MatchingFields{
-		"spec.podRef.uid":       podUID,
-		"spec.podRef.name":      podName,
-		"spec.podRef.interface": req.Ifname,
+		podRefUIDIndex: podUID,
 	}); err != nil {
 		zap.L().Error("failed to list NetworkInterface resources", zap.Error(err))
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to list NetworkInterface resources", err.Error())
 	}
-
 	if len(nwifaceList.Items) == 0 {
-		zap.L().Error("no NetworkInterface resource found for pod/interface")
-		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "No NetworkInterface resource found for pod/interface", "")
+		zap.L().Error("no NetworkInterface resource found for pod")
+		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "No NetworkInterface resource found for pod", "")
 	}
 
-	nwiface := &nwifaceList.Items[0]
-
-	if meta.IsStatusConditionFalse(nwiface.Status.Conditions, juneauv1alpha1.NetworkInterfaceStatusAllocated) {
-		zap.L().Error("NetworkInterface resource is not yet allocated")
-		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "NetworkInterface resource is not yet allocated", "")
-	}
-
-	vethHostName := c.vethHostName(req.Ifname, req.ContainerId)
-	vethPeerName := c.vethPeerName(req.Ifname, req.ContainerId)
-
-	veth := &netlink.Veth{
-		LinkAttrs: netlink.LinkAttrs{
-			Name: vethHostName,
-		},
-		PeerName: vethPeerName,
-	}
-	if err := c.createVethPair(veth); err != nil {
-		zap.L().Error("failed to create veth pair", zap.Error(err))
-		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to create veth pair", err.Error())
-	}
-	cleanups = append(cleanups, func() { c.cleanupVeth(vethHostName) })
-
-	zap.S().Debugf("Created veth pair: %s <-> %s", vethHostName, vethPeerName)
-
-	vethHostTmp, err := netlink.LinkByName(vethHostName)
+	wanted, err := c.requirePodNetworkAttachments(ctx, podNamespace, podName, podUID)
 	if err != nil {
-		zap.L().Error("failed to lookup created veth", zap.Error(err))
-		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to lookup created veth", err.Error())
+		return nil, err
 	}
 
-	vethHost, ok := vethHostTmp.(*netlink.Veth)
-	if !ok {
-		zap.L().Error("failed to cast veth host link", zap.String("linkType", reflect.TypeOf(vethHostTmp).String()))
-		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to cast veth host link", "")
+	nwifaces := orderPodInterfaces(nwifaceList.Items, req.Ifname)
+	if err := checkPodInterfacesComplete(nwifaces, wanted); err != nil {
+		zap.L().Error("pod NICs are not all provisioned yet", zap.Error(err))
+		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Pod NetworkInterfaces are not all provisioned yet", err.Error())
+	}
+	nwifaces = filterPodInterfaces(nwifaces, wanted)
+	if err := checkPodInterfacesAllocated(nwifaces); err != nil {
+		zap.L().Error("pod NICs are not allocated yet", zap.Error(err))
+		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Pod NetworkInterfaces are not allocated yet", err.Error())
+	}
+	if err := checkPrimaryPodInterface(nwifaces, req.Ifname); err != nil {
+		zap.L().Error("pod cannot be handed to the container runtime", zap.Error(err))
+		return nil, makeError(cnipb.ErrorCode_INTERNAL, "Pod has no usable primary NIC", err.Error())
 	}
 
-	vethPeerTmp, err := netlink.LinkByName(vethPeerName)
-	if err != nil {
-		zap.L().Error("failed to lookup created veth", zap.Error(err))
-		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to lookup created veth", err.Error())
-	}
-
-	vethPeer, ok := vethPeerTmp.(*netlink.Veth)
-	if !ok {
-		zap.L().Error("failed to cast veth peer link", zap.String("linkType", reflect.TypeOf(vethPeerTmp).String()))
-		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to cast veth peer link", "")
-	}
-
-	if err := netlink.LinkSetUp(vethHost); err != nil {
-		zap.L().Error("failed to bring up veth on host", zap.Error(err))
-		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to bring up veth on host", err.Error())
-	}
-
-	// log req.Netns and req.Path
 	zap.S().Debugf("Netns: %s, Path: %s", req.Netns, req.Path)
 
 	netns, err := ns.GetNS(req.Netns)
@@ -161,32 +156,116 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 		_ = netns.Close()
 	}()
 
-	if err := netlink.LinkSetNsFd(vethPeer, int(netns.Fd())); err != nil {
-		zap.L().Error("failed to move peer veth to netns", zap.Error(err))
-		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to move peer veth to netns", err.Error())
+	res := &types040.Result{
+		CNIVersion: "0.4.0",
+		Routes:     []*types.Route{},
+	}
+	var primaryAddress string
+	for index, nwiface := range nwifaces {
+		attached, err := c.attachPodInterface(ctx, req, netns, index, nwiface, &undo)
+		if err != nil {
+			return nil, err
+		}
+		if attached.ifname == req.Ifname {
+			primaryAddress = attached.address.String()
+		}
+		res.Interfaces = append(res.Interfaces, &types040.Interface{
+			Name:    attached.ifname,
+			Sandbox: req.Netns,
+		})
+		res.IPs = append(res.IPs, &types040.IPConfig{
+			Version:   "4",
+			Interface: ptr.To(len(res.Interfaces) - 1),
+			Address:   attached.address,
+		})
+		for _, route := range attached.routes {
+			res.Routes = append(res.Routes, &types.Route{Dst: *route.dst, GW: route.gw})
+		}
 	}
 
-	var peerHWAddr net.HardwareAddr
-	if err = netns.Do(func(_ ns.NetNS) error {
-		link, err := netlink.LinkByName(vethPeerName)
-		if err != nil {
-			return err
+	var buf bytes.Buffer
+	if err := res.PrintTo(&buf); err != nil {
+		zap.L().Error("failed to serialize CNI result", zap.Error(err))
+		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to serialize CNI result", err.Error())
+	}
+
+	if c.probeRegistrar != nil && req.Ifname == probedPodInterfaceName {
+		if err := c.probeRegistrar.RegisterPod(ctx, podNamespace, podName, podUID, req.ContainerId, req.Netns, primaryAddress); err != nil {
+			return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to register Pod probes", err.Error())
 		}
-		if err := netlink.LinkSetName(link, req.Ifname); err != nil {
-			return err
+		undo.push(func() { _ = c.probeRegistrar.UnregisterPod(podUID, req.ContainerId) })
+	}
+
+	return &cnipb.CNIResponse{
+		ResultJson: buf.Bytes(),
+	}, nil
+}
+
+// errPodInstanceGone says the pod instance a CNI request names is not in
+// the cache, either because it is deleted or because its name now belongs
+// to a newer instance.
+var errPodInstanceGone = errors.New("the pod instance of the request is gone")
+
+// errPodNetworksUnreadable says the pod is there but describes NICs
+// Juneau cannot build. Retrying does not help.
+var errPodNetworksUnreadable = errors.New("the pod asks for NICs Juneau cannot build")
+
+// podNetworkAttachments reads back the NICs the pod asked for. The Pod is
+// the only place that says how many NICs to expect, so an ADD consults it
+// before deciding the NetworkInterfaces it found are the whole set.
+func (c *CNIServer) podNetworkAttachments(ctx context.Context, namespace, name, uid string) ([]juneauv1alpha1.PodNetworkAttachment, error) {
+	var pod corev1.Pod
+	if err := c.cachedClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &pod); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("%w: no pod %s/%s", errPodInstanceGone, namespace, name)
 		}
-		if err := netlink.LinkSetUp(link); err != nil {
-			return err
-		}
-		refreshed, err := netlink.LinkByName(req.Ifname)
-		if err != nil {
-			return fmt.Errorf("re-lookup peer veth after rename: %w", err)
-		}
-		peerHWAddr = refreshed.Attrs().HardwareAddr
-		return nil
-	}); err != nil {
-		zap.L().Error("failed to setup veth in netns", zap.Error(err))
-		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to setup veth in netns", err.Error())
+		return nil, fmt.Errorf("get pod %s/%s: %w", namespace, name, err)
+	}
+	if string(pod.UID) != uid {
+		return nil, fmt.Errorf("%w: pod %s/%s is instance %s, the request is for %s",
+			errPodInstanceGone, namespace, name, pod.UID, uid)
+	}
+	attachments, err := juneauv1alpha1.PodNetworkAttachments(pod.Annotations)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errPodNetworksUnreadable, err)
+	}
+	return attachments, nil
+}
+
+// requirePodNetworkAttachments is podNetworkAttachments for ADD and
+// CHECK, which cannot go on without knowing the NICs the pod asks for.
+func (c *CNIServer) requirePodNetworkAttachments(ctx context.Context, namespace, name, uid string) ([]juneauv1alpha1.PodNetworkAttachment, error) {
+	attachments, err := c.podNetworkAttachments(ctx, namespace, name, uid)
+	if err == nil {
+		return attachments, nil
+	}
+	zap.L().Error("cannot read the NICs the pod asks for", zap.Error(err))
+	if errors.Is(err, errPodNetworksUnreadable) {
+		return nil, makeError(cnipb.ErrorCode_INTERNAL, "The pod asks for NICs Juneau cannot build", err.Error())
+	}
+	return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to read the NICs the pod asks for", err.Error())
+}
+
+// attachPodInterface builds one NIC: a veth pair whose pod side lands in
+// the sandbox under the name the NetworkInterface asks for, plus the
+// NetworkEndpoint that tells the data plane about it. Every side effect
+// is pushed onto undo so a later NIC failing takes this one down too.
+func (c *CNIServer) attachPodInterface(
+	ctx context.Context,
+	req *cnipb.CNIRequest,
+	netns ns.NetNS,
+	index int,
+	nwiface *juneauv1alpha1.NetworkInterface,
+	undo *rollback,
+) (*attachedInterface, error) {
+	ifname := nwiface.Spec.PodRef.Interface
+	podNamespace := req.Args[PodNamespaceKey]
+	podName := req.Args[PodNameKey]
+	podUID := req.Args[PodUIDKey]
+
+	vethHost, peerHWAddr, err := c.createPodVeth(ifname, index, req, netns, undo)
+	if err != nil {
+		return nil, err
 	}
 
 	ip, ipnet, err := net.ParseCIDR(nwiface.Status.Address)
@@ -195,12 +274,7 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to parse assigned IP address", err.Error())
 	}
 
-	type Route struct {
-		dst *net.IPNet
-		gw  net.IP
-	}
-	routes := make([]Route, 0, len(nwiface.Status.Routes))
-
+	routes := make([]podRoute, 0, len(nwiface.Status.Routes))
 	for _, route := range nwiface.Status.Routes {
 		_, dst, err := net.ParseCIDR(route.Dst)
 		if err != nil {
@@ -209,28 +283,23 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 		}
 		gw := net.ParseIP(route.GW)
 		if gw == nil {
-			zap.L().Error("failed to parse route gateway IP", zap.Error(err))
+			zap.L().Error("failed to parse route gateway IP", zap.String("gw", route.GW))
 			return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to parse route gateway IP", "")
 		}
-
-		routes = append(routes, Route{dst: dst, gw: gw})
+		routes = append(routes, podRoute{dst: dst, gw: gw})
 	}
 
+	address := net.IPNet{IP: ip, Mask: ipnet.Mask}
 	if err = netns.Do(func(_ ns.NetNS) error {
-		link, err := netlink.LinkByName(req.Ifname)
+		link, err := netlink.LinkByName(ifname)
 		if err != nil {
-			return fmt.Errorf("failed to find interface %s in netns: %w", req.Ifname, err)
+			return fmt.Errorf("failed to find interface %s in netns: %w", ifname, err)
 		}
 
-		if err := netlink.AddrAdd(link, &netlink.Addr{
-			IPNet: &net.IPNet{
-				IP:   ip,
-				Mask: ipnet.Mask,
-			},
-		}); err != nil {
-			return fmt.Errorf("failed to assign IP address to interface %s in netns: %w", req.Ifname, err)
+		if err := netlink.AddrAdd(link, &netlink.Addr{IPNet: &address}); err != nil {
+			return fmt.Errorf("failed to assign IP address to interface %s in netns: %w", ifname, err)
 		}
-		zap.S().Debugf("Assigned IP %s to interface %s in netns", nwiface.Status.Address, req.Ifname)
+		zap.S().Debugf("Assigned IP %s to interface %s in netns", nwiface.Status.Address, ifname)
 
 		for _, route := range routes {
 			if err := netlink.RouteAdd(&netlink.Route{
@@ -238,7 +307,7 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 				Gw:        route.gw,
 				Dst:       route.dst,
 			}); err != nil {
-				return fmt.Errorf("failed to add route to interface %s in netns: %w", req.Ifname, err)
+				return fmt.Errorf("failed to add route to interface %s in netns: %w", ifname, err)
 			}
 		}
 
@@ -253,12 +322,11 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 		zap.L().Error("failed to re-lookup host veth", zap.Error(err))
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to re-lookup host veth", err.Error())
 	}
-	hostHWAddr := hostRefreshed.Attrs().HardwareAddr
 
 	nwep := &juneauv1alpha1.NetworkEndpoint{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: podNamespace,
-			Name:      networkEndpointName(podName, req.Ifname),
+			Name:      networkEndpointName(podName, ifname),
 			OwnerReferences: []metav1.OwnerReference{
 				{
 					APIVersion: juneauv1alpha1.GroupVersion.String(),
@@ -273,7 +341,7 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 			Kind: juneauv1alpha1.EndpointKindPod,
 			PodRef: &juneauv1alpha1.NetworkEndpointPodReference{
 				Name:      podName,
-				Interface: req.Ifname,
+				Interface: ifname,
 				UID:       podUID,
 			},
 			NodeName:   nwiface.Spec.NodeName,
@@ -282,7 +350,7 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 			MACAddress: peerHWAddr.String(),
 			Attachment: &juneauv1alpha1.NetworkEndpointAttachment{
 				Ifindex:        vethHost.Index,
-				HostMACAddress: hostHWAddr.String(),
+				HostMACAddress: hostRefreshed.Attrs().HardwareAddr.String(),
 				ContainerID:    req.ContainerId,
 			},
 		},
@@ -295,52 +363,97 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to create NetworkEndpoint resource", err.Error())
 	}
 	if createdByUs {
-		cleanups = append(cleanups, func() { c.cleanupNetworkEndpoint(nwep) })
+		undo.push(func() { c.cleanupNetworkEndpoint(nwep) })
 	}
 
-	res := &types040.Result{
-		CNIVersion: "0.4.0",
-		Interfaces: []*types040.Interface{
-			{
-				Name:    req.Ifname,
-				Sandbox: req.Netns,
-			},
+	return &attachedInterface{ifname: ifname, address: address, routes: routes}, nil
+}
+
+// createPodVeth builds the veth pair of one NIC and moves its pod side
+// into the sandbox under the final interface name. It returns the host
+// side and the MAC the pod side ended up with.
+func (c *CNIServer) createPodVeth(
+	ifname string,
+	index int,
+	req *cnipb.CNIRequest,
+	netns ns.NetNS,
+	undo *rollback,
+) (*netlink.Veth, net.HardwareAddr, error) {
+	vethHostName := vethHostName(ifname, req.ContainerId)
+	vethPeerName := vethPeerName(index, req.ContainerId)
+
+	veth := &netlink.Veth{
+		LinkAttrs: netlink.LinkAttrs{
+			Name: vethHostName,
 		},
-		IPs: []*types040.IPConfig{
-			{
-				Version:   "4",
-				Interface: ptr.To(0),
-				Address: net.IPNet{
-					IP:   ip,
-					Mask: ipnet.Mask,
-				},
-			},
-		},
-		Routes: []*types.Route{},
+		PeerName: vethPeerName,
+	}
+	if err := c.createVethPair(veth); err != nil {
+		zap.L().Error("failed to create veth pair", zap.Error(err))
+		return nil, nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to create veth pair", err.Error())
+	}
+	undo.push(func() { c.cleanupVeth(vethHostName) })
+
+	zap.S().Debugf("Created veth pair: %s <-> %s", vethHostName, vethPeerName)
+
+	vethHostTmp, err := netlink.LinkByName(vethHostName)
+	if err != nil {
+		zap.L().Error("failed to lookup created veth", zap.Error(err))
+		return nil, nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to lookup created veth", err.Error())
 	}
 
-	for _, route := range routes {
-		res.Routes = append(res.Routes, &types.Route{
-			Dst: *route.dst,
-			GW:  route.gw,
-		})
+	vethHost, ok := vethHostTmp.(*netlink.Veth)
+	if !ok {
+		zap.L().Error("failed to cast veth host link", zap.String("linkType", reflect.TypeOf(vethHostTmp).String()))
+		return nil, nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to cast veth host link", "")
 	}
 
-	var buf bytes.Buffer
-	if err := res.PrintTo(&buf); err != nil {
-		zap.L().Error("failed to serialize CNI result", zap.Error(err))
-		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to serialize CNI result", err.Error())
+	vethPeerTmp, err := netlink.LinkByName(vethPeerName)
+	if err != nil {
+		zap.L().Error("failed to lookup created veth", zap.Error(err))
+		return nil, nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to lookup created veth", err.Error())
 	}
-	if c.probeRegistrar != nil && req.Ifname == "eth0" {
-		if err := c.probeRegistrar.RegisterPod(ctx, podNamespace, podName, podUID, req.ContainerId, req.Netns, nwiface.Status.Address); err != nil {
-			return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to register Pod probes", err.Error())
+
+	vethPeer, ok := vethPeerTmp.(*netlink.Veth)
+	if !ok {
+		zap.L().Error("failed to cast veth peer link", zap.String("linkType", reflect.TypeOf(vethPeerTmp).String()))
+		return nil, nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to cast veth peer link", "")
+	}
+
+	if err := netlink.LinkSetUp(vethHost); err != nil {
+		zap.L().Error("failed to bring up veth on host", zap.Error(err))
+		return nil, nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to bring up veth on host", err.Error())
+	}
+
+	if err := netlink.LinkSetNsFd(vethPeer, int(netns.Fd())); err != nil {
+		zap.L().Error("failed to move peer veth to netns", zap.Error(err))
+		return nil, nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to move peer veth to netns", err.Error())
+	}
+
+	var peerHWAddr net.HardwareAddr
+	if err := netns.Do(func(_ ns.NetNS) error {
+		link, err := netlink.LinkByName(vethPeerName)
+		if err != nil {
+			return err
 		}
-		cleanups = append(cleanups, func() { _ = c.probeRegistrar.UnregisterPod(podUID, req.ContainerId) })
+		if err := netlink.LinkSetName(link, ifname); err != nil {
+			return err
+		}
+		if err := netlink.LinkSetUp(link); err != nil {
+			return err
+		}
+		refreshed, err := netlink.LinkByName(ifname)
+		if err != nil {
+			return fmt.Errorf("re-lookup peer veth after rename: %w", err)
+		}
+		peerHWAddr = refreshed.Attrs().HardwareAddr
+		return nil
+	}); err != nil {
+		zap.L().Error("failed to setup veth in netns", zap.Error(err))
+		return nil, nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to setup veth in netns", err.Error())
 	}
 
-	return &cnipb.CNIResponse{
-		ResultJson: buf.Bytes(),
-	}, nil
+	return vethHost, peerHWAddr, nil
 }
 
 func (c *CNIServer) Check(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.Empty, error) {
@@ -350,54 +463,67 @@ func (c *CNIServer) Check(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.
 
 	zap.S().Infof("CNI CHECK request for pod %s/%s ifname=%s", podNamespace, podName, req.Ifname)
 
-	// 1. NetworkInterface exists and has been allocated.
+	// 1. Every NetworkInterface of the pod exists and has been allocated.
 	var nwifList juneauv1alpha1.NetworkInterfaceList
 	if err := c.cachedClient.List(ctx, &nwifList, client.InNamespace(podNamespace), client.MatchingFields{
-		"spec.podRef.uid":       podUID,
-		"spec.podRef.name":      podName,
-		"spec.podRef.interface": req.Ifname,
+		podRefUIDIndex: podUID,
 	}); err != nil {
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to list NetworkInterface resources", err.Error())
 	}
 	if len(nwifList.Items) == 0 {
-		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "NetworkInterface not found for pod/interface", "")
+		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "NetworkInterface not found for pod", "")
 	}
-	nwif := &nwifList.Items[0]
-	if meta.IsStatusConditionFalse(nwif.Status.Conditions, juneauv1alpha1.NetworkInterfaceStatusAllocated) {
-		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "NetworkInterface is not yet allocated", "")
+	wanted, err := c.requirePodNetworkAttachments(ctx, podNamespace, podName, podUID)
+	if err != nil {
+		return nil, err
+	}
+	nwifaces := filterPodInterfaces(orderPodInterfaces(nwifList.Items, req.Ifname), wanted)
+	if err := checkPodInterfacesAllocated(nwifaces); err != nil {
+		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Pod NetworkInterfaces are not allocated yet", err.Error())
+	}
+	if err := checkPrimaryPodInterface(nwifaces, req.Ifname); err != nil {
+		return nil, makeError(cnipb.ErrorCode_INTERNAL, "Pod has no usable primary NIC", err.Error())
 	}
 
-	// 2. NetworkEndpoint exists and its address agrees with the NWIF.
+	// 2. Every NetworkEndpoint exists and agrees with its NetworkInterface.
 	var nwepList juneauv1alpha1.NetworkEndpointList
 	if err := c.cachedClient.List(ctx, &nwepList, client.InNamespace(podNamespace), client.MatchingFields{
-		"spec.podRef.uid":       podUID,
-		"spec.podRef.name":      podName,
-		"spec.podRef.interface": req.Ifname,
+		podRefUIDIndex: podUID,
 	}); err != nil {
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to list NetworkEndpoint resources", err.Error())
 	}
-	if len(nwepList.Items) == 0 {
-		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "NetworkEndpoint not found for pod/interface", "")
-	}
-	nwep := &nwepList.Items[0]
-	if nwep.Spec.Address != nwif.Status.Address {
-		return nil, makeError(cnipb.ErrorCode_INTERNAL,
-			"NetworkEndpoint address disagrees with NetworkInterface",
-			fmt.Sprintf("nwep=%s nwif=%s", nwep.Spec.Address, nwif.Status.Address))
-	}
-
-	// 3. Host-side veth for this container exists.
-	vethHostName := c.vethHostName(req.Ifname, req.ContainerId)
-	if _, err := netlink.LinkByName(vethHostName); err != nil {
-		if _, notFound := err.(netlink.LinkNotFoundError); notFound {
-			return nil, makeError(cnipb.ErrorCode_INTERNAL, "host-side veth missing", vethHostName)
+	endpoints := make(map[string]*juneauv1alpha1.NetworkEndpoint, len(nwepList.Items))
+	for i := range nwepList.Items {
+		if ref := nwepList.Items[i].Spec.PodRef; ref != nil {
+			endpoints[ref.Interface] = &nwepList.Items[i]
 		}
-		return nil, makeError(cnipb.ErrorCode_INTERNAL, "Failed to lookup host-side veth", err.Error())
 	}
 
-	// 4. Pod netns still has the expected interface with the expected IP.
-	if err := c.verifyPodInterface(req.Netns, req.Ifname, nwif.Status.Address); err != nil {
-		return nil, err
+	for _, nwif := range nwifaces {
+		ifname := nwif.Spec.PodRef.Interface
+		nwep, ok := endpoints[ifname]
+		if !ok {
+			return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "NetworkEndpoint not found for pod/interface", ifname)
+		}
+		if nwep.Spec.Address != nwif.Status.Address {
+			return nil, makeError(cnipb.ErrorCode_INTERNAL,
+				"NetworkEndpoint address disagrees with NetworkInterface",
+				fmt.Sprintf("ifname=%s nwep=%s nwif=%s", ifname, nwep.Spec.Address, nwif.Status.Address))
+		}
+
+		// 3. Host-side veth for this container exists.
+		hostName := vethHostName(ifname, req.ContainerId)
+		if _, err := netlink.LinkByName(hostName); err != nil {
+			if _, notFound := err.(netlink.LinkNotFoundError); notFound {
+				return nil, makeError(cnipb.ErrorCode_INTERNAL, "host-side veth missing", hostName)
+			}
+			return nil, makeError(cnipb.ErrorCode_INTERNAL, "Failed to lookup host-side veth", err.Error())
+		}
+
+		// 4. Pod netns still has the expected interface with the expected IP.
+		if err := c.verifyPodInterface(req.Netns, ifname, nwif.Status.Address); err != nil {
+			return nil, err
+		}
 	}
 
 	zap.S().Debugf("CNI CHECK succeeded for pod %s/%s ifname=%s", podNamespace, podName, req.Ifname)
@@ -447,40 +573,94 @@ func (c *CNIServer) Del(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.Em
 
 	zap.S().Infof("CNI DEL request for pod %s/%s ifname=%s containerID=%s", podNamespace, podName, req.Ifname, req.ContainerId)
 
-	vethHostName := c.vethHostName(req.Ifname, req.ContainerId)
-
-	vethHost, err := netlink.LinkByName(vethHostName)
-	if _, notFoundError := err.(netlink.LinkNotFoundError); !notFoundError && err != nil {
-		zap.L().Error("failed to find veth", zap.Error(err))
-		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to find veth", err.Error())
-	} else if !notFoundError {
-		if err := netlink.LinkDel(vethHost); err != nil {
-			zap.L().Error("failed to delete veth", zap.Error(err))
-			return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to delete veth", err.Error())
-		}
-		zap.S().Debugf("Deleted veth: %s", vethHostName)
+	if err := c.deleteSandboxVeths(req.ContainerId); err != nil {
+		zap.L().Error("failed to delete veth", zap.Error(err))
+		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to delete veth", err.Error())
 	}
 
-	release, err := c.releaseNetworkEndpoint(ctx, podNamespace, podName, podUID, req.Ifname, req.ContainerId)
+	var nwepList juneauv1alpha1.NetworkEndpointList
+	if err := c.cachedClient.List(ctx, &nwepList, client.InNamespace(podNamespace), client.MatchingFields{
+		podRefUIDIndex: podUID,
+	}); err != nil {
+		zap.L().Error("failed to list NetworkEndpoint resources", zap.Error(err))
+		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to list NetworkEndpoint resources", err.Error())
+	}
+
+	// A DEL has to finish even when the pod can no longer be read: the
+	// endpoints of a pod that is already gone were removed with its
+	// NetworkInterfaces, so the endpoint list is the whole story then.
+	wanted, err := c.podNetworkAttachments(ctx, podNamespace, podName, podUID)
 	if err != nil {
-		zap.L().Error("failed to release NetworkEndpoint resource", zap.Error(err))
-		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to release NetworkEndpoint resource", err.Error())
-	}
-	if release.superseded {
-		zap.S().Infof("CNI DEL for pod %s/%s ifname=%s from container %s ignored: %s",
-			podNamespace, podName, req.Ifname, req.ContainerId, release.supersededReason())
-		return &emptypb.Empty{}, nil
+		zap.S().Debugf("CNI DEL for pod %s/%s takes its NIC names from the endpoints alone: %v", podNamespace, podName, err)
+		wanted = nil
 	}
 
-	// Unregister Pod probes only for the generation being torn down. The
-	// stale-DEL guard above already ensures this DEL matches the live
-	// attachment, so the probe generation is safe to release.
-	if c.probeRegistrar != nil && req.Ifname == "eth0" {
+	primarySuperseded := false
+	for _, ifname := range podNICsToRelease(nwepList.Items, wanted, podName, podUID, req.Ifname) {
+		release, err := c.releaseNetworkEndpoint(ctx, podNamespace, podName, podUID, ifname, req.ContainerId)
+		if err != nil {
+			zap.L().Error("failed to release NetworkEndpoint resource", zap.Error(err))
+			return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to release NetworkEndpoint resource", err.Error())
+		}
+		if release.superseded {
+			zap.S().Infof("CNI DEL for pod %s/%s ifname=%s from container %s ignored: %s",
+				podNamespace, podName, ifname, req.ContainerId, release.supersededReason())
+			if ifname == req.Ifname {
+				primarySuperseded = true
+			}
+		}
+	}
+
+	// Unregister Pod probes only for the generation being torn down. A
+	// newer sandbox holding the primary endpoint means this DEL is stale
+	// and the probes it would release are the live ones.
+	if c.probeRegistrar != nil && req.Ifname == probedPodInterfaceName && !primarySuperseded {
 		if err := c.probeRegistrar.UnregisterPod(podUID, req.ContainerId); err != nil {
 			zap.L().Warn("failed to unregister Pod probes", zap.Error(err))
 		}
 	}
 	return &emptypb.Empty{}, nil
+}
+
+// deleteSandboxVeths removes every host veth this sandbox created.
+//
+// The host itself is the source of truth here rather than the
+// NetworkEndpoints, because those can already be gone when a DEL arrives:
+// a pod that finished loses its NetworkInterfaces, and the endpoints go
+// with them. Every name a link is deleted under is rebuilt from the
+// container ID of this very request, so a stale DEL can only ever take
+// down links of its own sandbox.
+func (c *CNIServer) deleteSandboxVeths(containerID string) error {
+	links, err := netlink.LinkList()
+	if err != nil {
+		return fmt.Errorf("list host links: %w", err)
+	}
+	for _, link := range links {
+		name := link.Attrs().Name
+		if !isSandboxVethName(name, containerID) {
+			continue
+		}
+		if err := netlink.LinkDel(link); err != nil {
+			if errors.Is(err, syscall.ENODEV) {
+				continue
+			}
+			return fmt.Errorf("delete veth %s: %w", name, err)
+		}
+		zap.S().Debugf("Deleted veth: %s", name)
+	}
+	return nil
+}
+
+// isSandboxVethName reports whether a host link carries a name Juneau
+// built for this container. The check rebuilds the name from the part in
+// front of the separator, so it accepts exactly the names vethHostName
+// and vethPeerName produce and nothing else.
+func isSandboxVethName(name, containerID string) bool {
+	prefix, _, found := strings.Cut(name, vethNameSeparator)
+	if !found || prefix == "" {
+		return false
+	}
+	return name == vethHostName(prefix, containerID)
 }
 
 // networkEndpointRelease says what a CNI DEL found when it went for the
@@ -592,22 +772,50 @@ func makeError(code cnipb.ErrorCode, msg string, details string) error {
 }
 
 const (
-	vethHostNameIDLen = 10
-	vethPeerNameIDLen = 6
+	// linkNameMaxLen is IFNAMSIZ minus the trailing NUL byte.
+	linkNameMaxLen = 15
+
+	// vethNameIDMinLen is the shortest slice of a container ID that still
+	// tells two sandboxes of the same pod NIC apart. It is what bounds
+	// juneauv1alpha1.PodInterfaceNameMaxLen.
+	vethNameIDMinLen = 6
+
+	// vethNameSeparator joins the interface name and the container ID.
+	vethNameSeparator = "+"
+
+	// vethPeerNamePrefix holds an underscore so it can never be mistaken
+	// for an interface name a pod asked for: those are DNS-1123 labels.
+	vethPeerNamePrefix = "tmp_"
 )
 
-func (c *CNIServer) vethHostName(ifName, containerID string) string {
-	return ifName + "+" + shortContainerID(containerID, vethHostNameIDLen)
+// probedPodInterfaceName is the NIC kubelet probes reach the pod on. The
+// probe proxy rewrites a probe to the pod address of this NIC, so an
+// extra NIC never takes probe traffic.
+const probedPodInterfaceName = juneauv1alpha1.PodPrimaryInterfaceName
+
+// vethHostName names the host side of one pod NIC. The container ID gets
+// whatever room the interface name leaves it inside IFNAMSIZ, which is
+// why an interface name may not be longer than
+// juneauv1alpha1.PodInterfaceNameMaxLen.
+func vethHostName(ifName, containerID string) string {
+	return ifName + vethNameSeparator + shortContainerID(containerID, linkNameMaxLen-len(ifName)-len(vethNameSeparator))
 }
 
-func (c *CNIServer) vethPeerName(ifName, containerID string) string {
-	return "tmp+" + ifName + "+" + shortContainerID(containerID, vethPeerNameIDLen)
+// vethPeerName names the pod side of a veth while it is still in the host
+// netns. It only lives until the link is moved and renamed, so telling
+// the NICs of one ADD apart by their position is enough and leaves the
+// whole IFNAMSIZ budget to the container ID.
+func vethPeerName(index int, containerID string) string {
+	return vethHostName(fmt.Sprintf("%s%d", vethPeerNamePrefix, index), containerID)
 }
 
 // shortContainerID cuts the container ID down so the link name fits in
 // IFNAMSIZ. The CNI spec allows any non-empty container ID, so an ID that
 // is already short enough is used whole.
 func shortContainerID(containerID string, length int) string {
+	if length < 0 {
+		length = 0
+	}
 	if len(containerID) <= length {
 		return containerID
 	}
@@ -743,8 +951,14 @@ func (c *CNIServer) cleanupVeth(name string) {
 func (c *CNIServer) cleanupNetworkEndpoint(nwep *juneauv1alpha1.NetworkEndpoint) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := c.apiClient.Delete(ctx, nwep); err != nil {
-		if apierrors.IsNotFound(err) {
+	// The preconditions matter here: a rollback can run long after a newer
+	// sandbox recreated the same endpoint, and deleting that one would
+	// take a running pod off the network.
+	if err := c.apiClient.Delete(ctx, nwep, client.Preconditions{
+		UID:             &nwep.UID,
+		ResourceVersion: &nwep.ResourceVersion,
+	}); err != nil {
+		if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
 			return
 		}
 		zap.S().Warnf("rollback: delete NetworkEndpoint %s/%s: %v", nwep.Namespace, nwep.Name, err)
