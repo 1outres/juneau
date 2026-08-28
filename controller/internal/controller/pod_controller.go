@@ -18,8 +18,7 @@ package controller
 
 import (
 	"context"
-	"sort"
-	"strings"
+	"fmt"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -28,17 +27,18 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	"github.com/1outres/juneau/controller/internal/workload"
 )
 
 const (
-	podAnnSubnet         = "juneau.loutres.me/subnet"
-	podAnnAddress        = "juneau.loutres.me/address"
-	podAnnSecurityGroups = "juneau.loutres.me/security-groups"
-	defaultIfName        = "eth0"
-	requeueDelay         = 5 * time.Second
+	requeueDelay = 5 * time.Second
+
+	// networkInterfacePodUIDIndex finds every NetworkInterface of one pod
+	// instance, including NICs the pod has stopped asking for.
+	networkInterfacePodUIDIndex = "spec.podRef.uid"
 )
 
 // PodReconciler reconciles a Pod object for NetworkInterface provisioning.
@@ -48,9 +48,9 @@ type PodReconciler struct {
 }
 
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
-// +kubebuilder:rbac:groups=juneau.loutres.me,resources=networkinterfaces,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=networkinterfaces,verbs=get;list;watch;create;update;delete
 
-// Reconcile creates a NetworkInterface for a Pod based on annotations.
+// Reconcile creates one NetworkInterface per NIC a Pod asks for.
 func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -75,23 +75,14 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, nil
 	}
 
-	ifName := "eth0"
-
 	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
-		niName := pod.Name + "." + ifName
-		var nwiface juneauv1alpha1.NetworkInterface
-		if err := r.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: niName}, &nwiface); err != nil {
-			if errors.IsNotFound(err) {
-				return ctrl.Result{}, nil
-			}
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, r.Delete(ctx, &nwiface)
+		return ctrl.Result{}, r.deleteNetworkInterfaces(ctx, &pod, nil)
 	}
 
-	subnetName := annotations[podAnnSubnet]
-	if subnetName == "" {
-		subnetName = "default"
+	attachments, err := juneauv1alpha1.PodNetworkAttachments(annotations)
+	if err != nil {
+		logger.Error(err, "unable to read the network annotations of the Pod", "name", req.NamespacedName)
+		return ctrl.Result{}, reconcile.TerminalError(err)
 	}
 
 	if pod.Spec.NodeName == "" {
@@ -99,77 +90,123 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{RequeueAfter: requeueDelay}, nil
 	}
 
-	var subnet juneauv1alpha1.Subnet
-	if err := r.Get(ctx, client.ObjectKey{Name: subnetName}, &subnet); err != nil {
-		if errors.IsNotFound(err) {
-			return ctrl.Result{RequeueAfter: requeueDelay}, nil
-		}
+	missing, err := r.findMissingSubnet(ctx, attachments)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
+	if missing != "" {
+		logger.Info("waiting for the Subnet of a Pod NIC", "name", req.NamespacedName, "subnet", missing)
+		return ctrl.Result{RequeueAfter: requeueDelay}, nil
+	}
 
+	wanted := make(map[string]struct{}, len(attachments))
+	for _, attachment := range attachments {
+		wanted[attachment.Interface] = struct{}{}
+		if err := r.applyNetworkInterface(ctx, &pod, attachment); err != nil {
+			if errors.IsConflict(err) || errors.IsAlreadyExists(err) {
+				return ctrl.Result{Requeue: true}, nil
+			}
+			logger.Error(err, "unable to create or update NetworkInterface", "interface", attachment.Interface)
+			return ctrl.Result{}, err
+		}
+	}
+
+	return ctrl.Result{}, r.deleteNetworkInterfaces(ctx, &pod, wanted)
+}
+
+// findMissingSubnet returns the name of the first Subnet a NIC needs and
+// the cluster does not have. Nothing is provisioned until every NIC can be
+// built, so a pod never comes up holding only some of the NICs it asked
+// for.
+func (r *PodReconciler) findMissingSubnet(ctx context.Context, attachments []juneauv1alpha1.PodNetworkAttachment) (string, error) {
+	for _, attachment := range attachments {
+		var subnet juneauv1alpha1.Subnet
+		if err := r.Get(ctx, client.ObjectKey{Name: attachment.Subnet}, &subnet); err != nil {
+			if errors.IsNotFound(err) {
+				return attachment.Subnet, nil
+			}
+			return "", err
+		}
+	}
+	return "", nil
+}
+
+func (r *PodReconciler) applyNetworkInterface(ctx context.Context, pod *corev1.Pod, attachment juneauv1alpha1.PodNetworkAttachment) error {
 	nwiface := &juneauv1alpha1.NetworkInterface{}
-	nwiface.SetName(pod.Name + "." + ifName)
+	nwiface.SetName(networkInterfaceNameForPod(pod.Name, attachment.Interface))
 	nwiface.SetNamespace(pod.Namespace)
 
 	_, err := ctrl.CreateOrUpdate(ctx, r.Client, nwiface, func() error {
-
 		nwiface.Spec.PodRef.Name = pod.Name
 		nwiface.Spec.PodRef.UID = string(pod.UID)
-		nwiface.Spec.PodRef.Interface = ifName
+		nwiface.Spec.PodRef.Interface = attachment.Interface
 
 		nwiface.Spec.NodeName = pod.Spec.NodeName
-		nwiface.Spec.Subnet = subnetName
-		nwiface.Spec.Address = annotations[podAnnAddress]
-		nwiface.Spec.SecurityGroups = ParsePodSecurityGroups(annotations[podAnnSecurityGroups])
-		nwiface.Spec.AllocationIdentity = workload.AllocationIdentity(&pod)
-		nwiface.Spec.RetainWhile = workload.RetainReference(&pod)
+		nwiface.Spec.Subnet = attachment.Subnet
+		nwiface.Spec.Address = attachment.Address
+		nwiface.Spec.SecurityGroups = attachment.SecurityGroups
+		nwiface.Spec.AllocationIdentity = workload.AllocationIdentity(pod)
+		nwiface.Spec.RetainWhile = workload.RetainReference(pod)
 
-		return ctrl.SetControllerReference(&pod, nwiface, r.Scheme)
+		return ctrl.SetControllerReference(pod, nwiface, r.Scheme)
 	})
+	return err
+}
 
-	if err != nil {
-		if errors.IsConflict(err) || errors.IsAlreadyExists(err) {
-			return ctrl.Result{Requeue: true}, nil
-		}
-		logger.Error(err, "unable to create or update NetworkInterface")
-		return ctrl.Result{}, err
+// deleteNetworkInterfaces removes every NetworkInterface of this pod
+// instance whose interface name is not in keep. A nil keep set removes all
+// of them, which is what a finished pod wants.
+func (r *PodReconciler) deleteNetworkInterfaces(ctx context.Context, pod *corev1.Pod, keep map[string]struct{}) error {
+	var list juneauv1alpha1.NetworkInterfaceList
+	if err := r.List(ctx, &list, client.InNamespace(pod.Namespace), client.MatchingFields{
+		networkInterfacePodUIDIndex: string(pod.UID),
+	}); err != nil {
+		return err
 	}
 
-	return ctrl.Result{}, nil
+	for i := range list.Items {
+		nwiface := &list.Items[i]
+		if _, wanted := keep[nwiface.Spec.PodRef.Interface]; wanted {
+			continue
+		}
+		if err := r.Delete(ctx, nwiface); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("delete NetworkInterface %s/%s: %w", nwiface.Namespace, nwiface.Name, err)
+		}
+	}
+	return nil
+}
+
+// networkInterfaceNameForPod is the name the Pod controller gives the
+// NetworkInterface of one pod NIC.
+func networkInterfaceNameForPod(podName, ifName string) string {
+	return podName + "." + ifName
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := indexNetworkInterfaceByPodUID(context.Background(), mgr.GetFieldIndexer()); err != nil {
+		return err
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Pod{}).
 		Named("pod").
 		Complete(r)
 }
 
-// ParsePodSecurityGroups parses the comma-separated value of the
-// juneau.loutres.me/security-groups Pod annotation into a deduplicated,
-// sorted slice. Empty / whitespace-only entries are dropped.
-//
-// Sorting yields a stable spec.securityGroups regardless of how the user
-// wrote the annotation, which keeps NetworkInterface diffs minimal.
-func ParsePodSecurityGroups(annotation string) []string {
-	if strings.TrimSpace(annotation) == "" {
-		return nil
+func indexNetworkInterfaceByPodUID(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(
+		ctx,
+		&juneauv1alpha1.NetworkInterface{},
+		networkInterfacePodUIDIndex,
+		func(obj client.Object) []string {
+			nwiface := obj.(*juneauv1alpha1.NetworkInterface)
+			if nwiface.Spec.PodRef.UID == "" {
+				return nil
+			}
+			return []string{nwiface.Spec.PodRef.UID}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to set up field indexer for NetworkInterface.%s: %w", networkInterfacePodUIDIndex, err)
 	}
-	parts := strings.Split(annotation, ",")
-	seen := make(map[string]struct{}, len(parts))
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		name := strings.TrimSpace(p)
-		if name == "" {
-			continue
-		}
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		seen[name] = struct{}{}
-		out = append(out, name)
-	}
-	sort.Strings(out)
-	return out
+	return nil
 }

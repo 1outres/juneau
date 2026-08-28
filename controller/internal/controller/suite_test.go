@@ -54,7 +54,10 @@ var (
 	testEnv   *envtest.Environment
 	cfg       *rest.Config
 	k8sClient client.Client
-	mgrDone   chan error
+	// cachedK8sClient reads through the manager cache, which is the only
+	// reader that can serve the field indexes the reconcilers rely on.
+	cachedK8sClient client.Client
+	mgrDone         chan error
 )
 
 func TestControllers(t *testing.T) {
@@ -158,6 +161,9 @@ var _ = BeforeSuite(func() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr)).To(Succeed())
+	// The Pod reconciler runs from its own _test.go so the specs can drive
+	// it step by step; only its field index is installed here.
+	Expect(indexNetworkInterfaceByPodUID(ctx, mgr.GetFieldIndexer())).To(Succeed())
 	Expect((&ServiceNATAttachmentReconciler{
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),
@@ -199,6 +205,7 @@ var _ = BeforeSuite(func() {
 		mgrDone <- mgr.Start(ctx)
 	}()
 	Expect(mgr.GetCache().WaitForCacheSync(ctx)).To(BeTrue())
+	cachedK8sClient = mgr.GetClient()
 
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
