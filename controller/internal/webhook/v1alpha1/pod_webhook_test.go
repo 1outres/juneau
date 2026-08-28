@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -58,6 +59,14 @@ func patchDefaultSubnetDNS() juneauv1alpha1.Subnet {
 //
 // All resources clean themselves up via DeferCleanup so each spec
 // remains hermetic across the parallel envtest run.
+// fixtureSubnetOctet hands out the second octet of a fixture Subnet,
+// walking 112..211 so no two live fixtures share a prefix.
+var fixtureSubnetOctetCounter atomic.Int64
+
+func fixtureSubnetOctet() int64 {
+	return fixtureSubnetOctetCounter.Add(1)%100 + 112
+}
+
 func customSubnetFixture() juneauv1alpha1.Subnet {
 	GinkgoHelper()
 	return subnetFixtureForVpc(juneauv1alpha1.VpcSpec{Service: &juneauv1alpha1.VpcServiceSpec{Consume: true}})
@@ -96,7 +105,12 @@ func subnetFixtureForVpc(vpcSpec juneauv1alpha1.VpcSpec) juneauv1alpha1.Subnet {
 	subnetName := webhookUniqueTestName("subnet")
 	// Avoid the Service CIDR 10.96.0.0/12 (10.96-111.x.x); Vpc enables Service so
 	// overlapping Subnets are rejected by the validating webhook.
-	octet := time.Now().UnixNano()%100 + 112
+	//
+	// The octet comes from a counter and not from the clock. Several
+	// specs build two of these and then assert that the two prefixes do
+	// not overlap, and two calls close enough together read the same
+	// nanosecond count modulo the range.
+	octet := fixtureSubnetOctet()
 	cidr := fmt.Sprintf("10.%d.0.0/24", octet)
 	dnsVIP := fmt.Sprintf("10.%d.0.2", octet)
 	gateway := fmt.Sprintf("10.%d.0.1", octet)
