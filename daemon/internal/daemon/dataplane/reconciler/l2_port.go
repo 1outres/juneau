@@ -221,7 +221,8 @@ func (r *L2Port) acquire(member l2PortMember) error {
 }
 
 // release counts one endpoint off a port and unprograms it when it was
-// the last.
+// the last. A failed unprogram puts the count back, because the caller
+// keeps the endpoint on the port and will come here again.
 func (r *L2Port) release(member l2PortMember) error {
 	r.mu.Lock()
 	r.refs[member]--
@@ -234,7 +235,13 @@ func (r *L2Port) release(member l2PortMember) error {
 	if !last {
 		return nil
 	}
-	return r.unprogram(member)
+	if err := r.unprogram(member); err != nil {
+		r.mu.Lock()
+		r.refs[member]++
+		r.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (r *L2Port) program(member l2PortMember) error {

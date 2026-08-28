@@ -328,19 +328,28 @@ func TestL2PortSkipsAnEndpointWhoseNetworkIsGone(t *testing.T) {
 	}
 }
 
-// failingL2Table refuses the first AddMember, standing in for a full
+// failingL2Table refuses the first few writes, standing in for a full
 // map or a kernel that said no.
 type failingL2Table struct {
 	*fakeL2Table
-	failures int
+	addFailures    int
+	removeFailures int
 }
 
 func (f *failingL2Table) AddMember(vni, member uint32) error {
-	if f.failures > 0 {
-		f.failures--
+	if f.addFailures > 0 {
+		f.addFailures--
 		return fmt.Errorf("no room for member %d on vni %d", member, vni)
 	}
 	return f.fakeL2Table.AddMember(vni, member)
+}
+
+func (f *failingL2Table) RemoveMember(vni, member uint32) error {
+	if f.removeFailures > 0 {
+		f.removeFailures--
+		return fmt.Errorf("cannot remove member %d from vni %d", member, vni)
+	}
+	return f.fakeL2Table.RemoveMember(vni, member)
 }
 
 // A port the reconciler failed to program has to be tried again. If the
@@ -350,7 +359,7 @@ func TestL2PortRetriesAPortItCouldNotProgram(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(newNatTestScheme(t)).
 		WithRuntimeObjects(newL2Endpoint("pod-a", "node-a", 7, "10.0.0.1"), newL2TestNetwork(4242)).
 		Build()
-	local := &failingL2Table{fakeL2Table: newFakeL2Table(), failures: 1}
+	local := &failingL2Table{fakeL2Table: newFakeL2Table(), addFailures: 1}
 	r := NewL2Port(cl, newFakeBpfMap(), local, newFakeL2Table(), "node-a")
 
 	if err := r.Reconcile(context.Background(), "default/pod-a"); err == nil {
@@ -362,5 +371,50 @@ func TestL2PortRetriesAPortItCouldNotProgram(t *testing.T) {
 
 	if diff := local.list(4242); len(diff) != 1 || diff[0] != 7 {
 		t.Errorf("local flood list = %v after the retry, want [7]", diff)
+	}
+}
+
+// A node two endpoints share must not leave the flood list because the
+// first of them failed to come off it. The failed release is retried,
+// and until it lands the endpoint still counts as holding the port.
+func TestL2PortKeepsACountAfterAFailedRelease(t *testing.T) {
+	first := newL2Endpoint("pod-b", "node-b", 0, "10.0.0.2")
+	second := newL2Endpoint("pod-c", "node-b", 0, "10.0.0.2")
+	cl := fake.NewClientBuilder().WithScheme(newNatTestScheme(t)).
+		WithRuntimeObjects(first, second, newL2TestNetwork(4242)).
+		Build()
+	remote := &failingL2Table{fakeL2Table: newFakeL2Table()}
+	r := NewL2Port(cl, newFakeBpfMap(), newFakeL2Table(), remote, "node-a")
+
+	for _, key := range []string{"default/pod-b", "default/pod-c"} {
+		if err := r.Reconcile(context.Background(), key); err != nil {
+			t.Fatalf("Reconcile %s: %v", key, err)
+		}
+	}
+
+	remote.removeFailures = 1
+	if err := cl.Delete(context.Background(), first); err != nil {
+		t.Fatalf("delete the first endpoint: %v", err)
+	}
+	if err := cl.Delete(context.Background(), second); err != nil {
+		t.Fatalf("delete the second endpoint: %v", err)
+	}
+	// pod-b comes off the count, pod-c takes it to zero and the write
+	// fails there.
+	if err := r.Reconcile(context.Background(), "default/pod-b"); err != nil {
+		t.Fatalf("Reconcile after the first delete: %v", err)
+	}
+	if err := r.Reconcile(context.Background(), "default/pod-c"); err == nil {
+		t.Fatal("expected the failed write to be reported")
+	}
+	if diff := remote.list(4242); len(diff) != 1 {
+		t.Errorf("remote flood list = %v while the release is unfinished, want the node still on it", diff)
+	}
+
+	if err := r.Reconcile(context.Background(), "default/pod-c"); err != nil {
+		t.Fatalf("Reconcile on retry: %v", err)
+	}
+	if diff := remote.list(4242); len(diff) != 0 {
+		t.Errorf("remote flood list = %v after the retry, want empty", diff)
 	}
 }
