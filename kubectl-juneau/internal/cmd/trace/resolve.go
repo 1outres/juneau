@@ -58,6 +58,9 @@ type endpoint struct {
 	// caller named none. A Pod with several NICs sits in a different
 	// network on each, and the data plane keys its tuples by which.
 	ifname string
+	// networkName is the Subnet or L2Network that NIC joined. It is
+	// what did or did not hand out an address for it.
+	networkName string
 }
 
 // resolveSession turns the parsed Options into a resolved struct.
@@ -478,6 +481,7 @@ func (o *Options) resolvePodEndpoint(ctx context.Context, cl client.Client, ref,
 
 	ep.displayName = ns + "/" + name + ":" + ifname
 	ep.ifname = ifname
+	ep.networkName = nicNetworkName(nwif)
 	ep.vpcID = vpcID
 	// An L2Network without a CIDR hands the NIC no address, and the
 	// workload picks one juneau never sees. Leaving the field unset is
@@ -493,7 +497,16 @@ func noAddressHint(ep endpoint) string {
 	if ep.ifname == "" {
 		return ""
 	}
-	return fmt.Sprintf(" (%s hands out no address on %s)", ep.displayName, ep.ifname)
+	return fmt.Sprintf(" (%s hands out no address on %s)", ep.networkName, ep.ifname)
+}
+
+// nicNetworkName returns the network the NIC joined. nicVpcID has
+// already rejected a NIC that names neither, so one of the two is set.
+func nicNetworkName(nwif *juneauv1alpha1.NetworkInterface) string {
+	if nwif.Spec.L2Network != "" {
+		return nwif.Spec.L2Network
+	}
+	return nwif.Spec.Subnet
 }
 
 func (o *Options) resolveServiceEndpoint(ctx context.Context, cl client.Client, ref string) (endpoint, error) {

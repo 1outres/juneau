@@ -588,6 +588,9 @@ func TestResolveSessionAsksForAnAddressAnL2NetworkNeverHandedOut(t *testing.T) {
 	if !strings.Contains(err.Error(), "--from-ip") {
 		t.Errorf("error should name the flag that fixes it, got %v", err)
 	}
+	if !strings.Contains(err.Error(), "lab-net") {
+		t.Errorf("error should name the network that handed out no address, got %v", err)
+	}
 }
 
 // A NIC on a Subnet needs no --from-ip: juneau handed it an address
