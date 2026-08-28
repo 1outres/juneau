@@ -78,13 +78,9 @@ func (g *FdbGC) Sweep() {
 		return
 	}
 	nowNs := g.now()
-	for _, vni := range g.table.VNIs() {
-		inner := g.table.Inner(vni)
-		if inner == nil {
-			continue
-		}
+	g.table.ForEachInner(func(vni uint32, inner *ebpf.Map) {
 		g.sweepOne(vni, inner, nowNs)
-	}
+	})
 }
 
 func (g *FdbGC) sweepOne(vni uint32, inner *ebpf.Map, nowNs uint64) {

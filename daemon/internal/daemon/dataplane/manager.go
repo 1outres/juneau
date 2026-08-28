@@ -753,6 +753,19 @@ func (m *Manager) Stop() error {
 		m.l2FdbGCCancel = nil
 	}
 
+	// The two L2 runners come down before the per-VNI tables do. A
+	// reconcile that started before the shutdown would otherwise find
+	// the tables emptied under it and build a fresh inner map nobody
+	// closes again.
+	for _, rn := range []*runner.Runner{m.l2NetworkRunner, m.l2PortRunner} {
+		if rn == nil {
+			continue
+		}
+		if err := rn.Stop(); err != nil {
+			return err
+		}
+	}
+
 	if m.podAttacher != nil {
 		if err := m.podAttacher.CloseAll(); err != nil {
 			return err
@@ -833,8 +846,6 @@ func (m *Manager) Stop() error {
 		m.aclRunner,
 		m.traceRunner,
 		m.nodeUnderlayRunner,
-		m.l2NetworkRunner,
-		m.l2PortRunner,
 	}
 	for _, rn := range runners {
 		if rn == nil {

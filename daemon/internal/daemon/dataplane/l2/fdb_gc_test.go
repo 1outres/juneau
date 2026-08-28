@@ -48,24 +48,47 @@ func newGCTable(t *testing.T) *Table {
 	return table
 }
 
+// withInner runs fn against the inner map of gcTestVNI. Table hands
+// its inner maps out only while it holds its own lock.
+func withInner(t *testing.T, table *Table, fn func(inner *ebpf.Map)) {
+	t.Helper()
+	found := false
+	table.ForEachInner(func(vni uint32, inner *ebpf.Map) {
+		if vni != gcTestVNI {
+			return
+		}
+		found = true
+		fn(inner)
+	})
+	if !found {
+		t.Fatalf("the table has no inner map for VNI %d", gcTestVNI)
+	}
+}
+
 func writeEntry(t *testing.T, table *Table, last byte, lastSeenNs uint64) bpf.PodEgressL2FdbKey {
 	t.Helper()
 	key := bpf.PodEgressL2FdbKey{Mac: [6]uint8{0x02, 0, 0, 0, 0, last}}
-	err := table.Inner(gcTestVNI).Update(
-		&key,
-		&bpf.PodEgressL2FdbVal{Ifindex: uint32(last), LastSeenNs: lastSeenNs},
-		ebpf.UpdateAny,
-	)
-	if err != nil {
-		t.Fatalf("write a forwarding entry: %v", err)
-	}
+	withInner(t, table, func(inner *ebpf.Map) {
+		err := inner.Update(
+			&key,
+			&bpf.PodEgressL2FdbVal{Ifindex: uint32(last), LastSeenNs: lastSeenNs},
+			ebpf.UpdateAny,
+		)
+		if err != nil {
+			t.Fatalf("write a forwarding entry: %v", err)
+		}
+	})
 	return key
 }
 
 func has(t *testing.T, table *Table, key bpf.PodEgressL2FdbKey) bool {
 	t.Helper()
-	var val bpf.PodEgressL2FdbVal
-	return table.Inner(gcTestVNI).Lookup(&key, &val) == nil
+	found := false
+	withInner(t, table, func(inner *ebpf.Map) {
+		var val bpf.PodEgressL2FdbVal
+		found = inner.Lookup(&key, &val) == nil
+	})
+	return found
 }
 
 func TestFdbGCDropsWhatHasNotBeenSeenForTheAgingTime(t *testing.T) {

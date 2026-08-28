@@ -17,6 +17,24 @@ import (
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/convert"
 )
 
+// l2NetworkFromEvent reads the L2Network out of an informer event.
+//
+// A relist that misses a delete hands the handler a tombstone rather
+// than the object. Dropping it would leave the endpoints of a deleted
+// network recorded as programmed into tables the L2Network reconciler
+// has already taken down.
+func l2NetworkFromEvent(obj any) (*juneauv1alpha1.L2Network, bool) {
+	if network, ok := obj.(*juneauv1alpha1.L2Network); ok {
+		return network, true
+	}
+	tombstone, ok := obj.(toolscache.DeletedFinalStateUnknown)
+	if !ok {
+		return nil, false
+	}
+	network, ok := tombstone.Obj.(*juneauv1alpha1.L2Network)
+	return network, ok
+}
+
 // l2NetworkTable is what a reconciler needs to build and drop one
 // per-VNI table. *l2.Table is the only implementation the daemon runs;
 // tests bring their own because minting a BPF map needs CAP_BPF.
@@ -172,7 +190,14 @@ func (r *L2Port) apply(key string, desired l2PortMember) error {
 	r.mu.Unlock()
 
 	if previous == desired {
-		return nil
+		if !desired.valid() {
+			return nil
+		}
+		// Write the entries again rather than trusting the snapshot.
+		// The per-VNI tables belong to the L2Network reconciler, so a
+		// network that was deleted and made again leaves this endpoint
+		// recorded as programmed into tables that no longer hold it.
+		return r.program(desired)
 	}
 
 	if previous.valid() {
@@ -277,7 +302,7 @@ func (r *L2Port) unprogram(member l2PortMember) error {
 // port is keyed by it, so the endpoints have to be looked at again
 // once it lands.
 func (r *L2Port) FanOutL2NetworkToEndpoints(obj any) []string {
-	network, ok := obj.(*juneauv1alpha1.L2Network)
+	network, ok := l2NetworkFromEvent(obj)
 	if !ok {
 		return nil
 	}

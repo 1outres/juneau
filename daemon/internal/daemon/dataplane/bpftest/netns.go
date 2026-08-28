@@ -1,6 +1,9 @@
 package bpftest
 
 import (
+	"errors"
+	"io/fs"
+	"os"
 	"runtime"
 	"testing"
 
@@ -47,6 +50,34 @@ func Netns(t *testing.T) {
 		_ = previous.Close()
 		runtime.UnlockOSThread()
 	})
+
+	silenceIPv6(t)
+}
+
+// silenceIPv6 turns IPv6 off for the namespace the test just entered.
+//
+// A device that comes up with IPv6 on sends router solicitation and
+// multicast listener reports of its own, on a timer the test does not
+// control. Those land in the same send counters the flood assertions
+// read, so a port nothing fed can look like a port that was fed.
+//
+// /proc/sys/net is per-namespace, so this reaches no device outside
+// the test.
+func silenceIPv6(t *testing.T) {
+	t.Helper()
+	for _, path := range []string{
+		"/proc/sys/net/ipv6/conf/all/disable_ipv6",
+		"/proc/sys/net/ipv6/conf/default/disable_ipv6",
+	} {
+		err := os.WriteFile(path, []byte("1"), 0o644)
+		if errors.Is(err, fs.ErrNotExist) {
+			// A kernel built without IPv6 has nothing to silence.
+			continue
+		}
+		if err != nil {
+			t.Fatalf("bpftest: turn IPv6 off in the test namespace: %v", err)
+		}
+	}
 }
 
 // Device is a network device a test built.

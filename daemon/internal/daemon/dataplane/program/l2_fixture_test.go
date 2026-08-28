@@ -101,6 +101,24 @@ func (s *l2Segment) useTunnelDevice(t *testing.T, device bpftest.Device) {
 	}
 }
 
+// withFdb runs fn against the forwarding table of the segment. Table
+// hands its inner maps out only while it holds its own lock, so the
+// test reaches one the same way the aging sweep does.
+func (s *l2Segment) withFdb(t *testing.T, fn func(inner *ebpf.Map)) {
+	t.Helper()
+	found := false
+	s.fdb.ForEachInner(func(vni uint32, inner *ebpf.Map) {
+		if vni != testVNI {
+			return
+		}
+		found = true
+		fn(inner)
+	})
+	if !found {
+		t.Fatalf("the segment has no forwarding table for VNI %d", testVNI)
+	}
+}
+
 // learn writes a forwarding entry by hand, standing in for a frame the
 // data plane would have learned it from.
 func (s *l2Segment) learn(t *testing.T, mac net.HardwareAddr, ifindex uint32, vtep string) {
@@ -109,21 +127,28 @@ func (s *l2Segment) learn(t *testing.T, mac net.HardwareAddr, ifindex uint32, vt
 	if vtep != "" {
 		vtepIP = hostOrderIPv4(t, vtep)
 	}
-	if err := s.fdb.Inner(testVNI).Update(
-		&bpf.PodEgressL2FdbKey{Mac: macArray(t, mac)},
-		&bpf.PodEgressL2FdbVal{Ifindex: ifindex, VtepIp: vtepIP},
-		ebpf.UpdateAny,
-	); err != nil {
-		t.Fatalf("write a forwarding entry: %v", err)
-	}
+	s.withFdb(t, func(inner *ebpf.Map) {
+		if err := inner.Update(
+			&bpf.PodEgressL2FdbKey{Mac: macArray(t, mac)},
+			&bpf.PodEgressL2FdbVal{Ifindex: ifindex, VtepIp: vtepIP},
+			ebpf.UpdateAny,
+		); err != nil {
+			t.Fatalf("write a forwarding entry: %v", err)
+		}
+	})
 }
 
 // lookup reads back what the segment knows about one MAC.
 func (s *l2Segment) lookup(t *testing.T, mac net.HardwareAddr) (bpf.PodEgressL2FdbVal, bool) {
 	t.Helper()
-	var val bpf.PodEgressL2FdbVal
-	err := s.fdb.Inner(testVNI).Lookup(&bpf.PodEgressL2FdbKey{Mac: macArray(t, mac)}, &val)
-	if err != nil {
+	var (
+		val   bpf.PodEgressL2FdbVal
+		found bool
+	)
+	s.withFdb(t, func(inner *ebpf.Map) {
+		found = inner.Lookup(&bpf.PodEgressL2FdbKey{Mac: macArray(t, mac)}, &val) == nil
+	})
+	if !found {
 		return bpf.PodEgressL2FdbVal{}, false
 	}
 	return val, true

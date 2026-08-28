@@ -8,6 +8,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	toolscache "k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
@@ -416,5 +417,53 @@ func TestL2PortKeepsACountAfterAFailedRelease(t *testing.T) {
 	}
 	if diff := remote.list(4242); len(diff) != 0 {
 		t.Errorf("remote flood list = %v after the retry, want empty", diff)
+	}
+}
+
+// A network deleted and made again under the same VNI leaves the
+// endpoint on it recorded as programmed into tables that no longer
+// exist. The two events reach the queue as one key, so the reconcile
+// that runs sees no change at all: the only thing that puts the port
+// back is writing the entries every pass.
+func TestL2PortRebuildsTheTablesOfARecreatedNetwork(t *testing.T) {
+	r, ifindexMap, local, _ := newL2PortFixture(t,
+		newL2Endpoint("pod-a", "node-a", 7, "10.0.0.1"), newL2TestNetwork(4242))
+
+	if err := r.Reconcile(context.Background(), "default/pod-a"); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	// What the L2Network reconciler does when the network goes away.
+	if err := local.Delete(4242); err != nil {
+		t.Fatalf("drop the flood list: %v", err)
+	}
+	ifindexMap.entries = map[any]any{}
+
+	if err := r.Reconcile(context.Background(), "default/pod-a"); err != nil {
+		t.Fatalf("Reconcile after the network came back: %v", err)
+	}
+
+	if diff := local.list(4242); len(diff) != 1 || diff[0] != 7 {
+		t.Errorf("local flood list = %v, want the port back on it", diff)
+	}
+	if _, ok := ifindexMap.entries[bpf.PodEgressL2IfindexKey{Ifindex: 7}]; !ok {
+		t.Errorf("l2_ifindex is empty after the network came back: %v", ifindexMap.entries)
+	}
+}
+
+// A relist that misses a delete hands the fan-out a tombstone instead
+// of the object. Dropping it would leave every endpoint of the network
+// recorded as programmed into tables that are gone.
+func TestL2PortFansOutFromATombstone(t *testing.T) {
+	r, _, _, _ := newL2PortFixture(t,
+		newL2Endpoint("pod-a", "node-a", 7, "10.0.0.1"), newL2TestNetwork(4242))
+
+	keys := r.FanOutL2NetworkToEndpoints(toolscache.DeletedFinalStateUnknown{
+		Key: "lab-net",
+		Obj: newL2TestNetwork(4242),
+	})
+
+	if len(keys) != 1 || keys[0] != "default/pod-a" {
+		t.Errorf("fan-out returned %v, want [default/pod-a]", keys)
 	}
 }

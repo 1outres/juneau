@@ -24,6 +24,12 @@ import (
 // swapping would throw all of it away. Table therefore mints an inner
 // map once, on the first Ensure for a VNI, and lets it go only when
 // the L2Network does.
+//
+// Every map operation runs under mu, including the syscalls. Two
+// reconcilers and the aging sweep all reach a table, and a handle read
+// out from under the lock could be closed by a delete before its
+// syscall lands — on a descriptor number the next map has already
+// taken.
 type Table struct {
 	name      string
 	outer     *ebpf.Map
@@ -50,17 +56,16 @@ func NewTable(name string, outer *ebpf.Map, innerSpec *ebpf.MapSpec) *Table {
 // call it on every pass and two reconcilers may both call it without
 // agreeing on who goes first.
 func (t *Table) Ensure(vni uint32) error {
-	_, err := t.ensure(vni)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	_, err := t.ensureLocked(vni)
 	return err
 }
 
-func (t *Table) ensure(vni uint32) (*ebpf.Map, error) {
+func (t *Table) ensureLocked(vni uint32) (*ebpf.Map, error) {
 	if vni == 0 {
 		return nil, fmt.Errorf("l2/%s: vni 0 is not a network", t.name)
 	}
-
-	t.mu.Lock()
-	defer t.mu.Unlock()
 	if inner, ok := t.inners[vni]; ok {
 		return inner, nil
 	}
@@ -81,7 +86,10 @@ func (t *Table) ensure(vni uint32) (*ebpf.Map, error) {
 // table first if this is the first member. Members are a set: the
 // value the data plane reads is always 1 and only the key matters.
 func (t *Table) AddMember(vni, member uint32) error {
-	inner, err := t.ensure(vni)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	inner, err := t.ensureLocked(vni)
 	if err != nil {
 		return err
 	}
@@ -98,8 +106,9 @@ func (t *Table) AddMember(vni, member uint32) error {
 // network itself may have been deleted in between.
 func (t *Table) RemoveMember(vni, member uint32) error {
 	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	inner, ok := t.inners[vni]
-	t.mu.Unlock()
 	if !ok {
 		return nil
 	}
@@ -109,25 +118,22 @@ func (t *Table) RemoveMember(vni, member uint32) error {
 	return nil
 }
 
-// Inner returns the inner map of vni, or nil when this node holds no
-// table for it. The aging sweep reads entries through it.
-func (t *Table) Inner(vni uint32) *ebpf.Map {
+// ForEachInner runs fn over every inner map this table holds, in VNI
+// order. The lock is held for the whole walk, so a network deleted
+// halfway through waits rather than closing a map fn is reading.
+func (t *Table) ForEachInner(fn func(vni uint32, inner *ebpf.Map)) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.inners[vni]
-}
 
-// VNIs lists the networks this table holds an inner map for, in a
-// stable order.
-func (t *Table) VNIs() []uint32 {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	out := make([]uint32, 0, len(t.inners))
+	vnis := make([]uint32, 0, len(t.inners))
 	for vni := range t.inners {
-		out = append(out, vni)
+		vnis = append(vnis, vni)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
-	return out
+	sort.Slice(vnis, func(i, j int) bool { return vnis[i] < vnis[j] })
+
+	for _, vni := range vnis {
+		fn(vni, t.inners[vni])
+	}
 }
 
 // Delete drops the inner map of vni from the outer map and closes it.
@@ -140,9 +146,10 @@ func (t *Table) Delete(vni uint32) error {
 	}
 
 	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	inner, hadInner := t.inners[vni]
 	delete(t.inners, vni)
-	t.mu.Unlock()
 
 	if err := t.outer.Delete(vni); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 		return fmt.Errorf("l2/%s: remove inner map for vni %d: %w", t.name, vni, err)
@@ -159,15 +166,14 @@ func (t *Table) Delete(vni uint32) error {
 // shutdown so a daemon reload does not leak file descriptors.
 func (t *Table) CloseAll() error {
 	t.mu.Lock()
-	inners := t.inners
-	t.inners = make(map[uint32]*ebpf.Map)
-	t.mu.Unlock()
+	defer t.mu.Unlock()
 
 	var errs []error
-	for _, inner := range inners {
+	for _, inner := range t.inners {
 		if err := inner.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
+	t.inners = make(map[uint32]*ebpf.Map)
 	return errors.Join(errs...)
 }
