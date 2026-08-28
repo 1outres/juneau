@@ -80,6 +80,7 @@ func main() {
 	var secureMetrics bool
 	var defaultSubnetCIDR string
 	var serviceClusterIPRange string
+	var defaultL2MTU int
 	var enableHTTP2 bool
 	var enableProbeRewrite bool
 	var probeProxyPort int
@@ -96,6 +97,7 @@ func main() {
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
 	flag.StringVar(&defaultSubnetCIDR, "default-subnet-cidr", "10.16.0.0/16", "CIDR block for the default subnet created at startup.")
 	flag.StringVar(&serviceClusterIPRange, "service-cluster-ip-range", "10.96.0.0/12", "Cluster-wide CIDR from which Kubernetes Service ClusterIPs are allocated.")
+	flag.IntVar(&defaultL2MTU, "default-l2-mtu", int(controller.DefaultL2NetworkMTU), "MTU given to an L2Network that does not set spec.mtu. The default is a 1500-byte underlay minus the 50 bytes of VXLAN overhead.")
 	flag.StringVar(&webhookCASecret, "webhook-ca-secret-name", "webhook-certs", "Secret name that holds webhook CA/certs")
 	flag.StringVar(&podNamespace, "pod-namespace", os.Getenv("POD_NAMESPACE"), "Namespace where webhook secrets live (defaults to POD_NAMESPACE)")
 	flag.StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
@@ -122,6 +124,12 @@ func main() {
 	_, parsedServiceCIDR, err := net.ParseCIDR(serviceClusterIPRange)
 	if err != nil {
 		setupLog.Error(err, "invalid --service-cluster-ip-range", "value", serviceClusterIPRange)
+		os.Exit(1)
+	}
+
+	if defaultL2MTU < int(controller.MinL2NetworkMTU) || defaultL2MTU > int(controller.MaxL2NetworkMTU) {
+		setupLog.Error(fmt.Errorf("value must be between %d and %d", controller.MinL2NetworkMTU, controller.MaxL2NetworkMTU),
+			"invalid --default-l2-mtu", "value", defaultL2MTU)
 		os.Exit(1)
 	}
 
@@ -641,6 +649,21 @@ func main() {
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
 		if err = webhookjuneauv1alpha1.SetupTransitGatewayAttachmentWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "TransitGatewayAttachment")
+			os.Exit(1)
+		}
+	}
+	if err = (&controller.L2NetworkReconciler{
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		DefaultMTU: int32(defaultL2MTU),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "L2Network")
+		os.Exit(1)
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err = webhookjuneauv1alpha1.SetupL2NetworkWebhookWithManager(mgr, parsedServiceCIDR); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "L2Network")
 			os.Exit(1)
 		}
 	}

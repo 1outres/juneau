@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	"github.com/1outres/juneau/controller/internal/podnetwork"
 )
 
 var _ = Describe("NetworkInterface controller", func() {
@@ -226,7 +227,7 @@ var _ = Describe("NetworkInterface controller", func() {
 	It("auto-generates a per-subnet AllocationPool with the gateway excluded", func() {
 		var pool juneauv1alpha1.AllocationPool
 		Eventually(func(g Gomega) {
-			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: SubnetIPAllocationPoolName("default")}, &pool)).To(Succeed())
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: podnetwork.SubnetAllocationPoolName("default")}, &pool)).To(Succeed())
 			g.Expect(pool.Spec.Type).To(Equal(juneauv1alpha1.AllocationTypeIP))
 			g.Expect(pool.Spec.IP).NotTo(BeNil())
 			g.Expect(pool.Spec.IP.CIDRs).To(ConsistOf("10.16.0.0/16"))

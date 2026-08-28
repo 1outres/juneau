@@ -190,6 +190,35 @@ var _ = Describe("Pod controller", func() {
 		Expect(secondary.Spec.SecurityGroups).To(Equal([]string{"sg-extra"}))
 	})
 
+	It("points the NetworkInterface of a NIC at the L2Network it names", func() {
+		l2Name := createPodTestL2Network()
+		pod := newPod("multinic-l2network", nil)
+		pod.Annotations = map[string]string{
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(`[{"interface":"eth1","l2Network":%q}]`, l2Name),
+		}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		DeferCleanup(func() { cleanupPodTestArtifacts(ctx, pod) })
+
+		reconcilePod(pod, "eth0", "eth1")
+
+		secondary := interfaceNamed(pod, "eth1")
+		Expect(secondary.Spec.L2Network).To(Equal(l2Name))
+		Expect(secondary.Spec.Subnet).To(BeEmpty())
+		Expect(interfaceOf(pod).Spec.L2Network).To(BeEmpty())
+	})
+
+	It("builds no NIC at all while the L2Network of one of them is missing", func() {
+		pod := newPod("multinic-l2network-missing", nil)
+		pod.Annotations = map[string]string{
+			juneauv1alpha1.PodAnnotationNetworks: `[{"interface":"eth1","l2Network":"no-such-l2net"}]`,
+		}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		DeferCleanup(func() { cleanupPodTestArtifacts(ctx, pod) })
+
+		expectNoInterface(pod, "eth0")
+		expectNoInterface(pod, "eth1")
+	})
+
 	It("keeps the workload identity on every NIC of a virt-launcher pod", func() {
 		extra := createPodTestSubnet("multinic-vm", "10.32.0.0/24")
 		pod := newPod("vl-multinic", virtLauncherLabels("multinic-vm-name"))
@@ -334,4 +363,15 @@ func releasePodInterface(ctx context.Context, pod *corev1.Pod, nwiface *juneauv1
 		g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
 	}).Should(Succeed())
 	Expect(k8sClient.Delete(ctx, pod, client.GracePeriodSeconds(0))).To(Succeed())
+}
+
+func createPodTestL2Network() string {
+	GinkgoHelper()
+	name := uniqueTestName("l2net")
+	l2 := newTestL2Network(name, createReadyTestVpc(), "")
+	Expect(k8sClient.Create(context.Background(), l2)).To(Succeed())
+	DeferCleanup(func() {
+		_ = k8sClient.Delete(context.Background(), l2)
+	})
+	return name
 }

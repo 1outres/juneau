@@ -38,21 +38,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	"github.com/1outres/juneau/controller/internal/addressrange"
+	"github.com/1outres/juneau/controller/internal/podnetwork"
 )
-
-const (
-	// subnetIPAllocationPoolPrefix prefixes the auto-generated AllocationPool
-	// name that backs Pod IP assignment for a Subnet. Distinct from the
-	// AddressPool-derived ("addr-…") namespace so the two never collide.
-	subnetIPAllocationPoolPrefix = "subnet-ip-"
-)
-
-// SubnetIPAllocationPoolName returns the AllocationPool name that backs the
-// given Subnet. Exported so the NetworkInterface reconciler can reference
-// it without duplicating the naming rule.
-func SubnetIPAllocationPoolName(subnetName string) string {
-	return subnetIPAllocationPoolPrefix + subnetName
-}
 
 const (
 	subnetReasonDeleting           = "Deleting"
@@ -274,7 +262,7 @@ func (r *SubnetReconciler) ensureIPAllocationPool(ctx context.Context, subnet *j
 		},
 	}
 
-	name := SubnetIPAllocationPoolName(subnet.Name)
+	name := podnetwork.SubnetAllocationPoolName(subnet.Name)
 	var existing juneauv1alpha1.AllocationPool
 	getErr := r.Get(ctx, client.ObjectKey{Name: name}, &existing)
 	switch {
@@ -389,7 +377,7 @@ func addressIsUsableInPrefix(addr netip.Addr, p netip.Prefix) bool {
 			return true
 		}
 	}
-	return addr != lastAddrInPrefix(p)
+	return addr != addressrange.LastAddr(p)
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -40,10 +40,15 @@ import (
 
 	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	"github.com/1outres/juneau/controller/internal/bootstrap"
+	"github.com/1outres/juneau/controller/internal/podnetwork"
 	// +kubebuilder:scaffold:imports
 )
 
 var testServiceCIDR *net.IPNet
+
+// testDefaultL2MTU is deliberately not the production default, so a spec
+// that sees it knows the value came from the controller flag.
+const testDefaultL2MTU int32 = 1400
 
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
@@ -122,6 +127,11 @@ var _ = BeforeSuite(func() {
 	Expect((&SubnetReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr)).To(Succeed())
+	Expect((&L2NetworkReconciler{
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		DefaultMTU: testDefaultL2MTU,
 	}).SetupWithManager(mgr)).To(Succeed())
 	_, testServiceCIDR, err = net.ParseCIDR("10.96.0.0/12")
 	Expect(err).NotTo(HaveOccurred())
@@ -224,7 +234,7 @@ var _ = BeforeSuite(func() {
 		// don't race the bootstrap before they touch the default
 		// Subnet (NetworkInterface allocation, ServiceNAT attachment).
 		var defaultIPPool juneauloutresmev1alpha1.AllocationPool
-		g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: SubnetIPAllocationPoolName("default")}, &defaultIPPool)).To(Succeed())
+		g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: podnetwork.SubnetAllocationPoolName("default")}, &defaultIPPool)).To(Succeed())
 	}).Should(Succeed())
 })
 

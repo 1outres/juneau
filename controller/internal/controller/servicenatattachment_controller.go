@@ -38,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	"github.com/1outres/juneau/controller/internal/podnetwork"
 )
 
 const (
@@ -206,7 +207,7 @@ func (r *ServiceNATAttachmentReconciler) ensureClaim(ctx context.Context, resour
 		Version: juneauv1alpha1.GroupVersion.Version,
 		Kind:    "ServiceNATAttachment",
 	}
-	poolName := SubnetIPAllocationPoolName(subnetName)
+	poolName := podnetwork.SubnetAllocationPoolName(subnetName)
 	desired := newAllocationClaim(poolName, gvk, "", resource.Name, serviceNATAttachmentAttribute)
 
 	claim := &juneauv1alpha1.AllocationClaim{ObjectMeta: metav1.ObjectMeta{Name: desired.Name}}

@@ -346,6 +346,7 @@ func (c *CNIServer) attachPodInterface(
 			},
 			NodeName:   nwiface.Spec.NodeName,
 			Subnet:     nwiface.Spec.Subnet,
+			L2Network:  nwiface.Spec.L2Network,
 			Address:    nwiface.Status.Address,
 			MACAddress: peerHWAddr.String(),
 			Attachment: &juneauv1alpha1.NetworkEndpointAttachment{

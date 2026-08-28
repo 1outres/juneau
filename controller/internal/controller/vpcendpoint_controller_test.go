@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	"github.com/1outres/juneau/controller/internal/podnetwork"
 )
 
 var _ = Describe("VpcEndpoint controller", func() {
@@ -71,7 +72,7 @@ var _ = Describe("VpcEndpoint controller", func() {
 			g.Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: endpoint.Status.AllocationClaim}, &claim)).To(Succeed())
 			g.Expect(claim.Spec.PoolRefs).To(HaveLen(1))
 			g.Expect(claim.Spec.PoolRefs[0].Name).To(Equal(VpcEndpointIPAllocationPoolName(vpcName)))
-			g.Expect(claim.Spec.PoolRefs[0].Name).NotTo(Equal(SubnetIPAllocationPoolName(subnet.Name)))
+			g.Expect(claim.Spec.PoolRefs[0].Name).NotTo(Equal(podnetwork.SubnetAllocationPoolName(subnet.Name)))
 		}).Should(Succeed())
 	})
 
