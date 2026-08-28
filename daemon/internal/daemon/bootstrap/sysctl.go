@@ -117,3 +117,22 @@ func readSysctl(path string) (string, error) {
 	}
 	return string(b), nil
 }
+
+// DisableIPv6 turns IPv6 off on one interface.
+//
+// The gateway port of an L2Network is a veth in the host namespace with
+// no address of its own. With IPv6 left on, the kernel would send
+// router solicitations and multicast listener reports out of it, onto a
+// segment that belongs to a tenant and carries whatever that tenant
+// runs on it.
+func DisableIPv6(iface string) error {
+	path := "/proc/sys/net/ipv6/conf/" + iface + "/disable_ipv6"
+	if err := writeSysctl(path, "1"); err != nil {
+		if os.IsNotExist(err) {
+			// A kernel built without IPv6 has nothing to turn off.
+			return nil
+		}
+		return fmt.Errorf("turn IPv6 off on %s: %w", iface, err)
+	}
+	return nil
+}

@@ -24,13 +24,13 @@ const (
 // l2GatewayPorts is one segment with a gateway port and two hosts on
 // it, driving the program that sits at the egress of the gateway veth.
 type l2GatewayPorts struct {
-	segment   *l2Segment
-	program   *ebpf.Program
-	gateway   bpftest.Device
+	segment    *l2Segment
+	program    *ebpf.Program
+	gateway    bpftest.Device
 	gatewayMAC net.HardwareAddr
-	pod2      bpftest.Device
-	pod3      bpftest.Device
-	tunnel    bpftest.Device
+	pod2       bpftest.Device
+	pod3       bpftest.Device
+	tunnel     bpftest.Device
 }
 
 func newL2GatewayPorts(t *testing.T) *l2GatewayPorts {

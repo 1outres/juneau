@@ -83,6 +83,7 @@ type Manager struct {
 	nodeUnderlayRunner *runner.Runner
 	l2NetworkRunner    *runner.Runner
 	l2PortRunner       *runner.Runner
+	l2GatewayRunner    *runner.Runner
 
 	serviceLoadBalancerInformer cache.Informer
 	serviceLBProgrammer         servicelbreconciler.Programmer
@@ -111,9 +112,11 @@ type Manager struct {
 	affinityGCCancel context.CancelFunc
 	affinityGCDone   chan struct{}
 
-	podAttacher *link.PodAttacher
-	fib         *reconciler.Fib
-	tgwFib      *reconciler.TgwFib
+	podAttacher       *link.PodAttacher
+	l2GatewayAttacher *link.L2GatewayAttacher
+	l2Gateway         *reconciler.L2Gateway
+	fib               *reconciler.Fib
+	tgwFib            *reconciler.TgwFib
 
 	l2Fdb       *l2.Table
 	l2BumLocal  *l2.Table
@@ -130,12 +133,13 @@ type Manager struct {
 	hostMac            net.HardwareAddr
 	nodeIngressMac     net.HardwareAddr
 
-	podEgress    *program.PodEgress
-	podIngress   *program.PodIngress
-	vxlanIngress *program.VxlanIngress
-	nodeIngress  *program.NodeIngress
-	l2Egress     *program.L2Egress
-	l2Ingress    *program.L2Ingress
+	podEgress        *program.PodEgress
+	podIngress       *program.PodIngress
+	vxlanIngress     *program.VxlanIngress
+	nodeIngress      *program.NodeIngress
+	l2Egress         *program.L2Egress
+	l2Ingress        *program.L2Ingress
+	l2GatewayProgram *program.L2Gateway
 
 	mapInventory *mapinventory.Inventory
 }
@@ -190,6 +194,11 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.l2Ingress, err = program.NewL2Ingress(m.pinPath)
 	if err != nil {
 		return fmt.Errorf("load l2 ingress program: %w", err)
+	}
+
+	m.l2GatewayProgram, err = program.NewL2Gateway(m.pinPath)
+	if err != nil {
+		return fmt.Errorf("load l2 gateway program: %w", err)
 	}
 
 	// The per-VNI tables are minted from the l2_egress inner-map specs
@@ -291,6 +300,13 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	}
 	if err := m.fibRunner.WatchFanOut(m.nwepInformer, m.fib.FanOutAllRouteTables); err != nil {
 		return fmt.Errorf("watch NWEP (fib fan-out): %w", err)
+	}
+	// An L2Network with a gateway carries a route of its own, and the
+	// VNI it is programmed under lands after the object exists.
+	if m.l2NetworkInformer != nil {
+		if err := m.fibRunner.WatchFanOut(m.l2NetworkInformer, m.fib.FanOutAllRouteTables); err != nil {
+			return fmt.Errorf("watch L2Network (fib fan-out): %w", err)
+		}
 	}
 	// TransitGatewayRouteTable.status.tableID is what a transitGateway
 	// route programs into the FIB, so its allocation must re-fire the
@@ -599,6 +615,52 @@ func (m *Manager) startL2Reconcilers(ctx context.Context) error {
 		return fmt.Errorf("watch L2Network (l2-port fan-out): %w", err)
 	}
 	m.l2PortRunner.Start(ctx, 1)
+
+	return m.startL2GatewayReconciler(ctx)
+}
+
+// startL2GatewayReconciler wires the reconciler that stands up the
+// router port of every L2Network that declares a gateway and holds an
+// endpoint on this node.
+//
+// It watches more than the segment itself because the port carries a
+// boundary: the Vpc numbers it, a RouteTable governs what leaves it and
+// a NetworkACL polices it, and the endpoints decide whether this node
+// needs one at all.
+func (m *Manager) startL2GatewayReconciler(ctx context.Context) error {
+	m.l2GatewayAttacher = link.NewL2GatewayAttacher(m.podEgress, m.l2GatewayProgram)
+	m.l2Gateway = reconciler.NewL2Gateway(m.client, m.l2GatewayAttacher, reconciler.L2GatewayMaps{
+		Gateway:       m.podEgress.Objs.L2Gateway,
+		Subnet:        m.podEgress.Objs.SubnetMap,
+		IfindexSubnet: m.podEgress.Objs.IfindexSubnet,
+		Ifindex:       m.podEgress.Objs.L2Ifindex,
+		Fdb:           m.l2Fdb,
+		BumLocal:      m.l2BumLocal,
+	}, m.nodeName)
+
+	m.l2GatewayRunner = runner.New(m.l2Gateway)
+	if err := m.l2GatewayRunner.WatchFanOut(m.l2NetworkInformer, m.l2Gateway.FanOutL2Network); err != nil {
+		return fmt.Errorf("watch L2Network (l2-gateway): %w", err)
+	}
+	if err := m.l2GatewayRunner.WatchFanOut(m.nwepInformer, m.l2Gateway.FanOutEndpointToL2Network); err != nil {
+		return fmt.Errorf("watch NWEP (l2-gateway fan-out): %w", err)
+	}
+	if m.vpcInformer != nil {
+		if err := m.l2GatewayRunner.WatchFanOut(m.vpcInformer, m.l2Gateway.FanOutVpcToL2Networks); err != nil {
+			return fmt.Errorf("watch Vpc (l2-gateway fan-out): %w", err)
+		}
+	}
+	if m.rtInformer != nil {
+		if err := m.l2GatewayRunner.WatchFanOut(m.rtInformer, m.l2Gateway.FanOutRouteTableToL2Networks); err != nil {
+			return fmt.Errorf("watch RouteTable (l2-gateway fan-out): %w", err)
+		}
+	}
+	if m.networkACLInformer != nil {
+		if err := m.l2GatewayRunner.WatchFanOut(m.networkACLInformer, m.l2Gateway.FanOutNetworkACLToL2Networks); err != nil {
+			return fmt.Errorf("watch NetworkACL (l2-gateway fan-out): %w", err)
+		}
+	}
+	m.l2GatewayRunner.Start(ctx, 1)
 	return nil
 }
 
@@ -757,11 +819,21 @@ func (m *Manager) Stop() error {
 	// reconcile that started before the shutdown would otherwise find
 	// the tables emptied under it and build a fresh inner map nobody
 	// closes again.
-	for _, rn := range []*runner.Runner{m.l2NetworkRunner, m.l2PortRunner} {
+	for _, rn := range []*runner.Runner{m.l2NetworkRunner, m.l2PortRunner, m.l2GatewayRunner} {
 		if rn == nil {
 			continue
 		}
 		if err := rn.Stop(); err != nil {
+			return err
+		}
+	}
+
+	// The programs on a gateway port belong to this daemon, so they go
+	// with it. The veth stays: the reconciler of the next daemon
+	// decides which segments still want one, and taking them out here
+	// would drop every gateway port on a restart.
+	if m.l2GatewayAttacher != nil {
+		if err := m.l2GatewayAttacher.CloseAll(); err != nil {
 			return err
 		}
 	}
@@ -873,6 +945,11 @@ func (m *Manager) Stop() error {
 	}
 	if m.l2Ingress != nil {
 		if err := m.l2Ingress.Close(); err != nil {
+			return err
+		}
+	}
+	if m.l2GatewayProgram != nil {
+		if err := m.l2GatewayProgram.Close(); err != nil {
 			return err
 		}
 	}

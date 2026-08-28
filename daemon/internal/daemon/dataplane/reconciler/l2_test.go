@@ -13,59 +13,79 @@ import (
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	bpf "github.com/1outres/juneau/daemon/internal/daemon/bpf"
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/l2"
 )
 
 // fakeL2Table stands in for l2.Table, which mints real BPF maps and so
-// needs CAP_BPF. It records which VNIs exist and who is on them.
+// needs CAP_BPF. It records which VNIs exist and what is in them.
 type fakeL2Table struct {
-	members map[uint32]map[uint32]struct{}
+	entries map[uint32]map[any]any
 }
 
 func newFakeL2Table() *fakeL2Table {
-	return &fakeL2Table{members: make(map[uint32]map[uint32]struct{})}
+	return &fakeL2Table{entries: make(map[uint32]map[any]any)}
 }
 
 func (f *fakeL2Table) Ensure(vni uint32) error {
 	if vni == 0 {
 		return fmt.Errorf("vni 0 is not a network")
 	}
-	if _, ok := f.members[vni]; !ok {
-		f.members[vni] = make(map[uint32]struct{})
+	if _, ok := f.entries[vni]; !ok {
+		f.entries[vni] = make(map[any]any)
 	}
 	return nil
 }
 
 func (f *fakeL2Table) Delete(vni uint32) error {
-	delete(f.members, vni)
+	delete(f.entries, vni)
+	return nil
+}
+
+func (f *fakeL2Table) Put(vni uint32, key, value any) error {
+	if err := f.Ensure(vni); err != nil {
+		return err
+	}
+	f.entries[vni][indirectValue(key)] = indirectValue(value)
+	return nil
+}
+
+func (f *fakeL2Table) Remove(vni uint32, key any) error {
+	if set, ok := f.entries[vni]; ok {
+		delete(set, indirectValue(key))
+	}
 	return nil
 }
 
 func (f *fakeL2Table) AddMember(vni, member uint32) error {
-	if err := f.Ensure(vni); err != nil {
-		return err
-	}
-	f.members[vni][member] = struct{}{}
-	return nil
+	return f.Put(vni, member, l2.PortFlagPresent)
 }
 
 func (f *fakeL2Table) RemoveMember(vni, member uint32) error {
-	if set, ok := f.members[vni]; ok {
-		delete(set, member)
-	}
-	return nil
+	return f.Remove(vni, member)
 }
 
+// list is the flood-list members of a VNI, which are the entries keyed
+// by a bare ifindex or VTEP address.
 func (f *fakeL2Table) list(vni uint32) []uint32 {
-	out := make([]uint32, 0, len(f.members[vni]))
-	for member := range f.members[vni] {
+	out := make([]uint32, 0, len(f.entries[vni]))
+	for key := range f.entries[vni] {
+		member, ok := key.(uint32)
+		if !ok {
+			continue
+		}
 		out = append(out, member)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
 }
 
+func (f *fakeL2Table) value(vni uint32, key any) (any, bool) {
+	stored, ok := f.entries[vni][indirectValue(key)]
+	return stored, ok
+}
+
 func (f *fakeL2Table) has(vni uint32) bool {
-	_, ok := f.members[vni]
+	_, ok := f.entries[vni]
 	return ok
 }
 
