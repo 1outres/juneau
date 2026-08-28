@@ -129,9 +129,9 @@ Nodeを跨いでいても同じです。ARPリクエストは参加している�
 
 ```console
 $ kubectl juneau bpf dump l2_fdb --all-nodes --inner-key vni=4242
-NODE      MAC                IFINDEX  VTEP_IP     LAST_SEEN_NS
-worker-1  1a:2b:3c:00:00:01  42       0.0.0.0     913842771203
-worker-1  1a:2b:3c:00:00:02  0        10.0.0.12   913844015886
+NODE      VNI   MAC                IFINDEX  VTEP_IP     LAST_SEEN_NS
+worker-1  4242  1a:2b:3c:00:00:01  42       0.0.0.0     913842771203
+worker-1  4242  1a:2b:3c:00:00:02  0        10.0.0.12   913844015886
 ```
 
 `ifindex`が入っているのがこのNodeのvethに居るMAC、`vtep_ip`が入っているのが別Nodeに居るMACです。300秒フレームを見なかったエントリは掃除されます。
