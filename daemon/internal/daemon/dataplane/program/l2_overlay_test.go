@@ -193,3 +193,30 @@ func TestVxlanIngressSendsAKnownUnicastToItsLocalPort(t *testing.T) {
 		t.Errorf("pod3 received %d copies of a frame it does not hold the MAC for", got)
 	}
 }
+
+// A frame the overlay delivered is never put back on it, not even when
+// this node knows the destination MAC lives on a third node. The node
+// that sent it reaches that node directly, so relaying would send the
+// frame over the overlay twice and teach the far node that the source
+// MAC lives behind this one.
+func TestVxlanIngressNeverRelaysToAnotherNode(t *testing.T) {
+	overlay := newOverlaySegment(t)
+	sender, peer := bpftest.MAC(1), bpftest.MAC(2)
+	overlay.segment.learn(t, peer, 0, "10.0.0.3")
+
+	frame := bpftest.Frame(t, peer, sender, bpftest.EtherTypeIPv4, nil)
+	watched := bpftest.WatchPorts(t, overlay.pod2, overlay.pod3, overlay.vxlan)
+	overlay.deliver(t, testVNI, frame)
+	overlay.awaitLearned(t, sender)
+
+	if got := watched.Delivered(t, overlay.vxlan); got != 0 {
+		t.Errorf("the overlay carried the frame on to a third node %d times, want 0", got)
+	}
+	// With nowhere local to place it, the frame takes the same path as
+	// any unicast the segment cannot resolve.
+	for _, device := range []bpftest.Device{overlay.pod2, overlay.pod3} {
+		if got := watched.Delivered(t, device); got != 1 {
+			t.Errorf("%s received %d copies, want the local flood to reach it once", device.Name, got)
+		}
+	}
+}

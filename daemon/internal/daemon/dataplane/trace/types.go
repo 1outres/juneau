@@ -95,6 +95,11 @@ const (
 	ReasonL2Learned      Reason = 600
 	ReasonL2Flood        Reason = 601
 	ReasonL2SplitHorizon Reason = 602
+	// ReasonL2HairpinDrop marks a frame whose destination MAC sits on
+	// the very port it came in on. A switch never sends one back out
+	// there, and a workload with its own bridge behind the NIC would
+	// send it straight back.
+	ReasonL2HairpinDrop Reason = 603
 )
 
 // Hook mirrors TRACE_HOOK_* in trace.h.

@@ -31,6 +31,19 @@
 // overlay. It matches what forward_l2 stamps on Subnet traffic.
 #define L2_TUNNEL_TTL 64
 
+// l2_port is where a frame came from, which is what both the flood and
+// the unicast path need to know to keep the segment from feeding
+// itself.
+struct l2_port {
+  __u32 vni;
+  // in_ifindex is the veth the frame arrived on, and 0 when the
+  // overlay delivered it.
+  __u32 in_ifindex;
+  // from_overlay says the frame has already crossed the overlay once,
+  // so this node must not put it back on.
+  bool from_overlay;
+};
+
 // l2_flood_ctx is what the two bpf_for_each_map_elem callbacks below
 // read. The callback signature has one context pointer, so everything
 // they need travels in here.
@@ -134,7 +147,7 @@ static long l2_flood_remote_cb(struct bpf_map *map, const __u32 *key,
 // l2_flood copies the frame to every port of the segment but the one
 // it came in on, and returns how many copies it made.
 //
-// deliver_remote is false for a frame the overlay delivered. The node
+// A frame the overlay delivered reaches local ports only. The node
 // that sent it already copied it to every other node, so sending it
 // back out would multiply it without end. This is the split horizon
 // rule, and it is the whole reason the caller has to say where the
@@ -145,21 +158,22 @@ static long l2_flood_remote_cb(struct bpf_map *map, const __u32 *key,
 // the frame, and handing a frame with tunnel metadata to a veth
 // crashes the kernel (cilium#19428). Once the remote pass has run,
 // nothing hands the frame to a local port again.
-static __always_inline __u32 l2_flood(struct __sk_buff *skb, __u32 vni,
-                                      __u32 in_ifindex, bool deliver_remote) {
+static __always_inline __u32 l2_flood(struct __sk_buff *skb,
+                                      const struct l2_port *port) {
   struct l2_flood_ctx fctx = {
       .skb = skb,
-      .skip_ifindex = in_ifindex,
-      .vni = vni,
+      .skip_ifindex = port->in_ifindex,
+      .vni = port->vni,
       .vxlan_ifindex = 0,
       .copies = 0,
   };
 
+  __u32 vni = port->vni;
   struct l2_bum_local_inner_map *local = bpf_map_lookup_elem(&l2_bum_local, &vni);
   if (local)
     bpf_for_each_map_elem(local, l2_flood_local_cb, &fctx, 0);
 
-  if (!deliver_remote)
+  if (port->from_overlay)
     return fctx.copies;
 
   struct l2_bum_remote_inner_map *remote =
@@ -177,49 +191,83 @@ static __always_inline __u32 l2_flood(struct __sk_buff *skb, __u32 vni,
   return fctx.copies;
 }
 
-// l2_forward is what l2_forward_unicast tells the caller about the
-// hand-off it made, so the trace event says which way the frame went
-// and to which device.
+// l2_forward is what l2_forward_unicast decided. verdict is the value
+// the program returns; reason and target_ifindex are what the trace
+// event is stamped with.
 struct l2_forward {
+  int verdict;
   __u32 reason;
   __u32 target_ifindex;
 };
 
-// l2_forward_unicast sends the frame to the one port that holds the
-// destination MAC. Returns the TC verdict, or -1 when the MAC is not
-// in the table and the caller has to flood instead.
-static __always_inline int l2_forward_unicast(struct __sk_buff *skb,
-                                              struct l2_fdb_inner_map *table,
-                                              const __u8 *dst_mac, __u32 vni,
-                                              struct l2_forward *out) {
+// l2_forward_unicast sends the frame to the port that holds the
+// destination MAC. It reports true when it placed the frame, and false
+// when this node has nowhere to put it and the caller has to flood
+// instead.
+//
+// Two of its answers come from where the frame arrived rather than
+// from the table:
+//
+//   - A MAC that lives on the very port the frame came in on is
+//     dropped. A switch never sends a frame back out of the port it
+//     came from, and a workload running its own bridge behind the NIC
+//     would send it right back.
+//   - A MAC on another node is not reachable from a frame the overlay
+//     delivered. The node that sent it can reach that node directly,
+//     so relaying would put the frame on the overlay a second time and
+//     teach the far node the wrong place for the source MAC. Falling
+//     back to the local flood is what a switch does with a frame it
+//     cannot place.
+static __always_inline bool l2_forward_unicast(struct __sk_buff *skb,
+                                               struct l2_fdb_inner_map *table,
+                                               const __u8 *dst_mac,
+                                               const struct l2_port *port,
+                                               struct l2_forward *out) {
   struct l2_fdb_key key = {};
   __builtin_memcpy(key.mac, dst_mac, ETH_ALEN);
 
   const struct l2_fdb_val *entry = bpf_map_lookup_elem(table, &key);
   if (!entry)
-    return -1;
+    return false;
 
   if (entry->ifindex != 0) {
+    if (entry->ifindex == port->in_ifindex) {
+      out->verdict = TC_ACT_SHOT;
+      out->reason = TRACE_REASON_L2_HAIRPIN_DROP;
+      out->target_ifindex = entry->ifindex;
+      return true;
+    }
+    out->verdict = bpf_redirect(entry->ifindex, 0);
     out->reason = TRACE_REASON_REDIRECT_IFINDEX;
     out->target_ifindex = entry->ifindex;
-    return bpf_redirect(entry->ifindex, 0);
+    return true;
   }
+
+  if (port->from_overlay)
+    return false;
 
   __u32 vx_key = 0;
   const __u32 *vx_if = bpf_map_lookup_elem(&vxlan_ifindex, &vx_key);
-  if (!vx_if || *vx_if == 0)
-    return TC_ACT_SHOT;
+  if (!vx_if || *vx_if == 0) {
+    out->verdict = TC_ACT_SHOT;
+    out->reason = TRACE_REASON_DROP_SHOT;
+    return true;
+  }
 
   struct bpf_tunnel_key tkey = {};
   tkey.remote_ipv4 = entry->vtep_ip;
-  tkey.tunnel_id = vni;
+  tkey.tunnel_id = port->vni;
   tkey.tunnel_ttl = L2_TUNNEL_TTL;
-  if (bpf_skb_set_tunnel_key(skb, &tkey, sizeof(tkey), 0) < 0)
-    return TC_ACT_SHOT;
+  if (bpf_skb_set_tunnel_key(skb, &tkey, sizeof(tkey), 0) < 0) {
+    out->verdict = TC_ACT_SHOT;
+    out->reason = TRACE_REASON_DROP_SHOT;
+    return true;
+  }
 
+  out->verdict = bpf_redirect(*vx_if, 0);
   out->reason = TRACE_REASON_REDIRECT_VXLAN;
   out->target_ifindex = *vx_if;
-  return bpf_redirect(*vx_if, 0);
+  return true;
 }
 
 #endif // JUNEAU_BPF_L2_H

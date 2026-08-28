@@ -400,6 +400,7 @@ const (
 	TraceEventReason_TRACE_EVENT_REASON_L2_LEARNED               TraceEventReason = 600
 	TraceEventReason_TRACE_EVENT_REASON_L2_FLOOD                 TraceEventReason = 601
 	TraceEventReason_TRACE_EVENT_REASON_L2_SPLIT_HORIZON         TraceEventReason = 602
+	TraceEventReason_TRACE_EVENT_REASON_L2_HAIRPIN_DROP          TraceEventReason = 603
 )
 
 // Enum value maps for TraceEventReason.
@@ -448,6 +449,7 @@ var (
 		600: "TRACE_EVENT_REASON_L2_LEARNED",
 		601: "TRACE_EVENT_REASON_L2_FLOOD",
 		602: "TRACE_EVENT_REASON_L2_SPLIT_HORIZON",
+		603: "TRACE_EVENT_REASON_L2_HAIRPIN_DROP",
 	}
 	TraceEventReason_value = map[string]int32{
 		"TRACE_EVENT_REASON_UNSPECIFIED":              0,
@@ -493,6 +495,7 @@ var (
 		"TRACE_EVENT_REASON_L2_LEARNED":               600,
 		"TRACE_EVENT_REASON_L2_FLOOD":                 601,
 		"TRACE_EVENT_REASON_L2_SPLIT_HORIZON":         602,
+		"TRACE_EVENT_REASON_L2_HAIRPIN_DROP":          603,
 	}
 )
 
@@ -1891,7 +1894,7 @@ const file_pkg_debugpb_debug_proto_rawDesc = "" +
 	"\x19TRACE_VERDICT_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10TRACE_VERDICT_OK\x10\x01\x12\x16\n" +
 	"\x12TRACE_VERDICT_DROP\x10\x02\x12\x1a\n" +
-	"\x16TRACE_VERDICT_REDIRECT\x10\x03*\xd6\r\n" +
+	"\x16TRACE_VERDICT_REDIRECT\x10\x03*\xff\r\n" +
 	"\x10TraceEventReason\x12\"\n" +
 	"\x1eTRACE_EVENT_REASON_UNSPECIFIED\x10\x00\x12'\n" +
 	"#TRACE_EVENT_REASON_ENTER_POD_EGRESS\x10d\x12(\n" +
@@ -1935,7 +1938,8 @@ const file_pkg_debugpb_debug_proto_rawDesc = "" +
 	"!TRACE_EVENT_REASON_DROP_BLACKHOLE\x10\xf8\x03\x12\"\n" +
 	"\x1dTRACE_EVENT_REASON_L2_LEARNED\x10\xd8\x04\x12 \n" +
 	"\x1bTRACE_EVENT_REASON_L2_FLOOD\x10\xd9\x04\x12(\n" +
-	"#TRACE_EVENT_REASON_L2_SPLIT_HORIZON\x10\xda\x042\xb9\x03\n" +
+	"#TRACE_EVENT_REASON_L2_SPLIT_HORIZON\x10\xda\x04\x12'\n" +
+	"\"TRACE_EVENT_REASON_L2_HAIRPIN_DROP\x10\xdb\x042\xb9\x03\n" +
 	"\x05Debug\x12A\n" +
 	"\n" +
 	"WatchTrace\x12\x1b.debug.v1.WatchTraceRequest\x1a\x14.debug.v1.TraceEvent0\x01\x12N\n" +

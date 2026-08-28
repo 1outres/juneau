@@ -280,3 +280,25 @@ func TestL2EgressDropsAFrameOfANetworkThatIsGone(t *testing.T) {
 		t.Errorf("verdict %d, want the frame dropped (%d)", verdict, bpftest.ActShot)
 	}
 }
+
+// A switch never sends a frame back out of the port it came in on. A
+// workload running its own bridge behind the NIC would hand it right
+// back, and the two would trade the frame until one of them gave up.
+func TestL2EgressDropsAFrameAimedAtItsOwnPort(t *testing.T) {
+	ports := newL2EgressPorts(t)
+	sender, peerBehindTheSameNIC := bpftest.MAC(1), bpftest.MAC(2)
+	ports.segment.learn(t, peerBehindTheSameNIC, uint32(ports.pod1.Index), "")
+
+	frame := bpftest.Frame(t, peerBehindTheSameNIC, sender, bpftest.EtherTypeIPv4, nil)
+	watched := ports.watch(t)
+	verdict := bpftest.Run(t, ports.program, frame, ports.pod1)
+
+	if verdict != bpftest.ActShot {
+		t.Errorf("verdict %d, want the frame dropped (%d)", verdict, bpftest.ActShot)
+	}
+	for _, device := range []bpftest.Device{ports.pod1, ports.pod2, ports.pod3, ports.tunnel} {
+		if got := watched.Delivered(t, device); got != 0 {
+			t.Errorf("%s received %d copies of a frame aimed back at its source port", device.Name, got)
+		}
+	}
+}

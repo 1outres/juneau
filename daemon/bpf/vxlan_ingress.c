@@ -55,6 +55,8 @@ static __always_inline int handle_l2_overlay(struct __sk_buff *skb,
     return TC_ACT_SHOT;
   }
 
+  struct l2_port from = {.vni = vni, .in_ifindex = 0, .from_overlay = true};
+
   __u8 src_mac[ETH_ALEN];
   __u8 dst_mac[ETH_ALEN];
   __builtin_memcpy(src_mac, eth->h_source, ETH_ALEN);
@@ -67,19 +69,23 @@ static __always_inline int handle_l2_overlay(struct __sk_buff *skb,
 
   if (!l2_is_bum(dst_mac)) {
     struct l2_forward forwarded = {};
-    int rc = l2_forward_unicast(skb, table, dst_mac, vni, &forwarded);
-    if (rc >= 0) {
-      trace_emit_redirect_l3(skb, __trace_id, forwarded.reason,
-                             TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC, vpc_id,
-                             vni, forwarded.target_ifindex);
-      return rc;
+    if (l2_forward_unicast(skb, table, dst_mac, &from, &forwarded)) {
+      if (forwarded.verdict == TC_ACT_SHOT)
+        trace_emit_drop_l3(skb, __trace_id, forwarded.reason,
+                           TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC, vpc_id,
+                           vni);
+      else
+        trace_emit_redirect_l3(skb, __trace_id, forwarded.reason,
+                               TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC,
+                               vpc_id, vni, forwarded.target_ifindex);
+      return forwarded.verdict;
     }
     trace_emit_map_miss_l3(skb, __trace_id, TRACE_REASON_MISS_L2_FDB,
                            TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC, vpc_id,
                            vni, vni);
   }
 
-  __u32 copies = l2_flood(skb, vni, 0, false);
+  __u32 copies = l2_flood(skb, &from);
   trace_emit_map_miss_l3(skb, __trace_id, TRACE_REASON_L2_SPLIT_HORIZON,
                          TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC, vpc_id, vni,
                          copies);

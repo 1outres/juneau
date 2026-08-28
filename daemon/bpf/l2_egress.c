@@ -40,6 +40,7 @@ static __always_inline int handle(struct __sk_buff *skb) {
     return TC_ACT_SHOT;
   }
   __u32 vni = port->vni;
+  struct l2_port from = {.vni = vni, .in_ifindex = in_ifindex, .from_overlay = false};
 
   struct l2_network_key nkey = {.vni = vni};
   const struct l2_network_val *network =
@@ -89,12 +90,15 @@ static __always_inline int handle(struct __sk_buff *skb) {
 
   if (!l2_is_bum(dst_mac)) {
     struct l2_forward forwarded = {};
-    int rc = l2_forward_unicast(skb, table, dst_mac, vni, &forwarded);
-    if (rc >= 0) {
-      trace_emit_redirect_l3(skb, __trace_id, forwarded.reason,
-                             TRACE_HOOK_L2_EGRESS, TRACE_SCOPE_VPC, vpc_id, vni,
-                             forwarded.target_ifindex);
-      return rc;
+    if (l2_forward_unicast(skb, table, dst_mac, &from, &forwarded)) {
+      if (forwarded.verdict == TC_ACT_SHOT)
+        trace_emit_drop_l3(skb, __trace_id, forwarded.reason,
+                           TRACE_HOOK_L2_EGRESS, TRACE_SCOPE_VPC, vpc_id, vni);
+      else
+        trace_emit_redirect_l3(skb, __trace_id, forwarded.reason,
+                               TRACE_HOOK_L2_EGRESS, TRACE_SCOPE_VPC, vpc_id,
+                               vni, forwarded.target_ifindex);
+      return forwarded.verdict;
     }
     trace_emit_map_miss_l3(skb, __trace_id, TRACE_REASON_MISS_L2_FDB,
                            TRACE_HOOK_L2_EGRESS, TRACE_SCOPE_VPC, vpc_id, vni,
@@ -105,7 +109,7 @@ static __always_inline int handle(struct __sk_buff *skb) {
   // copy to every other port of the segment. Flooding the unknown
   // unicast is what lets a workload reach a peer juneau has not seen
   // send a frame yet.
-  __u32 copies = l2_flood(skb, vni, in_ifindex, true);
+  __u32 copies = l2_flood(skb, &from);
   trace_emit_map_miss_l3(skb, __trace_id, TRACE_REASON_L2_FLOOD,
                          TRACE_HOOK_L2_EGRESS, TRACE_SCOPE_VPC, vpc_id, vni,
                          copies);

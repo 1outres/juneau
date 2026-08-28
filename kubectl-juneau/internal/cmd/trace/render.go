@@ -264,6 +264,8 @@ func reasonString(r debugpb.TraceEventReason) string {
 		return "l2 flood"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_L2_SPLIT_HORIZON:
 		return "l2 flood (split horizon)"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_L2_HAIRPIN_DROP:
+		return "l2 drop (destination is on the source port)"
 	}
 	return r.String()
 }
