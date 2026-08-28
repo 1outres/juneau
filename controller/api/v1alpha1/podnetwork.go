@@ -65,9 +65,12 @@ const (
 	// hard reject at admission so we never silently truncate.
 	PodSecurityGroupsMax = 2
 
-	// PodInterfaceNameMaxLen is IFNAMSIZ minus the trailing NUL byte, the
-	// longest interface name Linux accepts.
-	PodInterfaceNameMaxLen = 15
+	// PodInterfaceNameMaxLen is the longest interface name a NIC may
+	// carry. Linux itself takes 15 characters, but Juneau names the host
+	// side of the veth "<interface>+<container id>" and that name has to
+	// fit in the same 15 characters with enough of the container id left
+	// to tell two sandboxes of the same NIC apart.
+	PodInterfaceNameMaxLen = 8
 )
 
 // PodNetworkAttachment is one entry of the PodAnnotationNetworks list: a

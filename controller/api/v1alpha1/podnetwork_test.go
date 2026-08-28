@@ -141,12 +141,12 @@ func TestValidatePodNetworkAttachments(t *testing.T) {
 			wantErr: "Duplicate",
 		},
 		{
-			name:        "rejects an interface name longer than the kernel allows",
+			name:        "rejects an interface name longer than a veth name can hold",
 			attachments: []PodNetworkAttachment{{Interface: strings.Repeat("e", PodInterfaceNameMaxLen+1), Subnet: "db"}},
 			wantErr:     "interface",
 		},
 		{
-			name:        "accepts an interface name at the kernel limit",
+			name:        "accepts an interface name at the limit",
 			attachments: []PodNetworkAttachment{{Interface: strings.Repeat("e", PodInterfaceNameMaxLen), Subnet: "db"}},
 		},
 		{

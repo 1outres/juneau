@@ -50,6 +50,7 @@ nav:
     - NetworkACLでSubnet境界を制御する: guides/network-acl.md
     - VpcPeeringで2つのVPCを接続する: guides/vpc-peering.md
     - TransitGatewayでハブ&スポーク構成を作る: guides/transit-gateway.md
+    - PodにNICを追加する: guides/multi-nic-pod.md
   - Resources:
     - VPC: resources/vpc.md
     - Subnet: resources/subnet.md
