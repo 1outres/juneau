@@ -61,7 +61,8 @@ func TestParsePodNetworkAttachments(t *testing.T) {
 	t.Run("reads every field of every entry", func(t *testing.T) {
 		got, err := ParsePodNetworkAttachments(`[
 			{"interface": "eth1", "subnet": "db"},
-			{"interface": "eth2", "subnet": "mgmt", "address": "10.17.0.9", "securityGroups": ["sg-b"]}
+			{"interface": "eth2", "subnet": "mgmt", "address": "10.17.0.9", "securityGroups": ["sg-b"]},
+			{"interface": "eth3", "l2Network": "lab-net"}
 		]`)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -69,6 +70,7 @@ func TestParsePodNetworkAttachments(t *testing.T) {
 		want := []PodNetworkAttachment{
 			{Interface: "eth1", Subnet: "db"},
 			{Interface: "eth2", Subnet: "mgmt", Address: "10.17.0.9", SecurityGroups: []string{"sg-b"}},
+			{Interface: "eth3", L2Network: "lab-net"},
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("got %+v, want %+v", got, want)
@@ -155,9 +157,23 @@ func TestValidatePodNetworkAttachments(t *testing.T) {
 			wantErr:     "interface",
 		},
 		{
-			name:        "rejects a missing subnet",
+			name:        "accepts an entry that names an l2Network",
+			attachments: []PodNetworkAttachment{{Interface: "eth1", L2Network: "lab-net"}},
+		},
+		{
+			name:        "rejects an entry that names neither a subnet nor an l2Network",
 			attachments: []PodNetworkAttachment{{Interface: "eth1"}},
-			wantErr:     "subnet",
+			wantErr:     "needs a subnet or an l2Network",
+		},
+		{
+			name:        "rejects an entry that names both a subnet and an l2Network",
+			attachments: []PodNetworkAttachment{{Interface: "eth1", Subnet: "db", L2Network: "lab-net"}},
+			wantErr:     "not both",
+		},
+		{
+			name:        "rejects an l2Network name that is not a DNS subdomain",
+			attachments: []PodNetworkAttachment{{Interface: "eth1", L2Network: "Lab_Net"}},
+			wantErr:     "l2Network",
 		},
 		{
 			name:        "rejects an address that is not an IP",

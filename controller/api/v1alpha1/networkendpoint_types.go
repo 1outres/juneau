@@ -78,6 +78,7 @@ type NetworkEndpointAttachment struct {
 }
 
 // NetworkEndpointSpec defines the desired state of NetworkEndpoint.
+// +kubebuilder:validation:XValidation:rule="has(self.subnet) != has(self.l2Network)",message="set exactly one of spec.subnet and spec.l2Network"
 type NetworkEndpointSpec struct {
 	// Kind identifies what produced this endpoint.
 	// +required
@@ -89,10 +90,18 @@ type NetworkEndpointSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	NodeName string `json:"nodeName"`
 
-	// Subnet is the L2 segment this endpoint participates in.
-	// +required
+	// Subnet is the L2 segment this endpoint participates in. Exactly
+	// one of Subnet and L2Network is set.
+	// +optional
 	// +kubebuilder:validation:MinLength=1
-	Subnet string `json:"subnet"`
+	Subnet string `json:"subnet,omitempty"`
+
+	// L2Network is the L2 segment this endpoint participates in when it
+	// is a plain Ethernet one rather than a Subnet. Exactly one of
+	// Subnet and L2Network is set.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	L2Network string `json:"l2Network,omitempty"`
 
 	// Address is the L3 identity in CIDR form (e.g. "10.0.0.5/24").
 	// +optional
@@ -139,6 +148,7 @@ type NetworkEndpointPodReference struct {
 // +kubebuilder:printcolumn:name="Kind",type="string",JSONPath=".spec.kind"
 // +kubebuilder:printcolumn:name="Node",type="string",JSONPath=".spec.nodeName"
 // +kubebuilder:printcolumn:name="Subnet",type="string",JSONPath=".spec.subnet"
+// +kubebuilder:printcolumn:name="L2Network",type="string",JSONPath=".spec.l2Network"
 // +kubebuilder:printcolumn:name="Address",type="string",JSONPath=".spec.address"
 
 // NetworkEndpoint is the Schema for the networkendpoints API.

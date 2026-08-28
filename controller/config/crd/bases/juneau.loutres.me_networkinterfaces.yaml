@@ -26,6 +26,9 @@ spec:
     - jsonPath: .spec.subnet
       name: Subnet
       type: string
+    - jsonPath: .spec.l2Network
+      name: L2Network
+      type: string
     - jsonPath: .status.address
       name: Address
       type: string
@@ -67,6 +70,14 @@ spec:
                   interfaces that share an identity share the address reservation, so
                   the value must be unique per workload within the namespace. Must be a
                   DNS-1123 subdomain.
+                type: string
+              l2Network:
+                description: |-
+                  L2Network is the L2Network this interface joins. Exactly one of
+                  Subnet and L2Network is set. An L2Network without a CIDR hands out
+                  no address at all, so an interface on one becomes Allocated with an
+                  empty status.address.
+                minLength: 1
                 type: string
               nodeName:
                 minLength: 1
@@ -122,21 +133,26 @@ spec:
                   unless the owning Vpc has spec.enforceSecurityGroups=true, in
                   which case Pod admission rejects unattached Pods.
 
-                  All referenced SGs must belong to the same Vpc as this
-                  NetworkInterface's Subnet. Webhook validation enforces this.
+                  All referenced SGs must belong to the same Vpc as the network this
+                  NetworkInterface joins. Webhook validation enforces this.
                 items:
                   type: string
                 maxItems: 2
                 type: array
                 x-kubernetes-list-type: set
               subnet:
+                description: |-
+                  Subnet is the Subnet this interface joins. Exactly one of Subnet
+                  and L2Network is set.
                 minLength: 1
                 type: string
             required:
             - nodeName
             - podRef
-            - subnet
             type: object
+            x-kubernetes-validations:
+            - message: set exactly one of spec.subnet and spec.l2Network
+              rule: has(self.subnet) != has(self.l2Network)
           status:
             description: NetworkInterfaceStatus defines the observed state of NetworkInterface.
             properties:

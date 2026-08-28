@@ -19,4 +19,5 @@ resources:
 - v1alpha1_transitgatewayroutetable.yaml
 - v1alpha1_transitgatewayattachment.yaml
 - v1alpha1_arpadvertisement.yaml
+- v1alpha1_l2network.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

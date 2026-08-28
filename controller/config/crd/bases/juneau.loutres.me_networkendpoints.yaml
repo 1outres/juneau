@@ -26,6 +26,9 @@ spec:
     - jsonPath: .spec.subnet
       name: Subnet
       type: string
+    - jsonPath: .spec.l2Network
+      name: L2Network
+      type: string
     - jsonPath: .spec.address
       name: Address
       type: string
@@ -93,6 +96,13 @@ spec:
                 - Node
                 - ServiceNAT
                 type: string
+              l2Network:
+                description: |-
+                  L2Network is the L2 segment this endpoint participates in when it
+                  is a plain Ethernet one rather than a Subnet. Exactly one of
+                  Subnet and L2Network is set.
+                minLength: 1
+                type: string
               macAddress:
                 description: |-
                   MACAddress is the L2 identity used as the destination MAC for
@@ -123,14 +133,18 @@ spec:
                 - uid
                 type: object
               subnet:
-                description: Subnet is the L2 segment this endpoint participates in.
+                description: |-
+                  Subnet is the L2 segment this endpoint participates in. Exactly
+                  one of Subnet and L2Network is set.
                 minLength: 1
                 type: string
             required:
             - kind
             - nodeName
-            - subnet
             type: object
+            x-kubernetes-validations:
+            - message: set exactly one of spec.subnet and spec.l2Network
+              rule: has(self.subnet) != has(self.l2Network)
           status:
             description: NetworkEndpointStatus defines the observed state of NetworkEndpoint.
             properties:

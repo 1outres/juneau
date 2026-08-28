@@ -106,3 +106,6 @@ resources:
 - tracesession_admin_role.yaml
 - tracesession_editor_role.yaml
 - tracesession_viewer_role.yaml
+- l2network_admin_role.yaml
+- l2network_editor_role.yaml
+- l2network_viewer_role.yaml

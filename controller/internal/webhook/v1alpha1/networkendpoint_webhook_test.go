@@ -24,7 +24,22 @@ var _ = Describe("NetworkEndpoint webhook", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("spec.kind"))
 		Expect(err.Error()).To(ContainSubstring("spec.nodeName"))
-		Expect(err.Error()).To(ContainSubstring("spec.subnet"))
+	})
+
+	It("rejects an endpoint that names neither a Subnet nor an L2Network", func() {
+		err := webhookK8sClient.Create(context.Background(), &juneauv1alpha1.NetworkEndpoint{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      webhookUniqueTestName("networkendpoint"),
+				Namespace: "default",
+			},
+			Spec: juneauv1alpha1.NetworkEndpointSpec{
+				Kind:     juneauv1alpha1.EndpointKindNode,
+				NodeName: "node-a",
+			},
+		})
+
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("set exactly one of spec.subnet and spec.l2Network"))
 	})
 
 	It("requires PodRef when kind=Pod", func() {
