@@ -177,6 +177,50 @@
 // real deployments; can be raised later if the verifier budget allows.
 #define MAX_SGS_PER_NIC 2
 
+// ---- L2Network forwarding ----------------------------------------------
+//
+// The L2 data plane keeps its own tables. They are keyed by VNI like
+// the Subnet ones, but nothing is shared: a Subnet entry and an
+// L2Network entry never meet, and a full table on one side cannot push
+// entries out of the other.
+
+#ifndef MAX_L2_NETWORKS
+// MAX_L2_NETWORKS bounds l2_network_map and the outer map of every
+// per-VNI table below. One entry per L2Network in the cluster.
+#define MAX_L2_NETWORKS 4096
+#endif
+
+#ifndef MAX_L2_IFINDEX
+// MAX_L2_IFINDEX bounds l2_ifindex: one entry per local veth that
+// joins an L2Network on this node.
+#define MAX_L2_IFINDEX 32768
+#endif
+
+#ifndef MAX_L2_FDB_PER_NETWORK
+// MAX_L2_FDB_PER_NETWORK bounds one L2Network's learning table. The
+// table is an LRU, so a segment that shows more MACs than this keeps
+// working: the oldest entries drop out and the data plane floods until
+// it learns them again.
+#define MAX_L2_FDB_PER_NETWORK 8192
+#endif
+
+#ifndef MAX_L2_BUM_PER_NETWORK
+// MAX_L2_BUM_PER_NETWORK bounds one L2Network's flood list, counted
+// separately for local ports and for remote VTEPs. Every broadcast
+// frame is copied once per entry, so this is also the fan-out of a
+// single frame.
+#define MAX_L2_BUM_PER_NETWORK 1024
+#endif
+
+// L2_FDB_AGING_NS is how long a learned MAC stays without being seen
+// again. 300 seconds is what an ordinary switch uses.
+#define L2_FDB_AGING_NS 300000000000ULL
+
+// L2_FDB_REFRESH_NS is how often the data plane rewrites the
+// last_seen_ns of a MAC it keeps seeing. Without it every frame would
+// write to the table; with it the write happens once a second per MAC.
+#define L2_FDB_REFRESH_NS 1000000000ULL
+
 #define FIB_ROUTE_TYPE_CONNECTED 1
 #define FIB_ROUTE_TYPE_ENDPOINT 2
 #define FIB_ROUTE_TYPE_INTERNET_GATEWAY 3
@@ -1213,5 +1257,133 @@ struct {
   __uint(pinning, LIBBPF_PIN_BY_NAME);
   __array(values, struct acl_rules_inner);
 } acl_rule_table SEC(".maps");
+
+// ---- L2Network maps -----------------------------------------------------
+
+struct l2_network_key {
+  __u32 vni;
+};
+
+struct l2_network_val {
+  // vpc_id is the owning Vpc. The L2 data plane reads no policy, so
+  // this is only what its trace events are stamped with.
+  __u32 vpc_id;
+};
+
+// l2_network_map says which VNIs the L2 data plane owns. vxlan_ingress
+// asks it first: a hit means the frame belongs to an L2Network and is
+// forwarded on its destination MAC alone, a miss means the frame
+// belongs to a Subnet and takes the L3-aware path.
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_L2_NETWORKS);
+  __type(key, struct l2_network_key);
+  __type(value, struct l2_network_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} l2_network_map SEC(".maps");
+
+struct l2_ifindex_key {
+  __u32 ifindex;
+};
+
+struct l2_ifindex_val {
+  __u32 vni;
+};
+
+// l2_ifindex names the L2Network behind one local veth. It is the L2
+// counterpart of ifindex_subnet and stays apart from it on purpose: a
+// NIC on an L2Network may carry no address at all, and
+// ifindex_subnet.ipv4 is what the policy stage looks a NIC up by.
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_L2_IFINDEX);
+  __type(key, struct l2_ifindex_key);
+  __type(value, struct l2_ifindex_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} l2_ifindex SEC(".maps");
+
+struct l2_fdb_key {
+  __u8 mac[6];
+};
+
+struct l2_fdb_val {
+  // Exactly one of the two is set: ifindex for a MAC on a local veth,
+  // vtep_ip for a MAC another node holds. vtep_ip is in host byte
+  // order, which is what bpf_tunnel_key.remote_ipv4 takes.
+  __u32 ifindex;
+  __u32 vtep_ip;
+  __u64 last_seen_ns;
+};
+
+// l2_fdb_inner_map is one L2Network's learning table. User space
+// writes no entries: l2_egress learns from the frames a local port
+// sends and vxlan_ingress learns from the frames the overlay delivers.
+struct l2_fdb_inner_map {
+  __uint(type, BPF_MAP_TYPE_LRU_HASH);
+  __uint(max_entries, MAX_L2_FDB_PER_NETWORK);
+  __type(key, struct l2_fdb_key);
+  __type(value, struct l2_fdb_val);
+};
+
+struct l2_fdb_inner_map l2_fdb_inner SEC(".maps");
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
+  __uint(max_entries, MAX_L2_NETWORKS);
+  __type(key, __u32); // VNI
+  __type(value, __u32);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+  __array(values, struct l2_fdb_inner_map);
+} l2_fdb SEC(".maps");
+
+// l2_bum_local_inner_map is the set of local veths on one L2Network. A
+// broadcast, an unknown unicast or a multicast frame is copied to
+// every one of them but the port it came in on.
+struct l2_bum_local_inner_map {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_L2_BUM_PER_NETWORK);
+  __type(key, __u32);  // ifindex
+  __type(value, __u8); // always 1
+};
+
+struct l2_bum_local_inner_map l2_bum_local_inner SEC(".maps");
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
+  __uint(max_entries, MAX_L2_NETWORKS);
+  __type(key, __u32); // VNI
+  __type(value, __u32);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+  __array(values, struct l2_bum_local_inner_map);
+} l2_bum_local SEC(".maps");
+
+// l2_bum_remote_inner_map is the set of nodes that hold a port on one
+// L2Network. It is a table of its own and not a second half of
+// l2_bum_local because a frame bound for a node is stamped with a
+// tunnel key first, and handing a stamped frame to a device that is
+// not a tunnel crashes the kernel (cilium#19428). Two tables make that
+// mistake impossible to write.
+//
+// The inner map repeats the layout of l2_bum_local_inner_map instead
+// of naming it, for the reason tgw_fib_inner_map gives above: one
+// map-def struct named by two __array(values, ...) members loses its
+// key and value types to BTF forward declarations.
+struct l2_bum_remote_inner_map {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_L2_BUM_PER_NETWORK);
+  __type(key, __u32);  // VTEP IPv4, host byte order
+  __type(value, __u8); // always 1
+};
+
+struct l2_bum_remote_inner_map l2_bum_remote_inner SEC(".maps");
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
+  __uint(max_entries, MAX_L2_NETWORKS);
+  __type(key, __u32); // VNI
+  __type(value, __u32);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+  __array(values, struct l2_bum_remote_inner_map);
+} l2_bum_remote SEC(".maps");
 
 #endif // JUNEAU_BPF_MAPS_H
