@@ -396,3 +396,72 @@ func TestResolveSessionAppendsReverseTuplesForIPTrace(t *testing.T) {
 		t.Errorf("reverse tuple must be tagged Reply: %+v", rev)
 	}
 }
+
+func TestLookupPodVPCFollowsThePrimaryNIC(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "web", UID: "uid-web"},
+		Status:     corev1.PodStatus{PodIP: "10.16.0.5"},
+	}
+	objects := []client.Object{
+		pod,
+		&juneauv1alpha1.NetworkInterface{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "web.data0"},
+			Spec: juneauv1alpha1.NetworkInterfaceSpec{
+				PodRef: juneauv1alpha1.NetworkInterfacePodReference{UID: "uid-web", Name: "web", Interface: "data0"},
+				Subnet: "subnet-storage",
+			},
+		},
+		&juneauv1alpha1.NetworkInterface{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "web.eth0"},
+			Spec: juneauv1alpha1.NetworkInterfaceSpec{
+				PodRef: juneauv1alpha1.NetworkInterfacePodReference{UID: "uid-web", Name: "web", Interface: "eth0"},
+				Subnet: "subnet-web",
+			},
+		},
+		&juneauv1alpha1.Subnet{
+			ObjectMeta: metav1.ObjectMeta{Name: "subnet-web"},
+			Spec:       juneauv1alpha1.SubnetSpec{Vpc: "vpc-web"},
+		},
+		&juneauv1alpha1.Subnet{
+			ObjectMeta: metav1.ObjectMeta{Name: "subnet-storage"},
+			Spec:       juneauv1alpha1.SubnetSpec{Vpc: "vpc-storage"},
+		},
+		&juneauv1alpha1.Vpc{ObjectMeta: metav1.ObjectMeta{Name: "vpc-web"}, Status: juneauv1alpha1.VpcStatus{VpcID: 7}},
+		&juneauv1alpha1.Vpc{ObjectMeta: metav1.ObjectMeta{Name: "vpc-storage"}, Status: juneauv1alpha1.VpcStatus{VpcID: 9}},
+	}
+	cl := fake.NewClientBuilder().WithScheme(newSchemeForTest(t)).WithObjects(objects...).Build()
+
+	got, err := lookupPodVPC(context.Background(), cl, pod)
+	if err != nil {
+		t.Fatalf("lookupPodVPC: %v", err)
+	}
+	if got != 7 {
+		t.Fatalf("got VPC id %d, want the id %d of the primary NIC", got, 7)
+	}
+}
+
+func TestLookupPodVPCIgnoresAPodWithoutPrimaryNIC(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "web", UID: "uid-web"},
+	}
+	objects := []client.Object{
+		pod,
+		&juneauv1alpha1.NetworkInterface{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "web.data0"},
+			Spec: juneauv1alpha1.NetworkInterfaceSpec{
+				PodRef: juneauv1alpha1.NetworkInterfacePodReference{UID: "uid-web", Name: "web", Interface: "data0"},
+				Subnet: "subnet-storage",
+			},
+		},
+		&juneauv1alpha1.Subnet{
+			ObjectMeta: metav1.ObjectMeta{Name: "subnet-storage"},
+			Spec:       juneauv1alpha1.SubnetSpec{Vpc: "vpc-storage"},
+		},
+		&juneauv1alpha1.Vpc{ObjectMeta: metav1.ObjectMeta{Name: "vpc-storage"}, Status: juneauv1alpha1.VpcStatus{VpcID: 9}},
+	}
+	cl := fake.NewClientBuilder().WithScheme(newSchemeForTest(t)).WithObjects(objects...).Build()
+
+	if _, err := lookupPodVPC(context.Background(), cl, pod); err == nil {
+		t.Fatal("expected an error when the pod has no primary NIC")
+	}
+}

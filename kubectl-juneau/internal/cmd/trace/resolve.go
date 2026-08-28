@@ -450,9 +450,10 @@ func (o *Options) resolveServiceEndpoint(ctx context.Context, cl client.Client, 
 	return ep, nil
 }
 
-// lookupPodVPC walks Pod → NetworkInterface → Subnet → Vpc to learn
-// the VPC ID. Best-effort: missing links return 0 and the caller
-// falls back to host scope.
+// lookupPodVPC walks Pod → primary NetworkInterface → Subnet → Vpc to
+// learn the VPC ID. Best-effort: missing links return 0 and the caller
+// falls back to host scope. Extra NICs are skipped because a trace is
+// scoped to the Vpc the Pod's own address lives in.
 func lookupPodVPC(ctx context.Context, cl client.Client, pod *corev1.Pod) (uint32, error) {
 	var nwifs juneauv1alpha1.NetworkInterfaceList
 	if err := cl.List(ctx, &nwifs, client.InNamespace(pod.Namespace)); err != nil {
@@ -460,11 +461,15 @@ func lookupPodVPC(ctx context.Context, cl client.Client, pod *corev1.Pod) (uint3
 	}
 	var nwif *juneauv1alpha1.NetworkInterface
 	for i := range nwifs.Items {
-		if nwifs.Items[i].Spec.PodRef.UID == string(pod.UID) {
+		podRef := nwifs.Items[i].Spec.PodRef
+		if podRef.Interface != juneauv1alpha1.PodPrimaryInterfaceName {
+			continue
+		}
+		if podRef.UID == string(pod.UID) {
 			nwif = &nwifs.Items[i]
 			break
 		}
-		if nwifs.Items[i].Spec.PodRef.Name == pod.Name {
+		if podRef.Name == pod.Name {
 			nwif = &nwifs.Items[i]
 		}
 	}
