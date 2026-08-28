@@ -139,9 +139,11 @@ worker-1  4242  1a:2b:3c:00:00:02  0        10.0.0.12   913844015886
 フレームがどのhookを通ったかは`kubectl juneau trace`で追えます。どのNICの話なのかと、自分で振ったアドレスの両方を渡してください。
 
 ```console
-$ kubectl juneau trace --from-pod default/lab-a --interface eth1 --from-ip 192.168.50.1 \
+$ kubectl juneau trace --from-pod default/lab-a --from-interface eth1 --from-ip 192.168.50.1 \
     --to-pod default/lab-b --to-interface eth1 --to-ip 192.168.50.2 --proto icmp
 ```
+
+`--from-ip`には、そのPodが実際にそのアドレスから送るものを書いてください。probeはPodの中で`ping`を実行するだけなので、送信元アドレスはPodのルーティングが選びます。
 
 ### 5. IP以外のフレームが通ることを確認
 
