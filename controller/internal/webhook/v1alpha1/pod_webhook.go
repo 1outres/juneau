@@ -13,6 +13,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"net/netip"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -267,13 +268,18 @@ func (v *PodSecurityGroupValidator) validate(ctx context.Context, pod *corev1.Po
 	}
 
 	nics, errs := podNICsToValidate(pod)
+	subnets := make(map[string]*juneauv1alpha1.Subnet, len(nics))
 	for _, nic := range nics {
-		nicErrs, err := v.validateNIC(ctx, nic)
+		subnet, nicErrs, err := v.validateNIC(ctx, nic)
 		if err != nil {
 			return nil, err
 		}
 		errs = append(errs, nicErrs...)
+		if subnet != nil {
+			subnets[nic.attachment.Interface] = subnet
+		}
 	}
+	errs = append(errs, validateNICSubnetsDoNotOverlap(nics, subnets)...)
 
 	if len(errs) > 0 {
 		return nil, apierrors.NewInvalid(schema.GroupKind{Group: "", Kind: "Pod"}, pod.Name, errs)
@@ -332,9 +338,9 @@ func podNICsToValidate(pod *corev1.Pod) ([]podNIC, field.ErrorList) {
 // validateNIC checks one NIC against the cluster: its SecurityGroups have
 // to exist, they have to live in the Vpc of the NIC's own Subnet, and a
 // Vpc that enforces SecurityGroups needs at least one on this NIC.
-func (v *PodSecurityGroupValidator) validateNIC(ctx context.Context, nic podNIC) (field.ErrorList, error) {
+func (v *PodSecurityGroupValidator) validateNIC(ctx context.Context, nic podNIC) (*juneauv1alpha1.Subnet, field.ErrorList, error) {
 	if len(nic.attachment.SecurityGroups) > juneauv1alpha1.PodSecurityGroupsMax {
-		return field.ErrorList{field.Invalid(nic.path, nic.value,
+		return nil, field.ErrorList{field.Invalid(nic.path, nic.value,
 			fmt.Sprintf("at most %d security groups allowed (got %d)",
 				juneauv1alpha1.PodSecurityGroupsMax, len(nic.attachment.SecurityGroups)))}, nil
 	}
@@ -342,17 +348,17 @@ func (v *PodSecurityGroupValidator) validateNIC(ctx context.Context, nic podNIC)
 	var subnet juneauv1alpha1.Subnet
 	if err := v.Get(ctx, client.ObjectKey{Name: nic.attachment.Subnet}, &subnet); err != nil {
 		if apierrors.IsNotFound(err) {
-			return nic.missingReference(fmt.Sprintf("Subnet %q does not exist", nic.attachment.Subnet)), nil
+			return nil, nic.missingReference(fmt.Sprintf("Subnet %q does not exist", nic.attachment.Subnet)), nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
 
 	var vpc juneauv1alpha1.Vpc
 	if err := v.Get(ctx, client.ObjectKey{Name: subnet.Spec.Vpc}, &vpc); err != nil {
 		if apierrors.IsNotFound(err) {
-			return nic.missingReference(fmt.Sprintf("Vpc %q of Subnet %q does not exist", subnet.Spec.Vpc, subnet.Name)), nil
+			return &subnet, nic.missingReference(fmt.Sprintf("Vpc %q of Subnet %q does not exist", subnet.Spec.Vpc, subnet.Name)), nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
 
 	var errs field.ErrorList
@@ -365,7 +371,7 @@ func (v *PodSecurityGroupValidator) validateNIC(ctx context.Context, nic podNIC)
 					fmt.Sprintf("entry [%d]: SecurityGroup %q does not exist", i, name)))
 				continue
 			}
-			return nil, err
+			return nil, nil, err
 		}
 		if sg.Spec.Vpc != vpc.Name {
 			errs = append(errs, field.Invalid(nic.path, nic.value,
@@ -381,7 +387,45 @@ func (v *PodSecurityGroupValidator) validateNIC(ctx context.Context, nic podNIC)
 			fmt.Sprintf("Vpc %q has enforceSecurityGroups=true; interface %q must reference at least one SecurityGroup",
 				vpc.Name, nic.attachment.Interface)))
 	}
-	return errs, nil
+	return &subnet, errs, nil
+}
+
+// validateNICSubnetsDoNotOverlap rejects a pod whose NICs would land on
+// overlapping prefixes. The pod would get two on-link routes for the same
+// addresses and pick one of them at random, which is impossible to debug
+// from inside the pod.
+func validateNICSubnetsDoNotOverlap(nics []podNIC, subnets map[string]*juneauv1alpha1.Subnet) field.ErrorList {
+	type nicPrefix struct {
+		nic    podNIC
+		prefix netip.Prefix
+	}
+
+	parsed := make([]nicPrefix, 0, len(nics))
+	for _, nic := range nics {
+		subnet, ok := subnets[nic.attachment.Interface]
+		if !ok {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(subnet.Spec.CIDR)
+		if err != nil {
+			continue
+		}
+		parsed = append(parsed, nicPrefix{nic: nic, prefix: prefix.Masked()})
+	}
+
+	var errs field.ErrorList
+	for i := 1; i < len(parsed); i++ {
+		for j := 0; j < i; j++ {
+			if !parsed[i].prefix.Overlaps(parsed[j].prefix) {
+				continue
+			}
+			errs = append(errs, field.Invalid(parsed[i].nic.path, parsed[i].nic.value,
+				fmt.Sprintf("Subnet %q of interface %q and Subnet %q of interface %q overlap",
+					parsed[i].nic.attachment.Subnet, parsed[i].nic.attachment.Interface,
+					parsed[j].nic.attachment.Subnet, parsed[j].nic.attachment.Interface)))
+		}
+	}
+	return errs
 }
 
 func (n podNIC) missingReference(detail string) field.ErrorList {

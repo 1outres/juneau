@@ -772,3 +772,31 @@ var _ = Describe("Pod extra NIC validating webhook", func() {
 		Expect(created.Spec.DNSConfig.Nameservers).NotTo(ContainElement(extra.Status.DNS))
 	})
 })
+
+var _ = Describe("Pod overlapping NIC subnets", func() {
+	It("rejects two NICs whose subnets overlap", func() {
+		primary := customSubnetFixture()
+		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
+			juneauv1alpha1.PodAnnotationSubnet: primary.Name,
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(
+				`[{"interface":"eth1","subnet":%q}]`, primary.Name),
+		})
+		err := webhookK8sClient.Create(context.Background(), pod)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("overlap"))
+	})
+
+	It("accepts two NICs on subnets that do not overlap", func() {
+		primary := customSubnetFixture()
+		extra := customSubnetFixture()
+		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
+			juneauv1alpha1.PodAnnotationSubnet: primary.Name,
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(
+				`[{"interface":"eth1","subnet":%q}]`, extra.Name),
+		})
+		Expect(webhookK8sClient.Create(context.Background(), pod)).To(Succeed())
+		DeferCleanup(func() {
+			_ = webhookK8sClient.Delete(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: "default"}})
+		})
+	})
+})
