@@ -18,6 +18,32 @@
 #define TC_ACT_OK 0
 #define TC_ACT_SHOT 2
 
+// l2_gateway_port reports whether subnet_id names an L2Network and, if
+// it does, which veth is this node's gateway port for it.
+//
+// The two kinds of network keep their addresses apart. A Subnet
+// resolves a destination through arp_table and forwards the frame with
+// fdb, both of which this program reads directly. An L2Network keeps
+// what it has learned in l2_arp, and the program on its gateway port is
+// what reads that table, so a packet routed at a segment is handed to
+// the port as it stands instead of being resolved here.
+//
+// ifindex is 0 when this node holds no port on the segment. The caller
+// has to treat that as a drop rather than as a Subnet, because
+// arp_table holds nothing for an L2Network either way.
+static __always_inline bool l2_gateway_port(__u32 subnet_id,
+                                            __u32 *ifindex) {
+  struct l2_network_key nkey = {.vni = subnet_id};
+  if (!bpf_map_lookup_elem(&l2_network_map, &nkey))
+    return false;
+
+  struct l2_gateway_key gkey = {.vni = subnet_id};
+  const struct l2_gateway_val *gateway =
+      bpf_map_lookup_elem(&l2_gateway, &gkey);
+  *ifindex = gateway ? gateway->ifindex : 0;
+  return true;
+}
+
 static __always_inline int forward_l2(struct __sk_buff *skb, struct ethhdr *eth,
                                       __u32 subnet_id, __u32 trace_id) {
   struct fdb_key fk = {};
@@ -299,25 +325,42 @@ static __always_inline int handle_napt_in(struct __sk_buff *skb,
     return TC_ACT_SHOT;
   }
 
-  struct arp_table_key ak = {
-      .subnet_id = cv->next_subnet_id,
-      .ipaddr = bpf_ntohl(cv->new_daddr),
-  };
-  const struct arp_table_val *av = bpf_map_lookup_elem(&arp_table, &ak);
-  if (!av) {
-    trace_emit_map_miss_l3(skb, trace_id, TRACE_REASON_MISS_ARP,
+  // The reply of a flow a workload on an L2Network opened comes back
+  // here. Its MAC is in l2_arp rather than arp_table, so the packet is
+  // handed to the gateway port once the addresses are put back, and
+  // l2_gateway resolves the MAC and puts the frame on the segment.
+  __u32 l2_gw_ifindex = 0;
+  bool via_l2_gateway = l2_gateway_port(cv->next_subnet_id, &l2_gw_ifindex);
+  if (via_l2_gateway && l2_gw_ifindex == 0) {
+    trace_emit_map_miss_l3(skb, trace_id, TRACE_REASON_MISS_L2_GATEWAY,
                            TRACE_HOOK_NODE_INGRESS, TRACE_SCOPE_HOST, 0,
-                           cv->next_subnet_id, bpf_ntohl(cv->new_daddr));
+                           cv->next_subnet_id, cv->next_subnet_id);
     trace_emit_drop_l3(skb, trace_id, TRACE_REASON_DROP_SHOT,
                        TRACE_HOOK_NODE_INGRESS, TRACE_SCOPE_HOST, 0,
                        cv->next_subnet_id);
     return TC_ACT_SHOT;
   }
 
-  __u8 dst_mac[ETH_ALEN];
-  __u8 src_mac[ETH_ALEN];
-  __builtin_memcpy(dst_mac, av->mac, ETH_ALEN);
-  __builtin_memcpy(src_mac, subnet->gw_mac, ETH_ALEN);
+  __u8 dst_mac[ETH_ALEN] = {};
+  __u8 src_mac[ETH_ALEN] = {};
+  if (!via_l2_gateway) {
+    struct arp_table_key ak = {
+        .subnet_id = cv->next_subnet_id,
+        .ipaddr = bpf_ntohl(cv->new_daddr),
+    };
+    const struct arp_table_val *av = bpf_map_lookup_elem(&arp_table, &ak);
+    if (!av) {
+      trace_emit_map_miss_l3(skb, trace_id, TRACE_REASON_MISS_ARP,
+                             TRACE_HOOK_NODE_INGRESS, TRACE_SCOPE_HOST, 0,
+                             cv->next_subnet_id, bpf_ntohl(cv->new_daddr));
+      trace_emit_drop_l3(skb, trace_id, TRACE_REASON_DROP_SHOT,
+                         TRACE_HOOK_NODE_INGRESS, TRACE_SCOPE_HOST, 0,
+                         cv->next_subnet_id);
+      return TC_ACT_SHOT;
+    }
+    __builtin_memcpy(dst_mac, av->mac, ETH_ALEN);
+    __builtin_memcpy(src_mac, subnet->gw_mac, ETH_ALEN);
+  }
 
   __u8 tcp_flags = 0;
   bool have_tcp_flags = false;
@@ -386,6 +429,13 @@ static __always_inline int handle_napt_in(struct __sk_buff *skb,
   eth = data;
   if ((void *)(eth + 1) > data_end)
     return TC_ACT_SHOT;
+
+  if (via_l2_gateway) {
+    trace_emit_redirect_l3(skb, trace_id, TRACE_REASON_REDIRECT_IFINDEX,
+                           TRACE_HOOK_NODE_INGRESS, TRACE_SCOPE_HOST, 0,
+                           cv->next_subnet_id, l2_gw_ifindex);
+    return bpf_redirect(l2_gw_ifindex, 0);
+  }
 
   __builtin_memcpy(eth->h_dest, dst_mac, ETH_ALEN);
   __builtin_memcpy(eth->h_source, src_mac, ETH_ALEN);
