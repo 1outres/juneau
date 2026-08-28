@@ -172,6 +172,15 @@ func (r *L2NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 
+	aclRef, err := r.resolveNetworkACL(ctx, &resource)
+	if err != nil {
+		if updateErr := r.updateStatus(ctx, &resource, *desired, metav1.ConditionFalse, l2NetworkReasonReconcileFailed, fmt.Sprintf("failed to resolve NetworkACL: %v", err)); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{}, err
+	}
+	desired.NetworkACL = aclRef
+
 	if err := r.updateStatus(ctx, &resource, *desired, metav1.ConditionTrue, l2NetworkReasonReconcileSucceeded, ""); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -206,6 +215,33 @@ func (r *L2NetworkReconciler) vpcIsReady(ctx context.Context, resource *juneauv1
 	}
 
 	return true, nil
+}
+
+// resolveNetworkACL produces the NetworkACLRef the daemon reads from
+// status.networkACL when it programs the gateway port of the segment.
+//
+// A named ACL that is not there yet, and one that has not been handed
+// an ACLID, both come back as a ref with ACLID 0. The daemon reads that
+// as "no ACL programmed", and the user sees in status that the
+// reference is dangling rather than being told nothing at all.
+func (r *L2NetworkReconciler) resolveNetworkACL(ctx context.Context, resource *juneauv1alpha1.L2Network) (*juneauv1alpha1.NetworkACLRef, error) {
+	if resource.Spec.NetworkACL == "" {
+		return nil, nil
+	}
+
+	var acl juneauv1alpha1.NetworkACL
+	if err := r.Get(ctx, client.ObjectKey{Name: resource.Spec.NetworkACL}, &acl); err != nil {
+		if errors.IsNotFound(err) {
+			return &juneauv1alpha1.NetworkACLRef{Name: resource.Spec.NetworkACL}, nil
+		}
+		return nil, err
+	}
+
+	return &juneauv1alpha1.NetworkACLRef{
+		Name:           acl.Name,
+		ACLID:          acl.Status.ACLID,
+		RulesetVersion: acl.Status.RulesetVersion,
+	}, nil
 }
 
 // effectiveMTU is the MTU the segment ends up with: what it asked for,
@@ -385,6 +421,7 @@ func (r *L2NetworkReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&juneauv1alpha1.AllocationPool{}).
 		Watches(&juneauv1alpha1.Vpc{}, handler.EnqueueRequestsFromMapFunc(r.mapVpcToL2Networks)).
 		Watches(&juneauv1alpha1.AllocationClaim{}, handler.EnqueueRequestsFromMapFunc(r.mapClaimToL2Networks)).
+		Watches(&juneauv1alpha1.NetworkACL{}, handler.EnqueueRequestsFromMapFunc(r.mapNetworkACLToL2Networks)).
 		Named("l2network").
 		Complete(r)
 }
@@ -402,6 +439,31 @@ func (r *L2NetworkReconciler) mapVpcToL2Networks(ctx context.Context, obj client
 
 	requests := make([]reconcile.Request, 0, len(list.Items))
 	for i := range list.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: list.Items[i].Name}})
+	}
+	return requests
+}
+
+// mapNetworkACLToL2Networks fans a NetworkACL change out to the
+// segments that name it, so an ACLID allocation or a rulesetVersion
+// bump reaches status.networkACL without waiting for an unrelated
+// L2Network event.
+func (r *L2NetworkReconciler) mapNetworkACLToL2Networks(ctx context.Context, obj client.Object) []reconcile.Request {
+	acl, ok := obj.(*juneauv1alpha1.NetworkACL)
+	if !ok {
+		return nil
+	}
+
+	var list juneauv1alpha1.L2NetworkList
+	if err := r.List(ctx, &list); err != nil {
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0, len(list.Items))
+	for i := range list.Items {
+		if list.Items[i].Spec.NetworkACL != acl.Name {
+			continue
+		}
 		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: list.Items[i].Name}})
 	}
 	return requests

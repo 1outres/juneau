@@ -75,35 +75,7 @@ type SubnetStatus struct {
 	// reference was resolved. Empty (nil) when spec.networkACL is
 	// unset or the named ACL does not yet exist.
 	// +optional
-	NetworkACL *SubnetNetworkACLRef `json:"networkACL,omitempty"`
-}
-
-// SubnetNetworkACLRef carries the resolved view of a Subnet's
-// NetworkACL attachment that the daemon needs to program the BPF
-// subnet_map. Distinct from spec.networkACL because it folds in fields
-// (ACLID, RulesetVersion) that the controller resolves at reconcile
-// time and that the daemon cannot recompute from the spec alone.
-type SubnetNetworkACLRef struct {
-	// Name mirrors spec.networkACL — the user-facing reference. Kept
-	// in status so daemons consume one struct without cross-checking
-	// spec.
-	// +required
-	Name string `json:"name"`
-
-	// ACLID is the resolved cluster-wide identifier from the
-	// referenced NetworkACL's status.aclID. Zero means "the ACL
-	// exists in spec but has not been allocated yet"; the daemon
-	// treats zero as "no ACL programmed" and falls back to default-allow
-	// until the controller publishes a non-zero value.
-	// +optional
-	ACLID uint32 `json:"aclID,omitempty"`
-
-	// RulesetVersion mirrors the referenced ACL's
-	// status.rulesetVersion at the moment the reference was resolved.
-	// Daemons compare this against their last-applied value to decide
-	// whether to flush CT entries.
-	// +optional
-	RulesetVersion uint64 `json:"rulesetVersion,omitempty"`
+	NetworkACL *NetworkACLRef `json:"networkACL,omitempty"`
 }
 
 // +kubebuilder:object:root=true

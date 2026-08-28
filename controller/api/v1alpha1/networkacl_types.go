@@ -232,6 +232,35 @@ const (
 	NetworkACLReasonRuleLimitExceeded  = "RuleLimitExceeded"
 )
 
+// NetworkACLRef carries the resolved view of a NetworkACL
+// attachment that the daemon needs to program the BPF subnet_map. Both
+// a Subnet and the gateway port of an L2Network publish one. It is
+// distinct from spec.networkACL because it folds in fields (ACLID,
+// RulesetVersion) that the controller resolves at reconcile time and
+// that the daemon cannot recompute from the spec alone.
+type NetworkACLRef struct {
+	// Name mirrors spec.networkACL — the user-facing reference. Kept
+	// in status so daemons consume one struct without cross-checking
+	// spec.
+	// +required
+	Name string `json:"name"`
+
+	// ACLID is the resolved cluster-wide identifier from the
+	// referenced NetworkACL's status.aclID. Zero means "the ACL
+	// exists in spec but has not been allocated yet"; the daemon
+	// treats zero as "no ACL programmed" and falls back to default-allow
+	// until the controller publishes a non-zero value.
+	// +optional
+	ACLID uint32 `json:"aclID,omitempty"`
+
+	// RulesetVersion mirrors the referenced ACL's
+	// status.rulesetVersion at the moment the reference was resolved.
+	// Daemons compare this against their last-applied value to decide
+	// whether to flush CT entries.
+	// +optional
+	RulesetVersion uint64 `json:"rulesetVersion,omitempty"`
+}
+
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster,shortName={"netacl"}

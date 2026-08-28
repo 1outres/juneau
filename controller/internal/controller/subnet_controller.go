@@ -210,7 +210,7 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	return ctrl.Result{}, nil
 }
 
-// resolveNetworkACL produces the SubnetNetworkACLRef the daemon
+// resolveNetworkACL produces the NetworkACLRef the daemon
 // consumes from status.networkACL. The webhook already enforces same-
 // Vpc and existence at admission time, but the ACL may be allocated
 // asynchronously (status.aclID == 0 until the AllocationClaim resolves)
@@ -219,7 +219,7 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 // daemon can distinguish "no ACL configured" from "ACL configured but
 // not yet ready" — the daemon treats both as "do not enforce" but
 // users can see the dangling reference in status.
-func (r *SubnetReconciler) resolveNetworkACL(ctx context.Context, subnet *juneauv1alpha1.Subnet) (*juneauv1alpha1.SubnetNetworkACLRef, error) {
+func (r *SubnetReconciler) resolveNetworkACL(ctx context.Context, subnet *juneauv1alpha1.Subnet) (*juneauv1alpha1.NetworkACLRef, error) {
 	if subnet.Spec.NetworkACL == "" {
 		return nil, nil
 	}
@@ -227,12 +227,12 @@ func (r *SubnetReconciler) resolveNetworkACL(ctx context.Context, subnet *juneau
 	var acl juneauv1alpha1.NetworkACL
 	if err := r.Get(ctx, client.ObjectKey{Name: subnet.Spec.NetworkACL}, &acl); err != nil {
 		if errors.IsNotFound(err) {
-			return &juneauv1alpha1.SubnetNetworkACLRef{Name: subnet.Spec.NetworkACL}, nil
+			return &juneauv1alpha1.NetworkACLRef{Name: subnet.Spec.NetworkACL}, nil
 		}
 		return nil, err
 	}
 
-	return &juneauv1alpha1.SubnetNetworkACLRef{
+	return &juneauv1alpha1.NetworkACLRef{
 		Name:           acl.Name,
 		ACLID:          acl.Status.ACLID,
 		RulesetVersion: acl.Status.RulesetVersion,
