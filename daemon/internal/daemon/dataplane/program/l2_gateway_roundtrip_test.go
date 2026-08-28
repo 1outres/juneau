@@ -42,6 +42,7 @@ type gatewayPort struct {
 	podEgress  *program.PodEgress
 	l2Egress   *program.L2Egress
 	l2Gateway  *program.L2Gateway
+	l2Ingress  *program.L2Ingress
 	fdb        *l2.Table
 	arp        *l2.Table
 	bumLocal   *l2.Table
@@ -97,10 +98,17 @@ func newGatewayPort(t *testing.T) *gatewayPort {
 	}
 	t.Cleanup(func() { _ = l2Gateway.Close() })
 
+	l2Ingress, err := program.NewL2Ingress(roundTripPinPath)
+	if err != nil {
+		t.Fatalf("load l2_ingress: %+v", err)
+	}
+	t.Cleanup(func() { _ = l2Ingress.Close() })
+
 	port := &gatewayPort{
 		podEgress:  podEgress,
 		l2Egress:   l2Egress,
 		l2Gateway:  l2Gateway,
+		l2Ingress:  l2Ingress,
 		fdb:        l2.NewTable("fdb", l2Egress.Objs.L2Fdb, l2Egress.MapSpecs.L2FdbInner),
 		arp:        l2.NewTable("arp", l2Egress.Objs.L2Arp, l2Egress.MapSpecs.L2ArpInner),
 		host:       bpftest.Dummy(t, "pod1"),
@@ -211,11 +219,12 @@ func TestGatewayAnswersArpFromTheSegment(t *testing.T) {
 //
 // The way home is the half that was missing. Reverse NAT for a Subnet
 // happens in pod_ingress on the veth of the Pod that asked, and an
-// L2Network NIC carries no pod_ingress, so l2_gateway has to undo the
-// rewrite as the reply crosses the port. The two halves only meet in
-// ct_map, which is why they are driven in one test: the entry pod_egress
-// writes has to be the entry l2_gateway reads, under a scope the two
-// take from different maps.
+// L2Network NIC carries no pod_ingress, so l2_ingress undoes the
+// rewrite as the reply reaches the workload. It has to be that hook and
+// not the gateway port: the two halves only meet in ct_map, and ct_map
+// lives on the node the flow was opened from. The gateway port runs
+// wherever the reply was routed, which for a backend on another node is
+// not that node at all.
 func TestGatewayCarriesAClusterIPFlowBothWays(t *testing.T) {
 	port := newGatewayPort(t)
 	backend := bpftest.Dummy(t, "backend")
@@ -233,13 +242,15 @@ func TestGatewayCarriesAClusterIPFlowBothWays(t *testing.T) {
 		t.Fatalf("the Service request got verdict %d, want a redirect (%d)", verdict, bpftest.ActRedirect)
 	}
 
-	// The way home: the backend answers the address it was reached on.
-	reply := bpftest.Frame(t, port.gatewayMAC, backendMAC, bpftest.EtherTypeIPv4,
+	// The way home, at the last hook before the workload. The gateway
+	// port it crossed on the way in may sit on another node; this one
+	// never does.
+	reply := bpftest.Frame(t, port.hostMAC, port.gatewayMAC, bpftest.EtherTypeIPv4,
 		bpftest.TCPv4(t, backendAddress, host2Address, backendPort, clientPort))
-	verdict, out := bpftest.RunFrame(t, port.l2Gateway.Objs.TcL2Gateway, reply, port.gateway)
+	verdict, out := bpftest.RunFrame(t, port.l2Ingress.Objs.TcL2Ingress, reply, port.host)
 
-	if verdict != bpftest.ActRedirect {
-		t.Fatalf("verdict %d, want a redirect (%d)", verdict, bpftest.ActRedirect)
+	if verdict != bpftest.ActOK {
+		t.Fatalf("verdict %d, want the reply delivered (%d)", verdict, bpftest.ActOK)
 	}
 	if got := bpftest.SourceAddress(t, out); got != serviceAddress {
 		t.Errorf("the reply left with source %s, want the Service address %s the workload wrote to", got, serviceAddress)
@@ -383,11 +394,14 @@ func (p *gatewayPort) denyInbound(t *testing.T) {
 // the two hooks of the gateway port have to agree on.
 //
 // pod_egress admits the way out under POLICY_HOOK_POD_EGRESS, and
-// l2_gateway judges the way in under POLICY_HOOK_POD_INGRESS. Those are
+// l2_ingress judges the way in under POLICY_HOOK_POD_INGRESS. Those are
 // different keys in policy_ct_map. If the reply had to be judged on its
 // own, an ACL that refuses everything inbound would kill every flow the
 // segment opens, and the rule would read as something no operator
 // intended.
+//
+// Both hooks run on the node of the workload, which is what makes the
+// pairing reachable at all: policy_ct_map is per node.
 //
 // It does not, because policy_ct_install writes each admission twice:
 // once under the hook that made it and once as the mirrored tuple under
@@ -395,7 +409,7 @@ func (p *gatewayPort) denyInbound(t *testing.T) {
 // mechanism a Subnet relies on, where the two hooks sit on the veths of
 // two different Pods.
 //
-// The test also pins the order inside this hook. The short-circuit only
+// The test also pins the order inside that hook. The short-circuit only
 // lands because the reverse rewrite runs first: the entry was written
 // against the address the workload wrote to, so the reply has to carry
 // that address again before it is looked up.
@@ -414,12 +428,12 @@ func TestGatewayLetsTheReplyOfAFlowTheSegmentOpenedBackIn(t *testing.T) {
 		t.Fatalf("the way out got verdict %d, want a redirect (%d)", verdict, bpftest.ActRedirect)
 	}
 
-	reply := bpftest.Frame(t, port.gatewayMAC, backendMAC, bpftest.EtherTypeIPv4,
+	reply := bpftest.Frame(t, port.hostMAC, port.gatewayMAC, bpftest.EtherTypeIPv4,
 		bpftest.TCPv4(t, backendAddress, host2Address, backendPort, clientPort))
-	verdict, out := bpftest.RunFrame(t, port.l2Gateway.Objs.TcL2Gateway, reply, port.gateway)
+	verdict, out := bpftest.RunFrame(t, port.l2Ingress.Objs.TcL2Ingress, reply, port.host)
 
-	if verdict != bpftest.ActRedirect {
-		t.Fatalf("the reply got verdict %d, want it admitted on the flow's own record (%d)", verdict, bpftest.ActRedirect)
+	if verdict != bpftest.ActOK {
+		t.Fatalf("the reply got verdict %d, want it admitted on the flow's own record (%d)", verdict, bpftest.ActOK)
 	}
 	if got := bpftest.SourceAddress(t, out); got != serviceAddress {
 		t.Errorf("the reply left with source %s, want %s", got, serviceAddress)
@@ -427,9 +441,9 @@ func TestGatewayLetsTheReplyOfAFlowTheSegmentOpenedBackIn(t *testing.T) {
 
 	// Nothing else gets in. The record admits one flow, not the
 	// direction it came from.
-	fresh := bpftest.Frame(t, port.gatewayMAC, backendMAC, bpftest.EtherTypeIPv4,
+	fresh := bpftest.Frame(t, port.hostMAC, port.gatewayMAC, bpftest.EtherTypeIPv4,
 		bpftest.TCPv4(t, backendAddress, host2Address, backendPort, clientPort+1))
-	if verdict := bpftest.Run(t, port.l2Gateway.Objs.TcL2Gateway, fresh, port.gateway); verdict != bpftest.ActShot {
+	if verdict := bpftest.Run(t, port.l2Ingress.Objs.TcL2Ingress, fresh, port.host); verdict != bpftest.ActShot {
 		t.Errorf("an unrelated inbound flow got verdict %d, want a drop (%d)", verdict, bpftest.ActShot)
 	}
 }

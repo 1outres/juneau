@@ -594,6 +594,8 @@ type L2IngressMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type L2IngressVariableSpecs struct {
+	AclRuleBtfAnchor *ebpf.VariableSpec `ebpf:"_acl_rule_btf_anchor"`
+	SgRuleBtfAnchor  *ebpf.VariableSpec `ebpf:"_sg_rule_btf_anchor"`
 }
 
 // L2IngressObjects contains all objects after they have been loaded into the kernel.
@@ -733,6 +735,8 @@ func (m *L2IngressMaps) Close() error {
 //
 // It can be passed to LoadL2IngressObjects or ebpf.CollectionSpec.LoadAndAssign.
 type L2IngressVariables struct {
+	AclRuleBtfAnchor *ebpf.Variable `ebpf:"_acl_rule_btf_anchor"`
+	SgRuleBtfAnchor  *ebpf.Variable `ebpf:"_sg_rule_btf_anchor"`
 }
 
 // L2IngressPrograms contains all programs after they have been loaded into the kernel.

@@ -201,83 +201,17 @@ func TestL2GatewayDropsAPacketThatResolvesToItself(t *testing.T) {
 	}
 }
 
-// The addresses a ClusterIP flow out of the segment involves.
-const (
-	serviceAddress = "10.96.0.10"
-	backendAddress = "10.61.0.7"
-	servicePort    = 80
-	backendPort    = 8080
-	clientPort     = 40000
-)
-
-// installServiceReverse records what pod_egress installs on the gateway
-// veth when it DNATs a ClusterIP: the reverse entry that turns the
-// backend's address back into the Service's on the way home.
-func (p *l2GatewayPorts) installServiceReverse(t *testing.T, client string) {
-	t.Helper()
-	err := p.segment.objs.Map(t, "ct_map").Update(
-		&bpf.PodEgressCtKey{
-			Scope: testVpcID,
-			Saddr: networkOrderIPv4(t, backendAddress),
-			Daddr: networkOrderIPv4(t, client),
-			Sport: bigEndianPort(backendPort),
-			Dport: bigEndianPort(clientPort),
-			Proto: 6,
-		},
-		&bpf.PodEgressCtVal{
-			NewSaddr: networkOrderIPv4(t, serviceAddress),
-			NewDaddr: networkOrderIPv4(t, client),
-			NewSport: bigEndianPort(servicePort),
-			NewDport: bigEndianPort(clientPort),
-			Action:   2, // CT_ACTION_SNAT
-		},
-		ebpf.UpdateAny,
-	)
-	if err != nil {
-		t.Fatalf("record the reverse entry of the Service flow: %v", err)
-	}
-}
-
-// bigEndianPort is a port as the data plane stores it: a __be16 read
-// back through a Go uint16.
-func bigEndianPort(port uint16) uint16 { return port<<8 | port>>8 }
-
-// A ClusterIP reply has to leave the gateway carrying the Service's
-// address, not the backend's. Nothing else on the way into the segment
-// can put it back: the reverse rewrite normally happens in pod_ingress,
-// and an L2 NIC has no pod_ingress on it.
-func TestL2GatewayPutsTheServiceAddressBackOnAReply(t *testing.T) {
+// The gateway resolves and re-addresses; it does not read the flow.
+// Undoing a NAT or judging a policy needs the conntrack of that flow,
+// and this program runs wherever the packet was routed rather than on
+// the node that holds it. Putting either back here breaks every
+// cross-node reply, which is how it was found.
+func TestL2GatewayLeavesTheAddressesOfAPacketAlone(t *testing.T) {
 	ports := newL2GatewayPorts(t)
-	client := bpftest.MAC(2)
-	ports.segment.resolve(t, host2Address, client)
-	ports.segment.learn(t, client, uint32(ports.pod2.Index), "")
-	ports.installServiceReverse(t, host2Address)
-
-	frame := bpftest.Frame(t, bpftest.MAC(0xf0), bpftest.MAC(0xf1), bpftest.EtherTypeIPv4,
-		bpftest.TCPv4(t, backendAddress, host2Address, backendPort, clientPort))
-	verdict, out := bpftest.RunFrame(t, ports.program, frame, ports.gateway)
-
-	if verdict != bpftest.ActRedirect {
-		t.Fatalf("verdict %d, want a redirect (%d)", verdict, bpftest.ActRedirect)
-	}
-	if got := bpftest.SourceAddress(t, out); got != serviceAddress {
-		t.Errorf("the reply left with source %s, want the Service address %s", got, serviceAddress)
-	}
-	if got := bpftest.SourcePort(t, out); got != servicePort {
-		t.Errorf("the reply left with source port %d, want %d", got, servicePort)
-	}
-	if got := net.HardwareAddr(out[0:6]); !bytes.Equal(got, client) {
-		t.Errorf("the reply is addressed to %s, want the client that asked (%s)", got, client)
-	}
-}
-
-// A packet with no reverse entry behind it is not a Service reply. It
-// has to reach the segment exactly as it arrived.
-func TestL2GatewayLeavesAPacketWithNoConntrackEntryAlone(t *testing.T) {
-	ports := newL2GatewayPorts(t)
-	client := bpftest.MAC(2)
-	ports.segment.resolve(t, host2Address, client)
-	ports.segment.learn(t, client, uint32(ports.pod2.Index), "")
+	host := bpftest.MAC(2)
+	ports.segment.resolve(t, host2Address, host)
+	ports.segment.learn(t, host, uint32(ports.pod2.Index), "")
+	installServiceReverseInto(t, ports.segment.objs.Map(t, "ct_map"), host2Address)
 
 	frame := bpftest.Frame(t, bpftest.MAC(0xf0), bpftest.MAC(0xf1), bpftest.EtherTypeIPv4,
 		bpftest.TCPv4(t, backendAddress, host2Address, backendPort, clientPort))
@@ -287,54 +221,7 @@ func TestL2GatewayLeavesAPacketWithNoConntrackEntryAlone(t *testing.T) {
 		t.Fatalf("verdict %d, want a redirect (%d)", verdict, bpftest.ActRedirect)
 	}
 	if got := bpftest.SourceAddress(t, out); got != backendAddress {
-		t.Errorf("the packet left with source %s, want the %s it arrived with", got, backendAddress)
-	}
-}
-
-// testACLID is the NetworkACL the gateway tests attach to the segment.
-const testACLID = 3
-
-// denyInbound attaches an ACL that admits nothing on the way in and
-// everything on the way out.
-//
-// A direction with has_*_rules set and no rule that matches falls to a
-// terminal deny, so an empty ingress window is the whole of "deny
-// everything inbound". The egress window is left in default-allow.
-func (p *l2GatewayPorts) denyInbound(t *testing.T) {
-	t.Helper()
-	if err := p.segment.objs.Map(t, "acl_meta_map").Update(
-		uint32(testACLID),
-		&bpf.PodEgressAclMetaVal{HasIngressRules: 1},
-		ebpf.UpdateAny,
-	); err != nil {
-		t.Fatalf("declare the ACL: %v", err)
-	}
-	p.segment.standUpGateway(t, p.gateway, p.gatewayMAC, 0, testACLID)
-}
-
-// A NetworkACL on an L2Network is meant to police what crosses the
-// gateway. Until this hook read one, only the direction leaving the
-// segment was ever judged, and a rule written to keep traffic out did
-// nothing at all.
-func TestL2GatewayDropsWhatTheIngressRulesRefuse(t *testing.T) {
-	ports := newL2GatewayPorts(t)
-	ports.segment.resolve(t, host2Address, bpftest.MAC(2))
-	ports.segment.learn(t, bpftest.MAC(2), uint32(ports.pod2.Index), "")
-	ports.denyInbound(t)
-
-	watched := ports.watch(t)
-	verdict := bpftest.Run(t, ports.program,
-		bpftest.Frame(t, bpftest.MAC(0xf0), bpftest.MAC(0xf1), bpftest.EtherTypeIPv4,
-			bpftest.TCPv4(t, outsideAddress, host2Address, clientPort, servicePort)),
-		ports.gateway)
-
-	if verdict != bpftest.ActShot {
-		t.Errorf("verdict %d, want a drop (%d)", verdict, bpftest.ActShot)
-	}
-	for _, device := range []bpftest.Device{ports.pod2, ports.pod3, ports.tunnel} {
-		if delivered := watched.Delivered(t, device); delivered != 0 {
-			t.Errorf("%s was fed %d copies of a packet the ACL refused", device.Name, delivered)
-		}
+		t.Errorf("the gateway rewrote the source to %s; that belongs to l2_ingress", got)
 	}
 }
 

@@ -37,7 +37,9 @@ VXLANデバイス側だけは別プログラムにしませんでした。同じ
                       → VXLAN → vxlan_ingressのL2分岐
 ```
 
-`l2_ingress`はポリシーを評価せず、書き換えもしません。traceに配送を記録するだけです。これが無いと、trace上ではフレームをredirectしたhookで記録が終わり、届いたのかどうかが読めません。
+`l2_ingress`は、セグメントの中で完結するフレームには何もしません。traceに配送を記録するだけです。これが無いと、trace上ではフレームをredirectしたhookで記録が終わり、届いたのかどうかが読めません。
+
+gatewayが置いたフレームだけは別で、NATの書き戻しとpolicyの評価をここで行います。理由は[Serviceの応答](#service)にあります。見分けるのは送信元MACで、gatewayのMACで署名されているかどうかです。
 
 ## MAC学習
 
@@ -120,7 +122,7 @@ VXLAN経由で受けたフレームは、ローカルポートにだけ配って
 
 この形にした理由は、gatewayから先を作らなくて済むからです。gw vethのingressに`pod_egress`が付いている以上、セグメントから出ていく方向はRouteTableもNATGatewayもElasticIPもClusterIP ServiceもSubnetのときと同じコードを通ります。`pod_egress`への変更は`fib_val.type`を1つ足した分岐だけで、命令数は581,483から581,856に増えました。
 
-帰ってくる方向は同じようにはいきませんでした。`pod_ingress`が担っている書き戻しがどこにも無いからです。Serviceの応答は`l2_gateway`が戻し、NATGatewayの応答は`node_ingress`が戻してからgatewayポートへ渡します。詳しくは[Serviceの応答](#service)にあります。
+帰ってくる方向は同じようにはいきませんでした。`pod_ingress`が担っている書き戻しがどこにも無いからです。Serviceの応答は`l2_ingress`が戻し、NATGatewayの応答は`node_ingress`が戻してからgatewayポートへ渡します。詳しくは[Serviceの応答](#service)にあります。
 
 ### BPF_F_INGRESSが必須です
 
@@ -196,11 +198,19 @@ ARPのフレームは`pod_egress`がgatewayのアドレスのために作った�
 
 L2NetworkのNICからClusterIP Serviceを叩けます。往路は`pod_egress`がgw vethのingressで`handle_service`まで走るので、Subnetから叩いたときと1行も違いません。
 
-復路だけが違います。ServiceのDNATを戻すのは`pod_ingress`で、叩いた側のvethのegressに付いています。L2NetworkのNICに付いているのは`l2_egress`と`l2_ingress`で、どちらもアドレスを読みません。応答はbackendのアドレスのままワークロードに届き、書いた覚えのない相手からの返事として捨てられます。
+復路だけが違います。ServiceのDNATを戻すのは`pod_ingress`で、叩いた側のvethのegressに付いています。L2NetworkのNICにはそれが付いていません。応答はbackendのアドレスのままワークロードに届き、書いた覚えのない相手からの返事として捨てられます。
 
-そこで`l2_gateway`が書き戻します。応答がセグメントに入る唯一のhookで、往路の`pod_egress`が`ct_map`に置いた逆向きエントリはそこから引けます。エントリのscopeは`subnet_map[VNI].vpc_id`、`l2_gateway`が使うのは`l2_network_map[VNI].vpc_id`で、どちらも同じVpcの`status.vpcID`から来ているので一致します。書き戻し自体は`nat.h`の`nat_apply_reverse_snat`で、`pod_ingress`と同じものです。
+書き戻すのは`l2_ingress`です。宛先ワークロードのvethのegress、つまりフレームがワークロードに入る直前で、`nat.h`の`nat_apply_reverse_snat`を呼びます。`pod_ingress`が呼ぶのと同じ関数です。
 
-gw vethのegressに`pod_ingress`を並べて付ける手は使えません。TCXは前のプログラムが`TC_ACT_UNSPEC`を返したときだけ次を走らせますが、`pod_ingress`は`TC_ACT_OK`か`TC_ACT_SHOT`を返すので、`l2_gateway`に届きません。
+**なぜgatewayポートではないのか。**最初はそこに置きました。「応答がセグメントに入る唯一のhook」だと思ったからですが、それはノード単位でしか正しくありませんでした。Vpcからセグメントへ向かうパケットは、宛先エンドポイントのいるノードではなく、**経路が引かれたノード**でセグメントに入ります。応答の経路を引くのはbackendが動いているノードなので、gatewayポートで書き戻すと、そのフローの`ct_map`を持たないノードで書き戻そうとすることになります。同一ノードなら通り、クロスノードでは黙って素通しになりました。
+
+`l2_ingress`は必ず宛先ワークロード自身のノードで走ります。フローを開いたのもそのノードなので、`ct_map`も`policy_ct_map`もそこにあります。
+
+エントリのscopeは`subnet_map[VNI].vpc_id`、`l2_ingress`が使うのは`l2_network_map[VNI].vpc_id`で、どちらも同じVpcの`status.vpcID`から来ているので一致します。
+
+**gatewayが置いたフレームの見分け方**は送信元MACです。gatewayのMACで署名されているものだけが対象で、そのMACは`l2_gateway[vni]`にあります。セグメントの中で完結するフレームは別のMACで来るので、これまで通りアドレスもpolicyも読まれません。「L2セグメントの中は素通し、gatewayを跨ぐときだけ効く」がそのまま保たれます。`l2_egress`はgateway MACを送信元にしたフレームで学習エントリが動くのを拒否するので、ワークロードがそのアドレスを乗っ取ることはできません。自分の送るフレームにそのMACを入れることはできますが、それは自分の通信を審査してもらう側に回るだけで、抜け道にはなりません。
+
+vethのegressに`pod_ingress`を並べて付ける手は使えません。TCXは前のプログラムが`TC_ACT_UNSPEC`を返したときだけ次を走らせますが、`pod_ingress`は`TC_ACT_OK`か`TC_ACT_SHOT`を返すので、後ろのプログラムに届きません。
 
 NATGatewayの応答は経路が違います。`node_ingress`の`handle_napt_in`がアドレスを戻し、宛先MACの解決だけをgatewayポートに任せます。セグメントのMACは`arp_table`ではなく`l2_arp`にあり、それを読むのは`l2_gateway`だからです。
 
@@ -235,21 +245,23 @@ vethとプログラムの世話は`dataplane/link/l2_gateway.go`が持ちます�
 
 ### policy
 
-両方向とも`apply_policy`が評価します。出ていく方向はgw vethのingressの`pod_egress`が`POLICY_HOOK_POD_EGRESS`で、入ってくる方向は`l2_gateway`が`POLICY_HOOK_POD_INGRESS`で呼びます。ACLは`subnet_map.acl_id`から、SecurityGroupは`sg_membership_map`をパケットのアドレスで引いて、です。境界を書いた`subnet_map`のエントリは1つなので、2つのhookが同じACLと同じmembershipを見ます。
+両方向とも`apply_policy`が評価します。出ていく方向はgw vethのingressの`pod_egress`が`POLICY_HOOK_POD_EGRESS`で、入ってくる方向はワークロードのvethのegressの`l2_ingress`が`POLICY_HOOK_POD_INGRESS`で呼びます。どちらもワークロードのノードで走ります。ACLは`subnet_map.acl_id`から、SecurityGroupは`sg_membership_map`をパケットのアドレスで引いて、です。境界を書いた`subnet_map`のエントリは1つなので、2つのhookが同じACLと同じmembershipを見ます。
 
 `apply_policy`が「自分」として見るのはNICではなくパケットのアドレスなので、L2NetworkのNICに付けたSecurityGroupはgatewayを跨ぐ通信で参照されます。`reconciler/sg_membership.go`はL2NetworkのNICのVpcをL2Network経由で解決するようにしました。ただしgatewayを持たないセグメントのNICは`sg_membership_map`に書きません。読む側が存在しないので、書いても誰も見ないエントリが増えるだけです。webhookも同じ理由で、gatewayを持たないセグメントのNICにSecurityGroupを付けることを拒否します。
 
 #### hookの名前を借りている理由
 
-`l2_gateway`が`POLICY_HOOK_POD_INGRESS`を名乗るのは、`policy_ct_map`のキーにhookが入っているからです。`policy_ct_install`は許可を2回書きます。判断したhookのキーと、同じフローを反対側から見たhookのキーです。gw vethのingressの`pod_egress`にとっての反対側がこのプログラムなので、独自のhook番号を作ると、セグメント発のフローの応答が`l2_gateway`で再評価されます。ingressを全部拒否するACLを書いた瞬間、セグメントから出ていくフローが全部死にます。
+`l2_ingress`が`POLICY_HOOK_POD_INGRESS`を名乗るのは、`policy_ct_map`のキーにhookが入っているからです。`policy_ct_install`は許可を2回書きます。判断したhookのキーと、同じフローを反対側から見たhookのキーです。gw vethのingressの`pod_egress`にとっての反対側がこのプログラムなので、独自のhook番号を作ると、セグメント発のフローの応答が再評価されます。ingressを全部拒否するACLを書いた瞬間、セグメントから出ていくフローが全部死にます。
+
+ペアリング自体は正しくても、参照するノードを間違えると同じことが起きます。`policy_ct_map`はノードごとなので、gatewayポートで評価していたときはクロスノードの戻りだけが記録の無いノードで判定され、落ちていました。
 
 Subnet同士の通信で`pod_egress`と`pod_ingress`が別々のNICに付いていても成立しているのは同じ仕組みで、L2のgatewayはその2つを1本のvethの表と裏に載せ替えただけです。
 
-順番も効いています。`l2_gateway`ではServiceの書き戻しを先に、policyを後に走らせます。`pod_ingress`が同じ順にしているのと同じ理由で、CTのエントリはワークロードが書いた宛先で作られているので、応答がそのアドレスに戻ってからでないと引けません。逆にすると、ingressを拒否するACLの下でServiceの応答が落ちます。`TestGatewayLetsTheReplyOfAFlowTheSegmentOpenedBackIn`がそこを押さえています。
+順番も効いています。`l2_ingress`ではServiceの書き戻しを先に、policyを後に走らせます。`pod_ingress`が同じ順にしているのと同じ理由で、CTのエントリはワークロードが書いた宛先で作られているので、応答がそのアドレスに戻ってからでないと引けません。逆にすると、ingressを拒否するACLの下でServiceの応答が落ちます。`TestGatewayLetsTheReplyOfAFlowTheSegmentOpenedBackIn`がそこを押さえています。
 
 #### 命令数
 
-`apply_policy`はそのまま呼ぶと重すぎました。`handle()`にインライン展開すると`l2_gateway`は622,171命令になります。手前のNAT書き戻しがパケットポインタの状態をいくつも残していて、verifierがルール評価をその数だけ歩き直すからです。`l2_gateway_policy`というBPF-to-BPFのsubprogramに包むと132,527命令に落ちます。引数は全てスカラーです。`policy-data-plane.md`にある「スタックポインタを引数に取るnoinline callで爆発する」の裏返しで、渡すものがスカラーだけならverifierは本体を1回だけ歩きます。
+`apply_policy`はそのまま呼ぶと重すぎました。gatewayポートに置いていたときの実測で、`handle()`にインライン展開すると622,171命令、BPF-to-BPFのsubprogramに包むと132,527命令です。手前のNAT書き戻しがパケットポインタの状態をいくつも残していて、展開するとverifierがルール評価をその数だけ歩き直します。`l2_ingress_policy`も同じ形で、引数は全てスカラーです。`policy-data-plane.md`にある「スタックポインタを引数に取るnoinline callで爆発する」の裏返しで、渡すものがスカラーだけならverifierは本体を1回だけ歩きます。
 
 セグメントの中の通信には、どちらの方向も一切効きません。L2のプログラムはpolicyを読まないからです。
 
@@ -350,11 +362,11 @@ OK   pod_ingress: tc_pod_ingress processed 101533 insns (limit 1000000, 10.2% us
 OK   vxlan_ingress: tc_vxlan_ingress_entry processed 5282 insns (limit 1000000, 0.5% used)
 OK   node_ingress: tc_node_ingress processed 109544 insns (limit 1000000, 11.0% used)
 OK   l2_egress: tc_l2_egress processed 2786 insns (limit 1000000, 0.3% used)
-OK   l2_ingress: tc_l2_ingress processed 511 insns (limit 1000000, 0.1% used)
-OK   l2_gateway: tc_l2_gateway processed 132527 insns (limit 1000000, 13.3% used)
+OK   l2_ingress: tc_l2_ingress processed 43781 insns (limit 1000000, 4.4% used)
+OK   l2_gateway: tc_l2_gateway processed 2709 insns (limit 1000000, 0.3% used)
 ```
 
-gatewayを入れる前は`pod_egress`が581,483命令、`vxlan_ingress`が5,166命令、`l2_egress`が2,277命令、`node_ingress`が70,965命令でした。`pod_egress`が373命令増えたのは`fib_val.type`の分岐で、`vxlan_ingress`と`l2_egress`が増えたのはARP snoopingです。`node_ingress`が109,544命令になったのはNATGatewayの応答をgatewayポートへ渡す分岐です。`l2_gateway`は2,709からServiceの応答の書き戻しで4,631になり、policyの評価で132,527になりました。`vxlan_ingress`はL2分岐を入れる前が3,760命令(0.4%)でした。
+gatewayを入れる前は`pod_egress`が581,483命令、`vxlan_ingress`が5,166命令、`l2_egress`が2,277命令、`node_ingress`が70,965命令でした。`pod_egress`が373命令増えたのは`fib_val.type`の分岐で、`vxlan_ingress`と`l2_egress`が増えたのはARP snoopingです。`node_ingress`が109,544命令になったのはNATGatewayの応答をgatewayポートへ渡す分岐です。`l2_ingress`が511から43,781になったのは、Serviceの書き戻しとpolicyの評価です。`l2_gateway`はその2つを一度預かって132,527まで行きましたが、ノードを間違えていたので`l2_ingress`へ移し、2,709に戻りました。`vxlan_ingress`はL2分岐を入れる前が3,760命令(0.4%)でした。
 
 `bpf/`の下を触ったらこれを回してください。命令数が上限を超えてもコンパイラは何も言わず、次に分かるのはdaemonがcrashloopに入ったときです。実行にはrootとマウント済みのbpffsが要ります。
 
@@ -381,7 +393,9 @@ VXLAN側は`BPF_PROG_TEST_RUN`では駆動できません。プログラムが�
 
 gatewayについては、`BPF_PROG_TEST_RUN`では`BPF_F_INGRESS`のredirectが本当にingressへ届いたかを見せられません。dummyデバイスは受信側のカウンタを持たないので、届かなかった場合と区別が付かないからです。`TestGatewayAnswersArpFromTheSegment`はそこを一往復まるごとで確かめます。`pod_egress`、`l2_egress`、`l2_gateway`を1つのpin pathに読み込んでmapを共有させ、gateway vethの両hookにdaemonと同じプログラムを貼り、セグメントのポートからgatewayのアドレス宛のARPリクエストを流します。返事がリクエストを出したポートに届けば、複製がingressに渡って`pod_egress`が答え、その答えが`l2_gateway`を通って戻ってきたということです。この経路以外にそのポートへフレームが届く道はありません。
 
-`TestGatewayCarriesAClusterIPFlowBothWays`は同じ足回りでServiceの往復を通します。往路は`pod_egress`をgw vethのifindexで走らせてDNATと逆向きエントリの記録まで、復路は`l2_gateway`に応答を渡してアドレスが戻ることまでです。2つのプログラムは`ct_map`でしか出会わないので、片方だけのテストでは「同じscopeを見ているか」が確かめられません。1つのpin pathに両方を読み込むのはそのためです。
+`TestGatewayCarriesAClusterIPFlowBothWays`は同じ足回りでServiceの往復を通します。往路は`pod_egress`をgw vethのifindexで走らせてDNATと逆向きエントリの記録まで、復路は`l2_ingress`にワークロードのポートで応答を渡してアドレスが戻ることまでです。2つのプログラムは`ct_map`でしか出会わないので、片方だけのテストでは「同じscopeを見ているか」が確かめられません。1つのpin pathに両方を読み込むのはそのためです。
+
+`l2_ingress`側のテストは、記録が無い状態も明示的に通します。gateway由来のフレームが`ct_map`にも`policy_ct_map`にも何も無いまま来たら、書き戻しは起きず、ingressルールが素で判定します。これがクロスノードの不具合が取っていた形で、同一ノードのテストだけでは一度も出ませんでした。セグメントの中のフレームが同じルールで落ちないことも並べて押さえてあります。
 
 セグメントもgatewayポートも、テストが自分で並べるのをやめました。`newL2Segment`は`reconciler.L2Network`に、`StandUpGatewayPort`は`reconciler.L2Gateway`にReconcileさせています。前者は`l2_arp`を作り忘れているのを誰も見つけられなかったから、後者は`subnet_map`を書き忘れたまま`l2_gateway`がそれを読み始めて、IPv4のテストが揃って落ちたからです。どちらもテストが本番と同じ経路でmapを用意していれば出なかった話です。
 
