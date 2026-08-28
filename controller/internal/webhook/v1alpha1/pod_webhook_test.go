@@ -2,6 +2,7 @@ package v1alpha1
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -53,16 +54,28 @@ func patchDefaultSubnetDNS() juneauv1alpha1.Subnet {
 // the way the SubnetReconciler would have, so the Pod webhook sees a
 // non-default Vpc with a usable DNS VIP. Returns the Subnet — callers
 // pin to its DNS VIP for assertions and use its name as the
-// PodAnnotationSubnet value.
+// juneauv1alpha1.PodAnnotationSubnet value.
 //
 // All resources clean themselves up via DeferCleanup so each spec
 // remains hermetic across the parallel envtest run.
 func customSubnetFixture() juneauv1alpha1.Subnet {
 	GinkgoHelper()
+	return subnetFixtureForVpc(juneauv1alpha1.VpcSpec{Service: &juneauv1alpha1.VpcServiceSpec{Consume: true}})
+}
+
+// enforcingSubnetFixture is customSubnetFixture for a Vpc that demands a
+// SecurityGroup on every NIC that joins it.
+func enforcingSubnetFixture() juneauv1alpha1.Subnet {
+	GinkgoHelper()
+	return subnetFixtureForVpc(juneauv1alpha1.VpcSpec{EnforceSecurityGroups: true})
+}
+
+func subnetFixtureForVpc(vpcSpec juneauv1alpha1.VpcSpec) juneauv1alpha1.Subnet {
+	GinkgoHelper()
 	vpcName := webhookUniqueTestName("vpc")
 	Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.Vpc{
 		ObjectMeta: metav1.ObjectMeta{Name: vpcName},
-		Spec:       juneauv1alpha1.VpcSpec{Service: &juneauv1alpha1.VpcServiceSpec{Consume: true}},
+		Spec:       vpcSpec,
 	})).To(Succeed())
 	DeferCleanup(func() {
 		_ = webhookK8sClient.Delete(context.Background(), &juneauv1alpha1.Vpc{ObjectMeta: metav1.ObjectMeta{Name: vpcName}})
@@ -135,7 +148,7 @@ var _ = Describe("Pod DNS injection webhook", func() {
 		subnet := customSubnetFixture()
 
 		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
-			PodAnnotationSubnet: subnet.Name,
+			juneauv1alpha1.PodAnnotationSubnet: subnet.Name,
 		})
 		Expect(webhookK8sClient.Create(context.Background(), pod)).To(Succeed())
 		DeferCleanup(func() {
@@ -187,8 +200,8 @@ var _ = Describe("Pod DNS injection webhook", func() {
 		subnet := customSubnetFixture()
 
 		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
-			PodAnnotationSubnet:        subnet.Name,
-			PodAnnotationDNSInjectSkip: "true",
+			juneauv1alpha1.PodAnnotationSubnet:        subnet.Name,
+			juneauv1alpha1.PodAnnotationDNSInjectSkip: "true",
 		})
 		Expect(webhookK8sClient.Create(context.Background(), pod)).To(Succeed())
 		DeferCleanup(func() {
@@ -204,7 +217,7 @@ var _ = Describe("Pod DNS injection webhook", func() {
 	It("skips hostNetwork pods", func() {
 		subnet := customSubnetFixture()
 		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
-			PodAnnotationSubnet: subnet.Name,
+			juneauv1alpha1.PodAnnotationSubnet: subnet.Name,
 		})
 		pod.Spec.HostNetwork = true
 		// hostNetwork requires a matching dnsPolicy hint to be valid.
@@ -224,7 +237,7 @@ var _ = Describe("Pod DNS injection webhook", func() {
 		subnet := customSubnetFixture()
 		ndots := "2"
 		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
-			PodAnnotationSubnet: subnet.Name,
+			juneauv1alpha1.PodAnnotationSubnet: subnet.Name,
 		})
 		pod.Spec.DNSPolicy = corev1.DNSNone
 		pod.Spec.DNSConfig = &corev1.PodDNSConfig{
@@ -246,7 +259,7 @@ var _ = Describe("Pod DNS injection webhook", func() {
 		subnet := customSubnetFixture()
 
 		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
-			PodAnnotationSubnet: subnet.Name,
+			juneauv1alpha1.PodAnnotationSubnet: subnet.Name,
 		})
 		Expect(webhookK8sClient.Create(context.Background(), pod)).To(Succeed())
 		DeferCleanup(func() {
@@ -263,7 +276,7 @@ var _ = Describe("Pod DNS injection webhook", func() {
 	It("preserves user-supplied search list when injecting", func() {
 		subnet := customSubnetFixture()
 		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
-			PodAnnotationSubnet: subnet.Name,
+			juneauv1alpha1.PodAnnotationSubnet: subnet.Name,
 		})
 		pod.Spec.DNSConfig = &corev1.PodDNSConfig{
 			Searches: []string{"custom.example.com"},
@@ -360,7 +373,7 @@ var _ = Describe("Pod network probe rewrite", func() {
 	It("rewrites custom-Vpc Pod probes when the controller option is enabled", func() {
 		subnet := customSubnetFixture()
 		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
-			PodAnnotationSubnet: subnet.Name,
+			juneauv1alpha1.PodAnnotationSubnet: subnet.Name,
 		})
 		pod.Spec.Containers[0].ReadinessProbe = &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{Path: "/ready", Port: intstr.FromInt32(8080)},
@@ -395,7 +408,7 @@ var _ = Describe("Pod network probe rewrite", func() {
 	It("leaves explicit-host probes unchanged in compatibility mode", func() {
 		subnet := customSubnetFixture()
 		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
-			PodAnnotationSubnet: subnet.Name,
+			juneauv1alpha1.PodAnnotationSubnet: subnet.Name,
 		})
 		pod.Spec.Containers[0].ReadinessProbe = &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{Host: "example.com", Path: "/", Port: intstr.FromInt32(443)},
@@ -482,8 +495,8 @@ var _ = Describe("Pod SecurityGroup validating webhook", func() {
 	It("rejects a Pod referencing a nonexistent SG", func() {
 		subnet := customSubnetFixture()
 		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
-			PodAnnotationSubnet:         subnet.Name,
-			PodAnnotationSecurityGroups: "no-such-sg",
+			juneauv1alpha1.PodAnnotationSubnet:         subnet.Name,
+			juneauv1alpha1.PodAnnotationSecurityGroups: "no-such-sg",
 		})
 		err := webhookK8sClient.Create(context.Background(), pod)
 		Expect(err).To(HaveOccurred())
@@ -493,7 +506,7 @@ var _ = Describe("Pod SecurityGroup validating webhook", func() {
 	It("accepts a Pod whose SG list is empty", func() {
 		subnet := customSubnetFixture()
 		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
-			PodAnnotationSubnet: subnet.Name,
+			juneauv1alpha1.PodAnnotationSubnet: subnet.Name,
 		})
 		Expect(webhookK8sClient.Create(context.Background(), pod)).To(Succeed())
 		DeferCleanup(func() {
@@ -511,8 +524,8 @@ var _ = Describe("Pod SecurityGroup validating webhook", func() {
 		})).To(Succeed())
 
 		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
-			PodAnnotationSubnet:         subnet.Name,
-			PodAnnotationSecurityGroups: sgName,
+			juneauv1alpha1.PodAnnotationSubnet:         subnet.Name,
+			juneauv1alpha1.PodAnnotationSecurityGroups: sgName,
 		})
 		err := webhookK8sClient.Create(context.Background(), pod)
 		Expect(err).To(HaveOccurred())
@@ -527,8 +540,8 @@ var _ = Describe("Pod SecurityGroup validating webhook", func() {
 			Spec:       juneauv1alpha1.SecurityGroupSpec{Vpc: subnet.Spec.Vpc},
 		})).To(Succeed())
 		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
-			PodAnnotationSubnet:         subnet.Name,
-			PodAnnotationSecurityGroups: sgName,
+			juneauv1alpha1.PodAnnotationSubnet:         subnet.Name,
+			juneauv1alpha1.PodAnnotationSecurityGroups: sgName,
 		})
 		Expect(webhookK8sClient.Create(context.Background(), pod)).To(Succeed())
 		DeferCleanup(func() {
@@ -539,7 +552,7 @@ var _ = Describe("Pod SecurityGroup validating webhook", func() {
 	It("rejects more than the per-NIC SG ceiling", func() {
 		subnet := customSubnetFixture()
 		var names []string
-		for i := 0; i < PodSecurityGroupsMax+1; i++ {
+		for i := 0; i < juneauv1alpha1.PodSecurityGroupsMax+1; i++ {
 			n := webhookUniqueTestName("sg")
 			Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.SecurityGroup{
 				ObjectMeta: metav1.ObjectMeta{Name: n},
@@ -555,8 +568,8 @@ var _ = Describe("Pod SecurityGroup validating webhook", func() {
 			ann += n
 		}
 		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
-			PodAnnotationSubnet:         subnet.Name,
-			PodAnnotationSecurityGroups: ann,
+			juneauv1alpha1.PodAnnotationSubnet:         subnet.Name,
+			juneauv1alpha1.PodAnnotationSecurityGroups: ann,
 		})
 		err := webhookK8sClient.Create(context.Background(), pod)
 		Expect(err).To(HaveOccurred())
@@ -591,7 +604,7 @@ var _ = Describe("Pod SecurityGroup validating webhook", func() {
 
 		// Pod with no SG annotation → rejected.
 		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
-			PodAnnotationSubnet: subnetName,
+			juneauv1alpha1.PodAnnotationSubnet: subnetName,
 		})
 		err := webhookK8sClient.Create(context.Background(), pod)
 		Expect(err).To(HaveOccurred())
@@ -604,12 +617,158 @@ var _ = Describe("Pod SecurityGroup validating webhook", func() {
 			Spec:       juneauv1alpha1.SecurityGroupSpec{Vpc: vpcName},
 		})).To(Succeed())
 		pod2 := makePodWithImage(uniquePodName(), "default", map[string]string{
-			PodAnnotationSubnet:         subnetName,
-			PodAnnotationSecurityGroups: sgName,
+			juneauv1alpha1.PodAnnotationSubnet:         subnetName,
+			juneauv1alpha1.PodAnnotationSecurityGroups: sgName,
 		})
 		Expect(webhookK8sClient.Create(context.Background(), pod2)).To(Succeed())
 		DeferCleanup(func() {
 			_ = webhookK8sClient.Delete(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: pod2.Name, Namespace: "default"}})
 		})
+	})
+})
+
+var _ = Describe("Pod extra NIC validating webhook", func() {
+	newAttachment := func(ifName, subnet string, securityGroups ...string) string {
+		GinkgoHelper()
+		attachment := juneauv1alpha1.PodNetworkAttachment{
+			Interface:      ifName,
+			Subnet:         subnet,
+			SecurityGroups: securityGroups,
+		}
+		encoded, err := json.Marshal([]juneauv1alpha1.PodNetworkAttachment{attachment})
+		Expect(err).NotTo(HaveOccurred())
+		return string(encoded)
+	}
+
+	createSecurityGroup := func(vpc string) string {
+		GinkgoHelper()
+		name := webhookUniqueTestName("sg")
+		Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.SecurityGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec:       juneauv1alpha1.SecurityGroupSpec{Vpc: vpc},
+		})).To(Succeed())
+		DeferCleanup(func() {
+			_ = webhookK8sClient.Delete(context.Background(), &juneauv1alpha1.SecurityGroup{ObjectMeta: metav1.ObjectMeta{Name: name}})
+		})
+		return name
+	}
+
+	createPod := func(annotations map[string]string) error {
+		pod := makePodWithImage(uniquePodName(), "default", annotations)
+		err := webhookK8sClient.Create(context.Background(), pod)
+		if err == nil {
+			DeferCleanup(func() {
+				_ = webhookK8sClient.Delete(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: "default"}})
+			})
+		}
+		return err
+	}
+
+	It("accepts an extra NIC on an existing Subnet", func() {
+		primary := customSubnetFixture()
+		extra := customSubnetFixture()
+		Expect(createPod(map[string]string{
+			juneauv1alpha1.PodAnnotationSubnet:   primary.Name,
+			juneauv1alpha1.PodAnnotationNetworks: newAttachment("eth1", extra.Name),
+		})).To(Succeed())
+	})
+
+	It("rejects a networks annotation that is not a JSON list", func() {
+		primary := customSubnetFixture()
+		err := createPod(map[string]string{
+			juneauv1alpha1.PodAnnotationSubnet:   primary.Name,
+			juneauv1alpha1.PodAnnotationNetworks: "eth1=db",
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(juneauv1alpha1.PodAnnotationNetworks))
+	})
+
+	It("rejects an extra NIC that claims the primary interface name", func() {
+		primary := customSubnetFixture()
+		err := createPod(map[string]string{
+			juneauv1alpha1.PodAnnotationSubnet:   primary.Name,
+			juneauv1alpha1.PodAnnotationNetworks: newAttachment("eth0", primary.Name),
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("eth0"))
+	})
+
+	It("rejects two extra NICs sharing an interface name", func() {
+		primary := customSubnetFixture()
+		err := createPod(map[string]string{
+			juneauv1alpha1.PodAnnotationSubnet: primary.Name,
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(
+				`[{"interface":"eth1","subnet":%q},{"interface":"eth1","subnet":%q}]`, primary.Name, primary.Name),
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("Duplicate"))
+	})
+
+	It("rejects an extra NIC whose Subnet does not exist", func() {
+		primary := customSubnetFixture()
+		err := createPod(map[string]string{
+			juneauv1alpha1.PodAnnotationSubnet:   primary.Name,
+			juneauv1alpha1.PodAnnotationNetworks: newAttachment("eth1", "no-such-subnet"),
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("does not exist"))
+	})
+
+	It("rejects a SecurityGroup that belongs to another Vpc than the extra NIC", func() {
+		primary := customSubnetFixture()
+		extra := customSubnetFixture()
+		err := createPod(map[string]string{
+			juneauv1alpha1.PodAnnotationSubnet:   primary.Name,
+			juneauv1alpha1.PodAnnotationNetworks: newAttachment("eth1", extra.Name, createSecurityGroup(primary.Spec.Vpc)),
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(extra.Spec.Vpc))
+	})
+
+	It("accepts a SecurityGroup that belongs to the Vpc of the extra NIC", func() {
+		primary := customSubnetFixture()
+		extra := customSubnetFixture()
+		Expect(createPod(map[string]string{
+			juneauv1alpha1.PodAnnotationSubnet:   primary.Name,
+			juneauv1alpha1.PodAnnotationNetworks: newAttachment("eth1", extra.Name, createSecurityGroup(extra.Spec.Vpc)),
+		})).To(Succeed())
+	})
+
+	It("applies enforceSecurityGroups per NIC", func() {
+		primary := customSubnetFixture()
+		enforcing := enforcingSubnetFixture()
+
+		err := createPod(map[string]string{
+			juneauv1alpha1.PodAnnotationSubnet:   primary.Name,
+			juneauv1alpha1.PodAnnotationNetworks: newAttachment("eth1", enforcing.Name),
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("enforceSecurityGroups"))
+
+		Expect(createPod(map[string]string{
+			juneauv1alpha1.PodAnnotationSubnet:   primary.Name,
+			juneauv1alpha1.PodAnnotationNetworks: newAttachment("eth1", enforcing.Name, createSecurityGroup(enforcing.Spec.Vpc)),
+		})).To(Succeed())
+	})
+
+	It("injects the DNS of the primary NIC, not of an extra one", func() {
+		primary := customSubnetFixture()
+		extra := customSubnetFixture()
+		name := uniquePodName()
+		pod := makePodWithImage(name, "default", map[string]string{
+			juneauv1alpha1.PodAnnotationSubnet:   primary.Name,
+			juneauv1alpha1.PodAnnotationNetworks: newAttachment("eth1", extra.Name),
+		})
+		Expect(webhookK8sClient.Create(context.Background(), pod)).To(Succeed())
+		DeferCleanup(func() {
+			_ = webhookK8sClient.Delete(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"}})
+		})
+
+		var created corev1.Pod
+		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: name}, &created)).To(Succeed())
+		Expect(created.Spec.DNSPolicy).To(Equal(corev1.DNSNone))
+		Expect(created.Spec.DNSConfig).NotTo(BeNil())
+		Expect(created.Spec.DNSConfig.Nameservers).To(ContainElement(primary.Status.DNS))
+		Expect(created.Spec.DNSConfig.Nameservers).NotTo(ContainElement(extra.Status.DNS))
 	})
 })
