@@ -200,3 +200,93 @@ func TestL2GatewayDropsAPacketThatResolvesToItself(t *testing.T) {
 		t.Errorf("the gateway was fed %d copies of its own frame", delivered)
 	}
 }
+
+// The addresses a ClusterIP flow out of the segment involves.
+const (
+	serviceAddress = "10.96.0.10"
+	backendAddress = "10.61.0.7"
+	servicePort    = 80
+	backendPort    = 8080
+	clientPort     = 40000
+)
+
+// installServiceReverse records what pod_egress installs on the gateway
+// veth when it DNATs a ClusterIP: the reverse entry that turns the
+// backend's address back into the Service's on the way home.
+func (p *l2GatewayPorts) installServiceReverse(t *testing.T, client string) {
+	t.Helper()
+	err := p.segment.objs.Map(t, "ct_map").Update(
+		&bpf.PodEgressCtKey{
+			Scope: testVpcID,
+			Saddr: networkOrderIPv4(t, backendAddress),
+			Daddr: networkOrderIPv4(t, client),
+			Sport: bigEndianPort(backendPort),
+			Dport: bigEndianPort(clientPort),
+			Proto: 6,
+		},
+		&bpf.PodEgressCtVal{
+			NewSaddr: networkOrderIPv4(t, serviceAddress),
+			NewDaddr: networkOrderIPv4(t, client),
+			NewSport: bigEndianPort(servicePort),
+			NewDport: bigEndianPort(clientPort),
+			Action:   2, // CT_ACTION_SNAT
+		},
+		ebpf.UpdateAny,
+	)
+	if err != nil {
+		t.Fatalf("record the reverse entry of the Service flow: %v", err)
+	}
+}
+
+// bigEndianPort is a port as the data plane stores it: a __be16 read
+// back through a Go uint16.
+func bigEndianPort(port uint16) uint16 { return port<<8 | port>>8 }
+
+// A ClusterIP reply has to leave the gateway carrying the Service's
+// address, not the backend's. Nothing else on the way into the segment
+// can put it back: the reverse rewrite normally happens in pod_ingress,
+// and an L2 NIC has no pod_ingress on it.
+func TestL2GatewayPutsTheServiceAddressBackOnAReply(t *testing.T) {
+	ports := newL2GatewayPorts(t)
+	client := bpftest.MAC(2)
+	ports.segment.resolve(t, host2Address, client)
+	ports.segment.learn(t, client, uint32(ports.pod2.Index), "")
+	ports.installServiceReverse(t, host2Address)
+
+	frame := bpftest.Frame(t, bpftest.MAC(0xf0), bpftest.MAC(0xf1), bpftest.EtherTypeIPv4,
+		bpftest.TCPv4(t, backendAddress, host2Address, backendPort, clientPort))
+	verdict, out := bpftest.RunFrame(t, ports.program, frame, ports.gateway)
+
+	if verdict != bpftest.ActRedirect {
+		t.Fatalf("verdict %d, want a redirect (%d)", verdict, bpftest.ActRedirect)
+	}
+	if got := bpftest.SourceAddress(t, out); got != serviceAddress {
+		t.Errorf("the reply left with source %s, want the Service address %s", got, serviceAddress)
+	}
+	if got := bpftest.SourcePort(t, out); got != servicePort {
+		t.Errorf("the reply left with source port %d, want %d", got, servicePort)
+	}
+	if got := net.HardwareAddr(out[0:6]); !bytes.Equal(got, client) {
+		t.Errorf("the reply is addressed to %s, want the client that asked (%s)", got, client)
+	}
+}
+
+// A packet with no reverse entry behind it is not a Service reply. It
+// has to reach the segment exactly as it arrived.
+func TestL2GatewayLeavesAPacketWithNoConntrackEntryAlone(t *testing.T) {
+	ports := newL2GatewayPorts(t)
+	client := bpftest.MAC(2)
+	ports.segment.resolve(t, host2Address, client)
+	ports.segment.learn(t, client, uint32(ports.pod2.Index), "")
+
+	frame := bpftest.Frame(t, bpftest.MAC(0xf0), bpftest.MAC(0xf1), bpftest.EtherTypeIPv4,
+		bpftest.TCPv4(t, backendAddress, host2Address, backendPort, clientPort))
+	verdict, out := bpftest.RunFrame(t, ports.program, frame, ports.gateway)
+
+	if verdict != bpftest.ActRedirect {
+		t.Fatalf("verdict %d, want a redirect (%d)", verdict, bpftest.ActRedirect)
+	}
+	if got := bpftest.SourceAddress(t, out); got != backendAddress {
+		t.Errorf("the packet left with source %s, want the %s it arrived with", got, backendAddress)
+	}
+}

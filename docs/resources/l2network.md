@@ -46,6 +46,8 @@ gatewayを書くと、そのセグメントのポートを持つ各Nodeにルー
 
 gatewayを書くと、そのCIDR宛の経路がVpcの全RouteTableに自動で入ります。Subnetのconnected routeと同じ扱いです。
 
+gatewayを跨ぐ先には、同じVpcのSubnet、NATGateway経由の外部、ClusterIP Serviceが含まれます。Podの中で、その宛先をgatewayへ向ける経路を足してください。JuneauがPodに入れる経路は1枚目のNICのデフォルトルートだけです。
+
 `spec.gateway` は作成後にも変更することができます。ただし、そのアドレスを既にワークロードが持っている場合は拒否されます。`computeL2NetworkExcluded` はプールからの払い出しを止めるだけで、配ってしまったアドレスを取り返しません。別のアドレスを `spec.gateway.address` に書くか、持っているワークロードを消してから足してください。
 
 Subnetと違って、L2NetworkはDNSリゾルバを持ちません。自前でDNSを立てたい人にとって予約アドレスは邪魔なだけなので、`spec.cidr` があってもgatewayの1アドレスしか予約しません。
@@ -54,7 +56,7 @@ gatewayは自分からARPを出しません。セグメントを流れるARPの�
 
 ## SecurityGroup
 
-L2NetworkのNICにも、`juneau.loutres.me/networks` アノテーションのエントリでSecurityGroupを付けることができます。参照されるのはgatewayを跨ぐ通信だけで、セグメントの中の通信には一切効きません。
+L2NetworkのNICにも、`juneau.loutres.me/networks` アノテーションのエントリでSecurityGroupを付けることができます。参照されるのはgatewayを跨ぐ通信だけで、セグメントの中の通信には一切効きません。NetworkACLと同じく、効くのはegressルールだけです。
 
 そのため、`spec.gateway` を書いていないL2NetworkのNICにSecurityGroupを付けることはできません。`spec.networkACL` と同じ理由です。同じ理由で、Vpcの `spec.enforceSecurityGroups` はgatewayを持たないセグメントのNICには要求しません。
 
@@ -63,6 +65,8 @@ L2NetworkのNICにも、`juneau.loutres.me/networks` アノテーションのエ
 `spec.networkACL` には、同じVpcに属するNetworkACLを指定することができます。
 
 このACLはgatewayを跨ぐ通信にだけ適用されます。同じL2Network上のNIC同士の通信には一切効きません。L2のデータプレーンはpolicyを読まないためです。
+
+適用されるのは、さらにセグメントから出ていく方向だけです。入ってくる方向はgatewayの別のhookを通り、そこでpolicyを評価していません。egressルールは効きますが、ingressルールは今のところ何もしません。
 
 そのため、`spec.gateway` を書いていないL2Networkは `spec.networkACL` を書くことができません。効いているつもりの設定が残るくらいなら、作成時に拒否する方がましだと判断しました。
 

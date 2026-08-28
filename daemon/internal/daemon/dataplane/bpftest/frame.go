@@ -106,3 +106,42 @@ func ipv4Bytes(t *testing.T, address string) []byte {
 	}
 	return ip
 }
+
+// TCPv4 builds the payload of a minimal IPv4 TCP segment. The checksums
+// are left at zero: the data plane only ever updates them
+// incrementally, so nothing along the way reads them.
+func TCPv4(t *testing.T, src, dst string, sport, dport uint16) []byte {
+	t.Helper()
+
+	packet := make([]byte, 40)
+	packet[0] = 0x45 // version 4, header length 5 words
+	binary.BigEndian.PutUint16(packet[2:4], 40)
+	packet[8] = 64 // ttl
+	packet[9] = 6  // TCP
+	copy(packet[12:16], ipv4Bytes(t, src))
+	copy(packet[16:20], ipv4Bytes(t, dst))
+
+	binary.BigEndian.PutUint16(packet[20:22], sport)
+	binary.BigEndian.PutUint16(packet[22:24], dport)
+	packet[32] = 5 << 4 // data offset: 5 words
+	packet[33] = 0x10   // ACK
+	return packet
+}
+
+// SourceAddress and SourcePort read back what a program left in an IPv4
+// TCP frame, so a test can say what a rewrite turned it into.
+func SourceAddress(t *testing.T, frame []byte) string {
+	t.Helper()
+	if len(frame) < 34 {
+		t.Fatalf("bpftest: a frame of %d bytes carries no IPv4 header", len(frame))
+	}
+	return net.IP(frame[26:30]).String()
+}
+
+func SourcePort(t *testing.T, frame []byte) uint16 {
+	t.Helper()
+	if len(frame) < 38 {
+		t.Fatalf("bpftest: a frame of %d bytes carries no TCP header", len(frame))
+	}
+	return binary.BigEndian.Uint16(frame[34:36])
+}

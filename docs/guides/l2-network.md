@@ -243,7 +243,17 @@ PING 10.91.0.5 (10.91.0.5) 56(84) bytes of data.
 64 bytes from 10.91.0.5: icmp_seq=1 ttl=64 time=0.283 ms
 ```
 
-パケットはeth1から出て、gatewayのMAC宛のフレームとしてgateway vethに渡り、そこから先はSubnetのPodと同じ経路を通ります。gatewayが何をするかを決めるのは、そのVpcのRouteTableです。NATGateway経由の外部にもClusterIP Serviceにも、Subnetから出たパケットと同じ規則で届きます。
+パケットはeth1から出て、gatewayのMAC宛のフレームとしてgateway vethに渡り、そこから先はSubnetのPodと同じ経路を通ります。gatewayが何をするかを決めるのは、そのVpcのRouteTableです。
+
+ClusterIP Serviceも同じ経路で叩けます。Podの中でServiceのCIDRをこのgatewayへ向けてください。
+
+```console
+$ kubectl exec lab-c -- ip route add 10.96.0.0/12 via 10.92.0.1 dev eth1
+$ kubectl exec lab-c -- curl -s -o /dev/null -w '%{http_code}\n' http://my-service.default.svc:80/
+200
+```
+
+0.0.0.0/0を向ければ、NATGateway経由の外部にも同じ経路で出られます。ただしeth0のデフォルトルートを置き換えることになるので、eth0側の通信が要らない場合だけにしてください。
 
 ### 4. gatewayを通ったことを確認
 
@@ -300,6 +310,18 @@ Error from server (Forbidden): ... address 10.92.0.1 is already held by Allocati
 ```
 
 `spec.gateway.address`に空いているアドレスを書くか、そのアドレスを持っているPodを消してから足してください。
+
+### ingressルールは効きません
+
+NetworkACLとSecurityGroupが評価されるのは、セグメントから出ていく方向だけです。入ってくる方向はgatewayの別のhookを通り、そこにpolicyの評価がありません。
+
+セグメントの側から張った接続は、出ていく1発目で判定されて記録に載るので意図通りに効きます。Vpcの側から張った接続は素通りします。「このL2Networkへの受信を絞る」という書き方はまだできません。
+
+### backendのNodeにもポートが要ります
+
+ClusterIP Serviceの応答は、backendが乗っているNodeのgatewayポートを通ってセグメントへ戻ります。そのNodeがこのL2Networkのポートを1つも持っていないと、gatewayポートが立っていないので応答が落ちます。
+
+セグメントのPodがクラスタに散らばっていれば起きません。1つのNodeにL2NetworkのPodを固めて、backendを別のNodeに置いたときだけ表に出ます。`kubectl juneau trace`では`MISS_L2_GATEWAY`として見えます。
 
 ### IPv6はgatewayを越えられません
 
