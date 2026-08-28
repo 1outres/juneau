@@ -51,6 +51,7 @@ nav:
     - VpcPeeringで2つのVPCを接続する: guides/vpc-peering.md
     - TransitGatewayでハブ&スポーク構成を作る: guides/transit-gateway.md
     - PodにNICを追加する: guides/multi-nic-pod.md
+    - L2Networkで自由なセグメントを作る: guides/l2-network.md
   - Resources:
     - VPC: resources/vpc.md
     - Subnet: resources/subnet.md
@@ -80,5 +81,6 @@ nav:
   - API Reference: api-reference/v1alpha1.md
   - Developer Guide:
     - NetworkACLとSecurityGroupの評価を追う: developer/policy-data-plane.md
+    - L2Networkの転送を追う: developer/l2-data-plane.md
     - 仮想サービスを実装する: developer/virtual-service-plane.md
     - kubectl-juneau に新コマンドを実装する: developer/kubectl-plugin-command.md
