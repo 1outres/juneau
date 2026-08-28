@@ -13,6 +13,7 @@
 #include "vmlinux.h"
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
+#include "arp.h"
 #include "maps.h"
 #include "trace.h"
 
@@ -25,6 +26,10 @@
 #endif
 #ifndef TC_ACT_SHOT
 #define TC_ACT_SHOT 2
+#endif
+
+#ifndef ETH_P_IP
+#define ETH_P_IP 0x0800
 #endif
 
 // L2_TUNNEL_TTL is the outer IP TTL of a frame this node sends over the
@@ -44,6 +49,74 @@ struct l2_port {
   bool from_overlay;
 };
 
+// l2_gw_hops reads the hop count a frame carries.
+static __always_inline __u32 l2_gw_hops(const struct __sk_buff *skb) {
+  return (skb->mark & L2_MARK_GW_HOP_MASK) >> L2_MARK_GW_HOP_SHIFT;
+}
+
+// l2_gw_take_hop counts one more hand-off to a gateway port and reports
+// whether the frame may take it. A frame at the limit is refused, which
+// is what stops a loop between the gateway and something on the segment
+// that keeps sending the frame back.
+static __always_inline bool l2_gw_take_hop(struct __sk_buff *skb) {
+  __u32 hops = l2_gw_hops(skb);
+  if (hops >= L2_GW_MAX_HOPS)
+    return false;
+  hops++;
+  skb->mark = (skb->mark & ~L2_MARK_GW_HOP_MASK) |
+              ((hops << L2_MARK_GW_HOP_SHIFT) & L2_MARK_GW_HOP_MASK);
+  return true;
+}
+
+// l2_arp_for returns the address table of one segment.
+static __always_inline struct l2_arp_inner_map *l2_arp_for(__u32 vni) {
+  return bpf_map_lookup_elem(&l2_arp, &vni);
+}
+
+// l2_arp_snoop records the sender of an ARP frame so the gateway can
+// address a packet the Vpc sent into the segment.
+//
+// Every opcode is read, not just the request: a reply and a gratuitous
+// announcement both carry the sender pair, and a host that moves
+// announces itself before it sends anything else. Nothing is answered
+// here. The segment carries the user's own DHCP server, router and
+// duplicate-address probes, and a proxy reply would break all three.
+//
+// The frame is only read, so the caller may call this before it copies
+// the addresses it needs out of the header.
+static __always_inline void l2_arp_snoop(struct __sk_buff *skb, __u32 vni,
+                                         const struct ethhdr *eth) {
+  if (eth->h_proto != bpf_htons(ETH_P_ARP))
+    return;
+
+  void *data_end = (void *)(long)skb->data_end;
+  struct arphdr *arp = (void *)(eth + 1);
+  if ((void *)(arp + 1) > data_end)
+    return;
+  if (arp->ar_hrd != bpf_htons(ARP_HRD_ETHER))
+    return;
+  if (arp->ar_pro != bpf_htons(ARP_PRO_IPV4))
+    return;
+  if (arp->ar_hln != ARP_ETH_ALEN || arp->ar_pln != 4)
+    return;
+
+  struct arp_payload *payload = (void *)(arp + 1);
+  if ((void *)(payload + 1) > data_end)
+    return;
+
+  struct l2_arp_key key = {.ipv4 = bpf_ntohl(payload->spa)};
+  if (key.ipv4 == 0)
+    return;
+
+  struct l2_arp_inner_map *table = l2_arp_for(vni);
+  if (!table)
+    return;
+
+  struct l2_arp_val val = {};
+  __builtin_memcpy(val.mac, payload->sha, ETH_ALEN);
+  bpf_map_update_elem(table, &key, &val, BPF_ANY);
+}
+
 // l2_flood_ctx is what the two bpf_for_each_map_elem callbacks below
 // read. The callback signature has one context pointer, so everything
 // they need travels in here.
@@ -55,6 +128,10 @@ struct l2_flood_ctx {
   __u32 vni;
   __u32 vxlan_ifindex;
   __u32 copies;
+  // from_overlay is the same flag l2_port carries. The local walk needs
+  // it too, because the gateway port is skipped for a frame the overlay
+  // delivered.
+  bool from_overlay;
 };
 
 // l2_is_bum reports whether a destination MAC has to reach every port
@@ -84,6 +161,10 @@ static __always_inline struct l2_fdb_inner_map *l2_fdb_for(__u32 vni) {
 // L2_FDB_REFRESH_NS, so a busy port does not write to the table on
 // every frame.
 //
+// The gateway entry is the one place a frame cannot move. It is the
+// address of a port juneau made, and a workload that sends from it is
+// either confused or trying to take the segment's way out for itself.
+//
 // Returns 1 when a new place was recorded, 0 otherwise.
 static __always_inline int l2_learn(struct l2_fdb_inner_map *table,
                                     const __u8 *mac, __u32 ifindex,
@@ -96,6 +177,8 @@ static __always_inline int l2_learn(struct l2_fdb_inner_map *table,
 
   __u64 now = bpf_ktime_get_ns();
   struct l2_fdb_val *found = bpf_map_lookup_elem(table, &key);
+  if (found && (found->flags & L2_FDB_FLAG_GATEWAY))
+    return 0;
   if (found && found->ifindex == ifindex && found->vtep_ip == vtep_ip) {
     if (now - found->last_seen_ns >= L2_FDB_REFRESH_NS)
       found->last_seen_ns = now;
@@ -106,6 +189,7 @@ static __always_inline int l2_learn(struct l2_fdb_inner_map *table,
       .ifindex = ifindex,
       .vtep_ip = vtep_ip,
       .last_seen_ns = now,
+      .flags = 0,
   };
   if (bpf_map_update_elem(table, &key, &val, BPF_ANY) < 0)
     return 0;
@@ -115,12 +199,31 @@ static __always_inline int l2_learn(struct l2_fdb_inner_map *table,
 // l2_flood_local_cb copies the frame to one local veth. Returning 0
 // keeps the walk going; bpf_for_each_map_elem rejects anything other
 // than 0 or 1.
+//
+// The gateway port is the one member that takes its copy on ingress:
+// everything else on the list is a workload that receives what is put
+// on its egress, while the gateway is a port juneau reads from.
+//
+// It is also skipped for a frame the overlay delivered. Every node that
+// holds a port on the segment runs a gateway of its own on the same
+// address, so the node the frame started on has already offered it to
+// one. Copying it again here would answer a broadcast once per node.
 static long l2_flood_local_cb(struct bpf_map *map, const __u32 *key,
                               __u8 *value, struct l2_flood_ctx *fctx) {
   __u32 ifindex = *key;
   if (ifindex == fctx->skip_ifindex)
     return 0;
-  if (bpf_clone_redirect(fctx->skb, ifindex, 0) < 0)
+
+  __u64 flags = 0;
+  if (*value & L2_PORT_FLAG_GATEWAY) {
+    if (fctx->from_overlay)
+      return 0;
+    if (!l2_gw_take_hop(fctx->skb))
+      return 0;
+    flags = BPF_F_INGRESS;
+  }
+
+  if (bpf_clone_redirect(fctx->skb, ifindex, flags) < 0)
     return 0;
   fctx->copies++;
   return 0;
@@ -166,6 +269,7 @@ static __always_inline __u32 l2_flood(struct __sk_buff *skb,
       .vni = port->vni,
       .vxlan_ifindex = 0,
       .copies = 0,
+      .from_overlay = port->from_overlay,
   };
 
   __u32 vni = port->vni;
@@ -218,6 +322,12 @@ struct l2_forward {
 //     teach the far node the wrong place for the source MAC. Falling
 //     back to the local flood is what a switch does with a frame it
 //     cannot place.
+//
+// The gateway port is the one MAC handed to an ingress rather than an
+// egress: the frame is addressed to the router, so the router has to
+// receive it. BPF_F_INGRESS is what makes the kernel deliver it that
+// way; with flags 0 it would run the port's egress and leak out of the
+// veth peer into the host stack.
 static __always_inline bool l2_forward_unicast(struct __sk_buff *skb,
                                                struct l2_fdb_inner_map *table,
                                                const __u8 *dst_mac,
@@ -234,6 +344,18 @@ static __always_inline bool l2_forward_unicast(struct __sk_buff *skb,
     if (entry->ifindex == port->in_ifindex) {
       out->verdict = TC_ACT_SHOT;
       out->reason = TRACE_REASON_L2_HAIRPIN_DROP;
+      out->target_ifindex = entry->ifindex;
+      return true;
+    }
+    if (entry->flags & L2_FDB_FLAG_GATEWAY) {
+      if (!l2_gw_take_hop(skb)) {
+        out->verdict = TC_ACT_SHOT;
+        out->reason = TRACE_REASON_L2_GW_LOOP_DROP;
+        out->target_ifindex = entry->ifindex;
+        return true;
+      }
+      out->verdict = bpf_redirect(entry->ifindex, BPF_F_INGRESS);
+      out->reason = TRACE_REASON_REDIRECT_IFINDEX;
       out->target_ifindex = entry->ifindex;
       return true;
     }

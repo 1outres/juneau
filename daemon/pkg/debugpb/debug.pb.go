@@ -251,6 +251,7 @@ const (
 	TraceHook_TRACE_HOOK_NODE_INGRESS  TraceHook = 4
 	TraceHook_TRACE_HOOK_L2_EGRESS     TraceHook = 5
 	TraceHook_TRACE_HOOK_L2_INGRESS    TraceHook = 6
+	TraceHook_TRACE_HOOK_L2_GATEWAY    TraceHook = 7
 )
 
 // Enum value maps for TraceHook.
@@ -263,6 +264,7 @@ var (
 		4: "TRACE_HOOK_NODE_INGRESS",
 		5: "TRACE_HOOK_L2_EGRESS",
 		6: "TRACE_HOOK_L2_INGRESS",
+		7: "TRACE_HOOK_L2_GATEWAY",
 	}
 	TraceHook_value = map[string]int32{
 		"TRACE_HOOK_UNSPECIFIED":   0,
@@ -272,6 +274,7 @@ var (
 		"TRACE_HOOK_NODE_INGRESS":  4,
 		"TRACE_HOOK_L2_EGRESS":     5,
 		"TRACE_HOOK_L2_INGRESS":    6,
+		"TRACE_HOOK_L2_GATEWAY":    7,
 	}
 )
 
@@ -364,6 +367,7 @@ const (
 	TraceEventReason_TRACE_EVENT_REASON_ENTER_NODE_INGRESS       TraceEventReason = 103
 	TraceEventReason_TRACE_EVENT_REASON_ENTER_L2_EGRESS          TraceEventReason = 104
 	TraceEventReason_TRACE_EVENT_REASON_ENTER_L2_INGRESS         TraceEventReason = 105
+	TraceEventReason_TRACE_EVENT_REASON_ENTER_L2_GATEWAY         TraceEventReason = 106
 	TraceEventReason_TRACE_EVENT_REASON_MISS_IFINDEX_SUBNET      TraceEventReason = 200
 	TraceEventReason_TRACE_EVENT_REASON_MISS_SUBNET              TraceEventReason = 201
 	TraceEventReason_TRACE_EVENT_REASON_MISS_FIB_TABLE           TraceEventReason = 202
@@ -379,6 +383,8 @@ const (
 	TraceEventReason_TRACE_EVENT_REASON_MISS_L2_PORT             TraceEventReason = 212
 	TraceEventReason_TRACE_EVENT_REASON_MISS_L2_NETWORK          TraceEventReason = 213
 	TraceEventReason_TRACE_EVENT_REASON_MISS_L2_FDB              TraceEventReason = 214
+	TraceEventReason_TRACE_EVENT_REASON_MISS_L2_ARP              TraceEventReason = 215
+	TraceEventReason_TRACE_EVENT_REASON_MISS_L2_GATEWAY          TraceEventReason = 216
 	TraceEventReason_TRACE_EVENT_REASON_POLICY_ACL_PASS          TraceEventReason = 300
 	TraceEventReason_TRACE_EVENT_REASON_POLICY_ACL_DROP          TraceEventReason = 301
 	TraceEventReason_TRACE_EVENT_REASON_POLICY_SG_PASS           TraceEventReason = 302
@@ -401,6 +407,7 @@ const (
 	TraceEventReason_TRACE_EVENT_REASON_L2_FLOOD                 TraceEventReason = 601
 	TraceEventReason_TRACE_EVENT_REASON_L2_SPLIT_HORIZON         TraceEventReason = 602
 	TraceEventReason_TRACE_EVENT_REASON_L2_HAIRPIN_DROP          TraceEventReason = 603
+	TraceEventReason_TRACE_EVENT_REASON_L2_GW_LOOP_DROP          TraceEventReason = 604
 )
 
 // Enum value maps for TraceEventReason.
@@ -413,6 +420,7 @@ var (
 		103: "TRACE_EVENT_REASON_ENTER_NODE_INGRESS",
 		104: "TRACE_EVENT_REASON_ENTER_L2_EGRESS",
 		105: "TRACE_EVENT_REASON_ENTER_L2_INGRESS",
+		106: "TRACE_EVENT_REASON_ENTER_L2_GATEWAY",
 		200: "TRACE_EVENT_REASON_MISS_IFINDEX_SUBNET",
 		201: "TRACE_EVENT_REASON_MISS_SUBNET",
 		202: "TRACE_EVENT_REASON_MISS_FIB_TABLE",
@@ -428,6 +436,8 @@ var (
 		212: "TRACE_EVENT_REASON_MISS_L2_PORT",
 		213: "TRACE_EVENT_REASON_MISS_L2_NETWORK",
 		214: "TRACE_EVENT_REASON_MISS_L2_FDB",
+		215: "TRACE_EVENT_REASON_MISS_L2_ARP",
+		216: "TRACE_EVENT_REASON_MISS_L2_GATEWAY",
 		300: "TRACE_EVENT_REASON_POLICY_ACL_PASS",
 		301: "TRACE_EVENT_REASON_POLICY_ACL_DROP",
 		302: "TRACE_EVENT_REASON_POLICY_SG_PASS",
@@ -450,6 +460,7 @@ var (
 		601: "TRACE_EVENT_REASON_L2_FLOOD",
 		602: "TRACE_EVENT_REASON_L2_SPLIT_HORIZON",
 		603: "TRACE_EVENT_REASON_L2_HAIRPIN_DROP",
+		604: "TRACE_EVENT_REASON_L2_GW_LOOP_DROP",
 	}
 	TraceEventReason_value = map[string]int32{
 		"TRACE_EVENT_REASON_UNSPECIFIED":              0,
@@ -459,6 +470,7 @@ var (
 		"TRACE_EVENT_REASON_ENTER_NODE_INGRESS":       103,
 		"TRACE_EVENT_REASON_ENTER_L2_EGRESS":          104,
 		"TRACE_EVENT_REASON_ENTER_L2_INGRESS":         105,
+		"TRACE_EVENT_REASON_ENTER_L2_GATEWAY":         106,
 		"TRACE_EVENT_REASON_MISS_IFINDEX_SUBNET":      200,
 		"TRACE_EVENT_REASON_MISS_SUBNET":              201,
 		"TRACE_EVENT_REASON_MISS_FIB_TABLE":           202,
@@ -474,6 +486,8 @@ var (
 		"TRACE_EVENT_REASON_MISS_L2_PORT":             212,
 		"TRACE_EVENT_REASON_MISS_L2_NETWORK":          213,
 		"TRACE_EVENT_REASON_MISS_L2_FDB":              214,
+		"TRACE_EVENT_REASON_MISS_L2_ARP":              215,
+		"TRACE_EVENT_REASON_MISS_L2_GATEWAY":          216,
 		"TRACE_EVENT_REASON_POLICY_ACL_PASS":          300,
 		"TRACE_EVENT_REASON_POLICY_ACL_DROP":          301,
 		"TRACE_EVENT_REASON_POLICY_SG_PASS":           302,
@@ -496,6 +510,7 @@ var (
 		"TRACE_EVENT_REASON_L2_FLOOD":                 601,
 		"TRACE_EVENT_REASON_L2_SPLIT_HORIZON":         602,
 		"TRACE_EVENT_REASON_L2_HAIRPIN_DROP":          603,
+		"TRACE_EVENT_REASON_L2_GW_LOOP_DROP":          604,
 	}
 )
 
@@ -1881,7 +1896,7 @@ const file_pkg_debugpb_debug_proto_rawDesc = "" +
 	"\x1aTRACE_PROTOCOL_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12TRACE_PROTOCOL_TCP\x10\x01\x12\x16\n" +
 	"\x12TRACE_PROTOCOL_UDP\x10\x02\x12\x17\n" +
-	"\x13TRACE_PROTOCOL_ICMP\x10\x03*\xce\x01\n" +
+	"\x13TRACE_PROTOCOL_ICMP\x10\x03*\xe9\x01\n" +
 	"\tTraceHook\x12\x1a\n" +
 	"\x16TRACE_HOOK_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15TRACE_HOOK_POD_EGRESS\x10\x01\x12\x1a\n" +
@@ -1889,12 +1904,13 @@ const file_pkg_debugpb_debug_proto_rawDesc = "" +
 	"\x18TRACE_HOOK_VXLAN_INGRESS\x10\x03\x12\x1b\n" +
 	"\x17TRACE_HOOK_NODE_INGRESS\x10\x04\x12\x18\n" +
 	"\x14TRACE_HOOK_L2_EGRESS\x10\x05\x12\x19\n" +
-	"\x15TRACE_HOOK_L2_INGRESS\x10\x06*w\n" +
+	"\x15TRACE_HOOK_L2_INGRESS\x10\x06\x12\x19\n" +
+	"\x15TRACE_HOOK_L2_GATEWAY\x10\a*w\n" +
 	"\fTraceVerdict\x12\x1d\n" +
 	"\x19TRACE_VERDICT_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10TRACE_VERDICT_OK\x10\x01\x12\x16\n" +
 	"\x12TRACE_VERDICT_DROP\x10\x02\x12\x1a\n" +
-	"\x16TRACE_VERDICT_REDIRECT\x10\x03*\xff\r\n" +
+	"\x16TRACE_VERDICT_REDIRECT\x10\x03*\x9f\x0f\n" +
 	"\x10TraceEventReason\x12\"\n" +
 	"\x1eTRACE_EVENT_REASON_UNSPECIFIED\x10\x00\x12'\n" +
 	"#TRACE_EVENT_REASON_ENTER_POD_EGRESS\x10d\x12(\n" +
@@ -1902,7 +1918,8 @@ const file_pkg_debugpb_debug_proto_rawDesc = "" +
 	"&TRACE_EVENT_REASON_ENTER_VXLAN_INGRESS\x10f\x12)\n" +
 	"%TRACE_EVENT_REASON_ENTER_NODE_INGRESS\x10g\x12&\n" +
 	"\"TRACE_EVENT_REASON_ENTER_L2_EGRESS\x10h\x12'\n" +
-	"#TRACE_EVENT_REASON_ENTER_L2_INGRESS\x10i\x12+\n" +
+	"#TRACE_EVENT_REASON_ENTER_L2_INGRESS\x10i\x12'\n" +
+	"#TRACE_EVENT_REASON_ENTER_L2_GATEWAY\x10j\x12+\n" +
 	"&TRACE_EVENT_REASON_MISS_IFINDEX_SUBNET\x10\xc8\x01\x12#\n" +
 	"\x1eTRACE_EVENT_REASON_MISS_SUBNET\x10\xc9\x01\x12&\n" +
 	"!TRACE_EVENT_REASON_MISS_FIB_TABLE\x10\xca\x01\x12&\n" +
@@ -1917,7 +1934,9 @@ const file_pkg_debugpb_debug_proto_rawDesc = "" +
 	"$TRACE_EVENT_REASON_MISS_VPC_ENDPOINT\x10\xd3\x01\x12$\n" +
 	"\x1fTRACE_EVENT_REASON_MISS_L2_PORT\x10\xd4\x01\x12'\n" +
 	"\"TRACE_EVENT_REASON_MISS_L2_NETWORK\x10\xd5\x01\x12#\n" +
-	"\x1eTRACE_EVENT_REASON_MISS_L2_FDB\x10\xd6\x01\x12'\n" +
+	"\x1eTRACE_EVENT_REASON_MISS_L2_FDB\x10\xd6\x01\x12#\n" +
+	"\x1eTRACE_EVENT_REASON_MISS_L2_ARP\x10\xd7\x01\x12'\n" +
+	"\"TRACE_EVENT_REASON_MISS_L2_GATEWAY\x10\xd8\x01\x12'\n" +
 	"\"TRACE_EVENT_REASON_POLICY_ACL_PASS\x10\xac\x02\x12'\n" +
 	"\"TRACE_EVENT_REASON_POLICY_ACL_DROP\x10\xad\x02\x12&\n" +
 	"!TRACE_EVENT_REASON_POLICY_SG_PASS\x10\xae\x02\x12&\n" +
@@ -1939,7 +1958,8 @@ const file_pkg_debugpb_debug_proto_rawDesc = "" +
 	"\x1dTRACE_EVENT_REASON_L2_LEARNED\x10\xd8\x04\x12 \n" +
 	"\x1bTRACE_EVENT_REASON_L2_FLOOD\x10\xd9\x04\x12(\n" +
 	"#TRACE_EVENT_REASON_L2_SPLIT_HORIZON\x10\xda\x04\x12'\n" +
-	"\"TRACE_EVENT_REASON_L2_HAIRPIN_DROP\x10\xdb\x042\xb9\x03\n" +
+	"\"TRACE_EVENT_REASON_L2_HAIRPIN_DROP\x10\xdb\x04\x12'\n" +
+	"\"TRACE_EVENT_REASON_L2_GW_LOOP_DROP\x10\xdc\x042\xb9\x03\n" +
 	"\x05Debug\x12A\n" +
 	"\n" +
 	"WatchTrace\x12\x1b.debug.v1.WatchTraceRequest\x1a\x14.debug.v1.TraceEvent0\x01\x12N\n" +

@@ -50,6 +50,7 @@
 #define TRACE_REASON_ENTER_NODE_INGRESS  103
 #define TRACE_REASON_ENTER_L2_EGRESS     104
 #define TRACE_REASON_ENTER_L2_INGRESS    105
+#define TRACE_REASON_ENTER_L2_GATEWAY    106
 
 #define TRACE_REASON_MISS_IFINDEX_SUBNET 200
 #define TRACE_REASON_MISS_SUBNET         201
@@ -66,6 +67,8 @@
 #define TRACE_REASON_MISS_L2_PORT        212
 #define TRACE_REASON_MISS_L2_NETWORK     213
 #define TRACE_REASON_MISS_L2_FDB         214
+#define TRACE_REASON_MISS_L2_ARP         215
+#define TRACE_REASON_MISS_L2_GATEWAY     216
 
 #define TRACE_REASON_POLICY_ACL_PASS 300
 #define TRACE_REASON_POLICY_ACL_DROP 301
@@ -103,6 +106,7 @@
 #define TRACE_REASON_L2_FLOOD         601
 #define TRACE_REASON_L2_SPLIT_HORIZON 602
 #define TRACE_REASON_L2_HAIRPIN_DROP  603
+#define TRACE_REASON_L2_GW_LOOP_DROP  604
 
 // Hook identifiers. Embedded into trace_event.hook so the userspace
 // renderer can attribute events to a specific BPF program without
@@ -113,6 +117,7 @@
 #define TRACE_HOOK_NODE_INGRESS  4
 #define TRACE_HOOK_L2_EGRESS     5
 #define TRACE_HOOK_L2_INGRESS    6
+#define TRACE_HOOK_L2_GATEWAY    7
 
 // Capture flag bits — mirror TraceCaptureConfig in the CRD. Daemons
 // translate user-facing booleans into this bitmask before writing

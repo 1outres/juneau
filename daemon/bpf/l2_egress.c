@@ -79,6 +79,11 @@ static __always_inline int handle(struct __sk_buff *skb) {
   __builtin_memcpy(src_mac, eth->h_source, ETH_ALEN);
   __builtin_memcpy(dst_mac, eth->h_dest, ETH_ALEN);
 
+  // The addresses an ARP frame carries are recorded before anything
+  // else reads the segment: the gateway resolves a destination address
+  // to a MAC out of this table, and it has no other way to fill it in.
+  l2_arp_snoop(skb, vni, eth);
+
   // Whatever MAC the workload puts in the frame is learned as its own.
   // An L2Network is a segment the user builds, so who claims which
   // address on it is the user's business, and a nested VM or a bridge

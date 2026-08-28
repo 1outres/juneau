@@ -2288,6 +2288,28 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
     return forward_l2(skb, eth, subnet->vpc_id, transit_subnet_id);
   }
 
+  // An L2Network reached through its gateway. The packet is handed to
+  // the local gateway veth as it stands, and the program on that veth
+  // resolves the destination MAC and forwards it on the segment. The
+  // ifindex is node-local, so it comes from l2_gateway rather than from
+  // the route, which every node reads the same.
+  if (fv->type == FIB_ROUTE_TYPE_L2_GATEWAY) {
+    struct l2_gateway_key gkey = {.vni = fv->subnet_id};
+    const struct l2_gateway_val *gateway =
+        bpf_map_lookup_elem(&l2_gateway, &gkey);
+    __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, subnet->vpc_id);
+    if (!gateway || gateway->ifindex == 0) {
+      trace_emit_map_miss_l3(skb, __tid, TRACE_REASON_MISS_L2_GATEWAY,
+                             TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                             subnet->vpc_id, 0, fv->subnet_id);
+      return TC_ACT_SHOT;
+    }
+    trace_emit_redirect_l3(skb, __tid, TRACE_REASON_REDIRECT_IFINDEX,
+                           TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC,
+                           subnet->vpc_id, fv->subnet_id, gateway->ifindex);
+    return bpf_redirect(gateway->ifindex, 0);
+  }
+
   return TC_ACT_SHOT;
 }
 

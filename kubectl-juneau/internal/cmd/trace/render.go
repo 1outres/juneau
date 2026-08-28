@@ -174,6 +174,8 @@ func hookString(h debugpb.TraceHook) string {
 		return "l2_egress"
 	case debugpb.TraceHook_TRACE_HOOK_L2_INGRESS:
 		return "l2_ingress"
+	case debugpb.TraceHook_TRACE_HOOK_L2_GATEWAY:
+		return "l2_gateway"
 	}
 	return "?"
 }
@@ -190,6 +192,8 @@ func reasonString(r debugpb.TraceEventReason) string {
 		return "enter node_ingress"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_ENTER_L2_EGRESS:
 		return "enter l2_egress"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_ENTER_L2_GATEWAY:
+		return "enter l2_gateway"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_ENTER_L2_INGRESS:
 		return "enter l2_ingress"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_IFINDEX_SUBNET:
@@ -222,6 +226,10 @@ func reasonString(r debugpb.TraceEventReason) string {
 		return "l2 network miss"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_L2_FDB:
 		return "l2 fdb miss"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_L2_ARP:
+		return "l2 address miss (nothing on the segment has spoken from it)"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_L2_GATEWAY:
+		return "l2 gateway miss (this node runs no gateway for the segment)"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_POLICY_ACL_PASS:
 		return "acl pass"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_POLICY_ACL_DROP:
@@ -266,6 +274,8 @@ func reasonString(r debugpb.TraceEventReason) string {
 		return "l2 flood (split horizon)"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_L2_HAIRPIN_DROP:
 		return "l2 drop (destination is on the source port)"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_L2_GW_LOOP_DROP:
+		return "l2 drop (too many hops through the gateway)"
 	}
 	return r.String()
 }

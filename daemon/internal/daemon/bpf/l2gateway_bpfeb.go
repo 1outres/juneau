@@ -13,7 +13,7 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-type VxlanIngressAclMetaVal struct {
+type L2GatewayAclMetaVal struct {
 	_               structs.HostLayout
 	IngressCount    uint32
 	EgressCount     uint32
@@ -23,7 +23,7 @@ type VxlanIngressAclMetaVal struct {
 	Pad             [6]uint8
 }
 
-type VxlanIngressAclRule struct {
+type L2GatewayAclRule struct {
 	_         structs.HostLayout
 	Proto     uint16
 	PortLo    uint16
@@ -36,18 +36,18 @@ type VxlanIngressAclRule struct {
 	Pad       uint8
 }
 
-type VxlanIngressArpTableKey struct {
+type L2GatewayArpTableKey struct {
 	_        structs.HostLayout
 	SubnetId uint32
 	Ipaddr   uint32
 }
 
-type VxlanIngressArpTableVal struct {
+type L2GatewayArpTableVal struct {
 	_   structs.HostLayout
 	Mac [6]uint8
 }
 
-type VxlanIngressBackendKey struct {
+type L2GatewayBackendKey struct {
 	_         structs.HostLayout
 	ClusterIp uint32
 	Port      uint16
@@ -56,7 +56,7 @@ type VxlanIngressBackendKey struct {
 	Index     uint32
 }
 
-type VxlanIngressBackendVal struct {
+type L2GatewayBackendVal struct {
 	_               structs.HostLayout
 	BackendIp       uint32
 	BackendPort     uint16
@@ -65,7 +65,7 @@ type VxlanIngressBackendVal struct {
 	BackendSubnetId uint32
 }
 
-type VxlanIngressCtKey struct {
+type L2GatewayCtKey struct {
 	_     structs.HostLayout
 	Scope uint32
 	Saddr uint32
@@ -76,7 +76,7 @@ type VxlanIngressCtKey struct {
 	Pad   [3]uint8
 }
 
-type VxlanIngressCtVal struct {
+type L2GatewayCtVal struct {
 	_            structs.HostLayout
 	NewSaddr     uint32
 	NewDaddr     uint32
@@ -91,44 +91,44 @@ type VxlanIngressCtVal struct {
 	LastSeenNs   uint64
 }
 
-type VxlanIngressExternalAddressPoolsKey struct {
+type L2GatewayExternalAddressPoolsKey struct {
 	_         structs.HostLayout
 	Prefixlen uint32
 	Addr      uint32
 }
 
-type VxlanIngressExternalArpKey struct {
+type L2GatewayExternalArpKey struct {
 	_       structs.HostLayout
 	Ifindex uint32
 	Ipaddr  uint32
 }
 
-type VxlanIngressExternalArpVal struct {
+type L2GatewayExternalArpVal struct {
 	_   structs.HostLayout
 	Mac [6]uint8
 	Pad [2]uint8
 }
 
-type VxlanIngressFdbKey struct {
+type L2GatewayFdbKey struct {
 	_        structs.HostLayout
 	SubnetId uint32
 	Mac      [6]uint8
 	_        [2]byte
 }
 
-type VxlanIngressFdbVal struct {
+type L2GatewayFdbVal struct {
 	_       structs.HostLayout
 	Ifindex uint32
 	VtepIp  uint32
 }
 
-type VxlanIngressFibKey struct {
+type L2GatewayFibKey struct {
 	_         structs.HostLayout
 	Prefixlen uint32
 	Dst       uint32
 }
 
-type VxlanIngressFibVal struct {
+type L2GatewayFibVal struct {
 	_        structs.HostLayout
 	Type     uint8
 	Dmac     [6]uint8
@@ -138,28 +138,28 @@ type VxlanIngressFibVal struct {
 	Oif      uint32
 }
 
-type VxlanIngressIfindexHostMacKey struct {
+type L2GatewayIfindexHostMacKey struct {
 	_       structs.HostLayout
 	Ifindex uint32
 }
 
-type VxlanIngressIfindexHostMacVal struct {
+type L2GatewayIfindexHostMacVal struct {
 	_   structs.HostLayout
 	Mac [6]uint8
 }
 
-type VxlanIngressIfindexSubnetKey struct {
+type L2GatewayIfindexSubnetKey struct {
 	_       structs.HostLayout
 	Ifindex uint32
 }
 
-type VxlanIngressIfindexSubnetVal struct {
+type L2GatewayIfindexSubnetVal struct {
 	_        structs.HostLayout
 	SubnetId uint32
 	Ipv4     uint32
 }
 
-type VxlanIngressIpv4FragKey struct {
+type L2GatewayIpv4FragKey struct {
 	_     structs.HostLayout
 	VpcId uint32
 	Saddr uint32
@@ -169,7 +169,7 @@ type VxlanIngressIpv4FragKey struct {
 	Pad   uint8
 }
 
-type VxlanIngressIpv4FragVal struct {
+type L2GatewayIpv4FragVal struct {
 	_          structs.HostLayout
 	Sport      uint16
 	Dport      uint16
@@ -177,23 +177,23 @@ type VxlanIngressIpv4FragVal struct {
 	LastSeenNs uint64
 }
 
-type VxlanIngressL2ArpKey struct {
+type L2GatewayL2ArpKey struct {
 	_    structs.HostLayout
 	Ipv4 uint32
 }
 
-type VxlanIngressL2ArpVal struct {
+type L2GatewayL2ArpVal struct {
 	_   structs.HostLayout
 	Mac [6]uint8
 	Pad [2]uint8
 }
 
-type VxlanIngressL2FdbKey struct {
+type L2GatewayL2FdbKey struct {
 	_   structs.HostLayout
 	Mac [6]uint8
 }
 
-type VxlanIngressL2FdbVal struct {
+type L2GatewayL2FdbVal struct {
 	_          structs.HostLayout
 	Ifindex    uint32
 	VtepIp     uint32
@@ -202,39 +202,39 @@ type VxlanIngressL2FdbVal struct {
 	Pad        uint32
 }
 
-type VxlanIngressL2GatewayKey struct {
+type L2GatewayL2GatewayKey struct {
 	_   structs.HostLayout
 	Vni uint32
 }
 
-type VxlanIngressL2GatewayVal struct {
+type L2GatewayL2GatewayVal struct {
 	_       structs.HostLayout
 	Ifindex uint32
 	Mac     [6]uint8
 	Pad     [2]uint8
 }
 
-type VxlanIngressL2IfindexKey struct {
+type L2GatewayL2IfindexKey struct {
 	_       structs.HostLayout
 	Ifindex uint32
 }
 
-type VxlanIngressL2IfindexVal struct {
+type L2GatewayL2IfindexVal struct {
 	_   structs.HostLayout
 	Vni uint32
 }
 
-type VxlanIngressL2NetworkKey struct {
+type L2GatewayL2NetworkKey struct {
 	_   structs.HostLayout
 	Vni uint32
 }
 
-type VxlanIngressL2NetworkVal struct {
+type L2GatewayL2NetworkVal struct {
 	_     structs.HostLayout
 	VpcId uint32
 }
 
-type VxlanIngressLbBackendKey struct {
+type L2GatewayLbBackendKey struct {
 	_     structs.HostLayout
 	Vip   uint32
 	Port  uint16
@@ -243,7 +243,7 @@ type VxlanIngressLbBackendKey struct {
 	Index uint32
 }
 
-type VxlanIngressLbBackendVal struct {
+type L2GatewayLbBackendVal struct {
 	_               structs.HostLayout
 	BackendIp       uint32
 	BackendPort     uint16
@@ -251,7 +251,7 @@ type VxlanIngressLbBackendVal struct {
 	BackendSubnetId uint32
 }
 
-type VxlanIngressLbServiceKey struct {
+type L2GatewayLbServiceKey struct {
 	_     structs.HostLayout
 	Vip   uint32
 	Port  uint16
@@ -259,7 +259,7 @@ type VxlanIngressLbServiceKey struct {
 	Pad   uint8
 }
 
-type VxlanIngressLbServiceVal struct {
+type L2GatewayLbServiceVal struct {
 	_            structs.HostLayout
 	BackendCount uint32
 	Gen          uint32
@@ -267,28 +267,28 @@ type VxlanIngressLbServiceVal struct {
 	Pad          uint32
 }
 
-type VxlanIngressNaptSrcKey struct {
+type L2GatewayNaptSrcKey struct {
 	_            structs.HostLayout
 	NatGatewayId uint32
 }
 
-type VxlanIngressNaptSrcVal struct {
+type L2GatewayNaptSrcVal struct {
 	_      structs.HostLayout
 	HostIp uint32
 }
 
-type VxlanIngressNatInside struct {
+type L2GatewayNatInside struct {
 	_        structs.HostLayout
 	SubnetId uint32
 	Addr     uint32
 }
 
-type VxlanIngressNatOutside struct {
+type L2GatewayNatOutside struct {
 	_    structs.HostLayout
 	Addr uint32
 }
 
-type VxlanIngressPolicyCtKey struct {
+type L2GatewayPolicyCtKey struct {
 	_     structs.HostLayout
 	Epoch uint32
 	Scope uint32
@@ -301,7 +301,7 @@ type VxlanIngressPolicyCtKey struct {
 	Pad   [2]uint8
 }
 
-type VxlanIngressPolicyCtVal struct {
+type L2GatewayPolicyCtVal struct {
 	_          structs.HostLayout
 	State      uint8
 	FlagsSeen  uint8
@@ -310,7 +310,7 @@ type VxlanIngressPolicyCtVal struct {
 	LastSeenNs uint64
 }
 
-type VxlanIngressServiceAclKey struct {
+type L2GatewayServiceAclKey struct {
 	_           structs.HostLayout
 	ClusterIp   uint32
 	Port        uint16
@@ -319,7 +319,7 @@ type VxlanIngressServiceAclKey struct {
 	CallerVpcId uint32
 }
 
-type VxlanIngressServiceAffinityKey struct {
+type L2GatewayServiceAffinityKey struct {
 	_         structs.HostLayout
 	ClusterIp uint32
 	Port      uint16
@@ -328,14 +328,14 @@ type VxlanIngressServiceAffinityKey struct {
 	ClientIp  uint32
 }
 
-type VxlanIngressServiceAffinityVal struct {
+type L2GatewayServiceAffinityVal struct {
 	_            structs.HostLayout
 	BackendIndex uint32
 	BackendGen   uint32
 	ExpiresAtNs  uint64
 }
 
-type VxlanIngressServiceKey struct {
+type L2GatewayServiceKey struct {
 	_         structs.HostLayout
 	ClusterIp uint32
 	Port      uint16
@@ -343,7 +343,7 @@ type VxlanIngressServiceKey struct {
 	Pad       uint8
 }
 
-type VxlanIngressServiceVal struct {
+type L2GatewayServiceVal struct {
 	_            structs.HostLayout
 	OwnerVpcId   uint32
 	BackendCount uint32
@@ -352,20 +352,20 @@ type VxlanIngressServiceVal struct {
 	Gen          uint32
 }
 
-type VxlanIngressSgMembershipKey struct {
+type L2GatewaySgMembershipKey struct {
 	_     structs.HostLayout
 	VpcId uint32
 	Ipv4  uint32
 }
 
-type VxlanIngressSgMembershipVal struct {
+type L2GatewaySgMembershipVal struct {
 	_     structs.HostLayout
 	Count uint8
 	Pad   [3]uint8
 	Sgs   [2]uint32
 }
 
-type VxlanIngressSgMetaVal struct {
+type L2GatewaySgMetaVal struct {
 	_              structs.HostLayout
 	IngressCount   uint32
 	EgressCount    uint32
@@ -374,7 +374,7 @@ type VxlanIngressSgMetaVal struct {
 	Pad            [3]uint8
 }
 
-type VxlanIngressSgRule struct {
+type L2GatewaySgRule struct {
 	_             structs.HostLayout
 	Proto         uint16
 	PortLo        uint16
@@ -387,12 +387,12 @@ type VxlanIngressSgRule struct {
 	Pad           [2]uint8
 }
 
-type VxlanIngressSubnetKey struct {
+type L2GatewaySubnetKey struct {
 	_        structs.HostLayout
 	SubnetId uint32
 }
 
-type VxlanIngressSubnetVal struct {
+type L2GatewaySubnetVal struct {
 	_       structs.HostLayout
 	TableId uint32
 	VpcId   uint32
@@ -403,7 +403,7 @@ type VxlanIngressSubnetVal struct {
 	AclId   uint32
 }
 
-type VxlanIngressTraceConfigVal struct {
+type L2GatewayTraceConfigVal struct {
 	_            structs.HostLayout
 	ExpiresNs    uint64
 	CaptureFlags uint32
@@ -412,7 +412,7 @@ type VxlanIngressTraceConfigVal struct {
 	Pad          [2]uint8
 }
 
-type VxlanIngressTraceTupleKey struct {
+type L2GatewayTraceTupleKey struct {
 	_     structs.HostLayout
 	Scope uint8
 	Proto uint8
@@ -424,14 +424,14 @@ type VxlanIngressTraceTupleKey struct {
 	Dport uint16
 }
 
-type VxlanIngressTraceTupleVal struct {
+type L2GatewayTraceTupleVal struct {
 	_         structs.HostLayout
 	TraceId   uint32
 	Direction uint8
 	Pad       [3]uint8
 }
 
-type VxlanIngressVirtualServiceFlowKey struct {
+type L2GatewayVirtualServiceFlowKey struct {
 	_        structs.HostLayout
 	SubnetId uint32
 	SrcIp    uint32
@@ -442,7 +442,7 @@ type VxlanIngressVirtualServiceFlowKey struct {
 	Pad      [3]uint8
 }
 
-type VxlanIngressVirtualServiceFlowVal struct {
+type L2GatewayVirtualServiceFlowVal struct {
 	_          structs.HostLayout
 	VpcId      uint32
 	ServiceId  uint32
@@ -454,7 +454,7 @@ type VxlanIngressVirtualServiceFlowVal struct {
 	LastSeenNs uint64
 }
 
-type VxlanIngressVirtualServiceKey struct {
+type L2GatewayVirtualServiceKey struct {
 	_        structs.HostLayout
 	SubnetId uint32
 	DstIp    uint32
@@ -463,7 +463,7 @@ type VxlanIngressVirtualServiceKey struct {
 	Pad      uint8
 }
 
-type VxlanIngressVirtualServiceVal struct {
+type L2GatewayVirtualServiceVal struct {
 	_          structs.HostLayout
 	ServiceId  uint32
 	TapIfindex uint32
@@ -472,7 +472,7 @@ type VxlanIngressVirtualServiceVal struct {
 	Flags      uint32
 }
 
-type VxlanIngressVpcEndpointKey struct {
+type L2GatewayVpcEndpointKey struct {
 	_       structs.HostLayout
 	VpcId   uint32
 	Address uint32
@@ -481,33 +481,33 @@ type VxlanIngressVpcEndpointKey struct {
 	Pad     uint8
 }
 
-type VxlanIngressVpcEndpointVal struct {
+type L2GatewayVpcEndpointVal struct {
 	_         structs.HostLayout
 	ClusterIp uint32
 }
 
-// LoadVxlanIngress returns the embedded CollectionSpec for VxlanIngress.
-func LoadVxlanIngress() (*ebpf.CollectionSpec, error) {
-	reader := bytes.NewReader(_VxlanIngressBytes)
+// LoadL2Gateway returns the embedded CollectionSpec for L2Gateway.
+func LoadL2Gateway() (*ebpf.CollectionSpec, error) {
+	reader := bytes.NewReader(_L2GatewayBytes)
 	spec, err := ebpf.LoadCollectionSpecFromReader(reader)
 	if err != nil {
-		return nil, fmt.Errorf("can't load VxlanIngress: %w", err)
+		return nil, fmt.Errorf("can't load L2Gateway: %w", err)
 	}
 
 	return spec, err
 }
 
-// LoadVxlanIngressObjects loads VxlanIngress and converts it into a struct.
+// LoadL2GatewayObjects loads L2Gateway and converts it into a struct.
 //
 // The following types are suitable as obj argument:
 //
-//	*VxlanIngressObjects
-//	*VxlanIngressPrograms
-//	*VxlanIngressMaps
+//	*L2GatewayObjects
+//	*L2GatewayPrograms
+//	*L2GatewayMaps
 //
 // See ebpf.CollectionSpec.LoadAndAssign documentation for details.
-func LoadVxlanIngressObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
-	spec, err := LoadVxlanIngress()
+func LoadL2GatewayObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
+	spec, err := LoadL2Gateway()
 	if err != nil {
 		return err
 	}
@@ -515,26 +515,26 @@ func LoadVxlanIngressObjects(obj interface{}, opts *ebpf.CollectionOptions) erro
 	return spec.LoadAndAssign(obj, opts)
 }
 
-// VxlanIngressSpecs contains maps and programs before they are loaded into the kernel.
+// L2GatewaySpecs contains maps and programs before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
-type VxlanIngressSpecs struct {
-	VxlanIngressProgramSpecs
-	VxlanIngressMapSpecs
-	VxlanIngressVariableSpecs
+type L2GatewaySpecs struct {
+	L2GatewayProgramSpecs
+	L2GatewayMapSpecs
+	L2GatewayVariableSpecs
 }
 
-// VxlanIngressProgramSpecs contains programs before they are loaded into the kernel.
+// L2GatewayProgramSpecs contains programs before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
-type VxlanIngressProgramSpecs struct {
-	TcVxlanIngressEntry *ebpf.ProgramSpec `ebpf:"tc_vxlan_ingress_entry"`
+type L2GatewayProgramSpecs struct {
+	TcL2Gateway *ebpf.ProgramSpec `ebpf:"tc_l2_gateway"`
 }
 
-// VxlanIngressMapSpecs contains maps before they are loaded into the kernel.
+// L2GatewayMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
-type VxlanIngressMapSpecs struct {
+type L2GatewayMapSpecs struct {
 	AclMetaMap            *ebpf.MapSpec `ebpf:"acl_meta_map"`
 	AclRuleTable          *ebpf.MapSpec `ebpf:"acl_rule_table"`
 	AclRulesInnerProto    *ebpf.MapSpec `ebpf:"acl_rules_inner_proto"`
@@ -590,32 +590,32 @@ type VxlanIngressMapSpecs struct {
 	VxlanIfindex          *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
 }
 
-// VxlanIngressVariableSpecs contains global variables before they are loaded into the kernel.
+// L2GatewayVariableSpecs contains global variables before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
-type VxlanIngressVariableSpecs struct {
+type L2GatewayVariableSpecs struct {
 }
 
-// VxlanIngressObjects contains all objects after they have been loaded into the kernel.
+// L2GatewayObjects contains all objects after they have been loaded into the kernel.
 //
-// It can be passed to LoadVxlanIngressObjects or ebpf.CollectionSpec.LoadAndAssign.
-type VxlanIngressObjects struct {
-	VxlanIngressPrograms
-	VxlanIngressMaps
-	VxlanIngressVariables
+// It can be passed to LoadL2GatewayObjects or ebpf.CollectionSpec.LoadAndAssign.
+type L2GatewayObjects struct {
+	L2GatewayPrograms
+	L2GatewayMaps
+	L2GatewayVariables
 }
 
-func (o *VxlanIngressObjects) Close() error {
-	return _VxlanIngressClose(
-		&o.VxlanIngressPrograms,
-		&o.VxlanIngressMaps,
+func (o *L2GatewayObjects) Close() error {
+	return _L2GatewayClose(
+		&o.L2GatewayPrograms,
+		&o.L2GatewayMaps,
 	)
 }
 
-// VxlanIngressMaps contains all maps after they have been loaded into the kernel.
+// L2GatewayMaps contains all maps after they have been loaded into the kernel.
 //
-// It can be passed to LoadVxlanIngressObjects or ebpf.CollectionSpec.LoadAndAssign.
-type VxlanIngressMaps struct {
+// It can be passed to LoadL2GatewayObjects or ebpf.CollectionSpec.LoadAndAssign.
+type L2GatewayMaps struct {
 	AclMetaMap            *ebpf.Map `ebpf:"acl_meta_map"`
 	AclRuleTable          *ebpf.Map `ebpf:"acl_rule_table"`
 	AclRulesInnerProto    *ebpf.Map `ebpf:"acl_rules_inner_proto"`
@@ -671,8 +671,8 @@ type VxlanIngressMaps struct {
 	VxlanIfindex          *ebpf.Map `ebpf:"vxlan_ifindex"`
 }
 
-func (m *VxlanIngressMaps) Close() error {
-	return _VxlanIngressClose(
+func (m *L2GatewayMaps) Close() error {
+	return _L2GatewayClose(
 		m.AclMetaMap,
 		m.AclRuleTable,
 		m.AclRulesInnerProto,
@@ -729,26 +729,26 @@ func (m *VxlanIngressMaps) Close() error {
 	)
 }
 
-// VxlanIngressVariables contains all global variables after they have been loaded into the kernel.
+// L2GatewayVariables contains all global variables after they have been loaded into the kernel.
 //
-// It can be passed to LoadVxlanIngressObjects or ebpf.CollectionSpec.LoadAndAssign.
-type VxlanIngressVariables struct {
+// It can be passed to LoadL2GatewayObjects or ebpf.CollectionSpec.LoadAndAssign.
+type L2GatewayVariables struct {
 }
 
-// VxlanIngressPrograms contains all programs after they have been loaded into the kernel.
+// L2GatewayPrograms contains all programs after they have been loaded into the kernel.
 //
-// It can be passed to LoadVxlanIngressObjects or ebpf.CollectionSpec.LoadAndAssign.
-type VxlanIngressPrograms struct {
-	TcVxlanIngressEntry *ebpf.Program `ebpf:"tc_vxlan_ingress_entry"`
+// It can be passed to LoadL2GatewayObjects or ebpf.CollectionSpec.LoadAndAssign.
+type L2GatewayPrograms struct {
+	TcL2Gateway *ebpf.Program `ebpf:"tc_l2_gateway"`
 }
 
-func (p *VxlanIngressPrograms) Close() error {
-	return _VxlanIngressClose(
-		p.TcVxlanIngressEntry,
+func (p *L2GatewayPrograms) Close() error {
+	return _L2GatewayClose(
+		p.TcL2Gateway,
 	)
 }
 
-func _VxlanIngressClose(closers ...io.Closer) error {
+func _L2GatewayClose(closers ...io.Closer) error {
 	for _, closer := range closers {
 		if err := closer.Close(); err != nil {
 			return err
@@ -759,5 +759,5 @@ func _VxlanIngressClose(closers ...io.Closer) error {
 
 // Do not access this directly.
 //
-//go:embed vxlaningress_bpfeb.o
-var _VxlanIngressBytes []byte
+//go:embed l2gateway_bpfeb.o
+var _L2GatewayBytes []byte

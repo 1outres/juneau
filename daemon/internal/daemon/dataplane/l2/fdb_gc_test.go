@@ -145,3 +145,29 @@ func TestFdbGCLeavesANetworkItHoldsNoTableFor(t *testing.T) {
 	// simply not walked. This asserts it does not reach for one.
 	gc.Sweep()
 }
+
+// The gateway entry carries a stamp nothing refreshes: the port sends
+// no frame to learn it from. Sweeping it out would cut the segment off
+// from the rest of the Vpc until the reconciler wrote it again.
+func TestFdbGCKeepsTheGatewayEntryHoweverOldItIs(t *testing.T) {
+	table := newGCTable(t)
+
+	const now = uint64(10 * time.Hour)
+	key := bpf.PodEgressL2FdbKey{Mac: [6]uint8{0x02, 0, 0, 0, 0, 0xfe}}
+	withInner(t, table, func(inner *ebpf.Map) {
+		err := inner.Update(&key,
+			&bpf.PodEgressL2FdbVal{Ifindex: 9, LastSeenNs: 0, Flags: FdbFlagGateway},
+			ebpf.UpdateAny)
+		if err != nil {
+			t.Fatalf("write the gateway entry: %v", err)
+		}
+	})
+
+	gc := NewFdbGC(table, FdbAging, FdbGCInterval)
+	gc.now = func() uint64 { return now }
+	gc.Sweep()
+
+	if !has(t, table, key) {
+		t.Error("the sweep dropped the gateway entry")
+	}
+}

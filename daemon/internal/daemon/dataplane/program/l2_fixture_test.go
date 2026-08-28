@@ -26,6 +26,7 @@ type l2Segment struct {
 	fdb       *l2.Table
 	bumLocal  *l2.Table
 	bumRemote *l2.Table
+	arp       *l2.Table
 }
 
 // newL2Segment loads one generated object, builds the three per-VNI
@@ -40,16 +41,17 @@ func newL2Segment(t *testing.T, load func() (*ebpf.CollectionSpec, error)) *l2Se
 		fdb:       l2.NewTable("fdb", objs.Map(t, "l2_fdb"), objs.MapSpec(t, "l2_fdb_inner")),
 		bumLocal:  l2.NewTable("bum-local", objs.Map(t, "l2_bum_local"), objs.MapSpec(t, "l2_bum_local_inner")),
 		bumRemote: l2.NewTable("bum-remote", objs.Map(t, "l2_bum_remote"), objs.MapSpec(t, "l2_bum_remote_inner")),
+		arp:       l2.NewTable("arp", objs.Map(t, "l2_arp"), objs.MapSpec(t, "l2_arp_inner")),
 	}
 	t.Cleanup(func() {
-		for _, table := range []*l2.Table{seg.fdb, seg.bumLocal, seg.bumRemote} {
+		for _, table := range []*l2.Table{seg.fdb, seg.bumLocal, seg.bumRemote, seg.arp} {
 			if err := table.CloseAll(); err != nil {
 				t.Errorf("close the per-VNI tables: %v", err)
 			}
 		}
 	})
 
-	for _, table := range []*l2.Table{seg.fdb, seg.bumLocal, seg.bumRemote} {
+	for _, table := range []*l2.Table{seg.fdb, seg.bumLocal, seg.bumRemote, seg.arp} {
 		if err := table.Ensure(testVNI); err != nil {
 			t.Fatalf("build a per-VNI table: %v", err)
 		}
@@ -79,6 +81,71 @@ func (s *l2Segment) addLocalPort(t *testing.T, device bpftest.Device) {
 	if err := s.bumLocal.AddMember(testVNI, uint32(device.Index)); err != nil {
 		t.Fatalf("add %s to the local flood list: %v", device.Name, err)
 	}
+}
+
+// addGatewayPort makes a device the gateway port of the segment: it is
+// a local port like any other, plus the entries that say the router
+// lives behind it — the flood-list flag that sends its copy to the
+// port's ingress, the forwarding entry the daemon writes because a
+// gateway sends no frame to learn it from, and the MAC the port signs
+// with.
+func (s *l2Segment) addGatewayPort(t *testing.T, device bpftest.Device, mac net.HardwareAddr) {
+	t.Helper()
+	if err := s.objs.Map(t, "l2_ifindex").Update(
+		&bpf.PodEgressL2IfindexKey{Ifindex: uint32(device.Index)},
+		&bpf.PodEgressL2IfindexVal{Vni: testVNI},
+		ebpf.UpdateAny,
+	); err != nil {
+		t.Fatalf("name the segment behind %s: %v", device.Name, err)
+	}
+	if err := s.bumLocal.Put(testVNI, uint32(device.Index), l2.PortFlagPresent|l2.PortFlagGateway); err != nil {
+		t.Fatalf("add %s to the local flood list: %v", device.Name, err)
+	}
+	if err := s.objs.Map(t, "l2_gateway").Update(
+		&bpf.PodEgressL2GatewayKey{Vni: testVNI},
+		&bpf.PodEgressL2GatewayVal{Ifindex: uint32(device.Index), Mac: macArray(t, mac)},
+		ebpf.UpdateAny,
+	); err != nil {
+		t.Fatalf("name the gateway port of the segment: %v", err)
+	}
+	s.withFdb(t, func(inner *ebpf.Map) {
+		if err := inner.Update(
+			&bpf.PodEgressL2FdbKey{Mac: macArray(t, mac)},
+			&bpf.PodEgressL2FdbVal{Ifindex: uint32(device.Index), Flags: l2.FdbFlagGateway},
+			ebpf.UpdateAny,
+		); err != nil {
+			t.Fatalf("write the forwarding entry of the gateway: %v", err)
+		}
+	})
+}
+
+// resolve records an address on the segment as the gateway would have
+// snooped it out of an ARP frame.
+func (s *l2Segment) resolve(t *testing.T, address string, mac net.HardwareAddr) {
+	t.Helper()
+	if err := s.arp.Put(testVNI, bpf.PodEgressL2ArpKey{Ipv4: hostOrderIPv4(t, address)},
+		bpf.PodEgressL2ArpVal{Mac: macArray(t, mac)}); err != nil {
+		t.Fatalf("record %s on the segment: %v", address, err)
+	}
+}
+
+// resolved reads back what the segment knows about one address.
+func (s *l2Segment) resolved(t *testing.T, address string) (net.HardwareAddr, bool) {
+	t.Helper()
+	var (
+		val   bpf.PodEgressL2ArpVal
+		found bool
+	)
+	s.arp.ForEachInner(func(vni uint32, inner *ebpf.Map) {
+		if vni != testVNI {
+			return
+		}
+		found = inner.Lookup(&bpf.PodEgressL2ArpKey{Ipv4: hostOrderIPv4(t, address)}, &val) == nil
+	})
+	if !found {
+		return nil, false
+	}
+	return net.HardwareAddr(val.Mac[:]), true
 }
 
 // addRemoteNode puts a node's underlay address on the remote flood

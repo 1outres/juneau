@@ -17,8 +17,8 @@ import (
 const pinPathForTest = "/sys/fs/bpf/juneau-program-test"
 
 // TestEveryProgramSeesTheSameL2Maps walks the sequence Manager.Start
-// runs: load all four objects under one pin path, then build the
-// per-VNI tables from the l2_egress specs.
+// runs: load every object under one pin path, then build the per-VNI
+// tables from the l2_egress specs.
 //
 // The L2 maps are declared in the header every program includes, so
 // each object carries a definition of them. Only LIBBPF_PIN_BY_NAME
@@ -60,15 +60,23 @@ func TestEveryProgramSeesTheSameL2Maps(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = l2Ingress.Close() })
 
+	l2Gateway, err := program.NewL2Gateway(pinPathForTest)
+	if err != nil {
+		t.Fatalf("load l2_gateway: %+v", err)
+	}
+	t.Cleanup(func() { _ = l2Gateway.Close() })
+
 	for _, tt := range []struct {
 		name    string
 		handles []*ebpf.Map
 	}{
-		{"l2_network_map", []*ebpf.Map{podEgress.Objs.L2NetworkMap, l2Egress.Objs.L2NetworkMap, l2Ingress.Objs.L2NetworkMap}},
-		{"l2_ifindex", []*ebpf.Map{podEgress.Objs.L2Ifindex, l2Egress.Objs.L2Ifindex, l2Ingress.Objs.L2Ifindex}},
-		{"l2_fdb", []*ebpf.Map{podEgress.Objs.L2Fdb, l2Egress.Objs.L2Fdb}},
-		{"l2_bum_local", []*ebpf.Map{podEgress.Objs.L2BumLocal, l2Egress.Objs.L2BumLocal}},
-		{"l2_bum_remote", []*ebpf.Map{podEgress.Objs.L2BumRemote, l2Egress.Objs.L2BumRemote}},
+		{"l2_network_map", []*ebpf.Map{podEgress.Objs.L2NetworkMap, l2Egress.Objs.L2NetworkMap, l2Ingress.Objs.L2NetworkMap, l2Gateway.Objs.L2NetworkMap}},
+		{"l2_ifindex", []*ebpf.Map{podEgress.Objs.L2Ifindex, l2Egress.Objs.L2Ifindex, l2Ingress.Objs.L2Ifindex, l2Gateway.Objs.L2Ifindex}},
+		{"l2_fdb", []*ebpf.Map{podEgress.Objs.L2Fdb, l2Egress.Objs.L2Fdb, l2Gateway.Objs.L2Fdb}},
+		{"l2_bum_local", []*ebpf.Map{podEgress.Objs.L2BumLocal, l2Egress.Objs.L2BumLocal, l2Gateway.Objs.L2BumLocal}},
+		{"l2_bum_remote", []*ebpf.Map{podEgress.Objs.L2BumRemote, l2Egress.Objs.L2BumRemote, l2Gateway.Objs.L2BumRemote}},
+		{"l2_arp", []*ebpf.Map{podEgress.Objs.L2Arp, l2Egress.Objs.L2Arp, l2Gateway.Objs.L2Arp}},
+		{"l2_gateway", []*ebpf.Map{podEgress.Objs.L2Gateway, l2Egress.Objs.L2Gateway, l2Gateway.Objs.L2Gateway}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			want := mapID(t, tt.handles[0])

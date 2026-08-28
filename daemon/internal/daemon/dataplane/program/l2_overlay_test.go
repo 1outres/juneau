@@ -1,6 +1,7 @@
 package program_test
 
 import (
+	"bytes"
 	"encoding/binary"
 	"net"
 	"testing"
@@ -218,5 +219,50 @@ func TestVxlanIngressNeverRelaysToAnotherNode(t *testing.T) {
 		if got := watched.Delivered(t, device); got != 1 {
 			t.Errorf("%s received %d copies, want the local flood to reach it once", device.Name, got)
 		}
+	}
+}
+
+// Every node that holds a port on a segment runs a gateway of its own,
+// on the same address and the same MAC, so a broadcast the overlay
+// delivered has already been offered to a gateway on the node it
+// started from. Offering it to this one as well would answer a single
+// ARP once per node in the cluster.
+func TestVxlanIngressSkipsTheGatewayForAFrameFromTheOverlay(t *testing.T) {
+	overlay := newOverlaySegment(t)
+	overlay.segment.addGatewayPort(t, overlay.pod3, bpftest.MAC(0xfe))
+
+	sender := bpftest.MAC(1)
+	frame := bpftest.Frame(t, bpftest.Broadcast, sender, bpftest.EtherTypeARP, nil)
+	watched := bpftest.WatchPorts(t, overlay.pod2, overlay.pod3)
+	overlay.deliver(t, testVNI, frame)
+	overlay.awaitLearned(t, sender)
+
+	if got := watched.Delivered(t, overlay.pod2); got != 1 {
+		t.Errorf("pod2 received %d copies of the broadcast, want 1", got)
+	}
+	if got := watched.Delivered(t, overlay.pod3); got != 0 {
+		t.Errorf("the gateway received %d copies of a broadcast another node already offered it one of", got)
+	}
+}
+
+// The gateway does read the ARP the overlay brings in. A host on
+// another node announces itself to the whole segment, and that is the
+// only way this node ever learns which MAC owns its address.
+func TestVxlanIngressRecordsTheSenderOfAnArpFromAnotherNode(t *testing.T) {
+	overlay := newOverlaySegment(t)
+	sender := bpftest.MAC(1)
+
+	frame := bpftest.Frame(t, bpftest.Broadcast, sender, bpftest.EtherTypeARP,
+		bpftest.ARP(t, bpftest.ARPRequest, sender, "10.60.0.7",
+			net.HardwareAddr{0, 0, 0, 0, 0, 0}, "10.60.0.1"))
+	overlay.deliver(t, testVNI, frame)
+	overlay.awaitLearned(t, sender)
+
+	got, ok := overlay.segment.resolved(t, "10.60.0.7")
+	if !ok {
+		t.Fatal("the segment did not record the sender of the request")
+	}
+	if !bytes.Equal(got, sender) {
+		t.Errorf("recorded 10.60.0.7 as %s, want %s", got, sender)
 	}
 }

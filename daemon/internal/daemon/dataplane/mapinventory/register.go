@@ -56,6 +56,8 @@ func RegisterPodEgress(inv *Inventory, p *program.PodEgress) error {
 		registerL2Fdb,
 		registerL2BumLocal,
 		registerL2BumRemote,
+		registerL2Arp,
+		registerL2Gateway,
 	} {
 		if err := fn(inv, p); err != nil {
 			return err
@@ -766,6 +768,8 @@ func registerL2Fdb(inv *Inventory, p *program.PodEgress) error {
 			// host-order number bpf_tunnel_key.remote_ipv4 takes.
 			FieldIPv4Named("vtep_ip", "0 means the MAC is on a local port"),
 			FieldU64Named("last_seen_ns", "CLOCK_MONOTONIC stamp of the last frame"),
+			FieldU32Named("flags", "1 marks the gateway port of the segment"),
+			FieldPadOf(4),
 		}},
 	})
 }
@@ -781,7 +785,7 @@ func registerL2BumLocal(inv *Inventory, p *program.PodEgress) error {
 		}},
 		Value:      Schema{},
 		InnerKey:   Schema{Fields: []Field{FieldU32Named("ifindex")}},
-		InnerValue: Schema{Fields: []Field{FieldU8Named("present")}},
+		InnerValue: Schema{Fields: []Field{FieldU8Named("flags", "2 marks the gateway port of the segment")}},
 	})
 }
 
@@ -797,5 +801,45 @@ func registerL2BumRemote(inv *Inventory, p *program.PodEgress) error {
 		Value:      Schema{},
 		InnerKey:   Schema{Fields: []Field{FieldIPv4Named("vtep_ip")}},
 		InnerValue: Schema{Fields: []Field{FieldU8Named("present")}},
+	})
+}
+
+// registerL2Arp exposes what the gateway of a segment has snooped out
+// of its ARP. A packet the Vpc routed into a segment is dropped when
+// the address is not here, so this is the first place to look when one
+// host on a segment is reachable and another is not.
+func registerL2Arp(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name:       "l2_arp",
+		Map:        p.Objs.L2Arp,
+		HashOfMaps: true,
+		InnerProto: p.MapSpecs.L2ArpInner,
+		Key: Schema{Fields: []Field{
+			FieldU32Named("vni"),
+		}},
+		Value:    Schema{},
+		InnerKey: Schema{Fields: []Field{FieldIPv4Named("ipv4")}},
+		InnerValue: Schema{Fields: []Field{
+			FieldMACNamed("mac"),
+			FieldPadOf(2),
+		}},
+	})
+}
+
+// registerL2Gateway exposes the gateway port each segment has on this
+// node. The ifindex is node-local, so a dump on one node says nothing
+// about another.
+func registerL2Gateway(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name: "l2_gateway",
+		Map:  p.Objs.L2Gateway,
+		Key: Schema{Fields: []Field{
+			FieldU32Named("vni"),
+		}},
+		Value: Schema{Fields: []Field{
+			FieldU32Named("ifindex"),
+			FieldMACNamed("mac"),
+			FieldPadOf(2),
+		}},
 	})
 }
