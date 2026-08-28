@@ -336,7 +336,7 @@ func (r *NetworkInterfaceReconciler) updateAllocatedStatus(ctx context.Context, 
 	updated.Status.ObservedGeneration = updated.Generation
 	updated.Status.AllocationClaim = claimName
 	updated.Status.Address = address.String()
-	updated.Status.Routes = buildDefaultRoutes(gateway)
+	updated.Status.Routes = buildPodRoutes(resource.Spec.PodRef.Interface, gateway)
 	updated.Status.EffectiveSecurityGroups = effectiveSGs
 	meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
 		Type:               juneauv1alpha1.NetworkInterfaceStatusAllocated,
@@ -402,8 +402,12 @@ func (r *NetworkInterfaceReconciler) updateAllocatedStatus(ctx context.Context, 
 	return r.commitStatus(ctx, resource, updated.Status)
 }
 
-func buildDefaultRoutes(gateway string) []juneauv1alpha1.NetworkRoute {
-	if gateway == "" {
+// buildPodRoutes returns the routes the CNI server writes into the pod
+// netns. Only the primary NIC carries a default route: a pod has one
+// default path, and a second NIC asking for the same route would fail to
+// install it and take the whole pod down with it.
+func buildPodRoutes(ifName, gateway string) []juneauv1alpha1.NetworkRoute {
+	if gateway == "" || ifName != juneauv1alpha1.PodPrimaryInterfaceName {
 		return nil
 	}
 	return []juneauv1alpha1.NetworkRoute{
