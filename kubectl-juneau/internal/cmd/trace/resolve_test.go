@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"sort"
+	"strings"
 	"testing"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
@@ -463,5 +464,299 @@ func TestLookupPodVPCIgnoresAPodWithoutPrimaryNIC(t *testing.T) {
 
 	if _, err := lookupPodVPC(context.Background(), cl, pod); err == nil {
 		t.Fatal("expected an error when the pod has no primary NIC")
+	}
+}
+
+// ---- NIC-scoped resolution ---------------------------------------------
+
+func l2TraceObjects() []client.Object {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "lab-a", UID: "uid-lab-a"},
+		Spec:       corev1.PodSpec{NodeName: "worker-1"},
+		Status:     corev1.PodStatus{PodIP: "10.242.0.5"},
+	}
+	primary := &juneauv1alpha1.NetworkInterface{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "lab-a.eth0"},
+		Spec: juneauv1alpha1.NetworkInterfaceSpec{
+			Subnet: "lab-subnet",
+			PodRef: juneauv1alpha1.NetworkInterfacePodReference{
+				Name: "lab-a", Interface: "eth0", UID: "uid-lab-a",
+			},
+		},
+		Status: juneauv1alpha1.NetworkInterfaceStatus{Address: "10.242.0.5/24"},
+	}
+	// An L2Network without a CIDR hands out no address, so status is
+	// empty and only the user knows what the workload picked.
+	extra := &juneauv1alpha1.NetworkInterface{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "lab-a.eth1"},
+		Spec: juneauv1alpha1.NetworkInterfaceSpec{
+			L2Network: "lab-net",
+			PodRef: juneauv1alpha1.NetworkInterfacePodReference{
+				Name: "lab-a", Interface: "eth1", UID: "uid-lab-a",
+			},
+		},
+	}
+	subnet := &juneauv1alpha1.Subnet{
+		ObjectMeta: metav1.ObjectMeta{Name: "lab-subnet"},
+		Spec:       juneauv1alpha1.SubnetSpec{Vpc: "lab-vpc", CIDR: "10.242.0.0/24"},
+	}
+	// The segment sits in a Vpc of its own, so a trace that read the
+	// Vpc off the Pod instead of off the NIC comes back with 11 where
+	// the L2 hooks stamp 22.
+	l2net := &juneauv1alpha1.L2Network{
+		ObjectMeta: metav1.ObjectMeta{Name: "lab-net"},
+		Spec:       juneauv1alpha1.L2NetworkSpec{Vpc: "lab-l2-vpc"},
+		Status:     juneauv1alpha1.L2NetworkStatus{VNI: 4242},
+	}
+	vpc := &juneauv1alpha1.Vpc{
+		ObjectMeta: metav1.ObjectMeta{Name: "lab-vpc"},
+		Status:     juneauv1alpha1.VpcStatus{VpcID: 11},
+	}
+	l2vpc := &juneauv1alpha1.Vpc{
+		ObjectMeta: metav1.ObjectMeta{Name: "lab-l2-vpc"},
+		Status:     juneauv1alpha1.VpcStatus{VpcID: 22},
+	}
+	return []client.Object{pod, primary, extra, subnet, l2net, vpc, l2vpc}
+}
+
+func newL2TraceClient(t *testing.T) client.Client {
+	t.Helper()
+	return fake.NewClientBuilder().WithScheme(newSchemeForTest(t)).WithObjects(l2TraceObjects()...).Build()
+}
+
+// The L2 hooks stamp their events with the Vpc of the L2Network, so a
+// trace of that NIC has to carry the same id. Reading it off the Pod
+// instead would give the Vpc of eth0's Subnet, which happens to match
+// here only because both sit in one Vpc — the address would not.
+func TestResolveSessionScopesToTheNamedNIC(t *testing.T) {
+	cl := newL2TraceClient(t)
+	o := &Options{
+		SourcePod:       "default/lab-a",
+		SourceInterface: "eth1",
+		SourceIP:        "192.168.60.1",
+		DestIP:          "192.168.60.2",
+		Protocol:        "icmp",
+		sourceNamespace: "default",
+		destNamespace:   "default",
+		traceID:         1,
+	}
+
+	r, err := o.resolveSession(context.Background(), cl)
+	if err != nil {
+		t.Fatalf("resolveSession: %v", err)
+	}
+	if r.source.vpcID != 22 {
+		t.Errorf("source vpcID = %d, want the Vpc of the L2Network (22)", r.source.vpcID)
+	}
+	if got := r.source.ip.String(); got != "192.168.60.1" {
+		t.Errorf("source ip = %q, want the address the user gave", got)
+	}
+	if r.source.nodeName != "worker-1" {
+		t.Errorf("source node = %q, want worker-1", r.source.nodeName)
+	}
+	if len(r.initialTuples) == 0 {
+		t.Fatal("no tuples")
+	}
+	first := r.initialTuples[0]
+	if first.Scope != juneauv1alpha1.TraceTupleScopeVPC || first.VPCID != 22 {
+		t.Errorf("primary tuple scope/vpc = %v/%d, want VPC/22", first.Scope, first.VPCID)
+	}
+	if first.SrcIP != "192.168.60.1" || first.DstIP != "192.168.60.2" {
+		t.Errorf("primary tuple = %s -> %s", first.SrcIP, first.DstIP)
+	}
+}
+
+// Without an address the trace has nothing to key on. Saying so, and
+// naming the flag that fixes it, beats keying the session on the
+// address of a NIC the user did not ask about.
+func TestResolveSessionAsksForAnAddressAnL2NetworkNeverHandedOut(t *testing.T) {
+	cl := newL2TraceClient(t)
+	o := &Options{
+		SourcePod:       "default/lab-a",
+		SourceInterface: "eth1",
+		DestIP:          "192.168.60.2",
+		Protocol:        "icmp",
+		sourceNamespace: "default",
+		destNamespace:   "default",
+		traceID:         1,
+	}
+
+	_, err := o.resolveSession(context.Background(), cl)
+	if err == nil {
+		t.Fatal("expected an error when the NIC carries no address")
+	}
+	if !strings.Contains(err.Error(), "--from-ip") {
+		t.Errorf("error should name the flag that fixes it, got %v", err)
+	}
+}
+
+// A NIC on a Subnet needs no --from-ip: juneau handed it an address
+// and writes it on the NetworkInterface.
+func TestResolveSessionReadsTheAddressOfANicOnASubnet(t *testing.T) {
+	cl := newL2TraceClient(t)
+	o := &Options{
+		SourcePod:       "default/lab-a",
+		SourceInterface: "eth0",
+		DestIP:          "10.242.0.9",
+		Protocol:        "icmp",
+		sourceNamespace: "default",
+		destNamespace:   "default",
+		traceID:         1,
+	}
+
+	r, err := o.resolveSession(context.Background(), cl)
+	if err != nil {
+		t.Fatalf("resolveSession: %v", err)
+	}
+	if got := r.source.ip.String(); got != "10.242.0.5" {
+		t.Errorf("source ip = %q, want the address on the NetworkInterface", got)
+	}
+	if r.source.vpcID != 11 {
+		t.Errorf("source vpcID = %d, want 11", r.source.vpcID)
+	}
+}
+
+// A NIC the Pod does not have is a mistake in the command, not a
+// reason to answer about a different NIC.
+func TestResolveSessionRejectsANicThePodDoesNotHave(t *testing.T) {
+	cl := newL2TraceClient(t)
+	o := &Options{
+		SourcePod:       "default/lab-a",
+		SourceInterface: "eth7",
+		DestIP:          "10.242.0.9",
+		Protocol:        "icmp",
+		sourceNamespace: "default",
+		destNamespace:   "default",
+		traceID:         1,
+	}
+
+	_, err := o.resolveSession(context.Background(), cl)
+	if err == nil {
+		t.Fatal("expected an error for a NIC the pod does not have")
+	}
+	if !strings.Contains(err.Error(), "eth7") {
+		t.Errorf("error should name the NIC that is missing, got %v", err)
+	}
+}
+
+// Naming no NIC keeps what the command has always done: the Pod's own
+// address, and the Vpc of the network its primary NIC joined.
+func TestResolveSessionWithoutANicTracesThePodItself(t *testing.T) {
+	cl := newL2TraceClient(t)
+	o := &Options{
+		SourcePod:       "default/lab-a",
+		DestIP:          "10.242.0.9",
+		Protocol:        "icmp",
+		sourceNamespace: "default",
+		destNamespace:   "default",
+		traceID:         1,
+	}
+
+	r, err := o.resolveSession(context.Background(), cl)
+	if err != nil {
+		t.Fatalf("resolveSession: %v", err)
+	}
+	if got := r.source.ip.String(); got != "10.242.0.5" {
+		t.Errorf("source ip = %q, want the pod address", got)
+	}
+	if r.source.vpcID != 11 {
+		t.Errorf("source vpcID = %d, want 11", r.source.vpcID)
+	}
+	if r.source.ifname != "" {
+		t.Errorf("ifname = %q, want empty", r.source.ifname)
+	}
+}
+
+// The destination side takes the same pair of flags, so a trace of one
+// L2 segment can name both ends of it.
+func TestResolveSessionScopesTheDestinationNICToo(t *testing.T) {
+	cl := newL2TraceClient(t)
+	peer := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "lab-b", UID: "uid-lab-b"},
+		Spec:       corev1.PodSpec{NodeName: "worker-2"},
+		Status:     corev1.PodStatus{PodIP: "10.242.0.6"},
+	}
+	peerNIC := &juneauv1alpha1.NetworkInterface{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "lab-b.eth1"},
+		Spec: juneauv1alpha1.NetworkInterfaceSpec{
+			L2Network: "lab-net",
+			PodRef: juneauv1alpha1.NetworkInterfacePodReference{
+				Name: "lab-b", Interface: "eth1", UID: "uid-lab-b",
+			},
+		},
+	}
+	if err := cl.Create(context.Background(), peer); err != nil {
+		t.Fatalf("create peer pod: %v", err)
+	}
+	if err := cl.Create(context.Background(), peerNIC); err != nil {
+		t.Fatalf("create peer nic: %v", err)
+	}
+
+	o := &Options{
+		SourcePod:       "default/lab-a",
+		SourceInterface: "eth1",
+		SourceIP:        "192.168.60.1",
+		DestPod:         "default/lab-b",
+		DestInterface:   "eth1",
+		DestIP:          "192.168.60.2",
+		Protocol:        "icmp",
+		sourceNamespace: "default",
+		destNamespace:   "default",
+		traceID:         1,
+	}
+
+	r, err := o.resolveSession(context.Background(), cl)
+	if err != nil {
+		t.Fatalf("resolveSession: %v", err)
+	}
+	if r.destination.vpcID != 22 {
+		t.Errorf("destination vpcID = %d, want the Vpc of the L2Network (22)", r.destination.vpcID)
+	}
+	if got := r.destination.ip.String(); got != "192.168.60.2" {
+		t.Errorf("destination ip = %q", got)
+	}
+	sort.Strings(r.nodes)
+	if len(r.nodes) != 2 || r.nodes[0] != "worker-1" || r.nodes[1] != "worker-2" {
+		t.Errorf("nodes = %v, want both worker-1 and worker-2", r.nodes)
+	}
+}
+
+func TestNicAddressReadsBothFormsAndReportsNone(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		raw   string
+		want  string
+		valid bool
+	}{
+		{name: "cidr", raw: "10.242.0.5/24", want: "10.242.0.5", valid: true},
+		{name: "bare", raw: "10.242.0.5", want: "10.242.0.5", valid: true},
+		{name: "none", raw: "", valid: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			nwif := &juneauv1alpha1.NetworkInterface{
+				ObjectMeta: metav1.ObjectMeta{Name: "lab-a.eth1"},
+				Status:     juneauv1alpha1.NetworkInterfaceStatus{Address: tt.raw},
+			}
+			addr, err := nicAddress(nwif)
+			if err != nil {
+				t.Fatalf("nicAddress: %v", err)
+			}
+			if addr.IsValid() != tt.valid {
+				t.Fatalf("valid = %t, want %t", addr.IsValid(), tt.valid)
+			}
+			if tt.valid && addr.String() != tt.want {
+				t.Errorf("addr = %q, want %q", addr.String(), tt.want)
+			}
+		})
+	}
+}
+
+func TestNicAddressRejectsSomethingItCannotRead(t *testing.T) {
+	nwif := &juneauv1alpha1.NetworkInterface{
+		ObjectMeta: metav1.ObjectMeta{Name: "lab-a.eth1"},
+		Status:     juneauv1alpha1.NetworkInterfaceStatus{Address: "not-an-address"},
+	}
+	if _, err := nicAddress(nwif); err == nil {
+		t.Fatal("expected an error for an unreadable address")
 	}
 }

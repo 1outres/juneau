@@ -45,7 +45,16 @@ Examples:
 
   # Trace by raw 5-tuple (no Kubernetes objects on either side).
   kubectl juneau trace --from-ip 10.0.1.10 --to-ip 10.0.2.8 \
-    --proto udp --port 53 --observe-only`,
+    --proto udp --port 53 --observe-only
+
+  # Trace a second NIC. --interface says which network the Pod is on
+  # there, and the addresses say what to follow: an L2Network without
+  # a CIDR hands out none, so the workload picked them and only you
+  # know what they are.
+  kubectl juneau trace --from-pod default/lab-a --interface eth1 \
+    --from-ip 192.168.60.1 \
+    --to-pod default/lab-b --to-interface eth1 --to-ip 192.168.60.2 \
+    --proto icmp`,
 		Args: cobra.MaximumNArgs(2),
 		RunE: func(c *cobra.Command, args []string) error {
 			if err := o.Complete(args); err != nil {
