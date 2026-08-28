@@ -68,6 +68,22 @@ func ResolveNetworkInterfaceContext(ctx context.Context, v View, namespace, name
 func buildInterfaceContext(ctx context.Context, v View, nic *juneauv1alpha1.NetworkInterface) (InterfaceContext, error) {
 	ic := InterfaceContext{NetworkInterface: nic}
 
+	if nic.Spec.L2Network != "" {
+		network, err := v.L2Network(ctx, nic.Spec.L2Network)
+		if err != nil {
+			return ic, err
+		}
+		ic.L2Network = network
+
+		if network != nil && network.Spec.Vpc != "" {
+			vpc, err := v.Vpc(ctx, network.Spec.Vpc)
+			if err != nil {
+				return ic, err
+			}
+			ic.Vpc = vpc
+		}
+	}
+
 	if nic.Spec.Subnet != "" {
 		subnet, err := v.Subnet(ctx, nic.Spec.Subnet)
 		if err != nil {

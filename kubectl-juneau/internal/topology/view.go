@@ -33,6 +33,7 @@ type View interface {
 
 	Vpc(ctx context.Context, name string) (*juneauv1alpha1.Vpc, error)
 	Subnet(ctx context.Context, name string) (*juneauv1alpha1.Subnet, error)
+	L2Network(ctx context.Context, name string) (*juneauv1alpha1.L2Network, error)
 	RouteTable(ctx context.Context, name string) (*juneauv1alpha1.RouteTable, error)
 	NetworkInterface(ctx context.Context, ns, name string) (*juneauv1alpha1.NetworkInterface, error)
 	SecurityGroup(ctx context.Context, name string) (*juneauv1alpha1.SecurityGroup, error)

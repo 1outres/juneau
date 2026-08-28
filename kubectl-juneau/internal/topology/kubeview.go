@@ -30,6 +30,7 @@ type kubeView struct {
 	mu              sync.Mutex
 	vpcCache        map[string]*juneauv1alpha1.Vpc
 	subnetCache     map[string]*juneauv1alpha1.Subnet
+	l2NetworkCache  map[string]*juneauv1alpha1.L2Network
 	routeTableCache map[string]*juneauv1alpha1.RouteTable
 	sgCache         map[string]*juneauv1alpha1.SecurityGroup
 	aclCache        map[string]*juneauv1alpha1.NetworkACL
@@ -65,6 +66,7 @@ func NewKubeView(cl client.Client) View {
 		cl:              cl,
 		vpcCache:        map[string]*juneauv1alpha1.Vpc{},
 		subnetCache:     map[string]*juneauv1alpha1.Subnet{},
+		l2NetworkCache:  map[string]*juneauv1alpha1.L2Network{},
 		routeTableCache: map[string]*juneauv1alpha1.RouteTable{},
 		sgCache:         map[string]*juneauv1alpha1.SecurityGroup{},
 		aclCache:        map[string]*juneauv1alpha1.NetworkACL{},
@@ -161,6 +163,30 @@ func (v *kubeView) Subnet(ctx context.Context, name string) (*juneauv1alpha1.Sub
 	}
 	v.mu.Lock()
 	v.subnetCache[name] = &obj
+	v.mu.Unlock()
+	return &obj, nil
+}
+
+func (v *kubeView) L2Network(ctx context.Context, name string) (*juneauv1alpha1.L2Network, error) {
+	v.mu.Lock()
+	if cached, ok := v.l2NetworkCache[name]; ok {
+		v.mu.Unlock()
+		return cached, nil
+	}
+	v.mu.Unlock()
+
+	var obj juneauv1alpha1.L2Network
+	if err := v.cl.Get(ctx, client.ObjectKey{Name: name}, &obj); err != nil {
+		if apierrors.IsNotFound(err) {
+			v.mu.Lock()
+			v.l2NetworkCache[name] = nil
+			v.mu.Unlock()
+			return nil, nil
+		}
+		return nil, err
+	}
+	v.mu.Lock()
+	v.l2NetworkCache[name] = &obj
 	v.mu.Unlock()
 	return &obj, nil
 }
