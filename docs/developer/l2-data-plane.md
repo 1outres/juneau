@@ -94,9 +94,15 @@ l2_bum_remote: HASH_OF_MAPS  outer: VNI, inner: HASH  key: リモートVTEPのIP
 
 ### split horizon
 
-VXLAN経由で受けたBUMは、ローカルポートにだけ配ってリモートには再送しません。送信元のNodeが既に全Nodeへ配っているからです。忘れるとVNI内でフレームが無限に増殖します。
+VXLAN経由で受けたフレームは、ローカルポートにだけ配ってリモートには再送しません。送信元のNodeが既に配り終えているからです。忘れるとVNI内でフレームが無限に増殖します。
 
-実装上は`l2_flood`の`deliver_remote`引数1つです。`l2_egress`はtrue、`vxlan_ingress`のL2分岐はfalseを渡します。
+規則はBUMだけのものではありません。宛先MACを学習済みでも、その居場所が別のNodeなら`vxlan_ingress`は転送しません。送信元のNodeはそのNodeに直接届けられるので、中継するとフレームがVXLANを2回通り、しかも受け取った先が送信元MACの居場所をこのNodeだと学習してしまいます。この場合はローカルへのフラッドに落とします。転送先を決められなかったフレームの扱いと同じです。
+
+実装上は`struct l2_port`の`from_overlay`1つで、`l2_flood`と`l2_forward_unicast`の両方が読みます。
+
+### 入ってきたポートへは戻さない
+
+宛先MACの居場所が、そのフレームが入ってきたポートそのものだった場合は捨てます。スイッチが必ずやるフィルタリングで、これを忘れるとNICの後ろでbridgeを組んだワークロードとの間でフレームが往復し続けます。trace上は`L2_HAIRPIN_DROP`として出ます。
 
 ## リモートVTEPとローカルポートの集約
 
@@ -150,6 +156,7 @@ L2固有のreasonを追加しました。
 | `L2_LEARNED` | 600 | 送信元MACの居場所を記録した |
 | `L2_FLOOD` | 601 | 複製した(aux1が複製数) |
 | `L2_SPLIT_HORIZON` | 602 | VXLAN経由のフレームをローカルにだけ複製した |
+| `L2_HAIRPIN_DROP` | 603 | 宛先MACが、そのフレームが入ってきたポートに居た |
 
 hookは`TRACE_HOOK_L2_EGRESS`(5)と`TRACE_HOOK_L2_INGRESS`(6)です。
 
@@ -162,13 +169,13 @@ traceが拾えるのはIPv4のフレームだけです。TraceSessionはIPv4の5
 ```
 OK   pod_egress: tc_pod_egress processed 581483 insns (limit 1000000, 58.1% used)
 OK   pod_ingress: tc_pod_ingress processed 101533 insns (limit 1000000, 10.2% used)
-OK   vxlan_ingress: tc_vxlan_ingress_entry processed 5045 insns (limit 1000000, 0.5% used)
+OK   vxlan_ingress: tc_vxlan_ingress_entry processed 5166 insns (limit 1000000, 0.5% used)
 OK   node_ingress: tc_node_ingress processed 70965 insns (limit 1000000, 7.1% used)
-OK   l2_egress: tc_l2_egress processed 2638 insns (limit 1000000, 0.3% used)
+OK   l2_egress: tc_l2_egress processed 2277 insns (limit 1000000, 0.2% used)
 OK   l2_ingress: tc_l2_ingress processed 511 insns (limit 1000000, 0.1% used)
 ```
 
-`vxlan_ingress`はL2分岐を入れる前が3,760命令(0.4%)でした。増えたのは1,285命令です。`pod_egress`は581,483命令のまま変わっていません。
+`vxlan_ingress`はL2分岐を入れる前が3,760命令(0.4%)でした。増えたのは1,406命令です。`pod_egress`は581,483命令のまま変わっていません。
 
 `bpf/`の下を触ったらこれを回してください。命令数が上限を超えてもコンパイラは何も言わず、次に分かるのはdaemonがcrashloopに入ったときです。実行にはrootとマウント済みのbpffsが要ります。
 
