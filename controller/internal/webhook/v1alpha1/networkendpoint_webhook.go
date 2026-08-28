@@ -125,6 +125,9 @@ func (v *NetworkEndpointCustomValidator) ValidateUpdate(ctx context.Context, old
 	if networkendpoint.Spec.Subnet != oldNetworkEndpoint.Spec.Subnet {
 		errs = append(errs, field.Invalid(specPath.Child("subnet"), networkendpoint.Spec.Subnet, "spec.subnet is immutable"))
 	}
+	if networkendpoint.Spec.L2Network != oldNetworkEndpoint.Spec.L2Network {
+		errs = append(errs, field.Invalid(specPath.Child("l2Network"), networkendpoint.Spec.L2Network, "spec.l2Network is immutable"))
+	}
 	if networkendpoint.Spec.Address != oldNetworkEndpoint.Spec.Address {
 		errs = append(errs, field.Invalid(specPath.Child("address"), networkendpoint.Spec.Address, "spec.address is immutable"))
 	}

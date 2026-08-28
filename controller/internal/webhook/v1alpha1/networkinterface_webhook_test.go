@@ -46,7 +46,7 @@ var _ = Describe("NetworkInterface webhook", func() {
 		err := webhookK8sClient.Create(context.Background(), newValidNetworkInterface(webhookUniqueTestName("networkinterface"), "default", "192.168.0.10"))
 
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("must be within Subnet CIDR"))
+		Expect(err.Error()).To(ContainSubstring(`must be within Subnet "default" CIDR`))
 	})
 
 	It("rejects immutable spec updates", func() {

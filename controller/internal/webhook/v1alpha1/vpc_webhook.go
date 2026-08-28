@@ -526,6 +526,27 @@ func (v *VpcCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Obj
 		)
 	}
 
+	// Same reasoning for L2Networks. They are not GC'd with the Vpc
+	// either, and a segment left behind would keep holding a VNI that
+	// nothing owns.
+	var l2List juneauv1alpha1.L2NetworkList
+	if err := v.List(ctx, &l2List); err != nil {
+		return nil, fmt.Errorf("list L2Networks: %w", err)
+	}
+	var l2Refs []string
+	for i := range l2List.Items {
+		if l2List.Items[i].Spec.Vpc == vpc.Name {
+			l2Refs = append(l2Refs, l2List.Items[i].Name)
+		}
+	}
+	if len(l2Refs) > 0 {
+		return nil, errors.NewForbidden(
+			schema.GroupResource{Group: juneauv1alpha1.GroupVersion.Group, Resource: "vpcs"},
+			vpc.Name,
+			fmt.Errorf("L2Network(s) %v still belong to this Vpc; delete them first", l2Refs),
+		)
+	}
+
 	// Block deletion while a VpcPeering still names this Vpc. A peering
 	// that lost one side can never become Ready again, and the routes
 	// pointing at it would stay broken with no object left to fix.
