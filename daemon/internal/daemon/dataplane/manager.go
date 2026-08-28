@@ -627,13 +627,11 @@ func (m *Manager) startL2Reconcilers(ctx context.Context) error {
 }
 
 // startL2GatewayReconciler wires the reconciler that stands up the
-// router port of every L2Network that declares a gateway and holds an
-// endpoint on this node.
+// router port of every L2Network that declares a gateway.
 //
 // It watches more than the segment itself because the port carries a
 // boundary: the Vpc numbers it, a RouteTable governs what leaves it and
-// a NetworkACL polices it, and the endpoints decide whether this node
-// needs one at all.
+// a NetworkACL polices both directions across it.
 func (m *Manager) startL2GatewayReconciler(ctx context.Context) error {
 	m.l2GatewayAttacher = link.NewL2GatewayAttacher(m.podEgress, m.l2GatewayProgram)
 	m.l2Gateway = reconciler.NewL2Gateway(m.client, m.l2GatewayAttacher, reconciler.L2GatewayMaps{
@@ -648,9 +646,6 @@ func (m *Manager) startL2GatewayReconciler(ctx context.Context) error {
 	m.l2GatewayRunner = runner.New(m.l2Gateway)
 	if err := m.l2GatewayRunner.WatchFanOut(m.l2NetworkInformer, m.l2Gateway.FanOutL2Network); err != nil {
 		return fmt.Errorf("watch L2Network (l2-gateway): %w", err)
-	}
-	if err := m.l2GatewayRunner.WatchFanOut(m.nwepInformer, m.l2Gateway.FanOutEndpointToL2Network); err != nil {
-		return fmt.Errorf("watch NWEP (l2-gateway fan-out): %w", err)
 	}
 	if m.vpcInformer != nil {
 		if err := m.l2GatewayRunner.WatchFanOut(m.vpcInformer, m.l2Gateway.FanOutVpcToL2Networks); err != nil {

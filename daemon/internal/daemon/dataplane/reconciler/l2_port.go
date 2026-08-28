@@ -35,22 +35,6 @@ func l2NetworkFromEvent(obj any) (*juneauv1alpha1.L2Network, bool) {
 	return network, ok
 }
 
-// networkEndpointFromL2Event reads the NetworkEndpoint out of an
-// informer event, tombstone included. A delete that a relist missed
-// arrives as a tombstone, and dropping it would leave the gateway of a
-// segment standing on a node that no longer holds a port on it.
-func networkEndpointFromL2Event(obj any) (*juneauv1alpha1.NetworkEndpoint, bool) {
-	if endpoint, ok := obj.(*juneauv1alpha1.NetworkEndpoint); ok {
-		return endpoint, true
-	}
-	tombstone, ok := obj.(toolscache.DeletedFinalStateUnknown)
-	if !ok {
-		return nil, false
-	}
-	endpoint, ok := tombstone.Obj.(*juneauv1alpha1.NetworkEndpoint)
-	return endpoint, ok
-}
-
 // l2NetworkTable is what a reconciler needs to build and drop one
 // per-VNI table. *l2.Table is the only implementation the daemon runs;
 // tests bring their own because minting a BPF map needs CAP_BPF.

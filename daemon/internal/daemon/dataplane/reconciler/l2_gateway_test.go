@@ -252,9 +252,11 @@ func TestL2GatewayLeavesASegmentWithNoGatewayAlone(t *testing.T) {
 	}
 }
 
-// The gateway is anycast: every node that holds a port on the segment
-// runs one. A node that holds none has nothing to route for.
-func TestL2GatewayWaitsForAnEndpointOnThisNode(t *testing.T) {
+// A segment that declares a gateway joins the routing of its Vpc, and a
+// packet for it can be routed on any node. Where the endpoints happen
+// to sit says nothing about where a packet needs a way in, so every
+// node runs a port.
+func TestL2GatewayStandsUpThePortWhereNoEndpointSits(t *testing.T) {
 	f := newL2GatewayFixture(t, newGatewayTestNetwork(), newGatewayTestVpc(),
 		newGatewayTestRouteTable("rt-main", 7), newGatewayTestEndpoint("node-b"))
 
@@ -262,8 +264,34 @@ func TestL2GatewayWaitsForAnEndpointOnThisNode(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	if len(f.ports.ports) != 0 {
-		t.Error("a veth was built on a node that holds no port on the segment")
+	if _, ok := f.ports.ports[gatewayTestVNI]; !ok {
+		t.Error("no veth was built on a node that holds no endpoint on the segment")
+	}
+	if _, ok := f.gatewayMap.entries[bpf.PodEgressL2GatewayKey{Vni: gatewayTestVNI}]; !ok {
+		t.Error("l2_gateway has no entry for the segment")
+	}
+}
+
+// The port belongs to the segment, not to the workloads on it. Taking
+// it down when the last one leaves would make the segment unreachable
+// from this node until something happened to be scheduled here.
+func TestL2GatewayKeepsThePortWhenTheLastEndpointLeaves(t *testing.T) {
+	endpoint := newGatewayTestEndpoint("node-a")
+	f := newL2GatewayFixture(t, newGatewayTestNetwork(), newGatewayTestVpc(),
+		newGatewayTestRouteTable("rt-main", 7), endpoint)
+
+	if err := f.reconciler.Reconcile(context.Background(), "lab-net"); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if err := f.reconciler.client.Delete(context.Background(), endpoint); err != nil {
+		t.Fatalf("delete the endpoint: %v", err)
+	}
+	if err := f.reconciler.Reconcile(context.Background(), "lab-net"); err != nil {
+		t.Fatalf("Reconcile after the endpoint left: %v", err)
+	}
+
+	if _, ok := f.ports.ports[gatewayTestVNI]; !ok {
+		t.Error("the port went down with the last endpoint on this node")
 	}
 }
 
@@ -281,24 +309,6 @@ func TestL2GatewayWaitsForTheIdentityOfThePort(t *testing.T) {
 	if len(f.ports.ports) != 0 {
 		t.Error("a veth was built before the controller published a MAC for it")
 	}
-}
-
-func TestL2GatewayTakesThePortDownWhenTheLastEndpointLeaves(t *testing.T) {
-	endpoint := newGatewayTestEndpoint("node-a")
-	f := newL2GatewayFixture(t, newGatewayTestNetwork(), newGatewayTestVpc(),
-		newGatewayTestRouteTable("rt-main", 7), endpoint)
-
-	if err := f.reconciler.Reconcile(context.Background(), "lab-net"); err != nil {
-		t.Fatalf("Reconcile: %v", err)
-	}
-	if err := f.reconciler.client.Delete(context.Background(), endpoint); err != nil {
-		t.Fatalf("delete the endpoint: %v", err)
-	}
-	if err := f.reconciler.Reconcile(context.Background(), "lab-net"); err != nil {
-		t.Fatalf("Reconcile after the endpoint left: %v", err)
-	}
-
-	assertGatewayGone(t, f)
 }
 
 func TestL2GatewayTakesThePortDownWithTheSegment(t *testing.T) {

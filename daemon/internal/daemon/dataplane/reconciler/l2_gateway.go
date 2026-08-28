@@ -75,13 +75,19 @@ type L2GatewayMaps struct {
 // to learn what an L2Network is.
 //
 // The identity of the port — the address and the MAC — is the
-// controller's, published in L2Network.status. Every node that holds a
-// port on the segment stands up a port with that same identity, so a
-// workload reaches its gateway without leaving its node.
+// controller's, published in L2Network.status. Every node stands up a
+// port with that same identity, so a workload reaches its gateway
+// without leaving its node.
 //
-// A node that holds no port on the segment builds nothing. There is
-// nothing on it to route for, and a veth per segment per node would
-// otherwise sit on every node in the cluster.
+// Every node, and not only the ones holding an endpoint on the segment.
+// A segment that declares a gateway joins the routing of its Vpc, and
+// the node a packet for it is routed on has nothing to do with the node
+// its endpoints sit on: a Pod on a Subnet reaching into the segment, or
+// the reply of a Service flow coming back from a backend, is routed
+// where that workload runs. A node with no port there would drop it.
+//
+// A segment without a gateway builds nothing. There is no way in or out
+// of it to carry.
 type L2Gateway struct {
 	client   client.Client
 	nodeName string
@@ -149,20 +155,12 @@ type l2GatewayPortSpec struct {
 // when it should run nothing.
 //
 // Every reason to run nothing is a state the cluster passes through on
-// its way somewhere: a VNI or a MAC that has not been handed out yet, a
-// Vpc that has not been numbered, a segment with no port on this node.
+// its way somewhere: a segment with no gateway, a VNI or a MAC that has
+// not been handed out yet, a Vpc or a RouteTable that is not there.
 // None of them is an error, because the event that resolves them is
 // already on its way and failing here would only spin the work queue.
 func (r *L2Gateway) desiredPort(ctx context.Context, network *juneauv1alpha1.L2Network) (*l2GatewayPortSpec, error) {
 	if network.Status.VNI == 0 || network.Status.Gateway == "" || network.Status.GatewayMAC == "" {
-		return nil, nil
-	}
-
-	local, err := r.holdsAPort(ctx, network.Name)
-	if err != nil {
-		return nil, err
-	}
-	if !local {
 		return nil, nil
 	}
 
@@ -223,22 +221,6 @@ func (r *L2Gateway) desiredPort(ctx context.Context, network *juneauv1alpha1.L2N
 		tableID: routeTable.Status.TableID,
 		aclID:   aclID,
 	}, nil
-}
-
-// holdsAPort reports whether any NetworkEndpoint of the segment sits on
-// this node.
-func (r *L2Gateway) holdsAPort(ctx context.Context, name string) (bool, error) {
-	var list juneauv1alpha1.NetworkEndpointList
-	if err := r.client.List(ctx, &list); err != nil {
-		return false, err
-	}
-	for i := range list.Items {
-		endpoint := &list.Items[i]
-		if endpoint.Spec.L2Network == name && endpoint.Spec.NodeName == r.nodeName {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 // stand brings the port up and writes everything that names it.
@@ -398,18 +380,6 @@ func (r *L2Gateway) releaseEntries(snapshot l2GatewaySnapshot) error {
 	}
 
 	return errors.Join(errs...)
-}
-
-// FanOutEndpointToL2Network re-enqueues the segment an endpoint joined.
-// Whether this node runs a gateway for a segment follows whether it
-// holds a port on it, so the first endpoint to arrive brings the port
-// up and the last one to leave takes it down.
-func (r *L2Gateway) FanOutEndpointToL2Network(obj any) []string {
-	endpoint, ok := networkEndpointFromL2Event(obj)
-	if !ok || endpoint.Spec.L2Network == "" {
-		return nil
-	}
-	return []string{endpoint.Spec.L2Network}
 }
 
 // FanOutL2Network re-enqueues the changed segment itself. The runner
