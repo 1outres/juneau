@@ -13,7 +13,7 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-type PodEgressAclMetaVal struct {
+type L2EgressAclMetaVal struct {
 	_               structs.HostLayout
 	IngressCount    uint32
 	EgressCount     uint32
@@ -23,7 +23,7 @@ type PodEgressAclMetaVal struct {
 	Pad             [6]uint8
 }
 
-type PodEgressAclRule struct {
+type L2EgressAclRule struct {
 	_         structs.HostLayout
 	Proto     uint16
 	PortLo    uint16
@@ -36,18 +36,18 @@ type PodEgressAclRule struct {
 	Pad       uint8
 }
 
-type PodEgressArpTableKey struct {
+type L2EgressArpTableKey struct {
 	_        structs.HostLayout
 	SubnetId uint32
 	Ipaddr   uint32
 }
 
-type PodEgressArpTableVal struct {
+type L2EgressArpTableVal struct {
 	_   structs.HostLayout
 	Mac [6]uint8
 }
 
-type PodEgressBackendKey struct {
+type L2EgressBackendKey struct {
 	_         structs.HostLayout
 	ClusterIp uint32
 	Port      uint16
@@ -56,7 +56,7 @@ type PodEgressBackendKey struct {
 	Index     uint32
 }
 
-type PodEgressBackendVal struct {
+type L2EgressBackendVal struct {
 	_               structs.HostLayout
 	BackendIp       uint32
 	BackendPort     uint16
@@ -65,7 +65,7 @@ type PodEgressBackendVal struct {
 	BackendSubnetId uint32
 }
 
-type PodEgressCtKey struct {
+type L2EgressCtKey struct {
 	_     structs.HostLayout
 	Scope uint32
 	Saddr uint32
@@ -76,7 +76,7 @@ type PodEgressCtKey struct {
 	Pad   [3]uint8
 }
 
-type PodEgressCtVal struct {
+type L2EgressCtVal struct {
 	_            structs.HostLayout
 	NewSaddr     uint32
 	NewDaddr     uint32
@@ -91,44 +91,44 @@ type PodEgressCtVal struct {
 	LastSeenNs   uint64
 }
 
-type PodEgressExternalAddressPoolsKey struct {
+type L2EgressExternalAddressPoolsKey struct {
 	_         structs.HostLayout
 	Prefixlen uint32
 	Addr      uint32
 }
 
-type PodEgressExternalArpKey struct {
+type L2EgressExternalArpKey struct {
 	_       structs.HostLayout
 	Ifindex uint32
 	Ipaddr  uint32
 }
 
-type PodEgressExternalArpVal struct {
+type L2EgressExternalArpVal struct {
 	_   structs.HostLayout
 	Mac [6]uint8
 	Pad [2]uint8
 }
 
-type PodEgressFdbKey struct {
+type L2EgressFdbKey struct {
 	_        structs.HostLayout
 	SubnetId uint32
 	Mac      [6]uint8
 	_        [2]byte
 }
 
-type PodEgressFdbVal struct {
+type L2EgressFdbVal struct {
 	_       structs.HostLayout
 	Ifindex uint32
 	VtepIp  uint32
 }
 
-type PodEgressFibKey struct {
+type L2EgressFibKey struct {
 	_         structs.HostLayout
 	Prefixlen uint32
 	Dst       uint32
 }
 
-type PodEgressFibVal struct {
+type L2EgressFibVal struct {
 	_        structs.HostLayout
 	Type     uint8
 	Dmac     [6]uint8
@@ -138,28 +138,28 @@ type PodEgressFibVal struct {
 	Oif      uint32
 }
 
-type PodEgressIfindexHostMacKey struct {
+type L2EgressIfindexHostMacKey struct {
 	_       structs.HostLayout
 	Ifindex uint32
 }
 
-type PodEgressIfindexHostMacVal struct {
+type L2EgressIfindexHostMacVal struct {
 	_   structs.HostLayout
 	Mac [6]uint8
 }
 
-type PodEgressIfindexSubnetKey struct {
+type L2EgressIfindexSubnetKey struct {
 	_       structs.HostLayout
 	Ifindex uint32
 }
 
-type PodEgressIfindexSubnetVal struct {
+type L2EgressIfindexSubnetVal struct {
 	_        structs.HostLayout
 	SubnetId uint32
 	Ipv4     uint32
 }
 
-type PodEgressIpv4FragKey struct {
+type L2EgressIpv4FragKey struct {
 	_     structs.HostLayout
 	VpcId uint32
 	Saddr uint32
@@ -169,7 +169,7 @@ type PodEgressIpv4FragKey struct {
 	Pad   uint8
 }
 
-type PodEgressIpv4FragVal struct {
+type L2EgressIpv4FragVal struct {
 	_          structs.HostLayout
 	Sport      uint16
 	Dport      uint16
@@ -177,39 +177,39 @@ type PodEgressIpv4FragVal struct {
 	LastSeenNs uint64
 }
 
-type PodEgressL2FdbKey struct {
+type L2EgressL2FdbKey struct {
 	_   structs.HostLayout
 	Mac [6]uint8
 }
 
-type PodEgressL2FdbVal struct {
+type L2EgressL2FdbVal struct {
 	_          structs.HostLayout
 	Ifindex    uint32
 	VtepIp     uint32
 	LastSeenNs uint64
 }
 
-type PodEgressL2IfindexKey struct {
+type L2EgressL2IfindexKey struct {
 	_       structs.HostLayout
 	Ifindex uint32
 }
 
-type PodEgressL2IfindexVal struct {
+type L2EgressL2IfindexVal struct {
 	_   structs.HostLayout
 	Vni uint32
 }
 
-type PodEgressL2NetworkKey struct {
+type L2EgressL2NetworkKey struct {
 	_   structs.HostLayout
 	Vni uint32
 }
 
-type PodEgressL2NetworkVal struct {
+type L2EgressL2NetworkVal struct {
 	_     structs.HostLayout
 	VpcId uint32
 }
 
-type PodEgressLbBackendKey struct {
+type L2EgressLbBackendKey struct {
 	_     structs.HostLayout
 	Vip   uint32
 	Port  uint16
@@ -218,7 +218,7 @@ type PodEgressLbBackendKey struct {
 	Index uint32
 }
 
-type PodEgressLbBackendVal struct {
+type L2EgressLbBackendVal struct {
 	_               structs.HostLayout
 	BackendIp       uint32
 	BackendPort     uint16
@@ -226,7 +226,7 @@ type PodEgressLbBackendVal struct {
 	BackendSubnetId uint32
 }
 
-type PodEgressLbServiceKey struct {
+type L2EgressLbServiceKey struct {
 	_     structs.HostLayout
 	Vip   uint32
 	Port  uint16
@@ -234,7 +234,7 @@ type PodEgressLbServiceKey struct {
 	Pad   uint8
 }
 
-type PodEgressLbServiceVal struct {
+type L2EgressLbServiceVal struct {
 	_            structs.HostLayout
 	BackendCount uint32
 	Gen          uint32
@@ -242,28 +242,28 @@ type PodEgressLbServiceVal struct {
 	Pad          uint32
 }
 
-type PodEgressNaptSrcKey struct {
+type L2EgressNaptSrcKey struct {
 	_            structs.HostLayout
 	NatGatewayId uint32
 }
 
-type PodEgressNaptSrcVal struct {
+type L2EgressNaptSrcVal struct {
 	_      structs.HostLayout
 	HostIp uint32
 }
 
-type PodEgressNatInside struct {
+type L2EgressNatInside struct {
 	_        structs.HostLayout
 	SubnetId uint32
 	Addr     uint32
 }
 
-type PodEgressNatOutside struct {
+type L2EgressNatOutside struct {
 	_    structs.HostLayout
 	Addr uint32
 }
 
-type PodEgressPolicyCtKey struct {
+type L2EgressPolicyCtKey struct {
 	_     structs.HostLayout
 	Epoch uint32
 	Scope uint32
@@ -276,7 +276,7 @@ type PodEgressPolicyCtKey struct {
 	Pad   [2]uint8
 }
 
-type PodEgressPolicyCtVal struct {
+type L2EgressPolicyCtVal struct {
 	_          structs.HostLayout
 	State      uint8
 	FlagsSeen  uint8
@@ -285,7 +285,7 @@ type PodEgressPolicyCtVal struct {
 	LastSeenNs uint64
 }
 
-type PodEgressServiceAclKey struct {
+type L2EgressServiceAclKey struct {
 	_           structs.HostLayout
 	ClusterIp   uint32
 	Port        uint16
@@ -294,7 +294,7 @@ type PodEgressServiceAclKey struct {
 	CallerVpcId uint32
 }
 
-type PodEgressServiceAffinityKey struct {
+type L2EgressServiceAffinityKey struct {
 	_         structs.HostLayout
 	ClusterIp uint32
 	Port      uint16
@@ -303,14 +303,14 @@ type PodEgressServiceAffinityKey struct {
 	ClientIp  uint32
 }
 
-type PodEgressServiceAffinityVal struct {
+type L2EgressServiceAffinityVal struct {
 	_            structs.HostLayout
 	BackendIndex uint32
 	BackendGen   uint32
 	ExpiresAtNs  uint64
 }
 
-type PodEgressServiceKey struct {
+type L2EgressServiceKey struct {
 	_         structs.HostLayout
 	ClusterIp uint32
 	Port      uint16
@@ -318,7 +318,7 @@ type PodEgressServiceKey struct {
 	Pad       uint8
 }
 
-type PodEgressServiceVal struct {
+type L2EgressServiceVal struct {
 	_            structs.HostLayout
 	OwnerVpcId   uint32
 	BackendCount uint32
@@ -327,20 +327,20 @@ type PodEgressServiceVal struct {
 	Gen          uint32
 }
 
-type PodEgressSgMembershipKey struct {
+type L2EgressSgMembershipKey struct {
 	_     structs.HostLayout
 	VpcId uint32
 	Ipv4  uint32
 }
 
-type PodEgressSgMembershipVal struct {
+type L2EgressSgMembershipVal struct {
 	_     structs.HostLayout
 	Count uint8
 	Pad   [3]uint8
 	Sgs   [2]uint32
 }
 
-type PodEgressSgMetaVal struct {
+type L2EgressSgMetaVal struct {
 	_              structs.HostLayout
 	IngressCount   uint32
 	EgressCount    uint32
@@ -349,7 +349,7 @@ type PodEgressSgMetaVal struct {
 	Pad            [3]uint8
 }
 
-type PodEgressSgRule struct {
+type L2EgressSgRule struct {
 	_             structs.HostLayout
 	Proto         uint16
 	PortLo        uint16
@@ -362,12 +362,12 @@ type PodEgressSgRule struct {
 	Pad           [2]uint8
 }
 
-type PodEgressSubnetKey struct {
+type L2EgressSubnetKey struct {
 	_        structs.HostLayout
 	SubnetId uint32
 }
 
-type PodEgressSubnetVal struct {
+type L2EgressSubnetVal struct {
 	_       structs.HostLayout
 	TableId uint32
 	VpcId   uint32
@@ -378,7 +378,7 @@ type PodEgressSubnetVal struct {
 	AclId   uint32
 }
 
-type PodEgressTraceConfigVal struct {
+type L2EgressTraceConfigVal struct {
 	_            structs.HostLayout
 	ExpiresNs    uint64
 	CaptureFlags uint32
@@ -387,51 +387,7 @@ type PodEgressTraceConfigVal struct {
 	Pad          [2]uint8
 }
 
-type PodEgressTraceEmitArgs struct {
-	_         structs.HostLayout
-	TraceId   uint32
-	Reason    uint16
-	Hook      uint8
-	Scope     uint8
-	Proto     uint8
-	Verdict   uint8
-	Direction uint8
-	Pad0      uint8
-	Ifindex   uint32
-	VpcId     uint32
-	SubnetId  uint32
-	Saddr     uint32
-	Daddr     uint32
-	Sport     uint16
-	Dport     uint16
-	Saddr2    uint32
-	Daddr2    uint32
-	Sport2    uint16
-	Dport2    uint16
-	Aux1      uint32
-	Aux2      uint32
-}
-
-type PodEgressTraceNatEvent struct {
-	_           structs.HostLayout
-	VpcId       uint32
-	SubnetId    uint32
-	Reason      uint16
-	Hook        uint8
-	Scope       uint8
-	Proto       uint8
-	Pad         [3]uint8
-	BeforeSaddr uint32
-	BeforeDaddr uint32
-	BeforeSport uint16
-	BeforeDport uint16
-	AfterSaddr  uint32
-	AfterDaddr  uint32
-	AfterSport  uint16
-	AfterDport  uint16
-}
-
-type PodEgressTraceTupleKey struct {
+type L2EgressTraceTupleKey struct {
 	_     structs.HostLayout
 	Scope uint8
 	Proto uint8
@@ -443,14 +399,14 @@ type PodEgressTraceTupleKey struct {
 	Dport uint16
 }
 
-type PodEgressTraceTupleVal struct {
+type L2EgressTraceTupleVal struct {
 	_         structs.HostLayout
 	TraceId   uint32
 	Direction uint8
 	Pad       [3]uint8
 }
 
-type PodEgressVirtualServiceFlowKey struct {
+type L2EgressVirtualServiceFlowKey struct {
 	_        structs.HostLayout
 	SubnetId uint32
 	SrcIp    uint32
@@ -461,7 +417,7 @@ type PodEgressVirtualServiceFlowKey struct {
 	Pad      [3]uint8
 }
 
-type PodEgressVirtualServiceFlowVal struct {
+type L2EgressVirtualServiceFlowVal struct {
 	_          structs.HostLayout
 	VpcId      uint32
 	ServiceId  uint32
@@ -473,7 +429,7 @@ type PodEgressVirtualServiceFlowVal struct {
 	LastSeenNs uint64
 }
 
-type PodEgressVirtualServiceKey struct {
+type L2EgressVirtualServiceKey struct {
 	_        structs.HostLayout
 	SubnetId uint32
 	DstIp    uint32
@@ -482,7 +438,7 @@ type PodEgressVirtualServiceKey struct {
 	Pad      uint8
 }
 
-type PodEgressVirtualServiceVal struct {
+type L2EgressVirtualServiceVal struct {
 	_          structs.HostLayout
 	ServiceId  uint32
 	TapIfindex uint32
@@ -491,7 +447,7 @@ type PodEgressVirtualServiceVal struct {
 	Flags      uint32
 }
 
-type PodEgressVpcEndpointKey struct {
+type L2EgressVpcEndpointKey struct {
 	_       structs.HostLayout
 	VpcId   uint32
 	Address uint32
@@ -500,33 +456,33 @@ type PodEgressVpcEndpointKey struct {
 	Pad     uint8
 }
 
-type PodEgressVpcEndpointVal struct {
+type L2EgressVpcEndpointVal struct {
 	_         structs.HostLayout
 	ClusterIp uint32
 }
 
-// LoadPodEgress returns the embedded CollectionSpec for PodEgress.
-func LoadPodEgress() (*ebpf.CollectionSpec, error) {
-	reader := bytes.NewReader(_PodEgressBytes)
+// LoadL2Egress returns the embedded CollectionSpec for L2Egress.
+func LoadL2Egress() (*ebpf.CollectionSpec, error) {
+	reader := bytes.NewReader(_L2EgressBytes)
 	spec, err := ebpf.LoadCollectionSpecFromReader(reader)
 	if err != nil {
-		return nil, fmt.Errorf("can't load PodEgress: %w", err)
+		return nil, fmt.Errorf("can't load L2Egress: %w", err)
 	}
 
 	return spec, err
 }
 
-// LoadPodEgressObjects loads PodEgress and converts it into a struct.
+// LoadL2EgressObjects loads L2Egress and converts it into a struct.
 //
 // The following types are suitable as obj argument:
 //
-//	*PodEgressObjects
-//	*PodEgressPrograms
-//	*PodEgressMaps
+//	*L2EgressObjects
+//	*L2EgressPrograms
+//	*L2EgressMaps
 //
 // See ebpf.CollectionSpec.LoadAndAssign documentation for details.
-func LoadPodEgressObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
-	spec, err := LoadPodEgress()
+func LoadL2EgressObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
+	spec, err := LoadL2Egress()
 	if err != nil {
 		return err
 	}
@@ -534,26 +490,26 @@ func LoadPodEgressObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
 	return spec.LoadAndAssign(obj, opts)
 }
 
-// PodEgressSpecs contains maps and programs before they are loaded into the kernel.
+// L2EgressSpecs contains maps and programs before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
-type PodEgressSpecs struct {
-	PodEgressProgramSpecs
-	PodEgressMapSpecs
-	PodEgressVariableSpecs
+type L2EgressSpecs struct {
+	L2EgressProgramSpecs
+	L2EgressMapSpecs
+	L2EgressVariableSpecs
 }
 
-// PodEgressProgramSpecs contains programs before they are loaded into the kernel.
+// L2EgressProgramSpecs contains programs before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
-type PodEgressProgramSpecs struct {
-	TcPodEgress *ebpf.ProgramSpec `ebpf:"tc_pod_egress"`
+type L2EgressProgramSpecs struct {
+	TcL2Egress *ebpf.ProgramSpec `ebpf:"tc_l2_egress"`
 }
 
-// PodEgressMapSpecs contains maps before they are loaded into the kernel.
+// L2EgressMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
-type PodEgressMapSpecs struct {
+type L2EgressMapSpecs struct {
 	AclMetaMap            *ebpf.MapSpec `ebpf:"acl_meta_map"`
 	AclRuleTable          *ebpf.MapSpec `ebpf:"acl_rule_table"`
 	AclRulesInnerProto    *ebpf.MapSpec `ebpf:"acl_rules_inner_proto"`
@@ -583,8 +539,6 @@ type PodEgressMapSpecs struct {
 	NatDnatMap            *ebpf.MapSpec `ebpf:"nat_dnat_map"`
 	NatSnatMap            *ebpf.MapSpec `ebpf:"nat_snat_map"`
 	NodeUnderlays         *ebpf.MapSpec `ebpf:"node_underlays"`
-	PodEgressEmitScratch  *ebpf.MapSpec `ebpf:"pod_egress_emit_scratch"`
-	PodEgressNatScratch   *ebpf.MapSpec `ebpf:"pod_egress_nat_scratch"`
 	PolicyCtMap           *ebpf.MapSpec `ebpf:"policy_ct_map"`
 	PolicyEpochMap        *ebpf.MapSpec `ebpf:"policy_epoch_map"`
 	ServiceAclMap         *ebpf.MapSpec `ebpf:"service_acl_map"`
@@ -608,34 +562,32 @@ type PodEgressMapSpecs struct {
 	VxlanIfindex          *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
 }
 
-// PodEgressVariableSpecs contains global variables before they are loaded into the kernel.
+// L2EgressVariableSpecs contains global variables before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
-type PodEgressVariableSpecs struct {
-	AclRuleBtfAnchor *ebpf.VariableSpec `ebpf:"_acl_rule_btf_anchor"`
-	SgRuleBtfAnchor  *ebpf.VariableSpec `ebpf:"_sg_rule_btf_anchor"`
+type L2EgressVariableSpecs struct {
 }
 
-// PodEgressObjects contains all objects after they have been loaded into the kernel.
+// L2EgressObjects contains all objects after they have been loaded into the kernel.
 //
-// It can be passed to LoadPodEgressObjects or ebpf.CollectionSpec.LoadAndAssign.
-type PodEgressObjects struct {
-	PodEgressPrograms
-	PodEgressMaps
-	PodEgressVariables
+// It can be passed to LoadL2EgressObjects or ebpf.CollectionSpec.LoadAndAssign.
+type L2EgressObjects struct {
+	L2EgressPrograms
+	L2EgressMaps
+	L2EgressVariables
 }
 
-func (o *PodEgressObjects) Close() error {
-	return _PodEgressClose(
-		&o.PodEgressPrograms,
-		&o.PodEgressMaps,
+func (o *L2EgressObjects) Close() error {
+	return _L2EgressClose(
+		&o.L2EgressPrograms,
+		&o.L2EgressMaps,
 	)
 }
 
-// PodEgressMaps contains all maps after they have been loaded into the kernel.
+// L2EgressMaps contains all maps after they have been loaded into the kernel.
 //
-// It can be passed to LoadPodEgressObjects or ebpf.CollectionSpec.LoadAndAssign.
-type PodEgressMaps struct {
+// It can be passed to LoadL2EgressObjects or ebpf.CollectionSpec.LoadAndAssign.
+type L2EgressMaps struct {
 	AclMetaMap            *ebpf.Map `ebpf:"acl_meta_map"`
 	AclRuleTable          *ebpf.Map `ebpf:"acl_rule_table"`
 	AclRulesInnerProto    *ebpf.Map `ebpf:"acl_rules_inner_proto"`
@@ -665,8 +617,6 @@ type PodEgressMaps struct {
 	NatDnatMap            *ebpf.Map `ebpf:"nat_dnat_map"`
 	NatSnatMap            *ebpf.Map `ebpf:"nat_snat_map"`
 	NodeUnderlays         *ebpf.Map `ebpf:"node_underlays"`
-	PodEgressEmitScratch  *ebpf.Map `ebpf:"pod_egress_emit_scratch"`
-	PodEgressNatScratch   *ebpf.Map `ebpf:"pod_egress_nat_scratch"`
 	PolicyCtMap           *ebpf.Map `ebpf:"policy_ct_map"`
 	PolicyEpochMap        *ebpf.Map `ebpf:"policy_epoch_map"`
 	ServiceAclMap         *ebpf.Map `ebpf:"service_acl_map"`
@@ -690,8 +640,8 @@ type PodEgressMaps struct {
 	VxlanIfindex          *ebpf.Map `ebpf:"vxlan_ifindex"`
 }
 
-func (m *PodEgressMaps) Close() error {
-	return _PodEgressClose(
+func (m *L2EgressMaps) Close() error {
+	return _L2EgressClose(
 		m.AclMetaMap,
 		m.AclRuleTable,
 		m.AclRulesInnerProto,
@@ -721,8 +671,6 @@ func (m *PodEgressMaps) Close() error {
 		m.NatDnatMap,
 		m.NatSnatMap,
 		m.NodeUnderlays,
-		m.PodEgressEmitScratch,
-		m.PodEgressNatScratch,
 		m.PolicyCtMap,
 		m.PolicyEpochMap,
 		m.ServiceAclMap,
@@ -747,28 +695,26 @@ func (m *PodEgressMaps) Close() error {
 	)
 }
 
-// PodEgressVariables contains all global variables after they have been loaded into the kernel.
+// L2EgressVariables contains all global variables after they have been loaded into the kernel.
 //
-// It can be passed to LoadPodEgressObjects or ebpf.CollectionSpec.LoadAndAssign.
-type PodEgressVariables struct {
-	AclRuleBtfAnchor *ebpf.Variable `ebpf:"_acl_rule_btf_anchor"`
-	SgRuleBtfAnchor  *ebpf.Variable `ebpf:"_sg_rule_btf_anchor"`
+// It can be passed to LoadL2EgressObjects or ebpf.CollectionSpec.LoadAndAssign.
+type L2EgressVariables struct {
 }
 
-// PodEgressPrograms contains all programs after they have been loaded into the kernel.
+// L2EgressPrograms contains all programs after they have been loaded into the kernel.
 //
-// It can be passed to LoadPodEgressObjects or ebpf.CollectionSpec.LoadAndAssign.
-type PodEgressPrograms struct {
-	TcPodEgress *ebpf.Program `ebpf:"tc_pod_egress"`
+// It can be passed to LoadL2EgressObjects or ebpf.CollectionSpec.LoadAndAssign.
+type L2EgressPrograms struct {
+	TcL2Egress *ebpf.Program `ebpf:"tc_l2_egress"`
 }
 
-func (p *PodEgressPrograms) Close() error {
-	return _PodEgressClose(
-		p.TcPodEgress,
+func (p *L2EgressPrograms) Close() error {
+	return _L2EgressClose(
+		p.TcL2Egress,
 	)
 }
 
-func _PodEgressClose(closers ...io.Closer) error {
+func _L2EgressClose(closers ...io.Closer) error {
 	for _, closer := range closers {
 		if err := closer.Close(); err != nil {
 			return err
@@ -779,5 +725,5 @@ func _PodEgressClose(closers ...io.Closer) error {
 
 // Do not access this directly.
 //
-//go:embed podegress_bpfeb.o
-var _PodEgressBytes []byte
+//go:embed l2egress_bpfeb.o
+var _L2EgressBytes []byte
