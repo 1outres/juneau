@@ -15,11 +15,12 @@
 // address and already carries the right pair. Nothing else belongs on
 // an L3 port, so nothing else is put on the segment.
 //
-// It is also where a Service reply gets its ClusterIP back. A Subnet
-// does that in pod_ingress, on the veth of the Pod that asked, but an
-// L2Network NIC carries l2_egress and l2_ingress and neither of those
-// reads an address. The gateway port is the only hook the reply passes
-// through on its way home.
+// It is also where a Service reply gets its ClusterIP back, and where
+// the NetworkACL and the SecurityGroups of the segment are read for the
+// direction coming in. A Subnet does both of those in pod_ingress, on
+// the veth of the Pod that asked, but an L2Network NIC carries
+// l2_egress and l2_ingress and neither of those reads an address. This
+// hook is the only one a packet entering the segment passes through.
 
 #include "vmlinux.h"
 #include <bpf/bpf_endian.h>
@@ -29,7 +30,25 @@
 #include "l2.h"
 #include "maps.h"
 #include "nat.h"
+#include "policy.h"
 #include "trace.h"
+
+// l2_gateway_policy runs the policy stage for the direction entering
+// the segment.
+//
+// It is a BPF-to-BPF subprogram, and every argument is a scalar. Inlined
+// into handle() the verifier walked 622,171 instructions: the rewrite
+// above it leaves several packet-pointer states behind, and it re-walks
+// the whole rule evaluation for each of them. Behind a call it walks the
+// body once. policy-data-plane.md warns about the other half of this
+// trade — a noinline call taking a stack pointer explodes instead — so
+// nothing here is passed by address.
+static __juneau_bpf_subprog int l2_gateway_policy(struct __sk_buff *skb,
+                                                  __u32 vpc_id, __u32 acl_id,
+                                                  __u32 trace_id, __u32 vni) {
+  return apply_policy(skb, POLICY_HOOK_POD_INGRESS, vpc_id, acl_id, trace_id,
+                      vni);
+}
 
 static __always_inline int handle(struct __sk_buff *skb) {
   void *data = (void *)(long)skb->data;
@@ -113,8 +132,54 @@ static __always_inline int handle(struct __sk_buff *skb) {
       return TC_ACT_SHOT;
     }
 
-    // The rewrite reloads skb->data, so the header pointers are taken
-    // again rather than carried over it.
+    // NetworkACL and SecurityGroup for the direction entering the
+    // segment. The boundary is described by the same subnet_map entry
+    // pod_egress reads on the ingress of this veth, so both directions
+    // are judged against one ACL and one set of memberships.
+    //
+    // It runs after the rewrite above, the way pod_ingress runs it
+    // after its own: a rule that names a Service has to see the address
+    // the workload wrote to, not the backend that answered.
+    struct subnet_key skey = {.subnet_id = vni};
+    const struct subnet_val *boundary = bpf_map_lookup_elem(&subnet_map, &skey);
+    if (!boundary) {
+      trace_emit_map_miss_l3(skb, __trace_id, TRACE_REASON_MISS_SUBNET,
+                             TRACE_HOOK_L2_GATEWAY, TRACE_SCOPE_VPC, vpc_id,
+                             vni, vni);
+      return TC_ACT_SHOT;
+    }
+
+    // POLICY_HOOK_POD_INGRESS and not a hook of its own. The enforcement
+    // point is what policy_ct_map is keyed on, and policy_ct_install
+    // writes every admission under both the hook that made it and the
+    // one that sees the flow from the other side. pod_egress on the
+    // ingress of this veth is that other side, so this program has to
+    // take the name it expects: a flow the segment opened is admitted
+    // there under POD_EGRESS, and the reply short-circuits here because
+    // the same call wrote the mirrored tuple under POD_INGRESS. A third
+    // hook id would leave both directions evaluating each other's
+    // replies from scratch.
+    //
+    // The cost is that the per-layer trace events of this stage report
+    // hook pod_ingress. The drop below is emitted under l2_gateway, so
+    // a timeline still says where the packet stopped.
+    int policy_rc =
+        l2_gateway_policy(skb, vpc_id, boundary->acl_id, __trace_id, vni);
+    if (policy_rc < 0) {
+      __u32 reason = TRACE_REASON_DROP_SHOT;
+      if (policy_rc == -1)
+        reason = TRACE_REASON_POLICY_ACL_DROP;
+      else if (policy_rc == -3)
+        reason = TRACE_REASON_POLICY_SG_DROP;
+      else if (policy_rc == -4)
+        reason = TRACE_REASON_POLICY_PARSE_DROP;
+      trace_emit_drop_l3(skb, __trace_id, reason, TRACE_HOOK_L2_GATEWAY,
+                         TRACE_SCOPE_VPC, vpc_id, vni);
+      return TC_ACT_SHOT;
+    }
+
+    // Both stages above reload skb->data, so the header pointers are
+    // taken again rather than carried over them.
     struct iphdr *iph = nat_load_iph(skb);
     if (!iph)
       return TC_ACT_SHOT;

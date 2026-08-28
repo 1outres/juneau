@@ -14,6 +14,7 @@ import (
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/bpftest"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/l2"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/program"
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/reconciler"
 )
 
 // roundTripPinPath is where these tests pin the maps of the objects
@@ -43,10 +44,26 @@ type gatewayPort struct {
 	l2Gateway  *program.L2Gateway
 	fdb        *l2.Table
 	arp        *l2.Table
+	bumLocal   *l2.Table
 	host       bpftest.Device
 	hostMAC    net.HardwareAddr
 	gateway    bpftest.Device
 	gatewayMAC net.HardwareAddr
+}
+
+// standUpGatewayPortWith brings the router port up through the
+// reconciler, so the maps a port occupies are written by the code that
+// writes them on a node rather than by a list kept in this file.
+func standUpGatewayPortWith(t *testing.T, port *gatewayPort, aclID uint32) {
+	t.Helper()
+	StandUpGatewayPort(t, reconciler.L2GatewayMaps{
+		Gateway:       port.l2Egress.Objs.L2Gateway,
+		Subnet:        port.podEgress.Objs.SubnetMap,
+		IfindexSubnet: port.podEgress.Objs.IfindexSubnet,
+		Ifindex:       port.l2Egress.Objs.L2Ifindex,
+		Fdb:           port.fdb,
+		BumLocal:      port.bumLocal,
+	}, port.gateway, port.gatewayMAC, serviceTableID, aclID)
 }
 
 func newGatewayPort(t *testing.T) *gatewayPort {
@@ -91,9 +108,9 @@ func newGatewayPort(t *testing.T) *gatewayPort {
 		gateway:    bpftest.Dummy(t, "l2gw"),
 		gatewayMAC: bpftest.MAC(0xfe),
 	}
-	bumLocal := l2.NewTable("bum-local", l2Egress.Objs.L2BumLocal, l2Egress.MapSpecs.L2BumLocalInner)
+	port.bumLocal = l2.NewTable("bum-local", l2Egress.Objs.L2BumLocal, l2Egress.MapSpecs.L2BumLocalInner)
 	bumRemote := l2.NewTable("bum-remote", l2Egress.Objs.L2BumRemote, l2Egress.MapSpecs.L2BumRemoteInner)
-	tables := []*l2.Table{port.fdb, port.arp, bumLocal, bumRemote}
+	tables := []*l2.Table{port.fdb, port.arp, port.bumLocal, bumRemote}
 	t.Cleanup(func() {
 		for _, table := range tables {
 			if err := table.CloseAll(); err != nil {
@@ -123,47 +140,10 @@ func newGatewayPort(t *testing.T) *gatewayPort {
 			t.Fatalf("name the segment behind %s: %v", device.Name, err)
 		}
 	}
-	if err := bumLocal.AddMember(testVNI, uint32(port.host.Index)); err != nil {
+	if err := port.bumLocal.AddMember(testVNI, uint32(port.host.Index)); err != nil {
 		t.Fatalf("add the host to the local flood list: %v", err)
 	}
-	if err := bumLocal.Put(testVNI, uint32(port.gateway.Index), l2.PortFlagPresent|l2.PortFlagGateway); err != nil {
-		t.Fatalf("add the gateway to the local flood list: %v", err)
-	}
-	if err := port.fdb.Put(testVNI, bpf.PodEgressL2FdbKey{Mac: macArray(t, port.gatewayMAC)},
-		bpf.PodEgressL2FdbVal{Ifindex: uint32(port.gateway.Index), Flags: l2.FdbFlagGateway}); err != nil {
-		t.Fatalf("write the forwarding entry of the gateway: %v", err)
-	}
-	if err := l2Egress.Objs.L2Gateway.Update(
-		&bpf.PodEgressL2GatewayKey{Vni: testVNI},
-		&bpf.PodEgressL2GatewayVal{Ifindex: uint32(port.gateway.Index), Mac: macArray(t, port.gatewayMAC)},
-		ebpf.UpdateAny,
-	); err != nil {
-		t.Fatalf("name the gateway port of the segment: %v", err)
-	}
-
-	// What pod_egress needs of the gateway veth to treat it as the L3
-	// boundary of the segment: the network behind the port, and the
-	// address and MAC that port answers for.
-	if err := podEgress.Objs.IfindexSubnet.Update(
-		&bpf.PodEgressIfindexSubnetKey{Ifindex: uint32(port.gateway.Index)},
-		&bpf.PodEgressIfindexSubnetVal{SubnetId: testVNI, Ipv4: networkOrderIPv4(t, gatewayAddress)},
-		ebpf.UpdateAny,
-	); err != nil {
-		t.Fatalf("name the segment behind the gateway veth: %v", err)
-	}
-	if err := podEgress.Objs.SubnetMap.Update(
-		&bpf.PodEgressSubnetKey{SubnetId: testVNI},
-		&bpf.PodEgressSubnetVal{
-			TableId: serviceTableID,
-			VpcId:   testVpcID,
-			GwMac:   macArray(t, port.gatewayMAC),
-			GwAddr:  hostOrderIPv4(t, gatewayAddress),
-			Mask:    0xffffff00,
-		},
-		ebpf.UpdateAny,
-	); err != nil {
-		t.Fatalf("describe the segment to pod_egress: %v", err)
-	}
+	standUpGatewayPortWith(t, port, 0)
 
 	ingress, err := ebpflink.AttachTCX(ebpflink.TCXOptions{
 		Program:   podEgress.Objs.TcPodEgress,
@@ -383,4 +363,73 @@ func networkOrderIPv4(t *testing.T, address string) uint32 {
 		t.Fatalf("%q is not an IPv4 address", address)
 	}
 	return binary.NativeEndian.Uint32(ip)
+}
+
+// denyInbound attaches an ACL to the boundary that admits nothing on
+// the way in and leaves the way out in default-allow.
+func (p *gatewayPort) denyInbound(t *testing.T) {
+	t.Helper()
+	if err := p.podEgress.Objs.AclMetaMap.Update(
+		uint32(testACLID),
+		&bpf.PodEgressAclMetaVal{HasIngressRules: 1},
+		ebpf.UpdateAny,
+	); err != nil {
+		t.Fatalf("declare the ACL: %v", err)
+	}
+	standUpGatewayPortWith(t, p, testACLID)
+}
+
+// TestGatewayLetsTheReplyOfAFlowTheSegmentOpenedBackIn is the question
+// the two hooks of the gateway port have to agree on.
+//
+// pod_egress admits the way out under POLICY_HOOK_POD_EGRESS, and
+// l2_gateway judges the way in under POLICY_HOOK_POD_INGRESS. Those are
+// different keys in policy_ct_map. If the reply had to be judged on its
+// own, an ACL that refuses everything inbound would kill every flow the
+// segment opens, and the rule would read as something no operator
+// intended.
+//
+// It does not, because policy_ct_install writes each admission twice:
+// once under the hook that made it and once as the mirrored tuple under
+// the hook that sees the flow from the other side. That is the same
+// mechanism a Subnet relies on, where the two hooks sit on the veths of
+// two different Pods.
+//
+// The test also pins the order inside this hook. The short-circuit only
+// lands because the reverse rewrite runs first: the entry was written
+// against the address the workload wrote to, so the reply has to carry
+// that address again before it is looked up.
+func TestGatewayLetsTheReplyOfAFlowTheSegmentOpenedBackIn(t *testing.T) {
+	port := newGatewayPort(t)
+	backend := bpftest.Dummy(t, "backend")
+	backendMAC := bpftest.MAC(7)
+	port.declareService(t, backend, backendMAC)
+	port.arpFor(t, host2Address, port.hostMAC)
+	port.learn(t, port.hostMAC, port.host)
+	port.denyInbound(t)
+
+	request := bpftest.Frame(t, port.gatewayMAC, port.hostMAC, bpftest.EtherTypeIPv4,
+		bpftest.TCPv4(t, host2Address, serviceAddress, clientPort, servicePort))
+	if verdict := bpftest.Run(t, port.podEgress.Objs.TcPodEgress, request, port.gateway); verdict != bpftest.ActRedirect {
+		t.Fatalf("the way out got verdict %d, want a redirect (%d)", verdict, bpftest.ActRedirect)
+	}
+
+	reply := bpftest.Frame(t, port.gatewayMAC, backendMAC, bpftest.EtherTypeIPv4,
+		bpftest.TCPv4(t, backendAddress, host2Address, backendPort, clientPort))
+	verdict, out := bpftest.RunFrame(t, port.l2Gateway.Objs.TcL2Gateway, reply, port.gateway)
+
+	if verdict != bpftest.ActRedirect {
+		t.Fatalf("the reply got verdict %d, want it admitted on the flow's own record (%d)", verdict, bpftest.ActRedirect)
+	}
+	if got := bpftest.SourceAddress(t, out); got != serviceAddress {
+		t.Errorf("the reply left with source %s, want %s", got, serviceAddress)
+	}
+
+	// Nothing else gets in. The record admits one flow, not the
+	// direction it came from.
+	fresh := bpftest.Frame(t, port.gatewayMAC, backendMAC, bpftest.EtherTypeIPv4,
+		bpftest.TCPv4(t, backendAddress, host2Address, backendPort, clientPort+1))
+	if verdict := bpftest.Run(t, port.l2Gateway.Objs.TcL2Gateway, fresh, port.gateway); verdict != bpftest.ActShot {
+		t.Errorf("an unrelated inbound flow got verdict %d, want a drop (%d)", verdict, bpftest.ActShot)
+	}
 }

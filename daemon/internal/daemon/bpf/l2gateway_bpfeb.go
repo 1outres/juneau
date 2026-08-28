@@ -594,6 +594,8 @@ type L2GatewayMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type L2GatewayVariableSpecs struct {
+	AclRuleBtfAnchor *ebpf.VariableSpec `ebpf:"_acl_rule_btf_anchor"`
+	SgRuleBtfAnchor  *ebpf.VariableSpec `ebpf:"_sg_rule_btf_anchor"`
 }
 
 // L2GatewayObjects contains all objects after they have been loaded into the kernel.
@@ -733,6 +735,8 @@ func (m *L2GatewayMaps) Close() error {
 //
 // It can be passed to LoadL2GatewayObjects or ebpf.CollectionSpec.LoadAndAssign.
 type L2GatewayVariables struct {
+	AclRuleBtfAnchor *ebpf.Variable `ebpf:"_acl_rule_btf_anchor"`
+	SgRuleBtfAnchor  *ebpf.Variable `ebpf:"_sg_rule_btf_anchor"`
 }
 
 // L2GatewayPrograms contains all programs after they have been loaded into the kernel.

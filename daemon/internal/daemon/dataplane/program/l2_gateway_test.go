@@ -290,3 +290,99 @@ func TestL2GatewayLeavesAPacketWithNoConntrackEntryAlone(t *testing.T) {
 		t.Errorf("the packet left with source %s, want the %s it arrived with", got, backendAddress)
 	}
 }
+
+// testACLID is the NetworkACL the gateway tests attach to the segment.
+const testACLID = 3
+
+// denyInbound attaches an ACL that admits nothing on the way in and
+// everything on the way out.
+//
+// A direction with has_*_rules set and no rule that matches falls to a
+// terminal deny, so an empty ingress window is the whole of "deny
+// everything inbound". The egress window is left in default-allow.
+func (p *l2GatewayPorts) denyInbound(t *testing.T) {
+	t.Helper()
+	if err := p.segment.objs.Map(t, "acl_meta_map").Update(
+		uint32(testACLID),
+		&bpf.PodEgressAclMetaVal{HasIngressRules: 1},
+		ebpf.UpdateAny,
+	); err != nil {
+		t.Fatalf("declare the ACL: %v", err)
+	}
+	p.segment.standUpGateway(t, p.gateway, p.gatewayMAC, 0, testACLID)
+}
+
+// A NetworkACL on an L2Network is meant to police what crosses the
+// gateway. Until this hook read one, only the direction leaving the
+// segment was ever judged, and a rule written to keep traffic out did
+// nothing at all.
+func TestL2GatewayDropsWhatTheIngressRulesRefuse(t *testing.T) {
+	ports := newL2GatewayPorts(t)
+	ports.segment.resolve(t, host2Address, bpftest.MAC(2))
+	ports.segment.learn(t, bpftest.MAC(2), uint32(ports.pod2.Index), "")
+	ports.denyInbound(t)
+
+	watched := ports.watch(t)
+	verdict := bpftest.Run(t, ports.program,
+		bpftest.Frame(t, bpftest.MAC(0xf0), bpftest.MAC(0xf1), bpftest.EtherTypeIPv4,
+			bpftest.TCPv4(t, outsideAddress, host2Address, clientPort, servicePort)),
+		ports.gateway)
+
+	if verdict != bpftest.ActShot {
+		t.Errorf("verdict %d, want a drop (%d)", verdict, bpftest.ActShot)
+	}
+	for _, device := range []bpftest.Device{ports.pod2, ports.pod3, ports.tunnel} {
+		if delivered := watched.Delivered(t, device); delivered != 0 {
+			t.Errorf("%s was fed %d copies of a packet the ACL refused", device.Name, delivered)
+		}
+	}
+}
+
+// The same ACL says nothing about traffic that stays on the segment.
+// The L2 programs read no policy, and a rule that started dropping
+// frames between two NICs would be a surprise nobody asked for.
+func TestL2EgressIgnoresTheGatewayACL(t *testing.T) {
+	ports := newL2EgressPorts(t)
+	peer := bpftest.MAC(2)
+	ports.segment.learn(t, peer, uint32(ports.pod2.Index), "")
+	if err := ports.segment.objs.Map(t, "acl_meta_map").Update(
+		uint32(testACLID),
+		&bpf.PodEgressAclMetaVal{HasIngressRules: 1, HasEgressRules: 1},
+		ebpf.UpdateAny,
+	); err != nil {
+		t.Fatalf("declare the ACL: %v", err)
+	}
+	ports.segment.standUpGateway(t, ports.pod3, bpftest.MAC(0xfe), 0, testACLID)
+
+	frame := bpftest.Frame(t, peer, bpftest.MAC(1), bpftest.EtherTypeIPv4,
+		bpftest.TCPv4(t, host2Address, host3Address, clientPort, servicePort))
+	if verdict := bpftest.Run(t, ports.program, frame, ports.pod1); verdict != bpftest.ActRedirect {
+		t.Errorf("verdict %d, want the frame forwarded (%d)", verdict, bpftest.ActRedirect)
+	}
+}
+
+// A gateway on a node that holds no port of the segment can still put a
+// packet on it: with the address resolved and no local port holding the
+// MAC, the frame leaves as an unknown unicast over the overlay and the
+// node that does hold it delivers.
+//
+// This is what makes a port on every node worth having, and it is also
+// what narrows the remaining gap to one table. Such a node receives no
+// frame from the segment — nothing lists it as a place to flood to — so
+// nothing ever fills its l2_arp, and the resolution above is the step
+// that fails.
+func TestL2GatewayReachesTheSegmentOverTheOverlay(t *testing.T) {
+	ports := newL2GatewayPorts(t)
+	ports.segment.addRemoteNode(t, "10.0.0.2")
+	ports.segment.resolve(t, host2Address, bpftest.MAC(2))
+
+	watched := ports.watch(t)
+	verdict := bpftest.Run(t, ports.program, routed(t, host2Address), ports.gateway)
+
+	if verdict != bpftest.ActShot {
+		t.Errorf("verdict %d, want the original frame dropped after the copies (%d)", verdict, bpftest.ActShot)
+	}
+	if delivered := watched.Delivered(t, ports.tunnel); delivered != 1 {
+		t.Errorf("the overlay carried %d copies, want the frame to reach the node that holds the MAC", delivered)
+	}
+}

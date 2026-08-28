@@ -25,6 +25,10 @@ const testVNI = 4242
 // The forwarding path never reads it.
 const testVpcID = 7
 
+// testSegmentCIDR is the prefix of the segment, and gatewayAddress is
+// the first address of it.
+const testSegmentCIDR = "10.60.0.0/24"
+
 // l2Segment is one L2Network as the data plane sees it: the tables it
 // reads, and the devices that stand in for its ports.
 type l2Segment struct {
@@ -121,40 +125,85 @@ func (s *l2Segment) addLocalPort(t *testing.T, device bpftest.Device) {
 	}
 }
 
-// addGatewayPort makes a device the gateway port of the segment: it is
-// a local port like any other, plus the entries that say the router
-// lives behind it — the flood-list flag that sends its copy to the
-// port's ingress, the forwarding entry the daemon writes because a
-// gateway sends no frame to learn it from, and the MAC the port signs
-// with.
+// addGatewayPort makes a device the gateway port of the segment.
+//
+// Like the tables above, this goes through the reconciler the daemon
+// runs. A port occupies six maps and the list is easy to get out of
+// step with by hand: the first version of these tests wrote five of
+// them and every IPv4 test started failing the moment the program
+// began reading the sixth.
 func (s *l2Segment) addGatewayPort(t *testing.T, device bpftest.Device, mac net.HardwareAddr) {
 	t.Helper()
-	if err := s.objs.Map(t, "l2_ifindex").Update(
-		&bpf.PodEgressL2IfindexKey{Ifindex: uint32(device.Index)},
-		&bpf.PodEgressL2IfindexVal{Vni: testVNI},
-		ebpf.UpdateAny,
-	); err != nil {
-		t.Fatalf("name the segment behind %s: %v", device.Name, err)
+	s.standUpGateway(t, device, mac, 0, 0)
+}
+
+// standUpGateway is addGatewayPort with the route table and the ACL of
+// the boundary named, which is what the tests about policy need.
+func (s *l2Segment) standUpGateway(t *testing.T, device bpftest.Device, mac net.HardwareAddr, tableID, aclID uint32) {
+	t.Helper()
+	StandUpGatewayPort(t, reconciler.L2GatewayMaps{
+		Gateway:       s.objs.Map(t, "l2_gateway"),
+		Subnet:        s.objs.Map(t, "subnet_map"),
+		IfindexSubnet: s.objs.Map(t, "ifindex_subnet"),
+		Ifindex:       s.objs.Map(t, "l2_ifindex"),
+		Fdb:           s.fdb,
+		BumLocal:      s.bumLocal,
+	}, device, mac, tableID, aclID)
+}
+
+// fixedGatewayPort stands in for the veth pair the daemon builds. The
+// device already exists here, so the reconciler is only told which
+// ifindex it landed on.
+type fixedGatewayPort struct{ ifindex uint32 }
+
+func (f fixedGatewayPort) Ensure(uint32, net.HardwareAddr) (uint32, error) { return f.ifindex, nil }
+
+func (f fixedGatewayPort) Remove(uint32) error { return nil }
+
+// StandUpGatewayPort brings the router port of testVNI up on a device,
+// through reconciler.L2Gateway. Every map a port occupies is written by
+// the code that writes them on a node.
+func StandUpGatewayPort(t *testing.T, maps reconciler.L2GatewayMaps, device bpftest.Device, mac net.HardwareAddr, tableID, aclID uint32) {
+	t.Helper()
+
+	scheme := runtime.NewScheme()
+	if err := juneauv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("build the scheme: %v", err)
 	}
-	if err := s.bumLocal.Put(testVNI, uint32(device.Index), l2.PortFlagPresent|l2.PortFlagGateway); err != nil {
-		t.Fatalf("add %s to the local flood list: %v", device.Name, err)
+	network := &juneauv1alpha1.L2Network{
+		ObjectMeta: metav1.ObjectMeta{Name: "lab-net"},
+		Spec: juneauv1alpha1.L2NetworkSpec{
+			Vpc:     "lab-vpc",
+			CIDR:    testSegmentCIDR,
+			Gateway: &juneauv1alpha1.L2NetworkGateway{},
+		},
+		Status: juneauv1alpha1.L2NetworkStatus{
+			VNI:        testVNI,
+			Gateway:    gatewayAddress,
+			GatewayMAC: mac.String(),
+		},
 	}
-	if err := s.objs.Map(t, "l2_gateway").Update(
-		&bpf.PodEgressL2GatewayKey{Vni: testVNI},
-		&bpf.PodEgressL2GatewayVal{Ifindex: uint32(device.Index), Mac: macArray(t, mac)},
-		ebpf.UpdateAny,
-	); err != nil {
-		t.Fatalf("name the gateway port of the segment: %v", err)
+	if aclID != 0 {
+		network.Spec.NetworkACL = "lab-acl"
+		network.Status.NetworkACL = &juneauv1alpha1.NetworkACLRef{Name: "lab-acl", ACLID: aclID}
 	}
-	s.withFdb(t, func(inner *ebpf.Map) {
-		if err := inner.Update(
-			&bpf.PodEgressL2FdbKey{Mac: macArray(t, mac)},
-			&bpf.PodEgressL2FdbVal{Ifindex: uint32(device.Index), Flags: l2.FdbFlagGateway},
-			ebpf.UpdateAny,
-		); err != nil {
-			t.Fatalf("write the forwarding entry of the gateway: %v", err)
-		}
-	})
+	client := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(
+		&juneauv1alpha1.Vpc{
+			ObjectMeta: metav1.ObjectMeta{Name: "lab-vpc"},
+			Status:     juneauv1alpha1.VpcStatus{VpcID: testVpcID, MainRouteTable: "lab-rt"},
+		},
+		&juneauv1alpha1.RouteTable{
+			ObjectMeta: metav1.ObjectMeta{Name: "lab-rt"},
+			Spec:       juneauv1alpha1.RouteTableSpec{Vpc: "lab-vpc"},
+			Status:     juneauv1alpha1.RouteTableStatus{TableID: tableID},
+		},
+		network,
+	).Build()
+
+	gateway := reconciler.NewL2Gateway(client, fixedGatewayPort{ifindex: uint32(device.Index)}, maps, "node-a")
+	if err := gateway.Reconcile(context.Background(), "lab-net"); err != nil {
+		t.Fatalf("stand the gateway port up: %v", err)
+	}
 }
 
 // resolve records an address on the segment as the gateway would have

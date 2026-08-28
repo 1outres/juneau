@@ -311,17 +311,11 @@ Error from server (Forbidden): ... address 10.92.0.1 is already held by Allocati
 
 `spec.gateway.address`に空いているアドレスを書くか、そのアドレスを持っているPodを消してから足してください。
 
-### ingressルールは効きません
+### エンドポイントのいないNodeからはまだ届きません
 
-NetworkACLとSecurityGroupが評価されるのは、セグメントから出ていく方向だけです。入ってくる方向はgatewayの別のhookを通り、そこにpolicyの評価がありません。
+gatewayを宣言すると、gatewayポート自体は全Nodeに立ちます。ただし、そのL2NetworkのPodを1つも持たないNodeは、セグメントを流れるARPを見る機会がありません。gatewayは通過するARPからしか宛先のMACを知らないので、そのNodeからセグメントへ向かうパケットは宛先が引けずに落ちます。`kubectl juneau trace`では`MISS_L2_ARP`として見えます。
 
-セグメントの側から張った接続は、出ていく1発目で判定されて記録に載るので意図通りに効きます。Vpcの側から張った接続は素通りします。「このL2Networkへの受信を絞る」という書き方はまだできません。
-
-### backendのNodeにもポートが要ります
-
-ClusterIP Serviceの応答は、backendが乗っているNodeのgatewayポートを通ってセグメントへ戻ります。そのNodeがこのL2Networkのポートを1つも持っていないと、gatewayポートが立っていないので応答が落ちます。
-
-セグメントのPodがクラスタに散らばっていれば起きません。1つのNodeにL2NetworkのPodを固めて、backendを別のNodeに置いたときだけ表に出ます。`kubectl juneau trace`では`MISS_L2_GATEWAY`として見えます。
+ClusterIP Serviceのbackendを、そのL2NetworkのPodがいないNodeに置いたときに出ます。セグメントのPodがクラスタに散らばっていれば起きません。
 
 ### IPv6はgatewayを越えられません
 

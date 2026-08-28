@@ -42,7 +42,7 @@ L2Networkは、書いたフィールドの数だけ機能が増えます。
 
 `spec.gateway.routeTable` を省略すると、所属VpcのメインルートテーブルがL2Networkの経路制御に使われます。指定する場合、そのRouteTableは同じVpcに属している必要があります。
 
-gatewayを書くと、そのセグメントのポートを持つ各Nodeにルータのポートが1つ立ちます。アドレスもMACも全Nodeで同じなので、ワークロードは自分のNodeのgatewayを使い、L3の通信のためにNodeを跨ぎません。ポートを1つも持たないNodeには何も立ちません。
+gatewayを書くと、全Nodeにルータのポートが1つずつ立ちます。アドレスもMACも全Nodeで同じなので、ワークロードは自分のNodeのgatewayを使い、L3の通信のためにNodeを跨ぎません。そのセグメント宛のパケットがどのNodeで経路を引かれるかは、セグメントのPodがどこにいるかと関係がないので、ポートはどのNodeにも要ります。
 
 gatewayを書くと、そのCIDR宛の経路がVpcの全RouteTableに自動で入ります。Subnetのconnected routeと同じ扱いです。
 
@@ -56,7 +56,7 @@ gatewayは自分からARPを出しません。セグメントを流れるARPの�
 
 ## SecurityGroup
 
-L2NetworkのNICにも、`juneau.loutres.me/networks` アノテーションのエントリでSecurityGroupを付けることができます。参照されるのはgatewayを跨ぐ通信だけで、セグメントの中の通信には一切効きません。NetworkACLと同じく、効くのはegressルールだけです。
+L2NetworkのNICにも、`juneau.loutres.me/networks` アノテーションのエントリでSecurityGroupを付けることができます。参照されるのはgatewayを跨ぐ通信だけで、セグメントの中の通信には一切効きません。
 
 そのため、`spec.gateway` を書いていないL2NetworkのNICにSecurityGroupを付けることはできません。`spec.networkACL` と同じ理由です。同じ理由で、Vpcの `spec.enforceSecurityGroups` はgatewayを持たないセグメントのNICには要求しません。
 
@@ -66,7 +66,7 @@ L2NetworkのNICにも、`juneau.loutres.me/networks` アノテーションのエ
 
 このACLはgatewayを跨ぐ通信にだけ適用されます。同じL2Network上のNIC同士の通信には一切効きません。L2のデータプレーンはpolicyを読まないためです。
 
-適用されるのは、さらにセグメントから出ていく方向だけです。入ってくる方向はgatewayの別のhookを通り、そこでpolicyを評価していません。egressルールは効きますが、ingressルールは今のところ何もしません。
+gatewayを跨ぐ通信には、ingressルールもegressルールも効きます。セグメントから出ていく方向と入ってくる方向をそれぞれ別のhookが評価しますが、許可の記録は共有されるので、セグメント側から張った接続の応答がingressルールで落ちることはありません。
 
 そのため、`spec.gateway` を書いていないL2Networkは `spec.networkACL` を書くことができません。効いているつもりの設定が残るくらいなら、作成時に拒否する方がましだと判断しました。
 
