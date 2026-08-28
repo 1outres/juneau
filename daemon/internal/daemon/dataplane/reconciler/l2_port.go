@@ -161,6 +161,11 @@ func (r *L2Port) desiredMember(ctx context.Context, nwep *juneauv1alpha1.Network
 
 // apply moves one endpoint from the port it held to the port it should
 // hold. Either may be the zero value, which stands for "no port".
+//
+// The snapshot is written last. A failed acquire has to leave the
+// endpoint recorded as holding nothing, or the retry would read the
+// snapshot it never managed to program and decide there was nothing
+// left to do.
 func (r *L2Port) apply(key string, desired l2PortMember) error {
 	r.mu.Lock()
 	previous := r.snapshots[key]
@@ -174,20 +179,22 @@ func (r *L2Port) apply(key string, desired l2PortMember) error {
 		if err := r.release(previous); err != nil {
 			return err
 		}
-	}
-
-	r.mu.Lock()
-	if desired.valid() {
-		r.snapshots[key] = desired
-	} else {
+		r.mu.Lock()
 		delete(r.snapshots, key)
+		r.mu.Unlock()
 	}
-	r.mu.Unlock()
 
 	if !desired.valid() {
 		return nil
 	}
-	return r.acquire(desired)
+	if err := r.acquire(desired); err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	r.snapshots[key] = desired
+	r.mu.Unlock()
+	return nil
 }
 
 // acquire counts one more endpoint on a port and programs it when it

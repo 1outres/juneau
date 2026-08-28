@@ -327,3 +327,40 @@ func TestL2PortSkipsAnEndpointWhoseNetworkIsGone(t *testing.T) {
 		t.Errorf("a flood list was written for a network that does not exist: %v", local.list(4242))
 	}
 }
+
+// failingL2Table refuses the first AddMember, standing in for a full
+// map or a kernel that said no.
+type failingL2Table struct {
+	*fakeL2Table
+	failures int
+}
+
+func (f *failingL2Table) AddMember(vni, member uint32) error {
+	if f.failures > 0 {
+		f.failures--
+		return fmt.Errorf("no room for member %d on vni %d", member, vni)
+	}
+	return f.fakeL2Table.AddMember(vni, member)
+}
+
+// A port the reconciler failed to program has to be tried again. If the
+// snapshot recorded it anyway, the retry would compare the endpoint
+// against what it never managed to write and decide it was done.
+func TestL2PortRetriesAPortItCouldNotProgram(t *testing.T) {
+	cl := fake.NewClientBuilder().WithScheme(newNatTestScheme(t)).
+		WithRuntimeObjects(newL2Endpoint("pod-a", "node-a", 7, "10.0.0.1"), newL2TestNetwork(4242)).
+		Build()
+	local := &failingL2Table{fakeL2Table: newFakeL2Table(), failures: 1}
+	r := NewL2Port(cl, newFakeBpfMap(), local, newFakeL2Table(), "node-a")
+
+	if err := r.Reconcile(context.Background(), "default/pod-a"); err == nil {
+		t.Fatal("expected the first pass to report the failed write")
+	}
+	if err := r.Reconcile(context.Background(), "default/pod-a"); err != nil {
+		t.Fatalf("Reconcile on retry: %v", err)
+	}
+
+	if diff := local.list(4242); len(diff) != 1 || diff[0] != 7 {
+		t.Errorf("local flood list = %v after the retry, want [7]", diff)
+	}
+}
