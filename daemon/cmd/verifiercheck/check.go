@@ -31,6 +31,8 @@ func targets() []target {
 		{name: "pod_ingress", load: bpf.LoadPodIngress},
 		{name: "vxlan_ingress", load: bpf.LoadVxlanIngress},
 		{name: "node_ingress", load: bpf.LoadNodeIngress},
+		{name: "l2_egress", load: bpf.LoadL2Egress},
+		{name: "l2_ingress", load: bpf.LoadL2Ingress},
 	}
 }
 

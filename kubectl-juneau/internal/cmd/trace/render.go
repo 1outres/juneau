@@ -170,6 +170,10 @@ func hookString(h debugpb.TraceHook) string {
 		return "vxlan_ingress"
 	case debugpb.TraceHook_TRACE_HOOK_NODE_INGRESS:
 		return "node_ingress"
+	case debugpb.TraceHook_TRACE_HOOK_L2_EGRESS:
+		return "l2_egress"
+	case debugpb.TraceHook_TRACE_HOOK_L2_INGRESS:
+		return "l2_ingress"
 	}
 	return "?"
 }
@@ -184,6 +188,10 @@ func reasonString(r debugpb.TraceEventReason) string {
 		return "enter vxlan_ingress"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_ENTER_NODE_INGRESS:
 		return "enter node_ingress"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_ENTER_L2_EGRESS:
+		return "enter l2_egress"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_ENTER_L2_INGRESS:
+		return "enter l2_ingress"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_IFINDEX_SUBNET:
 		return "ifindex->subnet miss"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_SUBNET:
@@ -208,6 +216,12 @@ func reasonString(r debugpb.TraceEventReason) string {
 		return "transit gateway route miss"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_VPC_ENDPOINT:
 		return "vpc endpoint miss"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_L2_PORT:
+		return "l2 port miss"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_L2_NETWORK:
+		return "l2 network miss"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_MISS_L2_FDB:
+		return "l2 fdb miss"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_POLICY_ACL_PASS:
 		return "acl pass"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_POLICY_ACL_DROP:
@@ -244,6 +258,14 @@ func reasonString(r debugpb.TraceEventReason) string {
 		return "drop"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_DROP_BLACKHOLE:
 		return "drop (blackhole route)"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_L2_LEARNED:
+		return "l2 mac learned"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_L2_FLOOD:
+		return "l2 flood"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_L2_SPLIT_HORIZON:
+		return "l2 flood (split horizon)"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_L2_HAIRPIN_DROP:
+		return "l2 drop (destination is on the source port)"
 	}
 	return r.String()
 }

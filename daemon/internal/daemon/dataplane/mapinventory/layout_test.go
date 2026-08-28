@@ -194,6 +194,27 @@ func TestSchemaLayoutMatchesGenerated(t *testing.T) {
 			keySize:   unsafe.Sizeof(bpf.PodEgressLbBackendKey{}),
 			valueSize: unsafe.Sizeof(bpf.PodEgressLbBackendVal{}),
 		},
+		{
+			name:      "l2_network_map",
+			key:       schemaL2NetworkKey(),
+			val:       schemaL2NetworkVal(),
+			keySize:   unsafe.Sizeof(bpf.PodEgressL2NetworkKey{}),
+			valueSize: unsafe.Sizeof(bpf.PodEgressL2NetworkVal{}),
+		},
+		{
+			name:      "l2_ifindex",
+			key:       schemaL2IfindexKey(),
+			val:       schemaL2IfindexVal(),
+			keySize:   unsafe.Sizeof(bpf.PodEgressL2IfindexKey{}),
+			valueSize: unsafe.Sizeof(bpf.PodEgressL2IfindexVal{}),
+		},
+		{
+			name:      "l2_fdb_inner",
+			key:       schemaL2FdbKey(),
+			val:       schemaL2FdbVal(),
+			keySize:   unsafe.Sizeof(bpf.PodEgressL2FdbKey{}),
+			valueSize: unsafe.Sizeof(bpf.PodEgressL2FdbVal{}),
+		},
 	}
 
 	for _, tc := range cases {
@@ -576,5 +597,20 @@ func schemaLBBackendVal() Schema {
 		FieldPortNamed("backend_port"),
 		FieldPadOf(2),
 		FieldU32Named("backend_subnet_id"),
+	}}
+}
+
+func schemaL2NetworkKey() Schema { return Schema{Fields: []Field{FieldU32Named("vni")}} }
+func schemaL2NetworkVal() Schema { return Schema{Fields: []Field{FieldU32Named("vpc_id")}} }
+
+func schemaL2IfindexKey() Schema { return Schema{Fields: []Field{FieldU32Named("ifindex")}} }
+func schemaL2IfindexVal() Schema { return Schema{Fields: []Field{FieldU32Named("vni")}} }
+
+func schemaL2FdbKey() Schema { return Schema{Fields: []Field{FieldMACNamed("mac")}} }
+func schemaL2FdbVal() Schema {
+	return Schema{Fields: []Field{
+		FieldU32Named("ifindex"),
+		FieldIPv4Named("vtep_ip"),
+		FieldU64Named("last_seen_ns"),
 	}}
 }

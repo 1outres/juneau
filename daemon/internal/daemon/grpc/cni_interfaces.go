@@ -26,18 +26,21 @@ func orderPodInterfaces(items []juneauv1alpha1.NetworkInterface, primaryIfname s
 	return out
 }
 
-// checkPodInterfacesAllocated reports the first NIC the controller has not
-// finished handing an address to. A pod gets all of its NICs at once, so a
+// checkPodInterfacesAllocated reports the first NIC the controller has
+// not finished with. A pod gets all of its NICs at once, so a
 // half-allocated pod waits instead of coming up with fewer NICs than it
 // asked for, which would leave a later DEL guessing what to take down.
+//
+// Being allocated is not the same as having an address. An L2Network
+// without a CIDR hands out none, and a NIC on one is allocated the
+// moment the controller has said so. The one NIC that really does need
+// an address is the pod's first, and checkPrimaryPodInterface is what
+// says so.
 func checkPodInterfacesAllocated(ifaces []*juneauv1alpha1.NetworkInterface) error {
 	for _, nwiface := range ifaces {
 		ifname := nwiface.Spec.PodRef.Interface
 		if !meta.IsStatusConditionTrue(nwiface.Status.Conditions, juneauv1alpha1.NetworkInterfaceStatusAllocated) {
 			return fmt.Errorf("NetworkInterface %s of %q is not allocated yet", nwiface.Name, ifname)
-		}
-		if nwiface.Status.Address == "" {
-			return fmt.Errorf("NetworkInterface %s of %q has no address yet", nwiface.Name, ifname)
 		}
 	}
 	return nil

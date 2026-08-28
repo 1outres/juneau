@@ -31,6 +31,9 @@ func (s *stubView) Vpc(_ context.Context, name string) (*juneauv1alpha1.Vpc, err
 func (s *stubView) Subnet(_ context.Context, name string) (*juneauv1alpha1.Subnet, error) {
 	return s.subnets[name], nil
 }
+func (s *stubView) L2Network(_ context.Context, _ string) (*juneauv1alpha1.L2Network, error) {
+	return nil, nil
+}
 func (s *stubView) RouteTable(_ context.Context, name string) (*juneauv1alpha1.RouteTable, error) {
 	return s.routeTables[name], nil
 }

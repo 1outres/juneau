@@ -272,6 +272,11 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("get VpcEndpoint informer: %w", err)
 			}
 
+			l2NetworkInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.L2Network{})
+			if err != nil {
+				return fmt.Errorf("get L2Network informer: %w", err)
+			}
+
 			traceSessionInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.TraceSession{})
 			if err != nil {
 				return fmt.Errorf("get TraceSession informer: %w", err)
@@ -500,6 +505,7 @@ func NewApp() *cli.Command {
 				NetworkACLInformer:                networkACLInformer,
 				ServiceLoadBalancerInformer:       serviceLoadBalancerInformer,
 				VpcEndpointInformer:               vpcEndpointInformer,
+				L2NetworkInformer:                 l2NetworkInformer,
 				TraceSessionInformer:              traceSessionInformer,
 				NodeInformer:                      nodeInformer,
 				NodeName:                          nodeName,

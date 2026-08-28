@@ -49,17 +49,6 @@ func TestOptionsValidateAcceptsPodToService(t *testing.T) {
 	}
 }
 
-func TestOptionsValidateRequiresExactlyOneSource(t *testing.T) {
-	o := newOptionsForTest()
-	o.SourcePod = "default/client"
-	o.SourceIP = "10.0.0.1"
-	o.DestIP = "10.0.0.2"
-	o.Port = 80
-	if err := o.Validate(); err == nil {
-		t.Fatalf("expected error when both source pod and ip set")
-	}
-}
-
 func TestOptionsValidateRequiresPortForTCP(t *testing.T) {
 	o := newOptionsForTest()
 	o.SourcePod = "default/client"
@@ -103,5 +92,82 @@ func TestOptionsCompletePopulatesNamespace(t *testing.T) {
 	}
 	if o.traceID == 0 {
 		t.Fatalf("traceID should be non-zero")
+	}
+}
+
+// A Pod and an address together are how an L2Network without a CIDR
+// is traced: the Pod says which network, the address says which of
+// its addresses. juneau hands out none there and never learns the one
+// the workload picked.
+func TestOptionsValidateAcceptsAPodAndAnAddressTogether(t *testing.T) {
+	o := newOptionsForTest()
+	o.SourcePod = "default/lab-a"
+	o.SourceInterface = "eth1"
+	o.SourceIP = "192.168.60.1"
+	o.DestPod = "default/lab-b"
+	o.DestInterface = "eth1"
+	o.DestIP = "192.168.60.2"
+	o.Protocol = "icmp"
+	o.ObserveOnly = true
+	if err := o.Validate(); err != nil {
+		t.Fatalf("expected accept, got %v", err)
+	}
+}
+
+func TestOptionsValidateRequiresASource(t *testing.T) {
+	o := newOptionsForTest()
+	o.DestIP = "10.0.0.2"
+	o.Port = 80
+	if err := o.Validate(); err == nil {
+		t.Fatal("expected an error when neither source flag is given")
+	}
+}
+
+func TestOptionsValidateRejectsAnInterfaceWithoutItsPod(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		apply func(*Options)
+	}{
+		{
+			name:  "source",
+			apply: func(o *Options) { o.SourceIP = "10.0.0.1"; o.SourceInterface = "eth1" },
+		},
+		{
+			name:  "destination",
+			apply: func(o *Options) { o.SourcePod = "default/client"; o.DestInterface = "eth1" },
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			o := newOptionsForTest()
+			o.DestIP = "10.0.0.2"
+			o.Port = 80
+			o.ObserveOnly = true
+			tt.apply(o)
+			if err := o.Validate(); err == nil {
+				t.Fatal("expected an error when an interface names a pod that was not given")
+			}
+		})
+	}
+}
+
+func TestOptionsValidateRejectsAServiceWithASecondDestination(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		apply func(*Options)
+	}{
+		{name: "with a pod", apply: func(o *Options) { o.DestPod = "default/api-0" }},
+		{name: "with an address", apply: func(o *Options) { o.DestIP = "10.96.0.10" }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			o := newOptionsForTest()
+			o.SourcePod = "default/client"
+			o.DestService = "default/api"
+			o.Port = 443
+			o.ObserveOnly = true
+			tt.apply(o)
+			if err := o.Validate(); err == nil {
+				t.Fatal("expected an error when a service is given a second destination")
+			}
+		})
 	}
 }

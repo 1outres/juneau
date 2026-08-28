@@ -21,18 +21,20 @@ import (
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/program"
 )
 
-// PodAttacher attaches the PodEgress and PodIngress TC programs to
-// every local NetworkEndpoint's iface (NodeName==self with Attachment
-// populated) and detaches them when the endpoint is deleted, migrates
-// off this node, or loses its Attachment. It is kind-agnostic and
-// handles every NWEP variant — Pod veths, the per-Node juneau_node
-// pseudo-pod, etc.
+// PodAttacher attaches a pair of TC programs to every local
+// NetworkEndpoint's iface (NodeName==self with Attachment populated)
+// and detaches them when the endpoint is deleted, migrates off this
+// node, or loses its Attachment. It is kind-agnostic and handles every
+// NWEP variant — Pod veths, the per-Node juneau_node pseudo-pod, etc.
 //
-// PodEgress runs at the host-side veth peer's ingress (packets leaving
-// the endpoint) and applies forward DNAT for Service flows. PodIngress
-// runs at the egress (packets entering the endpoint) and applies the
-// reverse SNAT recorded in conntrack so Service responses carry the
-// original ClusterIP.
+// Which pair it attaches follows the network the endpoint joined. An
+// endpoint on a Subnet gets PodEgress at the host-side veth peer's
+// ingress (packets leaving the endpoint), where forward DNAT for
+// Service flows happens, and PodIngress at the egress, where the
+// reverse SNAT recorded in conntrack is applied. An endpoint on an
+// L2Network gets L2Egress and L2Ingress instead: that segment carries
+// any EtherType and juneau forwards it on the destination MAC alone,
+// so none of the L3 machinery applies to it.
 //
 // Unlike map reconcilers, PodAttacher owns file descriptors (ebpflink.Link
 // handles) rather than eBPF map entries. It still implements the
@@ -41,25 +43,62 @@ type PodAttacher struct {
 	client     client.Client
 	podEgress  *program.PodEgress
 	podIngress *program.PodIngress
+	l2Egress   *program.L2Egress
+	l2Ingress  *program.L2Ingress
 	nodeName   string
 
 	mu        sync.Mutex
 	snapshots map[string]attacherSnapshot
 }
 
+// attacherPrograms is the pair of programs one endpoint runs.
+type attacherPrograms struct {
+	label   string
+	egress  *ebpf.Program
+	ingress *ebpf.Program
+}
+
 type attacherSnapshot struct {
 	ifindex     int
+	programs    string        // attacherPrograms.label the links were built from
 	egressLink  ebpflink.Link // nil if pre-attached by another owner
 	ingressLink ebpflink.Link
 }
 
-func NewPodAttacher(cl client.Client, podEgress *program.PodEgress, podIngress *program.PodIngress, nodeName string) *PodAttacher {
+func NewPodAttacher(
+	cl client.Client,
+	podEgress *program.PodEgress,
+	podIngress *program.PodIngress,
+	l2Egress *program.L2Egress,
+	l2Ingress *program.L2Ingress,
+	nodeName string,
+) *PodAttacher {
 	return &PodAttacher{
 		client:     cl,
 		podEgress:  podEgress,
 		podIngress: podIngress,
+		l2Egress:   l2Egress,
+		l2Ingress:  l2Ingress,
 		nodeName:   nodeName,
 		snapshots:  make(map[string]attacherSnapshot),
+	}
+}
+
+// programsFor picks the pair an endpoint runs. The choice is read off
+// the endpoint itself rather than looked up, so an L2Network that is
+// already gone still takes its own programs down.
+func (p *PodAttacher) programsFor(nwep *juneauv1alpha1.NetworkEndpoint) attacherPrograms {
+	if nwep.Spec.L2Network != "" {
+		return attacherPrograms{
+			label:   "l2",
+			egress:  p.l2Egress.Objs.TcL2Egress,
+			ingress: p.l2Ingress.Objs.TcL2Ingress,
+		}
+	}
+	return attacherPrograms{
+		label:   "pod",
+		egress:  p.podEgress.Objs.TcPodEgress,
+		ingress: p.podIngress.Objs.TcPodIngress,
 	}
 }
 
@@ -83,7 +122,7 @@ func (p *PodAttacher) Reconcile(ctx context.Context, key string) error {
 	if nwep.Spec.NodeName != p.nodeName || nwep.Spec.Attachment == nil {
 		return p.detach(key)
 	}
-	return p.attach(key, nwep.Spec.Attachment.Ifindex)
+	return p.attach(key, nwep.Spec.Attachment.Ifindex, p.programsFor(&nwep))
 }
 
 // CloseAll detaches every tracked link. Used by Manager on shutdown.
@@ -100,12 +139,12 @@ func (p *PodAttacher) CloseAll() error {
 	return errors.Join(errs...)
 }
 
-func (p *PodAttacher) attach(key string, ifindex int) error {
+func (p *PodAttacher) attach(key string, ifindex int, programs attacherPrograms) error {
 	p.mu.Lock()
 	old, hadOld := p.snapshots[key]
 	p.mu.Unlock()
 
-	if hadOld && old.ifindex == ifindex {
+	if hadOld && old.ifindex == ifindex && old.programs == programs.label {
 		return nil
 	}
 
@@ -131,14 +170,14 @@ func (p *PodAttacher) attach(key string, ifindex int) error {
 		zap.S().Warnf("lookup ifname for ifindex %d: %v", ifindex, err)
 	}
 
-	egressLink, err := attachTCX(p.podEgress.Objs.TcPodEgress, ifindex,
-		ebpf.AttachTCXIngress, "pod-egress")
+	egressLink, err := attachTCX(programs.egress, ifindex,
+		ebpf.AttachTCXIngress, programs.label+"-egress")
 	if err != nil {
 		return err
 	}
 
-	ingressLink, err := attachTCX(p.podIngress.Objs.TcPodIngress, ifindex,
-		ebpf.AttachTCXEgress, "pod-ingress")
+	ingressLink, err := attachTCX(programs.ingress, ifindex,
+		ebpf.AttachTCXEgress, programs.label+"-ingress")
 	if err != nil {
 		// Roll back the egress attach to keep the data plane symmetric.
 		if egressLink != nil {
@@ -150,6 +189,7 @@ func (p *PodAttacher) attach(key string, ifindex int) error {
 	p.mu.Lock()
 	p.snapshots[key] = attacherSnapshot{
 		ifindex:     ifindex,
+		programs:    programs.label,
 		egressLink:  egressLink,
 		ingressLink: ingressLink,
 	}
@@ -197,12 +237,12 @@ func (p *PodAttacher) closeSnapshot(snap attacherSnapshot) []error {
 	var errs []error
 	if snap.egressLink != nil {
 		if err := snap.egressLink.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("close pod-egress link (ifindex %d): %w", snap.ifindex, err))
+			errs = append(errs, fmt.Errorf("close %s-egress link (ifindex %d): %w", snap.programs, snap.ifindex, err))
 		}
 	}
 	if snap.ingressLink != nil {
 		if err := snap.ingressLink.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("close pod-ingress link (ifindex %d): %w", snap.ifindex, err))
+			errs = append(errs, fmt.Errorf("close %s-ingress link (ifindex %d): %w", snap.programs, snap.ifindex, err))
 		}
 	}
 	return errs

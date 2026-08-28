@@ -40,14 +40,16 @@
 
 // ---- Reason codes ---------------------------------------------------
 // Layout: 100s = hook entry, 200s = lookup miss, 300s = policy,
-// 400s = service / NAT, 500s = terminal verdict. Keep groups
-// contiguous so a userspace switch-case stays compact.
+// 400s = service / NAT, 500s = terminal verdict, 600s = L2Network.
+// Keep groups contiguous so a userspace switch-case stays compact.
 #define TRACE_REASON_UNSPECIFIED 0
 
 #define TRACE_REASON_ENTER_POD_EGRESS    100
 #define TRACE_REASON_ENTER_POD_INGRESS   101
 #define TRACE_REASON_ENTER_VXLAN_INGRESS 102
 #define TRACE_REASON_ENTER_NODE_INGRESS  103
+#define TRACE_REASON_ENTER_L2_EGRESS     104
+#define TRACE_REASON_ENTER_L2_INGRESS    105
 
 #define TRACE_REASON_MISS_IFINDEX_SUBNET 200
 #define TRACE_REASON_MISS_SUBNET         201
@@ -61,6 +63,9 @@
 #define TRACE_REASON_MISS_TGW_TABLE      209
 #define TRACE_REASON_MISS_TGW_ROUTE      210
 #define TRACE_REASON_MISS_VPC_ENDPOINT   211
+#define TRACE_REASON_MISS_L2_PORT        212
+#define TRACE_REASON_MISS_L2_NETWORK     213
+#define TRACE_REASON_MISS_L2_FDB         214
 
 #define TRACE_REASON_POLICY_ACL_PASS 300
 #define TRACE_REASON_POLICY_ACL_DROP 301
@@ -91,6 +96,14 @@
 #define TRACE_REASON_DROP_SHOT        503
 #define TRACE_REASON_DROP_BLACKHOLE   504
 
+// 600s = L2Network forwarding. An L2 segment has no addresses of its
+// own, so "did it learn" and "is it still flooding" are the only
+// questions an operator can ask about it.
+#define TRACE_REASON_L2_LEARNED       600
+#define TRACE_REASON_L2_FLOOD         601
+#define TRACE_REASON_L2_SPLIT_HORIZON 602
+#define TRACE_REASON_L2_HAIRPIN_DROP  603
+
 // Hook identifiers. Embedded into trace_event.hook so the userspace
 // renderer can attribute events to a specific BPF program without
 // re-deriving from the reason code.
@@ -98,6 +111,8 @@
 #define TRACE_HOOK_POD_INGRESS   2
 #define TRACE_HOOK_VXLAN_INGRESS 3
 #define TRACE_HOOK_NODE_INGRESS  4
+#define TRACE_HOOK_L2_EGRESS     5
+#define TRACE_HOOK_L2_INGRESS    6
 
 // Capture flag bits — mirror TraceCaptureConfig in the CRD. Daemons
 // translate user-facing booleans into this bitmask before writing

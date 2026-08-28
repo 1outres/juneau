@@ -4,8 +4,10 @@ L2Networkは、JuneauがL3を一切解釈しないL2セグメントです。宛�
 
 VMの中でbridgeを組む、自前のDHCPサーバを立てる、ルータVMを置く、といった使い方を想定しています。Subnetと同じくクラスタスコープで、shortNameは `l2net` です。
 
-!!! warning "現時点では通信できません"
-    このバージョンにはL2NetworkのCRDとcontrollerとwebhookだけが入っています。データプレーンはまだ実装されていないので、L2NetworkにPodを繋いでも通信は成立しません。
+!!! warning "gatewayはまだ動きません"
+    セグメントの中の転送は動きます。`spec.gateway`を書いてもgatewayのポートはまだ生えないので、VpcのRouteTableやNATGatewayには繋がりません。
+
+手順は[L2Networkで自由なセグメントを作る](../guides/l2-network.md)に、実装は[L2Networkの転送を追う](../developer/l2-data-plane.md)にあります。
 
 ## Vpc との関係
 
@@ -61,6 +63,8 @@ Subnetと違って、L2NetworkはDNSリゾルバを持ちません。自前でDN
 
 非IPプロトコルはフラグメントできないので、MTUが合っていないとフレームが黙って落ちます。
 
+CNIがこのMTUをvethの両端に設定します。設定するのはL2NetworkのNICだけで、SubnetのNICは今まで通りカーネルの既定値のままです。
+
 ## VNI
 
 L2NetworkのVNIは、Subnetと同じ `subnet-vni` AllocationPoolから払い出されます。データプレーンのフォワーディングテーブルはVNIだけをキーにしているので、プールを分けると2つのセグメントが同じVNIを取ってフレームが混ざります。
@@ -92,7 +96,19 @@ annotations:
 
 eth0にL2Networkを指定することはできません。`juneau.loutres.me/subnet` はSubnet名だけを受け付けます。
 
-`spec.cidr` を持たないL2NetworkだけにPodを繋ぐと、NICにIPが載りません。CNIはIPのないNICを構成できないので、PodはContainerCreatingのまま止まります。データプレーンが入るまでは、この状態が正しい挙動です。
+`spec.cidr` を持たないL2NetworkのNICにはIPが載りません。追加NICなら、アドレスが無いままvethが作られて通信することができます。アドレスはPodの中で自分で振るか、セグメントに置いたDHCPサーバから受け取ってください。
+
+eth0だけは例外です。コンテナランタイムはCNIの結果のeth0にアドレスが1つも無いとsandboxの作成を失敗させるので、`spec.cidr` を持たないL2NetworkはPodの1枚目のNICには使えません。
+
+## 転送
+
+L2NetworkのフレームはMACアドレスだけで転送されます。Juneauは学習テーブルを持っていて、ワークロードが出したフレームの送信元MACをそのポートに紐付けます。宛先MACが学習済みならそのポートへ、未学習ならセグメントの全ポートへ複製します。ブロードキャストとマルチキャストも全ポートへ複製します。
+
+controllerはこのテーブルを一切書きません。`NetworkEndpoint.spec.macAddress` の静的エントリも使いません。NICの後ろでbridgeを組んだりnested VMを動かしたりすると、NIC自身のものではないMACが出てくるからです。誰がどのMACを名乗るかは制限していません。
+
+学習したエントリは、300秒フレームを見なければ消えます。中身は `kubectl juneau bpf dump l2_fdb --inner-key vni=<VNI>` で読むことができます。
+
+同じL2Network上のNIC同士の通信にはSecurityGroupもNetworkACLも効きません。L2のデータプレーンはpolicyを読まないので、テナント境界は `spec.vpc` で引いてください。
 
 ## 削除
 

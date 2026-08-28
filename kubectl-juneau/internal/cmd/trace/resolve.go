@@ -54,6 +54,13 @@ type endpoint struct {
 	ip          netip.Addr
 	nodeName    string
 	vpcID       uint32
+	// ifname is the Pod NIC the trace is scoped to, empty when the
+	// caller named none. A Pod with several NICs sits in a different
+	// network on each, and the data plane keys its tuples by which.
+	ifname string
+	// networkName is the Subnet or L2Network that NIC joined. It is
+	// what did or did not hand out an address for it.
+	networkName string
 }
 
 // resolveSession turns the parsed Options into a resolved struct.
@@ -73,22 +80,26 @@ func (o *Options) resolveSession(ctx context.Context, cl client.Client) (*resolv
 	out := &resolved{traceID: o.traceID}
 
 	if o.SourcePod != "" {
-		ep, err := o.resolvePodEndpoint(ctx, cl, o.SourcePod)
+		ep, err := o.resolvePodEndpoint(ctx, cl, o.SourcePod, o.SourceInterface, o.sourceNamespace)
 		if err != nil {
 			return nil, fmt.Errorf("resolve source pod: %w", err)
 		}
 		out.source = ep
-	} else if o.SourceIP != "" {
+	}
+	if o.SourceIP != "" {
 		ip, err := netip.ParseAddr(o.SourceIP)
 		if err != nil || !ip.Is4() {
 			return nil, fmt.Errorf("--from-ip must be a valid IPv4 address: %v", err)
 		}
-		out.source = endpoint{displayName: o.SourceIP, ip: ip}
+		out.source.ip = ip
+		if out.source.pod == nil {
+			out.source.displayName = o.SourceIP
+		}
 	}
 
 	switch {
 	case o.DestPod != "":
-		ep, err := o.resolvePodEndpoint(ctx, cl, o.DestPod)
+		ep, err := o.resolvePodEndpoint(ctx, cl, o.DestPod, o.DestInterface, o.destNamespace)
 		if err != nil {
 			return nil, fmt.Errorf("resolve destination pod: %w", err)
 		}
@@ -99,12 +110,16 @@ func (o *Options) resolveSession(ctx context.Context, cl client.Client) (*resolv
 			return nil, fmt.Errorf("resolve destination service: %w", err)
 		}
 		out.destination = ep
-	case o.DestIP != "":
+	}
+	if o.DestIP != "" {
 		ip, err := netip.ParseAddr(o.DestIP)
 		if err != nil || !ip.Is4() {
 			return nil, fmt.Errorf("--to-ip must be a valid IPv4 address: %v", err)
 		}
-		out.destination = endpoint{displayName: o.DestIP, ip: ip}
+		out.destination.ip = ip
+		if out.destination.pod == nil && out.destination.service == nil {
+			out.destination.displayName = o.DestIP
+		}
 	}
 
 	out.nodes = dedupeNonEmpty(out.source.nodeName, out.destination.nodeName)
@@ -388,10 +403,12 @@ func endpointReady(ep discoveryv1.Endpoint) bool {
 
 func (o *Options) buildPrimaryTuple(r *resolved) (juneauv1alpha1.TraceTuple, error) {
 	if !r.source.ip.IsValid() {
-		return juneauv1alpha1.TraceTuple{}, fmt.Errorf("source endpoint has no resolvable IPv4 address")
+		return juneauv1alpha1.TraceTuple{}, fmt.Errorf(
+			"the source has no address juneau knows about; give one with --from-ip%s", noAddressHint(r.source))
 	}
 	if !r.destination.ip.IsValid() {
-		return juneauv1alpha1.TraceTuple{}, fmt.Errorf("destination endpoint has no resolvable IPv4 address")
+		return juneauv1alpha1.TraceTuple{}, fmt.Errorf(
+			"the destination has no address juneau knows about; give one with --to-ip%s", noAddressHint(r.destination))
 	}
 	scope := juneauv1alpha1.TraceTupleScopeVPC
 	vpcID := r.source.vpcID
@@ -415,24 +432,81 @@ func (o *Options) buildPrimaryTuple(r *resolved) (juneauv1alpha1.TraceTuple, err
 	}, nil
 }
 
-func (o *Options) resolvePodEndpoint(ctx context.Context, cl client.Client, ref string) (endpoint, error) {
-	ns, name := splitNamespacedName(ref, o.sourceNamespace)
+// resolvePodEndpoint reads one side of a session out of a Pod.
+//
+// ifname picks which of the Pod's NICs the trace is about. Left empty
+// it means the Pod itself: status.podIP for the address and a
+// best-effort walk to the Vpc, which is what a trace of the Pod's own
+// traffic wants and what this command has always done.
+//
+// Named, it means that NIC and nothing else. Both the address and the
+// Vpc come from its NetworkInterface, and a NIC that is not there is
+// an error rather than a quiet fall back to the Pod — the user asked
+// about a specific NIC, and answering about a different one would be
+// worse than saying no.
+func (o *Options) resolvePodEndpoint(ctx context.Context, cl client.Client, ref, ifname, defaultNs string) (endpoint, error) {
+	ns, name := splitNamespacedName(ref, defaultNs)
 	var pod corev1.Pod
 	if err := cl.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, &pod); err != nil {
 		return endpoint{}, fmt.Errorf("get pod %s/%s: %w", ns, name, err)
 	}
 	ep := endpoint{displayName: ns + "/" + name, pod: &pod, nodeName: pod.Spec.NodeName}
-	if pod.Status.PodIP != "" {
-		if addr, err := netip.ParseAddr(pod.Status.PodIP); err == nil && addr.Is4() {
-			ep.ip = addr
+
+	if ifname == "" {
+		if pod.Status.PodIP != "" {
+			if addr, err := netip.ParseAddr(pod.Status.PodIP); err == nil && addr.Is4() {
+				ep.ip = addr
+			}
 		}
+		// VPC discovery: fetch the NetworkInterface for this Pod and
+		// derive the VPC ID from the attached network → Vpc chain.
+		if vpcID, err := lookupPodVPC(ctx, cl, &pod); err == nil {
+			ep.vpcID = vpcID
+		}
+		return ep, nil
 	}
-	// VPC discovery: fetch the NetworkInterface for this Pod and
-	// derive the VPC ID from the attached Subnet → Vpc chain.
-	if vpcID, err := lookupPodVPC(ctx, cl, &pod); err == nil {
-		ep.vpcID = vpcID
+
+	nwif, err := findPodNetworkInterface(ctx, cl, &pod, ifname)
+	if err != nil {
+		return endpoint{}, err
 	}
+	vpcID, err := nicVpcID(ctx, cl, nwif)
+	if err != nil {
+		return endpoint{}, fmt.Errorf("read the Vpc of %s: %w", nwif.Name, err)
+	}
+	addr, err := nicAddress(nwif)
+	if err != nil {
+		return endpoint{}, err
+	}
+
+	ep.displayName = ns + "/" + name + ":" + ifname
+	ep.ifname = ifname
+	ep.networkName = nicNetworkName(nwif)
+	ep.vpcID = vpcID
+	// An L2Network without a CIDR hands the NIC no address, and the
+	// workload picks one juneau never sees. Leaving the field unset is
+	// what makes buildPrimaryTuple ask the user for it, rather than
+	// keying the trace on the address of a different NIC.
+	ep.ip = addr
 	return ep, nil
+}
+
+// noAddressHint adds the reason a NIC has no address, when the caller
+// named one and the answer is on the object.
+func noAddressHint(ep endpoint) string {
+	if ep.ifname == "" {
+		return ""
+	}
+	return fmt.Sprintf(" (%s hands out no address on %s)", ep.networkName, ep.ifname)
+}
+
+// nicNetworkName returns the network the NIC joined. nicVpcID has
+// already rejected a NIC that names neither, so one of the two is set.
+func nicNetworkName(nwif *juneauv1alpha1.NetworkInterface) string {
+	if nwif.Spec.L2Network != "" {
+		return nwif.Spec.L2Network
+	}
+	return nwif.Spec.Subnet
 }
 
 func (o *Options) resolveServiceEndpoint(ctx context.Context, cl client.Client, ref string) (endpoint, error) {
@@ -450,47 +524,117 @@ func (o *Options) resolveServiceEndpoint(ctx context.Context, cl client.Client, 
 	return ep, nil
 }
 
-// lookupPodVPC walks Pod → primary NetworkInterface → Subnet → Vpc to
-// learn the VPC ID. Best-effort: missing links return 0 and the caller
-// falls back to host scope. Extra NICs are skipped because a trace is
-// scoped to the Vpc the Pod's own address lives in.
+// lookupPodVPC learns the Vpc id of a Pod's own address, which lives
+// on its primary NIC. Best-effort: missing links return an error the
+// caller swallows to fall back to host scope.
 func lookupPodVPC(ctx context.Context, cl client.Client, pod *corev1.Pod) (uint32, error) {
-	var nwifs juneauv1alpha1.NetworkInterfaceList
-	if err := cl.List(ctx, &nwifs, client.InNamespace(pod.Namespace)); err != nil {
+	nwif, err := findPodNetworkInterface(ctx, cl, pod, juneauv1alpha1.PodPrimaryInterfaceName)
+	if err != nil {
 		return 0, err
 	}
-	var nwif *juneauv1alpha1.NetworkInterface
+	return nicVpcID(ctx, cl, nwif)
+}
+
+// findPodNetworkInterface returns the NetworkInterface backing one NIC
+// of a Pod.
+//
+// A match on the Pod UID wins outright. A match on the name alone is
+// kept as the answer only if no UID match turns up, because a Pod that
+// was recreated under the same name leaves the NetworkInterface of the
+// old instance behind for a moment.
+func findPodNetworkInterface(ctx context.Context, cl client.Client, pod *corev1.Pod, ifname string) (*juneauv1alpha1.NetworkInterface, error) {
+	var nwifs juneauv1alpha1.NetworkInterfaceList
+	if err := cl.List(ctx, &nwifs, client.InNamespace(pod.Namespace)); err != nil {
+		return nil, err
+	}
+	var byName *juneauv1alpha1.NetworkInterface
 	for i := range nwifs.Items {
 		podRef := nwifs.Items[i].Spec.PodRef
-		if podRef.Interface != juneauv1alpha1.PodPrimaryInterfaceName {
+		if podRef.Interface != ifname {
 			continue
 		}
 		if podRef.UID == string(pod.UID) {
-			nwif = &nwifs.Items[i]
-			break
+			return &nwifs.Items[i], nil
 		}
 		if podRef.Name == pod.Name {
-			nwif = &nwifs.Items[i]
+			byName = &nwifs.Items[i]
 		}
 	}
-	if nwif == nil {
-		return 0, apierrors.NewNotFound(corev1.Resource("networkinterfaces"), pod.Name)
+	if byName != nil {
+		return byName, nil
 	}
-	if nwif.Spec.Subnet == "" {
-		return 0, fmt.Errorf("NetworkInterface %s has no subnet", nwif.Name)
+	return nil, fmt.Errorf("pod %s/%s has no NetworkInterface for %q: %w",
+		pod.Namespace, pod.Name, ifname,
+		apierrors.NewNotFound(corev1.Resource("networkinterfaces"), pod.Name))
+}
+
+// nicVpcID reads the Vpc identity the data plane stamps on the frames
+// of one NIC. Every hook resolves trace_tuple_map with it, so a trace
+// that carries the wrong one matches nothing at all.
+//
+// The two kinds of network a NIC joins reach it by different routes: a
+// Subnet names its Vpc, an L2Network names its own. Both end at
+// Vpc.status.vpcID, which is the number the data plane writes.
+func nicVpcID(ctx context.Context, cl client.Client, nwif *juneauv1alpha1.NetworkInterface) (uint32, error) {
+	var vpcName string
+	switch {
+	case nwif.Spec.Subnet != "":
+		var subnet juneauv1alpha1.Subnet
+		if err := cl.Get(ctx, types.NamespacedName{Name: nwif.Spec.Subnet}, &subnet); err != nil {
+			return 0, err
+		}
+		if subnet.Spec.Vpc == "" {
+			return 0, fmt.Errorf("subnet %s has no vpc", subnet.Name)
+		}
+		vpcName = subnet.Spec.Vpc
+	case nwif.Spec.L2Network != "":
+		var network juneauv1alpha1.L2Network
+		if err := cl.Get(ctx, types.NamespacedName{Name: nwif.Spec.L2Network}, &network); err != nil {
+			return 0, err
+		}
+		if network.Spec.Vpc == "" {
+			return 0, fmt.Errorf("l2network %s has no vpc", network.Name)
+		}
+		vpcName = network.Spec.Vpc
+	default:
+		return 0, fmt.Errorf("NetworkInterface %s names neither a subnet nor an l2Network", nwif.Name)
 	}
-	var subnet juneauv1alpha1.Subnet
-	if err := cl.Get(ctx, types.NamespacedName{Name: nwif.Spec.Subnet}, &subnet); err != nil {
-		return 0, err
-	}
-	if subnet.Spec.Vpc == "" {
-		return 0, fmt.Errorf("subnet %s has no vpc", subnet.Name)
-	}
+
 	var vpc juneauv1alpha1.Vpc
-	if err := cl.Get(ctx, types.NamespacedName{Name: subnet.Spec.Vpc}, &vpc); err != nil {
+	if err := cl.Get(ctx, types.NamespacedName{Name: vpcName}, &vpc); err != nil {
 		return 0, err
 	}
 	return vpc.Status.VpcID, nil
+}
+
+// nicAddress is the address juneau handed one NIC, and the zero Addr
+// when it handed out none. An L2Network without a CIDR is the case
+// that reaches here: the workload addresses the segment itself, so
+// there is nothing for kubectl to read and the caller has to ask the
+// user instead.
+//
+// status.address is written in CIDR form; a bare address is accepted
+// too, the same way the daemon reads the field.
+func nicAddress(nwif *juneauv1alpha1.NetworkInterface) (netip.Addr, error) {
+	raw := nwif.Status.Address
+	if raw == "" {
+		return netip.Addr{}, nil
+	}
+
+	addr, err := netip.ParseAddr(raw)
+	if err != nil {
+		prefix, prefixErr := netip.ParsePrefix(raw)
+		if prefixErr != nil {
+			return netip.Addr{}, fmt.Errorf(
+				"NetworkInterface %s carries an address kubectl cannot read (%q): %w", nwif.Name, raw, err)
+		}
+		addr = prefix.Addr()
+	}
+	if !addr.Is4() {
+		return netip.Addr{}, fmt.Errorf(
+			"NetworkInterface %s carries a non-IPv4 address (%q); trace is IPv4 only", nwif.Name, raw)
+	}
+	return addr, nil
 }
 
 func dedupeNonEmpty(in ...string) []string {

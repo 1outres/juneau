@@ -24,7 +24,13 @@ type InterfaceContext struct {
 	NetworkInterface *juneauv1alpha1.NetworkInterface `json:"networkInterface,omitempty"`
 
 	Subnet *juneauv1alpha1.Subnet `json:"subnet,omitempty"`
-	Vpc    *juneauv1alpha1.Vpc    `json:"vpc,omitempty"`
+
+	// L2Network is set instead of Subnet when the NIC joined a plain
+	// Ethernet segment. Juneau forwards it on the destination MAC alone,
+	// so it has no RouteTable and no NetworkACL of its own.
+	L2Network *juneauv1alpha1.L2Network `json:"l2Network,omitempty"`
+
+	Vpc *juneauv1alpha1.Vpc `json:"vpc,omitempty"`
 
 	// RouteTable is the resolved RouteTable governing this
 	// interface's Subnet — either the Subnet's spec.routeTable

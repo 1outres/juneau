@@ -7,9 +7,9 @@ import (
 
 	"github.com/cilium/ebpf"
 	"go.uber.org/zap"
-	"golang.org/x/sys/unix"
 
 	bpf "github.com/1outres/juneau/daemon/internal/daemon/bpf"
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/monotonic"
 )
 
 // AffinityGCInterval bounds how stale an expired ClientIP-affinity
@@ -40,7 +40,7 @@ func NewAffinityGC(affinityMap *ebpf.Map, interval time.Duration) *AffinityGC {
 	return &AffinityGC{
 		affinityMap: affinityMap,
 		interval:    interval,
-		now:         monotonicNs,
+		now:         monotonic.Ns,
 	}
 }
 
@@ -82,17 +82,4 @@ func (g *AffinityGC) gcOnce() {
 	if err := iter.Err(); err != nil {
 		zap.S().Warnf("service affinity gc: iterate: %v", err)
 	}
-}
-
-// monotonicNs returns the same clock the eBPF data plane observes via
-// bpf_ktime_get_ns: nanoseconds since boot on CLOCK_MONOTONIC. Using
-// time.Now() (wall clock) here would silently break TTL comparisons
-// across NTP adjustments.
-func monotonicNs() uint64 {
-	var ts unix.Timespec
-	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
-		zap.S().Warnf("service affinity gc: clock_gettime: %v", err)
-		return 0
-	}
-	return uint64(ts.Sec)*uint64(time.Second) + uint64(ts.Nsec)
 }

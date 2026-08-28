@@ -5,6 +5,7 @@
 #include <bpf/bpf_helpers.h>
 #include <stdbool.h>
 #include "ct.h"
+#include "l2.h"
 #include "maps.h"
 #include "nat.h"
 #include "trace.h"
@@ -14,6 +15,82 @@
 
 #define TC_ACT_OK 0
 #define TC_ACT_SHOT 2
+
+// handle_l2_overlay forwards a frame the overlay delivered for an
+// L2Network. It is the counterpart of l2_egress on the receiving node:
+// it learns which node holds the source MAC and hands the frame to the
+// local port that holds the destination MAC.
+//
+// The L2 branch lives in this program rather than in one of its own on
+// the same device. A second program would only run if the first
+// returned TC_ACT_UNSPEC, so which of the two decides a frame would
+// depend on the order they were attached in — and getting that order
+// wrong drops every L2 frame with nothing to say why.
+//
+// A frame the overlay delivered is never sent back over it. The node
+// that sent it already gave every other node a copy, so a second round
+// would multiply the frame until the segment collapses. That rule is
+// split horizon, and it is why l2_flood is asked for local delivery
+// only.
+static __always_inline int handle_l2_overlay(struct __sk_buff *skb,
+                                             const struct ethhdr *eth,
+                                             __u32 vni, __u32 vpc_id,
+                                             __u32 remote_vtep) {
+  __u32 __trace_id = 0;
+  {
+    struct trace_hook_ctx __ctx = {
+        .reason = TRACE_REASON_ENTER_VXLAN_INGRESS,
+        .hook = TRACE_HOOK_VXLAN_INGRESS,
+        .vpc_id = vpc_id,
+        .subnet_id = vni,
+        .scope = TRACE_SCOPE_VPC,
+    };
+    __trace_id = trace_classify_and_emit_enter(skb, &__ctx);
+  }
+
+  struct l2_fdb_inner_map *table = l2_fdb_for(vni);
+  if (!table) {
+    trace_emit_drop_l3(skb, __trace_id, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC, vpc_id, vni);
+    return TC_ACT_SHOT;
+  }
+
+  struct l2_port from = {.vni = vni, .in_ifindex = 0, .from_overlay = true};
+
+  __u8 src_mac[ETH_ALEN];
+  __u8 dst_mac[ETH_ALEN];
+  __builtin_memcpy(src_mac, eth->h_source, ETH_ALEN);
+  __builtin_memcpy(dst_mac, eth->h_dest, ETH_ALEN);
+
+  if (l2_learn(table, src_mac, 0, remote_vtep))
+    trace_emit_map_miss_l3(skb, __trace_id, TRACE_REASON_L2_LEARNED,
+                           TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC, vpc_id,
+                           vni, remote_vtep);
+
+  if (!l2_is_bum(dst_mac)) {
+    struct l2_forward forwarded = {};
+    if (l2_forward_unicast(skb, table, dst_mac, &from, &forwarded)) {
+      if (forwarded.verdict == TC_ACT_SHOT)
+        trace_emit_drop_l3(skb, __trace_id, forwarded.reason,
+                           TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC, vpc_id,
+                           vni);
+      else
+        trace_emit_redirect_l3(skb, __trace_id, forwarded.reason,
+                               TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC,
+                               vpc_id, vni, forwarded.target_ifindex);
+      return forwarded.verdict;
+    }
+    trace_emit_map_miss_l3(skb, __trace_id, TRACE_REASON_MISS_L2_FDB,
+                           TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC, vpc_id,
+                           vni, vni);
+  }
+
+  __u32 copies = l2_flood(skb, &from);
+  trace_emit_map_miss_l3(skb, __trace_id, TRACE_REASON_L2_SPLIT_HORIZON,
+                         TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC, vpc_id, vni,
+                         copies);
+  return TC_ACT_SHOT;
+}
 
 // apply_shared_service_reverse handles the cross-Node reply leg of a
 // shared-Service flow. When a default-Vpc backend Pod replies to a SNAT
@@ -161,6 +238,16 @@ static __always_inline int tc_vxlan_ingress(struct __sk_buff *skb) {
     return TC_ACT_SHOT;
 
   __u32 subnet_id = tkey.tunnel_id & 0xFFFFFF;
+
+  // An L2Network owns the whole VNI, so this question comes before
+  // anything that reads an address out of the frame: the frame may
+  // carry no IP header at all.
+  struct l2_network_key l2key = {.vni = subnet_id};
+  const struct l2_network_val *l2net =
+      bpf_map_lookup_elem(&l2_network_map, &l2key);
+  if (l2net)
+    return handle_l2_overlay(skb, eth, subnet_id, l2net->vpc_id,
+                             tkey.remote_ipv4);
 
   struct subnet_key skey = {.subnet_id = subnet_id};
   const struct subnet_val *subnet = bpf_map_lookup_elem(&subnet_map, &skey);

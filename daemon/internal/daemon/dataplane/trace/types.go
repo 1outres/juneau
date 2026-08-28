@@ -38,6 +38,8 @@ const (
 	ReasonEnterPodIngress   Reason = 101
 	ReasonEnterVxlanIngress Reason = 102
 	ReasonEnterNodeIngress  Reason = 103
+	ReasonEnterL2Egress     Reason = 104
+	ReasonEnterL2Ingress    Reason = 105
 
 	ReasonMissIfindexSubnet Reason = 200
 	ReasonMissSubnet        Reason = 201
@@ -51,6 +53,9 @@ const (
 	ReasonMissTGWTable      Reason = 209
 	ReasonMissTGWRoute      Reason = 210
 	ReasonMissVpcEndpoint   Reason = 211
+	ReasonMissL2Port        Reason = 212
+	ReasonMissL2Network     Reason = 213
+	ReasonMissL2FDB         Reason = 214
 
 	ReasonPolicyACLPass Reason = 300
 	ReasonPolicyACLDrop Reason = 301
@@ -81,6 +86,20 @@ const (
 	ReasonPassKernel      Reason = 502
 	ReasonDropShot        Reason = 503
 	ReasonDropBlackhole   Reason = 504
+
+	// An L2Network has no addresses of its own, so "did it learn" and
+	// "is it still flooding" are the only questions an operator can ask
+	// about it. ReasonL2SplitHorizon marks a frame the overlay
+	// delivered: it was copied to the local ports and deliberately not
+	// sent back out.
+	ReasonL2Learned      Reason = 600
+	ReasonL2Flood        Reason = 601
+	ReasonL2SplitHorizon Reason = 602
+	// ReasonL2HairpinDrop marks a frame whose destination MAC sits on
+	// the very port it came in on. A switch never sends one back out
+	// there, and a workload with its own bridge behind the NIC would
+	// send it straight back.
+	ReasonL2HairpinDrop Reason = 603
 )
 
 // Hook mirrors TRACE_HOOK_* in trace.h.
@@ -92,6 +111,8 @@ const (
 	HookPodIngress   Hook = 2
 	HookVxlanIngress Hook = 3
 	HookNodeIngress  Hook = 4
+	HookL2Egress     Hook = 5
+	HookL2Ingress    Hook = 6
 )
 
 // Verdict mirrors TRACE_VERDICT_* in trace.h.

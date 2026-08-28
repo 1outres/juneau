@@ -147,8 +147,31 @@ func appendInterfaceNode(parent *output.Node, ic *topology.InterfaceContext) {
 		nicNode.Childf("Subnet  %s  (not found)", ic.NetworkInterface.Spec.Subnet)
 	}
 
+	appendL2NetworkNode(nicNode, ic)
+
 	appendSecurityGroupsNode(nicNode, ic.SecurityGroups)
 	appendElasticIPNode(nicNode, ic.ElasticIP)
+}
+
+// appendL2NetworkNode names the plain Ethernet segment a NIC joined.
+// There is no RouteTable and no NetworkACL under it: juneau forwards on
+// the destination MAC alone and reads no policy on the way.
+func appendL2NetworkNode(parent *output.Node, ic *topology.InterfaceContext) {
+	if ic.L2Network == nil {
+		if name := ic.NetworkInterface.Spec.L2Network; name != "" {
+			parent.Childf("L2Network  %s  (not found)", name)
+		}
+		return
+	}
+
+	node := parent.Childf("L2Network  %s  (cidr: %s, vni: %d, mtu: %d)",
+		ic.L2Network.Name, displayOrDash(ic.L2Network.Spec.CIDR),
+		ic.L2Network.Status.VNI, ic.L2Network.Status.MTU)
+	if ic.Vpc != nil {
+		node.Childf("Vpc  %s  (vpcID: %d)", ic.Vpc.Name, ic.Vpc.Status.VpcID)
+	} else if ic.L2Network.Spec.Vpc != "" {
+		node.Childf("Vpc  %s  (not found)", ic.L2Network.Spec.Vpc)
+	}
 }
 
 func appendRouteTableNode(parent *output.Node, rt *topology.RouteTableSummary, isMain bool) {

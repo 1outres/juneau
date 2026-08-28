@@ -51,6 +51,11 @@ func RegisterPodEgress(inv *Inventory, p *program.PodEgress) error {
 		registerACLRule,
 		registerLBService,
 		registerLBBackend,
+		registerL2Network,
+		registerL2Ifindex,
+		registerL2Fdb,
+		registerL2BumLocal,
+		registerL2BumRemote,
 	} {
 		if err := fn(inv, p); err != nil {
 			return err
@@ -710,5 +715,87 @@ func registerLBBackend(inv *Inventory, p *program.PodEgress) error {
 			FieldPadOf(2),
 			FieldU32Named("backend_subnet_id"),
 		}},
+	})
+}
+
+func registerL2Network(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name: "l2_network_map",
+		Map:  p.Objs.L2NetworkMap,
+		Key: Schema{Fields: []Field{
+			FieldU32Named("vni"),
+		}},
+		Value: Schema{Fields: []Field{
+			FieldU32Named("vpc_id"),
+		}},
+	})
+}
+
+func registerL2Ifindex(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name: "l2_ifindex",
+		Map:  p.Objs.L2Ifindex,
+		Key: Schema{Fields: []Field{
+			FieldU32Named("ifindex"),
+		}},
+		Value: Schema{Fields: []Field{
+			FieldU32Named("vni"),
+		}},
+	})
+}
+
+// registerL2Fdb exposes what every L2Network has learned. It is the
+// `bridge fdb show` of juneau: without it there is no way to ask
+// whether a segment has learned a MAC or is still flooding for it.
+func registerL2Fdb(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name:       "l2_fdb",
+		Map:        p.Objs.L2Fdb,
+		HashOfMaps: true,
+		InnerProto: p.MapSpecs.L2FdbInner,
+		Key: Schema{Fields: []Field{
+			FieldU32Named("vni"),
+		}},
+		Value: Schema{},
+		InnerKey: Schema{Fields: []Field{
+			FieldMACNamed("mac"),
+		}},
+		InnerValue: Schema{Fields: []Field{
+			FieldU32Named("ifindex", "0 means the MAC lives on another node"),
+			// vtep_ip: writer is the data plane, which stores the
+			// host-order number bpf_tunnel_key.remote_ipv4 takes.
+			FieldIPv4Named("vtep_ip", "0 means the MAC is on a local port"),
+			FieldU64Named("last_seen_ns", "CLOCK_MONOTONIC stamp of the last frame"),
+		}},
+	})
+}
+
+func registerL2BumLocal(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name:       "l2_bum_local",
+		Map:        p.Objs.L2BumLocal,
+		HashOfMaps: true,
+		InnerProto: p.MapSpecs.L2BumLocalInner,
+		Key: Schema{Fields: []Field{
+			FieldU32Named("vni"),
+		}},
+		Value:      Schema{},
+		InnerKey:   Schema{Fields: []Field{FieldU32Named("ifindex")}},
+		InnerValue: Schema{Fields: []Field{FieldU8Named("present")}},
+	})
+}
+
+func registerL2BumRemote(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name:       "l2_bum_remote",
+		Map:        p.Objs.L2BumRemote,
+		HashOfMaps: true,
+		InnerProto: p.MapSpecs.L2BumRemoteInner,
+		Key: Schema{Fields: []Field{
+			FieldU32Named("vni"),
+		}},
+		Value:      Schema{},
+		InnerKey:   Schema{Fields: []Field{FieldIPv4Named("vtep_ip")}},
+		InnerValue: Schema{Fields: []Field{FieldU8Named("present")}},
 	})
 }

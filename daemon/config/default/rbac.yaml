@@ -346,3 +346,19 @@ roleRef:
   kind: ClusterRole
   name: cni-daemon-service-viewer-role
   apiGroup: rbac.authorization.k8s.io
+---
+# L2Network view: the L2 reconcilers read status.vni to key the
+# forwarding tables, and the CNI server reads status.mtu to size the
+# veth of a NIC on the segment.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cni-daemon-l2network-viewer-binding
+subjects:
+  - kind: ServiceAccount
+    name: cni-daemon
+    namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: juneau-l2network-viewer-role
+  apiGroup: rbac.authorization.k8s.io

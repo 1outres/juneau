@@ -89,10 +89,12 @@ type podRoute struct {
 }
 
 // attachedInterface is what one attached NIC contributes to the CNI
-// result.
+// result. address is nil for a NIC on an L2Network that hands out no
+// address: the segment carries frames and the workload decides for
+// itself what to put on it, so there is nothing for juneau to report.
 type attachedInterface struct {
 	ifname  string
-	address net.IPNet
+	address *net.IPNet
 	routes  []podRoute
 }
 
@@ -166,18 +168,20 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 		if err != nil {
 			return nil, err
 		}
-		if attached.ifname == req.Ifname {
+		if attached.ifname == req.Ifname && attached.address != nil {
 			primaryAddress = attached.address.String()
 		}
 		res.Interfaces = append(res.Interfaces, &types040.Interface{
 			Name:    attached.ifname,
 			Sandbox: req.Netns,
 		})
-		res.IPs = append(res.IPs, &types040.IPConfig{
-			Version:   "4",
-			Interface: ptr.To(len(res.Interfaces) - 1),
-			Address:   attached.address,
-		})
+		if attached.address != nil {
+			res.IPs = append(res.IPs, &types040.IPConfig{
+				Version:   "4",
+				Interface: ptr.To(len(res.Interfaces) - 1),
+				Address:   *attached.address,
+			})
+		}
 		for _, route := range attached.routes {
 			res.Routes = append(res.Routes, &types.Route{Dst: *route.dst, GW: route.gw})
 		}
@@ -263,15 +267,28 @@ func (c *CNIServer) attachPodInterface(
 	podName := req.Args[PodNameKey]
 	podUID := req.Args[PodUIDKey]
 
-	vethHost, peerHWAddr, err := c.createPodVeth(ifname, index, req, netns, undo)
+	mtu, err := c.podInterfaceMTU(ctx, nwiface)
 	if err != nil {
 		return nil, err
 	}
 
-	ip, ipnet, err := net.ParseCIDR(nwiface.Status.Address)
+	vethHost, peerHWAddr, err := c.createPodVeth(ifname, index, req, netns, mtu, undo)
 	if err != nil {
-		zap.L().Error("failed to parse assigned IP address", zap.Error(err))
-		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to parse assigned IP address", err.Error())
+		return nil, err
+	}
+
+	// A NIC on an L2Network without a CIDR carries no address. It still
+	// gets a veth, and the L2 data plane still forwards its frames; what
+	// it does not get is anything on the CNI result, because the runtime
+	// reads that as the pod's address.
+	var address *net.IPNet
+	if nwiface.Status.Address != "" {
+		ip, ipnet, err := net.ParseCIDR(nwiface.Status.Address)
+		if err != nil {
+			zap.L().Error("failed to parse assigned IP address", zap.Error(err))
+			return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to parse assigned IP address", err.Error())
+		}
+		address = &net.IPNet{IP: ip, Mask: ipnet.Mask}
 	}
 
 	routes := make([]podRoute, 0, len(nwiface.Status.Routes))
@@ -289,17 +306,18 @@ func (c *CNIServer) attachPodInterface(
 		routes = append(routes, podRoute{dst: dst, gw: gw})
 	}
 
-	address := net.IPNet{IP: ip, Mask: ipnet.Mask}
 	if err = netns.Do(func(_ ns.NetNS) error {
 		link, err := netlink.LinkByName(ifname)
 		if err != nil {
 			return fmt.Errorf("failed to find interface %s in netns: %w", ifname, err)
 		}
 
-		if err := netlink.AddrAdd(link, &netlink.Addr{IPNet: &address}); err != nil {
-			return fmt.Errorf("failed to assign IP address to interface %s in netns: %w", ifname, err)
+		if address != nil {
+			if err := netlink.AddrAdd(link, &netlink.Addr{IPNet: address}); err != nil {
+				return fmt.Errorf("failed to assign IP address to interface %s in netns: %w", ifname, err)
+			}
+			zap.S().Debugf("Assigned IP %s to interface %s in netns", nwiface.Status.Address, ifname)
 		}
-		zap.S().Debugf("Assigned IP %s to interface %s in netns", nwiface.Status.Address, ifname)
 
 		for _, route := range routes {
 			if err := netlink.RouteAdd(&netlink.Route{
@@ -370,14 +388,42 @@ func (c *CNIServer) attachPodInterface(
 	return &attachedInterface{ifname: ifname, address: address, routes: routes}, nil
 }
 
+// podInterfaceMTU is the MTU juneau gives one NIC.
+//
+// An L2Network says what its segment carries: a non-IP protocol cannot
+// be fragmented, so a frame that is too big for the overlay disappears
+// without anything to read about it. A Subnet says nothing and the NIC
+// keeps the kernel default — lowering the MTU of every pod on a running
+// cluster is not a change L2 support gets to make on the way past.
+//
+// 0 means "leave the NIC alone".
+func (c *CNIServer) podInterfaceMTU(ctx context.Context, nwiface *juneauv1alpha1.NetworkInterface) (int, error) {
+	if nwiface.Spec.L2Network == "" {
+		return 0, nil
+	}
+
+	var network juneauv1alpha1.L2Network
+	if err := c.cachedClient.Get(ctx, client.ObjectKey{Name: nwiface.Spec.L2Network}, &network); err != nil {
+		zap.L().Error("failed to read the L2Network of a NIC", zap.Error(err))
+		return 0, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to read the L2Network of a NIC", err.Error())
+	}
+	if network.Status.MTU == 0 {
+		return 0, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "The L2Network has not published its MTU yet",
+			fmt.Sprintf("l2Network=%s", nwiface.Spec.L2Network))
+	}
+	return int(network.Status.MTU), nil
+}
+
 // createPodVeth builds the veth pair of one NIC and moves its pod side
 // into the sandbox under the final interface name. It returns the host
-// side and the MAC the pod side ended up with.
+// side and the MAC the pod side ended up with. An mtu of 0 leaves both
+// sides at the kernel default.
 func (c *CNIServer) createPodVeth(
 	ifname string,
 	index int,
 	req *cnipb.CNIRequest,
 	netns ns.NetNS,
+	mtu int,
 	undo *rollback,
 ) (*netlink.Veth, net.HardwareAddr, error) {
 	vethHostName := vethHostName(ifname, req.ContainerId)
@@ -419,6 +465,17 @@ func (c *CNIServer) createPodVeth(
 	if !ok {
 		zap.L().Error("failed to cast veth peer link", zap.String("linkType", reflect.TypeOf(vethPeerTmp).String()))
 		return nil, nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to cast veth peer link", "")
+	}
+
+	// Both ends take the MTU while they are still here: once the peer
+	// has moved into the sandbox it can only be reached from inside it.
+	if mtu > 0 {
+		for _, link := range []netlink.Link{vethHost, vethPeer} {
+			if err := netlink.LinkSetMTU(link, mtu); err != nil {
+				zap.L().Error("failed to set the MTU of a veth", zap.Error(err))
+				return nil, nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to set the MTU of a veth", err.Error())
+			}
+		}
 	}
 
 	if err := netlink.LinkSetUp(vethHost); err != nil {
@@ -521,7 +578,8 @@ func (c *CNIServer) Check(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.
 			return nil, makeError(cnipb.ErrorCode_INTERNAL, "Failed to lookup host-side veth", err.Error())
 		}
 
-		// 4. Pod netns still has the expected interface with the expected IP.
+		// 4. Pod netns still has the expected interface, carrying the
+		// expected IP where the network hands one out.
 		if err := c.verifyPodInterface(req.Netns, ifname, nwif.Status.Address); err != nil {
 			return nil, err
 		}
@@ -532,12 +590,19 @@ func (c *CNIServer) Check(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.
 }
 
 // verifyPodInterface enters the pod netns and checks that the named
-// interface exists and has the expected IPv4 address. Errors are already
-// shaped as gRPC status errors with a cnipb.CNIError detail.
+// interface exists and, where the network hands out an address, that it
+// carries it. An empty expectedAddress is a NIC on an L2Network without
+// a CIDR: the interface still has to be there, and what the workload
+// puts on it is its own business. Errors are already shaped as gRPC
+// status errors with a cnipb.CNIError detail.
 func (c *CNIServer) verifyPodInterface(netnsPath, ifname, expectedAddress string) error {
-	wantIP, _, err := net.ParseCIDR(expectedAddress)
-	if err != nil {
-		return makeError(cnipb.ErrorCode_INTERNAL, "Failed to parse NetworkInterface address", err.Error())
+	var wantIP net.IP
+	if expectedAddress != "" {
+		parsed, _, err := net.ParseCIDR(expectedAddress)
+		if err != nil {
+			return makeError(cnipb.ErrorCode_INTERNAL, "Failed to parse NetworkInterface address", err.Error())
+		}
+		wantIP = parsed
 	}
 
 	netns, err := ns.GetNS(netnsPath)
@@ -550,6 +615,9 @@ func (c *CNIServer) verifyPodInterface(netnsPath, ifname, expectedAddress string
 		link, err := netlink.LinkByName(ifname)
 		if err != nil {
 			return fmt.Errorf("interface %s not found in netns: %w", ifname, err)
+		}
+		if wantIP == nil {
+			return nil
 		}
 		addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
 		if err != nil {

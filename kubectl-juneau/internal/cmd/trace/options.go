@@ -24,11 +24,15 @@ type Options struct {
 	Factory factory.Factory
 
 	// Source / destination flags.
-	SourcePod   string // namespace/name
-	SourceIP    string
-	DestPod     string // namespace/name
-	DestService string // namespace/name
-	DestIP      string
+	SourcePod string // namespace/name
+	SourceIP  string
+	// SourceInterface names which NIC of SourcePod the trace is about.
+	// Empty means the Pod's own address on its primary NIC.
+	SourceInterface string
+	DestPod         string // namespace/name
+	DestService     string // namespace/name
+	DestIP          string
+	DestInterface   string
 
 	Protocol string
 	Port     int32
@@ -74,11 +78,13 @@ func newOptions(f factory.Factory) *Options {
 // AddFlags wires the options onto cobra.
 func (o *Options) AddFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&o.SourcePod, "from-pod", "", "Source Pod (namespace/name).")
-	cmd.Flags().StringVar(&o.SourceIP, "from-ip", "", "Source IPv4 (used when no source Pod is available).")
+	cmd.Flags().StringVar(&o.SourceIP, "from-ip", "", "Source IPv4. On its own it traces a raw address; with --from-pod it says which address of that Pod to trace.")
+	cmd.Flags().StringVar(&o.SourceInterface, "from-interface", "", "NIC of --from-pod to trace (default: the Pod's primary NIC).")
 
 	cmd.Flags().StringVar(&o.DestPod, "to-pod", "", "Destination Pod (namespace/name).")
 	cmd.Flags().StringVar(&o.DestService, "to-service", "", "Destination Service (namespace/name).")
-	cmd.Flags().StringVar(&o.DestIP, "to-ip", "", "Destination IPv4 (used when no Kubernetes object describes the target).")
+	cmd.Flags().StringVar(&o.DestIP, "to-ip", "", "Destination IPv4. On its own it traces a raw address; with --to-pod it says which address of that Pod to trace.")
+	cmd.Flags().StringVar(&o.DestInterface, "to-interface", "", "NIC of --to-pod to trace (default: the Pod's primary NIC).")
 
 	cmd.Flags().StringVar(&o.Protocol, "proto", o.Protocol, "L4 protocol (tcp|udp|icmp).")
 	cmd.Flags().Int32Var(&o.Port, "port", o.Port, "Destination L4 port (required for tcp/udp).")
@@ -145,30 +151,33 @@ func (o *Options) Complete(args []string) error {
 
 // Validate enforces invariants the cobra flags themselves cannot
 // express. Failures here happen before any cluster I/O.
+// A Pod and an address may be given together on either side. The Pod
+// says which network the trace is scoped to and where to inject the
+// probe; the address says which of that Pod's addresses to follow. An
+// L2Network without a CIDR needs both, because juneau hands out no
+// address there and never learns the one the workload picked.
 func (o *Options) Validate() error {
-	srcCount := 0
-	if o.SourcePod != "" {
-		srcCount++
+	if o.SourcePod == "" && o.SourceIP == "" {
+		return fmt.Errorf("--from-pod or --from-ip is required")
 	}
-	if o.SourceIP != "" {
-		srcCount++
-	}
-	if srcCount != 1 {
-		return fmt.Errorf("exactly one of --from-pod / --from-ip is required")
+	if o.SourceInterface != "" && o.SourcePod == "" {
+		return fmt.Errorf("--from-interface names a NIC of --from-pod, so --from-pod is required with it")
 	}
 
-	dstCount := 0
-	if o.DestPod != "" {
-		dstCount++
+	if o.DestPod != "" && o.DestService != "" {
+		return fmt.Errorf("--to-pod and --to-service name two different destinations; pick one")
 	}
-	if o.DestService != "" {
-		dstCount++
+	// A Service is reached at its ClusterIP, and the backend addresses
+	// are read off its EndpointSlices. There is no address left for the
+	// user to choose.
+	if o.DestService != "" && o.DestIP != "" {
+		return fmt.Errorf("--to-service already says which address to trace, so --to-ip cannot be given with it")
 	}
-	if o.DestIP != "" {
-		dstCount++
+	if o.DestPod == "" && o.DestService == "" && o.DestIP == "" {
+		return fmt.Errorf("one of --to-pod / --to-service / --to-ip is required")
 	}
-	if dstCount != 1 {
-		return fmt.Errorf("exactly one of --to-pod / --to-service / --to-ip is required")
+	if o.DestInterface != "" && o.DestPod == "" {
+		return fmt.Errorf("--to-interface names a NIC of --to-pod, so --to-pod is required with it")
 	}
 
 	switch strings.ToLower(o.Protocol) {
