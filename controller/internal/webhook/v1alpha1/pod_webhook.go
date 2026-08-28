@@ -363,6 +363,13 @@ func (v *PodSecurityGroupValidator) validateNIC(ctx context.Context, nic podNIC)
 		return nil, nil, err
 	}
 
+	if len(nic.attachment.SecurityGroups) > 0 && !network.HasGateway &&
+		network.Reference.Kind() == podnetwork.KindL2Network {
+		return network, field.ErrorList{field.Forbidden(nic.path,
+			fmt.Sprintf("a SecurityGroup on interface %q only applies to traffic crossing the gateway of %s; give the segment a spec.gateway or drop the reference",
+				nic.attachment.Interface, network.Reference))}, nil
+	}
+
 	var errs field.ErrorList
 	var resolved []string
 	for i, name := range nic.attachment.SecurityGroups {
@@ -384,7 +391,12 @@ func (v *PodSecurityGroupValidator) validateNIC(ctx context.Context, nic podNIC)
 		resolved = append(resolved, name)
 	}
 
-	if vpc.Spec.EnforceSecurityGroups && len(resolved) == 0 {
+	// A NIC on a segment with no gateway is left out of the rule. It
+	// meets no program that reads policy, so demanding a SecurityGroup
+	// on it would ask for one that could never be consulted — and, with
+	// the check above, could not be named either.
+	policed := network.Reference.Kind() != podnetwork.KindL2Network || network.HasGateway
+	if vpc.Spec.EnforceSecurityGroups && policed && len(resolved) == 0 {
 		errs = append(errs, field.Required(nic.path,
 			fmt.Sprintf("Vpc %q has enforceSecurityGroups=true; interface %q must reference at least one SecurityGroup",
 				vpc.Name, nic.attachment.Interface)))

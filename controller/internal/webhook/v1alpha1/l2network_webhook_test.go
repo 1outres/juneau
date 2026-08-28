@@ -415,6 +415,15 @@ func createWebhookNetworkACLIn(vpcName string) string {
 	return name
 }
 
+func createWebhookSecurityGroupIn(vpcName string) string {
+	name := webhookUniqueTestName("sg")
+	Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.SecurityGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec:       juneauv1alpha1.SecurityGroupSpec{Vpc: vpcName},
+	})).To(Succeed())
+	return name
+}
+
 var _ = Describe("NetworkInterface ↔ L2Network webhook", func() {
 	It("rejects an interface that names neither a Subnet nor an L2Network", func() {
 		iface := newValidNetworkInterface(webhookUniqueTestName("networkinterface"), "", "")
@@ -557,3 +566,36 @@ func leaseL2NetworkAddress(l2Name, address string) {
 		},
 	})).To(Succeed())
 }
+
+var _ = Describe("SecurityGroups on an L2Network NIC", func() {
+	It("rejects a SecurityGroup on a NIC of a segment with no gateway", func() {
+		vpcName := createWebhookVpc()
+		l2Name := webhookUniqueTestName("l2net")
+		l2 := newWebhookL2Network(l2Name, vpcName)
+		l2.Spec.CIDR = "10.230.0.0/24"
+		Expect(webhookK8sClient.Create(context.Background(), l2)).To(Succeed())
+
+		iface := newValidNetworkInterface(webhookUniqueTestName("networkinterface"), "", "")
+		iface.Spec.L2Network = l2Name
+		iface.Spec.SecurityGroups = []string{createWebhookSecurityGroupIn(vpcName)}
+
+		err := webhookK8sClient.Create(context.Background(), iface)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("only applies to traffic crossing the gateway"))
+	})
+
+	It("accepts a SecurityGroup once the segment has a gateway", func() {
+		vpcName := createWebhookVpc()
+		l2Name := webhookUniqueTestName("l2net")
+		l2 := newWebhookL2Network(l2Name, vpcName)
+		l2.Spec.CIDR = "10.231.0.0/24"
+		l2.Spec.Gateway = &juneauv1alpha1.L2NetworkGateway{}
+		Expect(webhookK8sClient.Create(context.Background(), l2)).To(Succeed())
+
+		iface := newValidNetworkInterface(webhookUniqueTestName("networkinterface"), "", "")
+		iface.Spec.L2Network = l2Name
+		iface.Spec.SecurityGroups = []string{createWebhookSecurityGroupIn(vpcName)}
+
+		Expect(webhookK8sClient.Create(context.Background(), iface)).To(Succeed())
+	})
+})

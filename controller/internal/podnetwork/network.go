@@ -142,6 +142,12 @@ type Network struct {
 	// Gateway is the address a NIC on this network routes through.
 	// Empty when the network has no gateway.
 	Gateway string
+
+	// HasGateway says whether the network declares a gateway at all.
+	// It is read from the spec rather than from Gateway, which the
+	// controller fills in a moment later: an admission check that waited
+	// for status would reject a NIC created right after the network.
+	HasGateway bool
 }
 
 // AllocatesAddresses reports whether the network hands out addresses.
@@ -192,19 +198,21 @@ func ResolveOptional(ctx context.Context, reader client.Reader, ref Reference) (
 
 func fromSubnet(subnet *juneauv1alpha1.Subnet) *Network {
 	return &Network{
-		Reference: Reference{Subnet: subnet.Name},
-		Vpc:       subnet.Spec.Vpc,
-		CIDR:      subnet.Spec.CIDR,
-		Gateway:   subnet.Status.Gateway,
+		Reference:  Reference{Subnet: subnet.Name},
+		Vpc:        subnet.Spec.Vpc,
+		CIDR:       subnet.Spec.CIDR,
+		Gateway:    subnet.Status.Gateway,
+		HasGateway: true,
 	}
 }
 
 func fromL2Network(l2 *juneauv1alpha1.L2Network) *Network {
 	return &Network{
-		Reference: Reference{L2Network: l2.Name},
-		Vpc:       l2.Spec.Vpc,
-		CIDR:      l2.Spec.CIDR,
-		Gateway:   l2.Status.Gateway,
+		Reference:  Reference{L2Network: l2.Name},
+		Vpc:        l2.Spec.Vpc,
+		CIDR:       l2.Spec.CIDR,
+		Gateway:    l2.Status.Gateway,
+		HasGateway: l2.Spec.Gateway != nil,
 	}
 }
 

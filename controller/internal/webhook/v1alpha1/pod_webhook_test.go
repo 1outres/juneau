@@ -833,7 +833,10 @@ var _ = Describe("Pod NIC on an L2Network", func() {
 	It("rejects a SecurityGroup from a Vpc other than the one of the L2Network", func() {
 		primary := customSubnetFixture()
 		other := customSubnetFixture()
-		l2Name := createPodWebhookL2Network(primary.Spec.Vpc, "")
+		// The segment needs a gateway, or the NIC is rejected for
+		// naming a SecurityGroup that could never be consulted before
+		// the Vpc of that group is ever looked at.
+		l2Name := createPodWebhookGatewayL2Network(primary.Spec.Vpc)
 		sgName := createPodWebhookSecurityGroup(other.Spec.Vpc)
 
 		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
@@ -888,6 +891,22 @@ func createPodWebhookL2Network(vpcName, cidr string) string {
 	name := webhookUniqueTestName("l2net")
 	l2 := newWebhookL2Network(name, vpcName)
 	l2.Spec.CIDR = cidr
+	Expect(webhookK8sClient.Create(context.Background(), l2)).To(Succeed())
+	DeferCleanup(func() {
+		_ = webhookK8sClient.Delete(context.Background(), &juneauv1alpha1.L2Network{ObjectMeta: metav1.ObjectMeta{Name: name}})
+	})
+	return name
+}
+
+// createPodWebhookGatewayL2Network builds a segment that can carry a
+// SecurityGroup: one with a CIDR and a gateway for the rules to be read
+// at.
+func createPodWebhookGatewayL2Network(vpcName string) string {
+	GinkgoHelper()
+	name := webhookUniqueTestName("l2net")
+	l2 := newWebhookL2Network(name, vpcName)
+	l2.Spec.CIDR = fmt.Sprintf("10.%d.0.0/24", time.Now().UnixNano()%20+232)
+	l2.Spec.Gateway = &juneauv1alpha1.L2NetworkGateway{}
 	Expect(webhookK8sClient.Create(context.Background(), l2)).To(Succeed())
 	DeferCleanup(func() {
 		_ = webhookK8sClient.Delete(context.Background(), &juneauv1alpha1.L2Network{ObjectMeta: metav1.ObjectMeta{Name: name}})

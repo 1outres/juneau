@@ -280,6 +280,22 @@ func validateNetworkInterfaceAllocationIdentity(identity string, path *field.Pat
 	return errs
 }
 
+// validateSecurityGroupsNeedAGateway rejects a SecurityGroup on a NIC
+// of an L2Network that has no gateway.
+//
+// A SecurityGroup is read where a packet crosses a program that
+// evaluates policy, and on a segment that is only ever the gateway
+// port. Without one nothing on the segment is ever judged, so the
+// rules would look configured and filter nothing. This is the same
+// rule spec.networkACL follows on the segment itself.
+func validateSecurityGroupsNeedAGateway(network *podnetwork.Network, path *field.Path) field.ErrorList {
+	if network == nil || network.Reference.Kind() != podnetwork.KindL2Network || network.HasGateway {
+		return nil
+	}
+	return field.ErrorList{field.Forbidden(path,
+		fmt.Sprintf("a SecurityGroup on a NIC of %s only applies to traffic crossing the gateway; give the segment a spec.gateway or drop the reference", network.Reference))}
+}
+
 // validateNetworkInterfaceSecurityGroups checks that every entry in
 // spec.securityGroups names a SecurityGroup that (a) exists, (b)
 // belongs to the same Vpc as the network the NetworkInterface joins,
@@ -294,6 +310,10 @@ func validateNetworkInterfaceSecurityGroups(ctx context.Context, c client.Reader
 	}
 
 	var errs field.ErrorList
+
+	if errs := validateSecurityGroupsNeedAGateway(network, path); len(errs) > 0 {
+		return errs, nil
+	}
 
 	seen := make(map[string]int, len(iface.Spec.SecurityGroups))
 	for i, name := range iface.Spec.SecurityGroups {

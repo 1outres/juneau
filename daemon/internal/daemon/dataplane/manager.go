@@ -489,6 +489,11 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 				return fmt.Errorf("watch SecurityGroup (sg-membership fan-out): %w", err)
 			}
 		}
+		if m.l2NetworkInformer != nil {
+			if err := m.sgMembershipRunner.WatchFanOut(m.l2NetworkInformer, mem.FanOutL2NetworkToInterfaces); err != nil {
+				return fmt.Errorf("watch L2Network (sg-membership fan-out): %w", err)
+			}
+		}
 		m.sgMembershipRunner.Start(ctx, 1)
 	}
 
