@@ -1,14 +1,20 @@
 package program_test
 
 import (
+	"context"
 	"net"
 	"testing"
 
 	"github.com/cilium/ebpf"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	bpf "github.com/1outres/juneau/daemon/internal/daemon/bpf"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/bpftest"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/l2"
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/reconciler"
 )
 
 // testVNI is the segment every L2 test builds. Any non-zero number
@@ -29,9 +35,15 @@ type l2Segment struct {
 	arp       *l2.Table
 }
 
-// newL2Segment loads one generated object, builds the three per-VNI
-// tables through the same code the daemon uses, and declares testVNI
-// an L2Network.
+// newL2Segment loads one generated object and brings testVNI up as an
+// L2Network.
+//
+// The tables are not built here. The reconciler the daemon runs is
+// handed the same map handles and asked to reconcile an L2Network, so
+// the segment these tests drive is built by the code that builds a real
+// one. A table the reconciler stops creating then shows up as a failing
+// program test rather than as traffic disappearing on a cluster, which
+// is how the missing l2_arp table got out.
 func newL2Segment(t *testing.T, load func() (*ebpf.CollectionSpec, error)) *l2Segment {
 	t.Helper()
 
@@ -51,18 +63,44 @@ func newL2Segment(t *testing.T, load func() (*ebpf.CollectionSpec, error)) *l2Se
 		}
 	})
 
-	for _, table := range []*l2.Table{seg.fdb, seg.bumLocal, seg.bumRemote, seg.arp} {
-		if err := table.Ensure(testVNI); err != nil {
-			t.Fatalf("build a per-VNI table: %v", err)
-		}
+	scheme := runtime.NewScheme()
+	if err := juneauv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("build the scheme: %v", err)
+	}
+	client := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(
+		&juneauv1alpha1.Vpc{
+			ObjectMeta: metav1.ObjectMeta{Name: "lab-vpc"},
+			Status:     juneauv1alpha1.VpcStatus{VpcID: testVpcID},
+		},
+		&juneauv1alpha1.L2Network{
+			ObjectMeta: metav1.ObjectMeta{Name: "lab-net"},
+			Spec:       juneauv1alpha1.L2NetworkSpec{Vpc: "lab-vpc"},
+			Status:     juneauv1alpha1.L2NetworkStatus{VNI: testVNI},
+		},
+	).Build()
+
+	network := reconciler.NewL2Network(client, objs.Map(t, "l2_network_map"),
+		seg.fdb, seg.bumLocal, seg.bumRemote, seg.arp)
+	if err := network.Reconcile(context.Background(), "lab-net"); err != nil {
+		t.Fatalf("bring the segment up: %v", err)
 	}
 
-	if err := objs.Map(t, "l2_network_map").Update(
-		&bpf.PodEgressL2NetworkKey{Vni: testVNI},
-		&bpf.PodEgressL2NetworkVal{VpcId: testVpcID},
-		ebpf.UpdateAny,
-	); err != nil {
-		t.Fatalf("declare the L2Network: %v", err)
+	// Said out loud rather than left to whichever test happens to read
+	// the table that is missing. A table the reconciler forgot is a
+	// segment that silently loses one kind of traffic.
+	for name, table := range map[string]*l2.Table{
+		"l2_fdb":        seg.fdb,
+		"l2_bum_local":  seg.bumLocal,
+		"l2_bum_remote": seg.bumRemote,
+		"l2_arp":        seg.arp,
+	} {
+		built := false
+		table.ForEachInner(func(vni uint32, _ *ebpf.Map) {
+			built = built || vni == testVNI
+		})
+		if !built {
+			t.Fatalf("the reconciler brought the segment up without %s", name)
+		}
 	}
 	return seg
 }
