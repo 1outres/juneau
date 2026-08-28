@@ -59,6 +59,13 @@ func (r *Arp) Reconcile(ctx context.Context, key string) error {
 	if err != nil {
 		return err
 	}
+
+	if nwep.Spec.Subnet == "" {
+		// An endpoint on an L2Network is left alone: that data plane
+		// learns its own entries, and a controller-written one would be
+		// overwritten by the next frame anyway.
+		return r.delete(key)
+	}
 	return r.upsert(ctx, key, &nwep)
 }
 
