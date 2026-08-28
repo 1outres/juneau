@@ -112,6 +112,8 @@ type Manager struct {
 	affinityGCDone   chan struct{}
 
 	podAttacher *link.PodAttacher
+	fib         *reconciler.Fib
+	tgwFib      *reconciler.TgwFib
 
 	l2Fdb       *l2.Table
 	l2BumLocal  *l2.Table
@@ -119,8 +121,6 @@ type Manager struct {
 
 	l2FdbGCCancel context.CancelFunc
 	l2FdbGCDone   chan struct{}
-	fib         *reconciler.Fib
-	tgwFib      *reconciler.TgwFib
 
 	nodeName           string
 	vxlanIfindex       int
