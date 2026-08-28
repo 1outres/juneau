@@ -162,13 +162,13 @@ traceが拾えるのはIPv4のフレームだけです。TraceSessionはIPv4の5
 ```
 OK   pod_egress: tc_pod_egress processed 581483 insns (limit 1000000, 58.1% used)
 OK   pod_ingress: tc_pod_ingress processed 101533 insns (limit 1000000, 10.2% used)
-OK   vxlan_ingress: tc_vxlan_ingress_entry processed 4957 insns (limit 1000000, 0.5% used)
+OK   vxlan_ingress: tc_vxlan_ingress_entry processed 5045 insns (limit 1000000, 0.5% used)
 OK   node_ingress: tc_node_ingress processed 70965 insns (limit 1000000, 7.1% used)
-OK   l2_egress: tc_l2_egress processed 2489 insns (limit 1000000, 0.2% used)
+OK   l2_egress: tc_l2_egress processed 2638 insns (limit 1000000, 0.3% used)
 OK   l2_ingress: tc_l2_ingress processed 511 insns (limit 1000000, 0.1% used)
 ```
 
-`vxlan_ingress`はL2分岐を入れる前が3,760命令(0.4%)でした。増えたのは1,197命令です。`pod_egress`は581,483命令のまま変わっていません。
+`vxlan_ingress`はL2分岐を入れる前が3,760命令(0.4%)でした。増えたのは1,285命令です。`pod_egress`は581,483命令のまま変わっていません。
 
 `bpf/`の下を触ったらこれを回してください。命令数が上限を超えてもコンパイラは何も言わず、次に分かるのはdaemonがcrashloopに入ったときです。実行にはrootとマウント済みのbpffsが要ります。
 

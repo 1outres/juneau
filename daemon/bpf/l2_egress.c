@@ -88,11 +88,12 @@ static __always_inline int handle(struct __sk_buff *skb) {
                            in_ifindex);
 
   if (!l2_is_bum(dst_mac)) {
-    int rc = l2_forward_unicast(skb, table, dst_mac, vni);
+    struct l2_forward forwarded = {};
+    int rc = l2_forward_unicast(skb, table, dst_mac, vni, &forwarded);
     if (rc >= 0) {
-      trace_emit_redirect_l3(skb, __trace_id, TRACE_REASON_REDIRECT_IFINDEX,
+      trace_emit_redirect_l3(skb, __trace_id, forwarded.reason,
                              TRACE_HOOK_L2_EGRESS, TRACE_SCOPE_VPC, vpc_id, vni,
-                             0);
+                             forwarded.target_ifindex);
       return rc;
     }
     trace_emit_map_miss_l3(skb, __trace_id, TRACE_REASON_MISS_L2_FDB,

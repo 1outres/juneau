@@ -61,6 +61,10 @@ static __always_inline struct l2_fdb_inner_map *l2_fdb_for(__u32 vni) {
 // l2_learn records where a source MAC lives. ifindex names a local
 // veth and vtep_ip a remote node; the caller sets exactly one.
 //
+// A frame that names neither is not recorded. Every reader of the
+// table takes an entry as a place to send to, so an entry that names
+// nowhere would turn a flood into a black hole.
+//
 // A MAC that moves is followed straight away: the entry is overwritten
 // the moment the first frame arrives from its new place. A MAC that
 // stays only has its last_seen_ns refreshed, and only once every
@@ -71,6 +75,9 @@ static __always_inline struct l2_fdb_inner_map *l2_fdb_for(__u32 vni) {
 static __always_inline int l2_learn(struct l2_fdb_inner_map *table,
                                     const __u8 *mac, __u32 ifindex,
                                     __u32 vtep_ip) {
+  if (ifindex == 0 && vtep_ip == 0)
+    return 0;
+
   struct l2_fdb_key key = {};
   __builtin_memcpy(key.mac, mac, ETH_ALEN);
 
@@ -170,12 +177,21 @@ static __always_inline __u32 l2_flood(struct __sk_buff *skb, __u32 vni,
   return fctx.copies;
 }
 
+// l2_forward is what l2_forward_unicast tells the caller about the
+// hand-off it made, so the trace event says which way the frame went
+// and to which device.
+struct l2_forward {
+  __u32 reason;
+  __u32 target_ifindex;
+};
+
 // l2_forward_unicast sends the frame to the one port that holds the
 // destination MAC. Returns the TC verdict, or -1 when the MAC is not
 // in the table and the caller has to flood instead.
 static __always_inline int l2_forward_unicast(struct __sk_buff *skb,
                                               struct l2_fdb_inner_map *table,
-                                              const __u8 *dst_mac, __u32 vni) {
+                                              const __u8 *dst_mac, __u32 vni,
+                                              struct l2_forward *out) {
   struct l2_fdb_key key = {};
   __builtin_memcpy(key.mac, dst_mac, ETH_ALEN);
 
@@ -183,8 +199,11 @@ static __always_inline int l2_forward_unicast(struct __sk_buff *skb,
   if (!entry)
     return -1;
 
-  if (entry->ifindex != 0)
+  if (entry->ifindex != 0) {
+    out->reason = TRACE_REASON_REDIRECT_IFINDEX;
+    out->target_ifindex = entry->ifindex;
     return bpf_redirect(entry->ifindex, 0);
+  }
 
   __u32 vx_key = 0;
   const __u32 *vx_if = bpf_map_lookup_elem(&vxlan_ifindex, &vx_key);
@@ -198,6 +217,8 @@ static __always_inline int l2_forward_unicast(struct __sk_buff *skb,
   if (bpf_skb_set_tunnel_key(skb, &tkey, sizeof(tkey), 0) < 0)
     return TC_ACT_SHOT;
 
+  out->reason = TRACE_REASON_REDIRECT_VXLAN;
+  out->target_ifindex = *vx_if;
   return bpf_redirect(*vx_if, 0);
 }
 

@@ -66,11 +66,12 @@ static __always_inline int handle_l2_overlay(struct __sk_buff *skb,
                            vni, remote_vtep);
 
   if (!l2_is_bum(dst_mac)) {
-    int rc = l2_forward_unicast(skb, table, dst_mac, vni);
+    struct l2_forward forwarded = {};
+    int rc = l2_forward_unicast(skb, table, dst_mac, vni, &forwarded);
     if (rc >= 0) {
-      trace_emit_redirect_l3(skb, __trace_id, TRACE_REASON_REDIRECT_IFINDEX,
+      trace_emit_redirect_l3(skb, __trace_id, forwarded.reason,
                              TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC, vpc_id,
-                             vni, 0);
+                             vni, forwarded.target_ifindex);
       return rc;
     }
     trace_emit_map_miss_l3(skb, __trace_id, TRACE_REASON_MISS_L2_FDB,
