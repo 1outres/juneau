@@ -54,6 +54,7 @@ nav:
   - Resources:
     - VPC: resources/vpc.md
     - Subnet: resources/subnet.md
+    - L2Network: resources/l2network.md
     - RouteTable: resources/routetable.md
     - VpcPeering: resources/vpcpeering.md
     - TransitGateway: resources/transitgateway.md
