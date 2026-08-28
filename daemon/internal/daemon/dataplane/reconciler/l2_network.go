@@ -20,7 +20,7 @@ import (
 //
 // l2_network_map is what tells vxlan_ingress that a VNI belongs to an
 // L2Network rather than to a Subnet, so it decides which of the two
-// data planes an arriving frame takes. The three tables beside it hold
+// data planes an arriving frame takes. The four tables beside it hold
 // what the L2 programs learn and flood to; this reconciler creates
 // them when the network appears and drops them when it goes away, but
 // never writes an entry into l2_fdb. Learning is the data plane's
@@ -32,6 +32,7 @@ type L2Network struct {
 	fdb        l2NetworkTable
 	bumLocal   l2NetworkTable
 	bumRemote  l2NetworkTable
+	arp        l2NetworkTable
 
 	mu        sync.Mutex
 	snapshots map[string]l2NetworkSnapshot
@@ -44,13 +45,14 @@ type l2NetworkSnapshot struct {
 	vni uint32
 }
 
-func NewL2Network(cl client.Client, networkMap bpfMap, fdb, bumLocal, bumRemote l2NetworkTable) *L2Network {
+func NewL2Network(cl client.Client, networkMap bpfMap, fdb, bumLocal, bumRemote, arp l2NetworkTable) *L2Network {
 	return &L2Network{
 		client:     cl,
 		networkMap: networkMap,
 		fdb:        fdb,
 		bumLocal:   bumLocal,
 		bumRemote:  bumRemote,
+		arp:        arp,
 		snapshots:  make(map[string]l2NetworkSnapshot),
 	}
 }
@@ -112,12 +114,12 @@ func (r *L2Network) upsert(ctx context.Context, network *juneauv1alpha1.L2Networ
 	return nil
 }
 
-// ensureTables builds the three per-VNI tables. They are created
+// ensureTables builds the four per-VNI tables. They are created
 // together because the data plane treats a network with only some of
 // them as broken: a frame that finds no flood list is dropped without
-// anything saying which of the three was missing.
+// anything saying which of the four was missing.
 func (r *L2Network) ensureTables(vni uint32) error {
-	for _, table := range []l2NetworkTable{r.fdb, r.bumLocal, r.bumRemote} {
+	for _, table := range []l2NetworkTable{r.fdb, r.bumLocal, r.bumRemote, r.arp} {
 		if err := table.Ensure(vni); err != nil {
 			return err
 		}
@@ -145,7 +147,7 @@ func (r *L2Network) release(vni uint32) error {
 		!errors.Is(err, ebpf.ErrKeyNotExist) {
 		return fmt.Errorf("delete L2NetworkMap: %w", err)
 	}
-	for _, table := range []l2NetworkTable{r.fdb, r.bumLocal, r.bumRemote} {
+	for _, table := range []l2NetworkTable{r.fdb, r.bumLocal, r.bumRemote, r.arp} {
 		if err := table.Delete(vni); err != nil {
 			return err
 		}

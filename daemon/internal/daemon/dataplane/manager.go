@@ -121,6 +121,7 @@ type Manager struct {
 	l2Fdb       *l2.Table
 	l2BumLocal  *l2.Table
 	l2BumRemote *l2.Table
+	l2Arp       *l2.Table
 
 	l2FdbGCCancel context.CancelFunc
 	l2FdbGCDone   chan struct{}
@@ -206,6 +207,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.l2Fdb = l2.NewTable("fdb", m.l2Egress.Objs.L2Fdb, m.l2Egress.MapSpecs.L2FdbInner)
 	m.l2BumLocal = l2.NewTable("bum-local", m.l2Egress.Objs.L2BumLocal, m.l2Egress.MapSpecs.L2BumLocalInner)
 	m.l2BumRemote = l2.NewTable("bum-remote", m.l2Egress.Objs.L2BumRemote, m.l2Egress.MapSpecs.L2BumRemoteInner)
+	m.l2Arp = l2.NewTable("arp", m.l2Egress.Objs.L2Arp, m.l2Egress.MapSpecs.L2ArpInner)
 
 	// Build the BPF map inventory used by the debug RPCs. All maps
 	// are LIBBPF_PIN_BY_NAME so the pod_egress handles transitively
@@ -598,7 +600,7 @@ func (m *Manager) startL2Reconcilers(ctx context.Context) error {
 	}
 
 	network := reconciler.NewL2Network(m.client, m.l2Egress.Objs.L2NetworkMap,
-		m.l2Fdb, m.l2BumLocal, m.l2BumRemote)
+		m.l2Fdb, m.l2BumLocal, m.l2BumRemote, m.l2Arp)
 	m.l2NetworkRunner = runner.New(network)
 	if err := m.l2NetworkRunner.Watch(m.l2NetworkInformer, runner.MetaNamespaceKey); err != nil {
 		return fmt.Errorf("watch L2Network: %w", err)
@@ -882,7 +884,7 @@ func (m *Manager) Stop() error {
 		}
 	}
 
-	for _, table := range []*l2.Table{m.l2Fdb, m.l2BumLocal, m.l2BumRemote} {
+	for _, table := range []*l2.Table{m.l2Fdb, m.l2BumLocal, m.l2BumRemote, m.l2Arp} {
 		if table == nil {
 			continue
 		}

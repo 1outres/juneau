@@ -104,16 +104,16 @@ func newL2TestNetwork(vni uint32) *juneauv1alpha1.L2Network {
 	}
 }
 
-func newL2NetworkFixture(t *testing.T, objs ...runtime.Object) (*L2Network, *fakeBpfMap, *fakeL2Table, *fakeL2Table, *fakeL2Table) {
+func newL2NetworkFixture(t *testing.T, objs ...runtime.Object) (*L2Network, *fakeBpfMap, *fakeL2Table, *fakeL2Table, *fakeL2Table, *fakeL2Table) {
 	t.Helper()
 	cl := fake.NewClientBuilder().WithScheme(newNatTestScheme(t)).WithRuntimeObjects(objs...).Build()
 	networkMap := newFakeBpfMap()
-	fdb, local, remote := newFakeL2Table(), newFakeL2Table(), newFakeL2Table()
-	return NewL2Network(cl, networkMap, fdb, local, remote), networkMap, fdb, local, remote
+	fdb, local, remote, arp := newFakeL2Table(), newFakeL2Table(), newFakeL2Table(), newFakeL2Table()
+	return NewL2Network(cl, networkMap, fdb, local, remote, arp), networkMap, fdb, local, remote, arp
 }
 
 func TestL2NetworkClaimsItsVniAndBuildsItsTables(t *testing.T) {
-	r, networkMap, fdb, local, remote := newL2NetworkFixture(t, newL2TestNetwork(4242), newL2TestVpc())
+	r, networkMap, fdb, local, remote, arp := newL2NetworkFixture(t, newL2TestNetwork(4242), newL2TestVpc())
 
 	if err := r.Reconcile(context.Background(), "lab-net"); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -126,7 +126,7 @@ func TestL2NetworkClaimsItsVniAndBuildsItsTables(t *testing.T) {
 	if want := (bpf.PodEgressL2NetworkVal{VpcId: 11}); got != want {
 		t.Errorf("l2_network_map value = %+v, want %+v", got, want)
 	}
-	for name, table := range map[string]*fakeL2Table{"fdb": fdb, "bum-local": local, "bum-remote": remote} {
+	for name, table := range map[string]*fakeL2Table{"fdb": fdb, "bum-local": local, "bum-remote": remote, "arp": arp} {
 		if !table.has(4242) {
 			t.Errorf("%s has no table for VNI 4242", name)
 		}
@@ -137,7 +137,7 @@ func TestL2NetworkClaimsItsVniAndBuildsItsTables(t *testing.T) {
 // data plane keys is keyed by it. Programming anything before it lands
 // would write under VNI 0, which is no network at all.
 func TestL2NetworkWaitsForItsVni(t *testing.T) {
-	r, networkMap, fdb, _, _ := newL2NetworkFixture(t, newL2TestNetwork(0), newL2TestVpc())
+	r, networkMap, fdb, _, _, _ := newL2NetworkFixture(t, newL2TestNetwork(0), newL2TestVpc())
 
 	if err := r.Reconcile(context.Background(), "lab-net"); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -152,7 +152,7 @@ func TestL2NetworkWaitsForItsVni(t *testing.T) {
 }
 
 func TestL2NetworkDropsItsTablesWhenTheNetworkGoesAway(t *testing.T) {
-	r, networkMap, fdb, local, remote := newL2NetworkFixture(t, newL2TestNetwork(4242), newL2TestVpc())
+	r, networkMap, fdb, local, remote, arp := newL2NetworkFixture(t, newL2TestNetwork(4242), newL2TestVpc())
 
 	if err := r.Reconcile(context.Background(), "lab-net"); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -170,7 +170,7 @@ func TestL2NetworkDropsItsTablesWhenTheNetworkGoesAway(t *testing.T) {
 	if len(networkMap.entries) != 0 {
 		t.Errorf("l2_network_map still holds %v", networkMap.entries)
 	}
-	for name, table := range map[string]*fakeL2Table{"fdb": fdb, "bum-local": local, "bum-remote": remote} {
+	for name, table := range map[string]*fakeL2Table{"fdb": fdb, "bum-local": local, "bum-remote": remote, "arp": arp} {
 		if table.has(4242) {
 			t.Errorf("%s still holds a table for a network that is gone", name)
 		}
