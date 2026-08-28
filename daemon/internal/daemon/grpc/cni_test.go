@@ -111,12 +111,19 @@ func TestCheckPodInterfacesAllocated(t *testing.T) {
 		t.Fatalf("error should name the NIC that is not ready, got %v", err)
 	}
 
+}
+
+// An L2Network without a CIDR hands out no address, and a NIC on one is
+// allocated as soon as the controller says so. Holding the sandbox back
+// for an address that is never coming would leave the pod in
+// ContainerCreating for good.
+func TestCheckPodInterfacesAllocatedAcceptsAnExtraNicWithoutAnAddress(t *testing.T) {
 	addressless := []juneauv1alpha1.NetworkInterface{
 		podInterface("eth0", "10.18.0.5/24", true),
 		podInterface("eth1", "", true),
 	}
-	if err := checkPodInterfacesAllocated(orderPodInterfaces(addressless, "eth0")); err == nil {
-		t.Fatal("expected an error while one NIC has no address")
+	if err := checkPodInterfacesAllocated(orderPodInterfaces(addressless, "eth0")); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
