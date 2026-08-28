@@ -38,3 +38,15 @@ func LastAddr(p netip.Prefix) netip.Addr {
 	}
 	return netip.AddrFrom16(bs)
 }
+
+// FirstAddr returns the first address after the network address of the
+// prefix — the `.1` of an IPv4 /24. A prefix with no room for one (a /31
+// or a /32) has no such address, so the second return is false.
+func FirstAddr(p netip.Prefix) (netip.Addr, bool) {
+	masked := p.Masked()
+	addr := masked.Addr().Next()
+	if !addr.IsValid() || !masked.Contains(addr) {
+		return netip.Addr{}, false
+	}
+	return addr, true
+}

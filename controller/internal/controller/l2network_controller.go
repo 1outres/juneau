@@ -19,7 +19,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/netip"
 	"reflect"
 	"time"
@@ -136,7 +135,7 @@ func (r *L2NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	desired.MTU = r.effectiveMTU(&resource)
 
-	gateway, err := resolveL2NetworkGateway(&resource)
+	gateway, err := podnetwork.L2NetworkGatewayAddress(&resource)
 	if err != nil {
 		if updateErr := r.updateStatus(ctx, &resource, *desired, metav1.ConditionFalse, l2NetworkReasonReconcileFailed, err.Error()); updateErr != nil {
 			return ctrl.Result{}, updateErr
@@ -254,22 +253,6 @@ func (r *L2NetworkReconciler) effectiveMTU(resource *juneauv1alpha1.L2Network) i
 		return r.DefaultMTU
 	}
 	return DefaultL2NetworkMTU
-}
-
-// resolveL2NetworkGateway returns the address the gateway port answers
-// on, or the empty string when the segment declares no gateway.
-func resolveL2NetworkGateway(resource *juneauv1alpha1.L2Network) (string, error) {
-	if resource.Spec.Gateway == nil {
-		return "", nil
-	}
-	if resource.Spec.Gateway.Address != "" {
-		return resource.Spec.Gateway.Address, nil
-	}
-	_, cidr, err := net.ParseCIDR(resource.Spec.CIDR)
-	if err != nil {
-		return "", fmt.Errorf("spec.gateway needs a parsable spec.cidr to take its address from: %w", err)
-	}
-	return nextGateway(cidr), nil
 }
 
 // ensureIPAllocationPool maintains the per-L2Network AllocationPool that

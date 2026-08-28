@@ -104,6 +104,7 @@ var _ = BeforeSuite(func() {
 	Expect(SetupRouteTableWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupAllocationPoolWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupAllocationClaimWebhookWithManager(mgr)).To(Succeed())
+	Expect(SetupAllocationLeaseWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupBGPAdvertisementWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupARPAdvertisementWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupBGPPeerWebhookWithManager(mgr)).To(Succeed())

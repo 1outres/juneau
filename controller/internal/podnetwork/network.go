@@ -23,11 +23,13 @@ package podnetwork
 import (
 	"context"
 	"fmt"
+	"net/netip"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	"github.com/1outres/juneau/controller/internal/addressrange"
 )
 
 const (
@@ -204,4 +206,31 @@ func fromL2Network(l2 *juneauv1alpha1.L2Network) *Network {
 		CIDR:      l2.Spec.CIDR,
 		Gateway:   l2.Status.Gateway,
 	}
+}
+
+// L2NetworkGatewayAddress is the address the gateway port of a segment
+// answers on: spec.gateway.address when the user pinned one, the first
+// address of spec.cidr otherwise. The empty string means the segment
+// declares no gateway at all.
+//
+// The controller publishes the result in status and the admission
+// webhook checks it against the addresses the segment has already
+// handed out, so both have to read the same rule out of the same spec.
+func L2NetworkGatewayAddress(l2 *juneauv1alpha1.L2Network) (string, error) {
+	if l2.Spec.Gateway == nil {
+		return "", nil
+	}
+	if l2.Spec.Gateway.Address != "" {
+		return l2.Spec.Gateway.Address, nil
+	}
+
+	prefix, err := netip.ParsePrefix(l2.Spec.CIDR)
+	if err != nil {
+		return "", fmt.Errorf("spec.gateway needs a parsable spec.cidr to take its address from: %w", err)
+	}
+	addr, ok := addressrange.FirstAddr(prefix)
+	if !ok {
+		return "", fmt.Errorf("spec.cidr %q has no address for a gateway to answer on", l2.Spec.CIDR)
+	}
+	return addr.String(), nil
 }
