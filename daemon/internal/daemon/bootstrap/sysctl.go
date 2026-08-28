@@ -14,15 +14,22 @@ const juneauSysctlDropInDir = "/run/sysctl.d"
 // so systemd-sysctl's last-write-wins pass keeps our rp_filter=0.
 const juneauSysctlDropInPath = juneauSysctlDropInDir + "/60-juneau.conf"
 
+// podVethSysctlGlob matches the host side of every pod NIC, named
+// "<ifname>+<container id>". A pod can carry more than one NIC, so the
+// pattern keys off the '+' the CNI server puts in the name rather than
+// off a fixed interface name. Host NICs never carry a '+', which is what
+// keeps their own settings out of reach.
+const podVethSysctlGlob = "*+*"
+
 // juneauSysctlDropInBody undoes 50-default.conf's
 // net.ipv4.conf.*.rp_filter=2 for juneau CNI veths. Without it the
 // systemd-sysctl run udev triggers on every net-device add races with
 // PodAttacher's per-iface write, dropping handle_service_host_local
 // packets as martian source.
-const juneauSysctlDropInBody = `# Managed by juneau-cni-daemon.
-net.ipv4.conf.eth0+*.rp_filter = 0
-net.ipv4.conf.eth0+*.accept_local = 1
-`
+var juneauSysctlDropInBody = fmt.Sprintf(`# Managed by juneau-cni-daemon.
+net.ipv4.conf.%[1]s.rp_filter = 0
+net.ipv4.conf.%[1]s.accept_local = 1
+`, podVethSysctlGlob)
 
 func ConfigureSysctl() error {
 	if err := InstallSysctlDropIn(); err != nil {
