@@ -130,7 +130,7 @@ func (r *L2Gateway) Reconcile(ctx context.Context, key string) error {
 	if port == nil {
 		return r.teardown(key)
 	}
-	return r.stand(ctx, key, &network, port)
+	return r.stand(key, &network, port)
 }
 
 // l2GatewayPortSpec is the port a segment asks this node for, read off
@@ -247,9 +247,7 @@ func (r *L2Gateway) holdsAPort(ctx context.Context, name string) (bool, error) {
 // programs come first, then the tables the programs read, and
 // l2_gateway last: that is the entry a route follows, so until it is
 // there nothing sends a packet to a port that is not ready for one.
-func (r *L2Gateway) stand(ctx context.Context, key string, network *juneauv1alpha1.L2Network, port *l2GatewayPortSpec) error {
-	_ = ctx
-
+func (r *L2Gateway) stand(key string, network *juneauv1alpha1.L2Network, port *l2GatewayPortSpec) error {
 	ifindex, err := r.ports.Ensure(port.vni, port.mac)
 	if err != nil {
 		return fmt.Errorf("bring up the gateway port of %s: %w", network.Name, err)
@@ -259,15 +257,19 @@ func (r *L2Gateway) stand(ctx context.Context, key string, network *juneauv1alph
 	copy(mac[:], port.mac)
 
 	// A veth the kernel rebuilt comes back under another index, and the
-	// entries under the old one would name a port that is gone.
+	// entries under the old one would name a port that is gone. Only
+	// the map entries go: the veth itself is the one this pass just
+	// brought up, and taking it out here would undo that.
 	r.mu.Lock()
 	previous, hadPrevious := r.snapshots[key]
-	delete(r.snapshots, key)
 	r.mu.Unlock()
 	if hadPrevious && (previous.ifindex != ifindex || previous.vni != port.vni) {
-		if err := r.release(previous); err != nil {
+		if err := r.releaseEntries(previous); err != nil {
 			return err
 		}
+		r.mu.Lock()
+		delete(r.snapshots, key)
+		r.mu.Unlock()
 	}
 
 	address, err := convert.IPv4ToBPFNetworkOrder(port.address)
@@ -357,9 +359,19 @@ func (r *L2Gateway) teardown(key string) error {
 	return r.release(snapshot)
 }
 
-// release takes out everything stand wrote, starting with the entry a
-// route follows so nothing is sent to a port that is coming down.
+// release takes the port down: the entries that name it, and then the
+// veth itself.
 func (r *L2Gateway) release(snapshot l2GatewaySnapshot) error {
+	if err := r.releaseEntries(snapshot); err != nil {
+		return err
+	}
+	return r.ports.Remove(snapshot.vni)
+}
+
+// releaseEntries takes out everything stand wrote into the maps,
+// starting with the entry a route follows so nothing is sent to a port
+// that is coming down.
+func (r *L2Gateway) releaseEntries(snapshot l2GatewaySnapshot) error {
 	var errs []error
 
 	if err := r.maps.Gateway.Delete(&bpf.PodEgressL2GatewayKey{Vni: snapshot.vni}); err != nil &&
@@ -384,28 +396,7 @@ func (r *L2Gateway) release(snapshot l2GatewaySnapshot) error {
 		!errors.Is(err, ebpf.ErrKeyNotExist) {
 		errs = append(errs, fmt.Errorf("delete L2Ifindex: %w", err))
 	}
-	if err := r.ports.Remove(snapshot.vni); err != nil {
-		errs = append(errs, err)
-	}
 
-	return errors.Join(errs...)
-}
-
-// CloseAll takes every gateway port this daemon built down. The Manager
-// calls it on shutdown so a reload does not leave a veth behind that
-// the next daemon would find with programs it no longer owns.
-func (r *L2Gateway) CloseAll() error {
-	r.mu.Lock()
-	snapshots := r.snapshots
-	r.snapshots = make(map[string]l2GatewaySnapshot)
-	r.mu.Unlock()
-
-	var errs []error
-	for _, snapshot := range snapshots {
-		if err := r.release(snapshot); err != nil {
-			errs = append(errs, err)
-		}
-	}
 	return errors.Join(errs...)
 }
 

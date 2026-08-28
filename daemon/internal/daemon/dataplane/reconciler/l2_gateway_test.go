@@ -364,3 +364,41 @@ func assertGatewayGone(t *testing.T, f *l2GatewayFixture) {
 		t.Error("the forwarding table still names the gateway MAC")
 	}
 }
+
+// A veth the kernel rebuilt comes back under another index. The entries
+// under the old one name a port that is gone, but the veth itself is
+// the one this pass just brought up.
+func TestL2GatewayMovesThePortToANewIfindex(t *testing.T) {
+	f := newL2GatewayFixture(t, newGatewayTestNetwork(), newGatewayTestVpc(),
+		newGatewayTestRouteTable("rt-main", 7), newGatewayTestEndpoint("node-a"))
+
+	if err := f.reconciler.Reconcile(context.Background(), "lab-net"); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	const rebuilt = gatewayTestIfindex + 1
+	f.ports.ifindex = rebuilt
+	if err := f.reconciler.Reconcile(context.Background(), "lab-net"); err != nil {
+		t.Fatalf("Reconcile after the veth came back: %v", err)
+	}
+
+	if _, ok := f.ports.ports[gatewayTestVNI]; !ok {
+		t.Error("the veth this pass brought up was taken down again")
+	}
+	if _, ok := f.ifindexMap.entries[bpf.PodEgressL2IfindexKey{Ifindex: gatewayTestIfindex}]; ok {
+		t.Error("l2_ifindex still names the veth that is gone")
+	}
+	if _, ok := f.ifindexSubnet.entries[bpf.PodEgressIfindexSubnetKey{Ifindex: gatewayTestIfindex}]; ok {
+		t.Error("ifindex_subnet still names the veth that is gone")
+	}
+	if members := f.bumLocal.list(gatewayTestVNI); len(members) != 1 || members[0] != rebuilt {
+		t.Errorf("the local flood list holds %v, want just the new ifindex %d", members, rebuilt)
+	}
+	got, ok := f.gatewayMap.entries[bpf.PodEgressL2GatewayKey{Vni: gatewayTestVNI}]
+	if !ok {
+		t.Fatal("l2_gateway no longer names the port")
+	}
+	if got.(bpf.PodEgressL2GatewayVal).Ifindex != rebuilt {
+		t.Errorf("l2_gateway names ifindex %d, want %d", got.(bpf.PodEgressL2GatewayVal).Ifindex, rebuilt)
+	}
+}
