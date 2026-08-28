@@ -311,11 +311,11 @@ Error from server (Forbidden): ... address 10.92.0.1 is already held by Allocati
 
 `spec.gateway.address`に空いているアドレスを書くか、そのアドレスを持っているPodを消してから足してください。
 
-### エンドポイントのいないNodeからはまだ届きません
+### 自分で振ったアドレスはgatewayから見えません
 
-gatewayを宣言すると、gatewayポート自体は全Nodeに立ちます。ただし、そのL2NetworkのPodを1つも持たないNodeは、セグメントを流れるARPを見る機会がありません。gatewayは通過するARPからしか宛先のMACを知らないので、そのNodeからセグメントへ向かうパケットは宛先が引けずに落ちます。`kubectl juneau trace`では`MISS_L2_ARP`として見えます。
+gatewayは、Juneauが配ったアドレスと、セグメントを流れるARPから見えたアドレスしか解決できません。`spec.cidr`の外のアドレスをPodの中で自分で振ったり、NICの後ろのbridgeにホストをぶら下げたりすると、そのホストが一度ARPを出すまでVpc側から届きません。`kubectl juneau trace`では`MISS_L2_ARP`として見えます。
 
-ClusterIP Serviceのbackendを、そのL2NetworkのPodがいないNodeに置いたときに出ます。セグメントのPodがクラスタに散らばっていれば起きません。
+出てしまったら、そのホストから何か1つ外へ向けて送れば埋まります。
 
 ### IPv6はgatewayを越えられません
 

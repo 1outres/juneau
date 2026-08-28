@@ -386,3 +386,38 @@ func TestL2GatewayReachesTheSegmentOverTheOverlay(t *testing.T) {
 		t.Errorf("the overlay carried %d copies, want the frame to reach the node that holds the MAC", delivered)
 	}
 }
+
+// A node that holds no port on the segment sees none of its ARP, so
+// nothing ever fills its l2_arp by snooping. The controller knows the
+// addresses it handed out, and reconciler.L2Arp offers them; with that
+// in place the gateway on such a node can address the segment and the
+// frame goes out over the overlay to the node that does hold the MAC.
+//
+// This is the whole of what a node with no endpoint was missing. The
+// port, the flood list and the route were already there.
+func TestGatewayOnANodeWithNoPortReachesTheSegment(t *testing.T) {
+	bpftest.Require(t)
+	bpftest.Netns(t)
+
+	segment := newL2Segment(t, bpf.LoadL2Gateway)
+	gateway := bpftest.Dummy(t, "l2gw")
+	gatewayMAC := bpftest.MAC(0xfe)
+	tunnel := bpftest.Dummy(t, "overlay0")
+	segment.addGatewayPort(t, gateway, gatewayMAC)
+	segment.useTunnelDevice(t, tunnel)
+
+	// Nothing of the segment lives here. The endpoints, and every MAC
+	// this node could have learned, are on another node.
+	segment.addRemoteNode(t, "10.0.0.2")
+	segment.seedAddress(t, host2Address, bpftest.MAC(2))
+
+	watched := bpftest.WatchPorts(t, tunnel, gateway)
+	bpftest.Run(t, segment.objs.Program(t, "tc_l2_gateway"), routed(t, host2Address), gateway)
+
+	if delivered := watched.Delivered(t, tunnel); delivered != 1 {
+		t.Errorf("the overlay carried %d copies, want the frame to reach the node that holds the MAC", delivered)
+	}
+	if delivered := watched.Delivered(t, gateway); delivered != 0 {
+		t.Errorf("the gateway was fed %d copies of its own frame", delivered)
+	}
+}

@@ -206,6 +206,42 @@ func StandUpGatewayPort(t *testing.T, maps reconciler.L2GatewayMaps, device bpft
 	}
 }
 
+// seedAddress records an address the way the daemon does for a node
+// that holds no port on the segment: through reconciler.L2Arp, out of
+// the NetworkEndpoint the controller published.
+func (s *l2Segment) seedAddress(t *testing.T, address string, mac net.HardwareAddr) {
+	t.Helper()
+
+	scheme := runtime.NewScheme()
+	if err := juneauv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("build the scheme: %v", err)
+	}
+	client := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(
+		&juneauv1alpha1.L2Network{
+			ObjectMeta: metav1.ObjectMeta{Name: "lab-net"},
+			Spec: juneauv1alpha1.L2NetworkSpec{
+				Vpc:     "lab-vpc",
+				CIDR:    testSegmentCIDR,
+				Gateway: &juneauv1alpha1.L2NetworkGateway{},
+			},
+			Status: juneauv1alpha1.L2NetworkStatus{VNI: testVNI},
+		},
+		&juneauv1alpha1.NetworkEndpoint{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "lab-a.eth1"},
+			Spec: juneauv1alpha1.NetworkEndpointSpec{
+				L2Network:  "lab-net",
+				NodeName:   "node-b",
+				Address:    address + "/24",
+				MACAddress: mac.String(),
+			},
+		},
+	).Build()
+
+	if err := reconciler.NewL2Arp(client, s.arp).Reconcile(context.Background(), "default/lab-a.eth1"); err != nil {
+		t.Fatalf("seed %s into the segment: %v", address, err)
+	}
+}
+
 // resolve records an address on the segment as the gateway would have
 // snooped it out of an ARP frame.
 func (s *l2Segment) resolve(t *testing.T, address string, mac net.HardwareAddr) {

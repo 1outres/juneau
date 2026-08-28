@@ -84,6 +84,7 @@ type Manager struct {
 	l2NetworkRunner    *runner.Runner
 	l2PortRunner       *runner.Runner
 	l2GatewayRunner    *runner.Runner
+	l2ArpRunner        *runner.Runner
 
 	serviceLoadBalancerInformer cache.Informer
 	serviceLBProgrammer         servicelbreconciler.Programmer
@@ -623,6 +624,19 @@ func (m *Manager) startL2Reconcilers(ctx context.Context) error {
 	}
 	m.l2PortRunner.Start(ctx, 1)
 
+	// The addresses the controller handed out, offered to the gateway
+	// of each segment. A node holding no port on a segment sees none of
+	// its ARP, so without this its gateway can address nobody.
+	arp := reconciler.NewL2Arp(m.client, m.l2Arp)
+	m.l2ArpRunner = runner.New(arp)
+	if err := m.l2ArpRunner.Watch(m.nwepInformer, runner.MetaNamespaceKey); err != nil {
+		return fmt.Errorf("watch NWEP (l2-arp): %w", err)
+	}
+	if err := m.l2ArpRunner.WatchFanOut(m.l2NetworkInformer, arp.FanOutL2NetworkToEndpoints); err != nil {
+		return fmt.Errorf("watch L2Network (l2-arp fan-out): %w", err)
+	}
+	m.l2ArpRunner.Start(ctx, 1)
+
 	return m.startL2GatewayReconciler(ctx)
 }
 
@@ -821,7 +835,7 @@ func (m *Manager) Stop() error {
 	// reconcile that started before the shutdown would otherwise find
 	// the tables emptied under it and build a fresh inner map nobody
 	// closes again.
-	for _, rn := range []*runner.Runner{m.l2NetworkRunner, m.l2PortRunner, m.l2GatewayRunner} {
+	for _, rn := range []*runner.Runner{m.l2NetworkRunner, m.l2PortRunner, m.l2GatewayRunner, m.l2ArpRunner} {
 		if rn == nil {
 			continue
 		}

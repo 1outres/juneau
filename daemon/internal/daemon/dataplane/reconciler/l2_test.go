@@ -56,6 +56,29 @@ func (f *fakeL2Table) Remove(vni uint32, key any) error {
 	return nil
 }
 
+func (f *fakeL2Table) PutIfAbsent(vni uint32, key, value any) error {
+	if err := f.Ensure(vni); err != nil {
+		return err
+	}
+	if _, held := f.entries[vni][indirectValue(key)]; held {
+		return nil
+	}
+	f.entries[vni][indirectValue(key)] = indirectValue(value)
+	return nil
+}
+
+func (f *fakeL2Table) RemoveIfEqual(vni uint32, key, value any) error {
+	set, ok := f.entries[vni]
+	if !ok {
+		return nil
+	}
+	if current, held := set[indirectValue(key)]; !held || current != indirectValue(value) {
+		return nil
+	}
+	delete(set, indirectValue(key))
+	return nil
+}
+
 func (f *fakeL2Table) AddMember(vni, member uint32) error {
 	return f.Put(vni, member, l2.PortFlagPresent)
 }

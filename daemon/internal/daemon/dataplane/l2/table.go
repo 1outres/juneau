@@ -6,6 +6,7 @@ package l2
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"sync"
 
@@ -110,6 +111,71 @@ func (t *Table) Put(vni uint32, key, value any) error {
 	}
 	if err := inner.Update(key, value, ebpf.UpdateAny); err != nil {
 		return fmt.Errorf("l2/%s: write %v into vni %d: %w", t.name, key, vni, err)
+	}
+	return nil
+}
+
+// PutIfAbsent writes one entry into the inner map of vni only while
+// nothing holds that key yet, building the table first when this is the
+// first entry.
+//
+// It is how user space offers what the control plane knows without
+// taking anything away from what the data plane has seen. An entry that
+// is already there was either written by an earlier pass or learned
+// from a frame, and a frame is the better source: it says what the
+// segment is really doing, while the control plane only knows what it
+// handed out.
+func (t *Table) PutIfAbsent(vni uint32, key, value any) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	inner, err := t.ensureLocked(vni)
+	if err != nil {
+		return err
+	}
+	if err := inner.Update(key, value, ebpf.UpdateNoExist); err != nil {
+		if errors.Is(err, ebpf.ErrKeyExist) {
+			return nil
+		}
+		return fmt.Errorf("l2/%s: write %v into vni %d: %w", t.name, key, vni, err)
+	}
+	return nil
+}
+
+// RemoveIfEqual takes one entry out of the inner map of vni, but only
+// while it still holds the value the caller wrote.
+//
+// The pair of this and PutIfAbsent is what keeps user space from
+// undoing the data plane. An entry the data plane has since corrected
+// no longer matches, so it stays; the caller is only ever taking back
+// its own.
+//
+// The read and the delete run under the same lock, so nothing user
+// space does lands between them. A frame arriving in that window can
+// still overwrite the entry after the read, which costs one relearn and
+// nothing else.
+func (t *Table) RemoveIfEqual(vni uint32, key, value any) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	inner, ok := t.inners[vni]
+	if !ok {
+		return nil
+	}
+
+	current := reflect.New(reflect.TypeOf(value))
+	if err := inner.Lookup(key, current.Interface()); err != nil {
+		if errors.Is(err, ebpf.ErrKeyNotExist) {
+			return nil
+		}
+		return fmt.Errorf("l2/%s: read %v of vni %d: %w", t.name, key, vni, err)
+	}
+	if !reflect.DeepEqual(current.Elem().Interface(), value) {
+		return nil
+	}
+
+	if err := inner.Delete(key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+		return fmt.Errorf("l2/%s: remove %v from vni %d: %w", t.name, key, vni, err)
 	}
 	return nil
 }

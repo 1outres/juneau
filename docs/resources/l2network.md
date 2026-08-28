@@ -52,7 +52,7 @@ gatewayを跨ぐ先には、同じVpcのSubnet、NATGateway経由の外部、Clu
 
 Subnetと違って、L2NetworkはDNSリゾルバを持ちません。自前でDNSを立てたい人にとって予約アドレスは邪魔なだけなので、`spec.cidr` があってもgatewayの1アドレスしか予約しません。
 
-gatewayは自分からARPを出しません。セグメントを流れるARPの送信者を記録して、Vpcから来たパケットの宛先MACを引きます。セグメント上のホストは外と話す前に必ずgatewayへARPを打つので普段は埋まっていますが、一度も名乗っていないホストへVpcの側から先に接続すると、最初のパケットは落ちます。
+gatewayは自分からARPを出しません。宛先のMACは、Juneauが配ったアドレスと、セグメントを流れるARPの送信者から引きます。前者はNICが作られた時点で分かるので、Vpcの側から先に接続しても届きます。`spec.cidr` の外のアドレスをPodの中で自分で振った場合や、NICの後ろのbridgeにホストをぶら下げた場合は、そのホストが一度ARPを出すまで届きません。
 
 ## SecurityGroup
 

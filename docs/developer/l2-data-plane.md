@@ -166,6 +166,18 @@ opcodeは見ません。リクエストもリプライもGARPも送信者のペ�
 
 既存の`arp_table`とは分けました。あちらは131072エントリのplain HASHをノード全体で共有していて、セグメントが大量のアドレスを覚えると`reconciler/arp.go`の`Update`が`E2BIG`で失敗し、正規のSubnetのARP代理応答が壊れます。読む側は`l2_network_map`を引いてどちらのテーブルを使うか決めます。missしたらもう一方も見る、という書き方はしていません。
 
+### 控えているアドレス
+
+snoopingだけでは足りないNodeがあります。セグメントのポートを1つも持たないNodeです。gatewayポート自体は全Nodeにありますが、そのNodeは`l2_egress`が見るローカルのARPも、overlayが運んでくるARPも見ません。他のNodeの`l2_bum_remote`にそのNodeが載るのはエンドポイントがある場合だけだからです。`l2_arp`が空のまま、gatewayは誰も呼べません。
+
+controllerは足りない分を知っています。gatewayを持つセグメントは必ずCIDRを持つので、NICには必ずアドレスがあり、それを名乗るNetworkEndpointにMACも載っています。それを書いておくのが`reconciler/l2_arp.go`です。
+
+書き方が2つとも片側通行になっています。書き込みは`Table.PutIfAbsent`で、そのキーに何も無いときだけ入ります。取り消しは`Table.RemoveIfEqual`で、自分が書いた値がまだそこにあるときだけ消します。つまりsnoopingは常にseedを上書きでき、seedは決してsnoopingを上書きし返しません。NICの後ろでbridgeを組んだワークロードが自分のMACでアドレスを名乗ると、最初のフレームで訂正されて、その訂正が残ります。
+
+controllerが転送テーブルを書き始めたわけではありません。`l2_fdb`は完全学習のままです。あちらはNICが持っていないMACが必ず出てくるテーブルで、`l2_arp`はjuneauが自分で作ったポートの近隣解決テーブルです。gateway MACを静的エントリにしたのと同じ理屈が通ります。
+
+seedが効けば残りは既に動きます。アドレスさえ引ければ、`l2_fdb`が空でも`l2_flood`がoverlay越しにポートを持つNodeへ送り、そこで配送されます。
+
 **セグメントの中のARPは素通しのままです。**代理応答を持ち込むと、GARPによるMAC移動の通知も、ユーザが立てたDHCPサーバも、重複アドレス検出も壊れます。`pod_egress`の`handle_arp`が答えるのはgateway自身のアドレスへのリクエストだけで、それ以外はgw vethに届いたコピーを捨てます。元のリクエストは既に全ポートへ複製されているので、答えるべきホストが自分で答えます。
 
 ### gw vethのegressプログラム
@@ -249,11 +261,7 @@ IPv6はセグメントの中ならBUMのフラッドで動きますが、gateway
 
 gatewayはIPのTTLを減らしません。既存のSubnetの`handle_l3`も減らしていないので揃えましたが、セグメント上に置いたルータVMと経路がループした場合、TTLでは止まらず`skb->mark`のホップ数で止まります。
 
-セグメントのエンドポイントを1つも持たないNodeからは、まだセグメントへ届きません。ポートは全Nodeにありますが、そのNodeの`l2_arp`が空だからです。
-
-`l2_arp`を埋めるのは`l2_egress`(ローカルのワークロードが出したARP)と`vxlan_ingress`(overlayが運んできたARP)の2つで、エンドポイントを持たないNodeはどちらも見ません。他のNodeの`l2_bum_remote`にそのNodeが載るのはエンドポイントがある場合だけなので、BUMも届かないためです。gatewayは自分からARPを出さないので、そこで宛先のMACが引けず`MISS_L2_ARP`で落ちます。
-
-足りないのは`l2_arp`だけです。アドレスさえ引ければ、`l2_fdb`が空でも`l2_flood`がoverlay越しにポートを持つNodeへ送り、そこで配送されます(`TestL2GatewayReachesTheSegmentOverTheOverlay`)。埋め方は2つあって、gatewayを持つセグメントのBUMを全Nodeへ配る(ブロードキャストの複製数がNode数になる)か、NetworkEndpointから`l2_arp`に種を書く(controllerが書いたエントリが入るが、snoopingが上書きするので自己修復する)かです。どちらを取るかは決めていません。
+juneauがアドレスを配っていないホストへは、Vpcから届きません。CIDRの外で自分でアドレスを振ったワークロードや、NICの後ろのbridgeにぶら下がったホストがそれにあたります。seedの材料はNetworkEndpointのアドレスなので、そこに載っていないアドレスはsnoopingが拾うまで解決できません。そのホストが一度でもARPを出せば埋まります。
 
 ## リモートVTEPとローカルポートの集約
 
@@ -279,10 +287,10 @@ L2Networkの側は`reconciler/l2_network.go`が見ます。`l2_network_map`にVN
 |---|---|---|---|---|
 | `l2_network_map` | HASH | VNI | vpc_id | `reconciler/l2_network.go` |
 | `l2_ifindex` | HASH | ifindex | VNI | `reconciler/l2_port.go` |
-| `l2_fdb` | HASH_OF_MAPS | VNI → MAC | ifindex / vtep_ip / last_seen_ns | データプレーン |
+| `l2_fdb` | HASH_OF_MAPS | VNI → MAC | ifindex / vtep_ip / last_seen_ns / flags | データプレーンと`reconciler/l2_gateway.go`(gateway MACの1件だけ) |
 | `l2_bum_local` | HASH_OF_MAPS | VNI → ifindex | 1 | `reconciler/l2_port.go` |
 | `l2_bum_remote` | HASH_OF_MAPS | VNI → VTEP IPv4 | 1 | `reconciler/l2_port.go` |
-| `l2_arp` | HASH_OF_MAPS | VNI → IPv4 | MAC | データプレーン |
+| `l2_arp` | HASH_OF_MAPS | VNI → IPv4 | MAC | データプレーンと`reconciler/l2_arp.go` |
 | `l2_gateway` | HASH | VNI | gw vethのifindex / gateway MAC | `reconciler/l2_gateway.go` |
 
 `l2_gateway`だけがNodeごとに違う値を持ちます。vethのifindexはそのNodeのものなので、あるNodeでのdumpは他のNodeについて何も言いません。
