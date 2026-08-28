@@ -160,6 +160,15 @@ L2固有のreasonを追加しました。
 
 hookは`TRACE_HOOK_L2_EGRESS`(5)と`TRACE_HOOK_L2_INGRESS`(6)です。
 
+L2 NICを追うには、どのNICの話なのかとアドレスの両方を渡します。
+
+```console
+$ kubectl juneau trace --from-pod default/lab-a --interface eth1 --from-ip 192.168.60.1 \
+    --to-pod default/lab-b --to-interface eth1 --to-ip 192.168.60.2 --proto icmp
+```
+
+`--interface`が無いとPodのeth0が対象になり、そのSubnetのvpc_idでセッションが作られます。L2 hookは所属L2Networkのvpc_idでeventを出すので、`trace_make_key`が一致せず何も表示されません。CIDRを持たないL2NetworkではJuneauがアドレスを知らないので、`--from-ip`と`--to-ip`も必須です。
+
 traceが拾えるのはIPv4のフレームだけです。TraceSessionはIPv4の5-tupleでセッションを定義するので、ARPやIPv6のフレームはtrace idが解決できず、emitは何もしません。EtherTypeごとの分岐にreasonを足すことも考えましたが、一度も発火しない定数が増えるだけなので入れていません。同じ理由で`TRACE_REASON_POLICY_ETHERTYPE_DROP`も現状は発火しない、と`trace.h`に書いてあります。
 
 ## verifier予算

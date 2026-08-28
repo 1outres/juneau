@@ -136,6 +136,13 @@ worker-1  4242  1a:2b:3c:00:00:02  0        10.0.0.12   913844015886
 
 `ifindex`が入っているのがこのNodeのvethに居るMAC、`vtep_ip`が入っているのが別Nodeに居るMACです。300秒フレームを見なかったエントリは掃除されます。
 
+フレームがどのhookを通ったかは`kubectl juneau trace`で追えます。どのNICの話なのかと、自分で振ったアドレスの両方を渡してください。
+
+```console
+$ kubectl juneau trace --from-pod default/lab-a --interface eth1 --from-ip 192.168.50.1 \
+    --to-pod default/lab-b --to-interface eth1 --to-ip 192.168.50.2 --proto icmp
+```
+
 ### 5. IP以外のフレームが通ることを確認
 
 3で通ったpingは、その前のARPが届いていたということです。ARPのEtherTypeは0x0806で、IPv4ではありません。tcpdumpで実際に流れているところを見ることができます。
