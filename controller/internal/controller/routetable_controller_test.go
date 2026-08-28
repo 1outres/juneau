@@ -37,6 +37,42 @@ var _ = Describe("RouteTable controller", func() {
 		}).Should(Succeed())
 	})
 
+	It("auto-generates a connected route for an L2Network that has a gateway", func() {
+		vpcName := createControllerVpc()
+		l2Name := uniqueTestName("l2net")
+		l2 := newTestL2Network(l2Name, vpcName, "10.161.0.0/24")
+		l2.Spec.Gateway = &juneauv1alpha1.L2NetworkGateway{}
+		Expect(k8sClient.Create(context.Background(), l2)).To(Succeed())
+		waitForReadyL2Network(l2Name)
+
+		Eventually(func(g Gomega) {
+			routeTable := getControllerRouteTable(vpcName)
+			g.Expect(routeTable.Status.Routes).To(ContainElement(
+				juneauv1alpha1.Route{
+					Dst:       "10.161.0.0/24",
+					L2Network: l2Name,
+					Via:       juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaConnected},
+				},
+			))
+		}).Should(Succeed())
+	})
+
+	// Without a gateway the segment is closed: nothing in the Vpc can
+	// reach it, and a route would only point at a port that is not
+	// there.
+	It("leaves an L2Network with no gateway out of the route table", func() {
+		vpcName := createControllerVpc()
+		l2Name := createTestL2Network(vpcName, "10.162.0.0/24")
+		waitForReadyL2Network(l2Name)
+
+		Consistently(func(g Gomega) {
+			routeTable := getControllerRouteTable(vpcName)
+			for _, route := range routeTable.Status.Routes {
+				g.Expect(route.Dst).NotTo(Equal("10.162.0.0/24"))
+			}
+		}, "1s").Should(Succeed())
+	})
+
 	It("resolves endpoint routes into status", func() {
 		vpcName := createControllerVpc()
 		subnet := createControllerSubnet(vpcName, uniqueTestName("subnet"), uniqueSubnetCIDR())

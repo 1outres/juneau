@@ -42,6 +42,13 @@ type Route struct {
 	Dst    string   `json:"dst"`
 	Via    RouteVia `json:"via"`
 	Subnet string   `json:"subnet,omitempty"`
+	// L2Network names the segment a connected route leads to when the
+	// destination is an L2Network rather than a Subnet. The controller
+	// resolves it, so it is only ever set in status. The data plane
+	// hands the packet to the gateway port of that segment, and the
+	// segment forwards it from there on its own tables.
+	// +optional
+	L2Network string `json:"l2Network,omitempty"`
 	// TransitGatewayRouteTable names the TransitGatewayRouteTable the
 	// data plane consults for this route. The controller resolves it
 	// from the attachment's association, so it is only ever set in

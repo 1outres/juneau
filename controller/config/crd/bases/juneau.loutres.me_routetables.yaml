@@ -49,6 +49,14 @@ spec:
                     dst:
                       minLength: 1
                       type: string
+                    l2Network:
+                      description: |-
+                        L2Network names the segment a connected route leads to when the
+                        destination is an L2Network rather than a Subnet. The controller
+                        resolves it, so it is only ever set in status. The data plane
+                        hands the packet to the gateway port of that segment, and the
+                        segment forwards it from there on its own tables.
+                      type: string
                     subnet:
                       type: string
                     transitGatewayRouteTable:
@@ -172,6 +180,14 @@ spec:
                   properties:
                     dst:
                       minLength: 1
+                      type: string
+                    l2Network:
+                      description: |-
+                        L2Network names the segment a connected route leads to when the
+                        destination is an L2Network rather than a Subnet. The controller
+                        resolves it, so it is only ever set in status. The data plane
+                        hands the packet to the gateway port of that segment, and the
+                        segment forwards it from there on its own tables.
                       type: string
                     subnet:
                       type: string
