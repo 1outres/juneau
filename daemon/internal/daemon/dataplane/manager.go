@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/convert"
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/l2"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/link"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/mapinventory"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/policy"
@@ -59,6 +60,7 @@ type Manager struct {
 	networkACLInformer                cache.Informer
 	nodeInformer                      cache.Informer
 	vpcEndpointInformer               cache.Informer
+	l2NetworkInformer                 cache.Informer
 
 	subnetRunner       *runner.Runner
 	arpRunner          *runner.Runner
@@ -79,6 +81,8 @@ type Manager struct {
 	aclRunner          *runner.Runner
 	traceRunner        *runner.Runner
 	nodeUnderlayRunner *runner.Runner
+	l2NetworkRunner    *runner.Runner
+	l2PortRunner       *runner.Runner
 
 	serviceLoadBalancerInformer cache.Informer
 	serviceLBProgrammer         servicelbreconciler.Programmer
@@ -108,6 +112,13 @@ type Manager struct {
 	affinityGCDone   chan struct{}
 
 	podAttacher *link.PodAttacher
+
+	l2Fdb       *l2.Table
+	l2BumLocal  *l2.Table
+	l2BumRemote *l2.Table
+
+	l2FdbGCCancel context.CancelFunc
+	l2FdbGCDone   chan struct{}
 	fib         *reconciler.Fib
 	tgwFib      *reconciler.TgwFib
 
@@ -123,6 +134,8 @@ type Manager struct {
 	podIngress   *program.PodIngress
 	vxlanIngress *program.VxlanIngress
 	nodeIngress  *program.NodeIngress
+	l2Egress     *program.L2Egress
+	l2Ingress    *program.L2Ingress
 
 	mapInventory *mapinventory.Inventory
 }
@@ -168,6 +181,22 @@ func (m *Manager) Start(ctx context.Context) error {
 		return fmt.Errorf("load node ingress program: %w", err)
 	}
 	zap.S().Infof("attached TC program to node ingress interface (ifindex: %d)", m.nodeIngressIfindex)
+
+	m.l2Egress, err = program.NewL2Egress(m.pinPath)
+	if err != nil {
+		return fmt.Errorf("load l2 egress program: %w", err)
+	}
+
+	m.l2Ingress, err = program.NewL2Ingress(m.pinPath)
+	if err != nil {
+		return fmt.Errorf("load l2 ingress program: %w", err)
+	}
+
+	// The per-VNI tables are minted from the l2_egress inner-map specs
+	// and installed on the outer maps every program shares by pin name.
+	m.l2Fdb = l2.NewTable("fdb", m.l2Egress.Objs.L2Fdb, m.l2Egress.MapSpecs.L2FdbInner)
+	m.l2BumLocal = l2.NewTable("bum-local", m.l2Egress.Objs.L2BumLocal, m.l2Egress.MapSpecs.L2BumLocalInner)
+	m.l2BumRemote = l2.NewTable("bum-remote", m.l2Egress.Objs.L2BumRemote, m.l2Egress.MapSpecs.L2BumRemoteInner)
 
 	// Build the BPF map inventory used by the debug RPCs. All maps
 	// are LIBBPF_PIN_BY_NAME so the pod_egress handles transitively
@@ -241,12 +270,16 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	}
 	m.podIfaceRunner.Start(ctx, 1)
 
-	m.podAttacher = link.NewPodAttacher(m.client, m.podEgress, m.podIngress, m.nodeName)
+	m.podAttacher = link.NewPodAttacher(m.client, m.podEgress, m.podIngress, m.l2Egress, m.l2Ingress, m.nodeName)
 	m.podAttacherRunner = runner.New(m.podAttacher)
 	if err := m.podAttacherRunner.Watch(m.nwepInformer, runner.MetaNamespaceKey); err != nil {
 		return fmt.Errorf("watch NWEP (pod-attacher): %w", err)
 	}
 	m.podAttacherRunner.Start(ctx, 1)
+
+	if err := m.startL2Reconcilers(ctx); err != nil {
+		return err
+	}
 
 	m.fib = reconciler.NewFib(m.client, m.podEgress)
 	m.fibRunner = runner.New(m.fib)
@@ -522,12 +555,66 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 
 	m.startConntrackGC(ctx, policyEpoch)
 	m.startAffinityGC(ctx)
+	m.startL2FdbGC(ctx)
 
 	if err := m.startTrace(ctx); err != nil {
 		return fmt.Errorf("start trace plane: %w", err)
 	}
 
 	return nil
+}
+
+// startL2Reconcilers wires the two reconcilers that program the L2
+// plane: one turns an L2Network into a VNI with its own tables, the
+// other turns the NetworkEndpoints on it into the ports of a switch.
+//
+// Both are skipped when no L2Network informer was handed in, which is
+// what test harnesses do. The programs stay loaded either way; with no
+// network in l2_network_map they simply never claim a frame.
+func (m *Manager) startL2Reconcilers(ctx context.Context) error {
+	if m.l2NetworkInformer == nil {
+		return nil
+	}
+
+	network := reconciler.NewL2Network(m.client, m.l2Egress.Objs.L2NetworkMap,
+		m.l2Fdb, m.l2BumLocal, m.l2BumRemote)
+	m.l2NetworkRunner = runner.New(network)
+	if err := m.l2NetworkRunner.Watch(m.l2NetworkInformer, runner.MetaNamespaceKey); err != nil {
+		return fmt.Errorf("watch L2Network: %w", err)
+	}
+	if m.vpcInformer != nil {
+		if err := m.l2NetworkRunner.WatchFanOut(m.vpcInformer, network.FanOutVpcToL2Networks); err != nil {
+			return fmt.Errorf("watch Vpc (l2-network fan-out): %w", err)
+		}
+	}
+	m.l2NetworkRunner.Start(ctx, 1)
+
+	port := reconciler.NewL2Port(m.client, m.l2Egress.Objs.L2Ifindex,
+		m.l2BumLocal, m.l2BumRemote, m.nodeName)
+	m.l2PortRunner = runner.New(port)
+	if err := m.l2PortRunner.Watch(m.nwepInformer, runner.MetaNamespaceKey); err != nil {
+		return fmt.Errorf("watch NWEP (l2-port): %w", err)
+	}
+	if err := m.l2PortRunner.WatchFanOut(m.l2NetworkInformer, port.FanOutL2NetworkToEndpoints); err != nil {
+		return fmt.Errorf("watch L2Network (l2-port fan-out): %w", err)
+	}
+	m.l2PortRunner.Start(ctx, 1)
+	return nil
+}
+
+// startL2FdbGC spawns the sweep that ages learned MACs out of the L2
+// forwarding tables. Nothing in Kubernetes says a MAC has gone quiet,
+// so like the conntrack and affinity sweeps it runs on a ticker of its
+// own rather than behind a Runner.
+func (m *Manager) startL2FdbGC(ctx context.Context) {
+	gc := l2.NewFdbGC(m.l2Fdb, l2.FdbAging, l2.FdbGCInterval)
+	cctx, cancel := context.WithCancel(ctx)
+	m.l2FdbGCCancel = cancel
+	m.l2FdbGCDone = make(chan struct{})
+	go func() {
+		defer close(m.l2FdbGCDone)
+		gc.Run(cctx)
+	}()
 }
 
 // startTrace wires the trace.Store, ringbuf reader, GC loop and the
@@ -660,6 +747,12 @@ func (m *Manager) Stop() error {
 		m.affinityGCCancel = nil
 	}
 
+	if m.l2FdbGCCancel != nil {
+		m.l2FdbGCCancel()
+		<-m.l2FdbGCDone
+		m.l2FdbGCCancel = nil
+	}
+
 	if m.podAttacher != nil {
 		if err := m.podAttacher.CloseAll(); err != nil {
 			return err
@@ -699,6 +792,15 @@ func (m *Manager) Stop() error {
 		}
 	}
 
+	for _, table := range []*l2.Table{m.l2Fdb, m.l2BumLocal, m.l2BumRemote} {
+		if table == nil {
+			continue
+		}
+		if err := table.CloseAll(); err != nil {
+			return err
+		}
+	}
+
 	if m.podEgress != nil {
 		if err := m.podEgress.Close(); err != nil {
 			return err
@@ -731,6 +833,8 @@ func (m *Manager) Stop() error {
 		m.aclRunner,
 		m.traceRunner,
 		m.nodeUnderlayRunner,
+		m.l2NetworkRunner,
+		m.l2PortRunner,
 	}
 	for _, rn := range runners {
 		if rn == nil {
@@ -748,6 +852,16 @@ func (m *Manager) Stop() error {
 	}
 	if m.nodeIngress != nil {
 		if err := m.nodeIngress.Close(); err != nil {
+			return err
+		}
+	}
+	if m.l2Egress != nil {
+		if err := m.l2Egress.Close(); err != nil {
+			return err
+		}
+	}
+	if m.l2Ingress != nil {
+		if err := m.l2Ingress.Close(); err != nil {
 			return err
 		}
 	}
@@ -802,6 +916,7 @@ type ManagerConfig struct {
 	NetworkACLInformer                cache.Informer
 	ServiceLoadBalancerInformer       cache.Informer
 	VpcEndpointInformer               cache.Informer
+	L2NetworkInformer                 cache.Informer
 	TraceSessionInformer              cache.Informer
 	NodeInformer                      cache.Informer
 
@@ -847,6 +962,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 		networkACLInformer:                cfg.NetworkACLInformer,
 		serviceLoadBalancerInformer:       cfg.ServiceLoadBalancerInformer,
 		vpcEndpointInformer:               cfg.VpcEndpointInformer,
+		l2NetworkInformer:                 cfg.L2NetworkInformer,
 		traceSessionInformer:              cfg.TraceSessionInformer,
 		nodeInformer:                      cfg.NodeInformer,
 		nodeName:                          cfg.NodeName,
