@@ -125,7 +125,7 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "No NetworkInterface resource found for pod", "")
 	}
 
-	wanted, err := c.podNetworkAttachments(ctx, podNamespace, podName)
+	wanted, err := c.requirePodNetworkAttachments(ctx, podNamespace, podName, podUID)
 	if err != nil {
 		return nil, err
 	}
@@ -135,6 +135,7 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 		zap.L().Error("pod NICs are not all provisioned yet", zap.Error(err))
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Pod NetworkInterfaces are not all provisioned yet", err.Error())
 	}
+	nwifaces = filterPodInterfaces(nwifaces, wanted)
 	if err := checkPodInterfacesAllocated(nwifaces); err != nil {
 		zap.L().Error("pod NICs are not allocated yet", zap.Error(err))
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Pod NetworkInterfaces are not allocated yet", err.Error())
@@ -200,21 +201,49 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 	}, nil
 }
 
+// errPodInstanceGone says the pod instance a CNI request names is not in
+// the cache, either because it is deleted or because its name now belongs
+// to a newer instance.
+var errPodInstanceGone = errors.New("the pod instance of the request is gone")
+
+// errPodNetworksUnreadable says the pod is there but describes NICs
+// Juneau cannot build. Retrying does not help.
+var errPodNetworksUnreadable = errors.New("the pod asks for NICs Juneau cannot build")
+
 // podNetworkAttachments reads back the NICs the pod asked for. The Pod is
 // the only place that says how many NICs to expect, so an ADD consults it
 // before deciding the NetworkInterfaces it found are the whole set.
-func (c *CNIServer) podNetworkAttachments(ctx context.Context, namespace, name string) ([]juneauv1alpha1.PodNetworkAttachment, error) {
+func (c *CNIServer) podNetworkAttachments(ctx context.Context, namespace, name, uid string) ([]juneauv1alpha1.PodNetworkAttachment, error) {
 	var pod corev1.Pod
 	if err := c.cachedClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &pod); err != nil {
-		zap.L().Error("failed to get the Pod of the CNI request", zap.Error(err))
-		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to get the Pod of the CNI request", err.Error())
+		if apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("%w: no pod %s/%s", errPodInstanceGone, namespace, name)
+		}
+		return nil, fmt.Errorf("get pod %s/%s: %w", namespace, name, err)
+	}
+	if string(pod.UID) != uid {
+		return nil, fmt.Errorf("%w: pod %s/%s is instance %s, the request is for %s",
+			errPodInstanceGone, namespace, name, pod.UID, uid)
 	}
 	attachments, err := juneauv1alpha1.PodNetworkAttachments(pod.Annotations)
 	if err != nil {
-		zap.L().Error("the pod asks for NICs Juneau cannot build", zap.Error(err))
-		return nil, makeError(cnipb.ErrorCode_INTERNAL, "The pod asks for NICs Juneau cannot build", err.Error())
+		return nil, fmt.Errorf("%w: %w", errPodNetworksUnreadable, err)
 	}
 	return attachments, nil
+}
+
+// requirePodNetworkAttachments is podNetworkAttachments for ADD and
+// CHECK, which cannot go on without knowing the NICs the pod asks for.
+func (c *CNIServer) requirePodNetworkAttachments(ctx context.Context, namespace, name, uid string) ([]juneauv1alpha1.PodNetworkAttachment, error) {
+	attachments, err := c.podNetworkAttachments(ctx, namespace, name, uid)
+	if err == nil {
+		return attachments, nil
+	}
+	zap.L().Error("cannot read the NICs the pod asks for", zap.Error(err))
+	if errors.Is(err, errPodNetworksUnreadable) {
+		return nil, makeError(cnipb.ErrorCode_INTERNAL, "The pod asks for NICs Juneau cannot build", err.Error())
+	}
+	return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to read the NICs the pod asks for", err.Error())
 }
 
 // attachPodInterface builds one NIC: a veth pair whose pod side lands in
@@ -444,7 +473,11 @@ func (c *CNIServer) Check(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.
 	if len(nwifList.Items) == 0 {
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "NetworkInterface not found for pod", "")
 	}
-	nwifaces := orderPodInterfaces(nwifList.Items, req.Ifname)
+	wanted, err := c.requirePodNetworkAttachments(ctx, podNamespace, podName, podUID)
+	if err != nil {
+		return nil, err
+	}
+	nwifaces := filterPodInterfaces(orderPodInterfaces(nwifList.Items, req.Ifname), wanted)
 	if err := checkPodInterfacesAllocated(nwifaces); err != nil {
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Pod NetworkInterfaces are not allocated yet", err.Error())
 	}
@@ -553,7 +586,17 @@ func (c *CNIServer) Del(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.Em
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to list NetworkEndpoint resources", err.Error())
 	}
 
-	for _, ifname := range podNICsToRelease(nwepList.Items, podName, podUID, req.Ifname) {
+	// A DEL has to finish even when the pod can no longer be read: the
+	// endpoints of a pod that is already gone were removed with its
+	// NetworkInterfaces, so the endpoint list is the whole story then.
+	wanted, err := c.podNetworkAttachments(ctx, podNamespace, podName, podUID)
+	if err != nil {
+		zap.S().Debugf("CNI DEL for pod %s/%s takes its NIC names from the endpoints alone: %v", podNamespace, podName, err)
+		wanted = nil
+	}
+
+	primarySuperseded := false
+	for _, ifname := range podNICsToRelease(nwepList.Items, wanted, podName, podUID, req.Ifname) {
 		release, err := c.releaseNetworkEndpoint(ctx, podNamespace, podName, podUID, ifname, req.ContainerId)
 		if err != nil {
 			zap.L().Error("failed to release NetworkEndpoint resource", zap.Error(err))
@@ -562,13 +605,16 @@ func (c *CNIServer) Del(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.Em
 		if release.superseded {
 			zap.S().Infof("CNI DEL for pod %s/%s ifname=%s from container %s ignored: %s",
 				podNamespace, podName, ifname, req.ContainerId, release.supersededReason())
+			if ifname == req.Ifname {
+				primarySuperseded = true
+			}
 		}
 	}
 
-	// Unregister Pod probes only for the generation being torn down. The
-	// stale-DEL guard above already ensures this DEL matches the live
-	// attachment, so the probe generation is safe to release.
-	if c.probeRegistrar != nil && req.Ifname == probedPodInterfaceName {
+	// Unregister Pod probes only for the generation being torn down. A
+	// newer sandbox holding the primary endpoint means this DEL is stale
+	// and the probes it would release are the live ones.
+	if c.probeRegistrar != nil && req.Ifname == probedPodInterfaceName && !primarySuperseded {
 		if err := c.probeRegistrar.UnregisterPod(podUID, req.ContainerId); err != nil {
 			zap.L().Warn("failed to unregister Pod probes", zap.Error(err))
 		}
@@ -905,8 +951,14 @@ func (c *CNIServer) cleanupVeth(name string) {
 func (c *CNIServer) cleanupNetworkEndpoint(nwep *juneauv1alpha1.NetworkEndpoint) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := c.apiClient.Delete(ctx, nwep); err != nil {
-		if apierrors.IsNotFound(err) {
+	// The preconditions matter here: a rollback can run long after a newer
+	// sandbox recreated the same endpoint, and deleting that one would
+	// take a running pod off the network.
+	if err := c.apiClient.Delete(ctx, nwep, client.Preconditions{
+		UID:             &nwep.UID,
+		ResourceVersion: &nwep.ResourceVersion,
+	}); err != nil {
+		if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
 			return
 		}
 		zap.S().Warnf("rollback: delete NetworkEndpoint %s/%s: %v", nwep.Namespace, nwep.Name, err)

@@ -43,6 +43,24 @@ func checkPodInterfacesAllocated(ifaces []*juneauv1alpha1.NetworkInterface) erro
 	return nil
 }
 
+// filterPodInterfaces keeps the NICs the pod currently asks for. The pod
+// is what says which NICs it wants; a NetworkInterface left over from an
+// earlier version of its annotation is on its way out and must neither be
+// built nor hold the sandbox back.
+func filterPodInterfaces(ifaces []*juneauv1alpha1.NetworkInterface, wanted []juneauv1alpha1.PodNetworkAttachment) []*juneauv1alpha1.NetworkInterface {
+	asked := make(map[string]struct{}, len(wanted))
+	for _, attachment := range wanted {
+		asked[attachment.Interface] = struct{}{}
+	}
+	out := make([]*juneauv1alpha1.NetworkInterface, 0, len(ifaces))
+	for _, nwiface := range ifaces {
+		if _, ok := asked[nwiface.Spec.PodRef.Interface]; ok {
+			out = append(out, nwiface)
+		}
+	}
+	return out
+}
+
 // checkPodInterfacesComplete reports the first NIC the pod asks for and
 // the controller has not written a NetworkInterface for yet. A CNI ADD
 // builds all the NICs of a pod in one go, so it has to see all of them
@@ -80,23 +98,39 @@ func checkPrimaryPodInterface(ifaces []*juneauv1alpha1.NetworkInterface, primary
 }
 
 // podNICsToRelease lists the interface names whose NetworkEndpoint one
-// CNI DEL has to release, primary first. The primary NIC is always there
-// because the DEL request names it; the extra NICs are only known from
-// the endpoints the ADD recorded.
-func podNICsToRelease(endpoints []juneauv1alpha1.NetworkEndpoint, podName, podUID, primaryIfname string) []string {
+// CNI DEL has to release, primary first.
+//
+// Both sources are needed. The endpoints alone would miss a NIC the
+// daemon cache has not seen yet, which happens when a sandbox is torn
+// down right after it came up. The pod alone would miss a NIC the user
+// has since dropped from the annotation. Releasing a NIC that has no
+// endpoint costs one lookup and finds nothing.
+func podNICsToRelease(endpoints []juneauv1alpha1.NetworkEndpoint, wanted []juneauv1alpha1.PodNetworkAttachment, podName, podUID, primaryIfname string) []string {
 	seen := map[string]struct{}{primaryIfname: {}}
-	extra := make([]string, 0, len(endpoints))
+	extra := make([]string, 0, len(endpoints)+len(wanted))
+
+	add := func(ifname string) {
+		if ifname == "" {
+			return
+		}
+		if _, known := seen[ifname]; known {
+			return
+		}
+		seen[ifname] = struct{}{}
+		extra = append(extra, ifname)
+	}
+
 	for i := range endpoints {
 		ref := endpoints[i].Spec.PodRef
 		if ref == nil || ref.Name != podName || ref.UID != podUID {
 			continue
 		}
-		if _, known := seen[ref.Interface]; known {
-			continue
-		}
-		seen[ref.Interface] = struct{}{}
-		extra = append(extra, ref.Interface)
+		add(ref.Interface)
 	}
+	for _, attachment := range wanted {
+		add(attachment.Interface)
+	}
+
 	sort.Strings(extra)
 	return append([]string{primaryIfname}, extra...)
 }

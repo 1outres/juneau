@@ -151,7 +151,7 @@ func TestVethHostNameKeepsTheCurrentPrimaryName(t *testing.T) {
 }
 
 func TestPodNICsToReleaseAlwaysCoversThePrimary(t *testing.T) {
-	got := podNICsToRelease(nil, "web", "uid-web", "eth0")
+	got := podNICsToRelease(nil, nil, "web", "uid-web", "eth0")
 	if strings.Join(got, ",") != "eth0" {
 		t.Fatalf("got %v, want the primary NIC alone", got)
 	}
@@ -163,7 +163,7 @@ func TestPodNICsToReleaseCoversEveryEndpointOfThePod(t *testing.T) {
 		{Spec: juneauv1alpha1.NetworkEndpointSpec{PodRef: &juneauv1alpha1.NetworkEndpointPodReference{Name: "web", UID: "uid-web", Interface: "eth0"}}},
 		{Spec: juneauv1alpha1.NetworkEndpointSpec{PodRef: &juneauv1alpha1.NetworkEndpointPodReference{Name: "other", UID: "uid-other", Interface: "eth1"}}},
 	}
-	got := podNICsToRelease(endpoints, "web", "uid-web", "eth0")
+	got := podNICsToRelease(endpoints, nil, "web", "uid-web", "eth0")
 	if strings.Join(got, ",") != "eth0,eth1" {
 		t.Fatalf("got %v, want the NICs of this pod, primary first", got)
 	}
@@ -237,5 +237,47 @@ func TestCheckPodInterfacesComplete(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "eth1") {
 		t.Fatalf("error should name the missing NIC, got %v", err)
+	}
+}
+
+func TestFilterPodInterfacesKeepsOnlyWhatThePodAsksFor(t *testing.T) {
+	items := []juneauv1alpha1.NetworkInterface{
+		podInterface("eth0", "10.18.0.5/24", true),
+		podInterface("eth1", "10.19.0.5/24", true),
+		podInterface("data0", "", false),
+	}
+	wanted := []juneauv1alpha1.PodNetworkAttachment{
+		{Interface: "eth0", Subnet: "web"},
+		{Interface: "eth1", Subnet: "db"},
+	}
+	got := ifnamesOf(filterPodInterfaces(orderPodInterfaces(items, "eth0"), wanted))
+	if strings.Join(got, ",") != "eth0,eth1" {
+		t.Fatalf("got %v, want the NICs the pod asks for", got)
+	}
+}
+
+func TestPodNICsToReleaseCoversTheNICsThePodAsksFor(t *testing.T) {
+	wanted := []juneauv1alpha1.PodNetworkAttachment{
+		{Interface: "eth0", Subnet: "web"},
+		{Interface: "eth1", Subnet: "db"},
+	}
+	got := podNICsToRelease(nil, wanted, "web", "uid-web", "eth0")
+	if strings.Join(got, ",") != "eth0,eth1" {
+		t.Fatalf("got %v, want every NIC of the pod even before the endpoints are cached", got)
+	}
+}
+
+func TestPodNICsToReleaseMergesBothSources(t *testing.T) {
+	endpoints := []juneauv1alpha1.NetworkEndpoint{
+		{Spec: juneauv1alpha1.NetworkEndpointSpec{PodRef: &juneauv1alpha1.NetworkEndpointPodReference{Name: "web", UID: "uid-web", Interface: "data0"}}},
+		{Spec: juneauv1alpha1.NetworkEndpointSpec{PodRef: &juneauv1alpha1.NetworkEndpointPodReference{Name: "web", UID: "uid-web", Interface: "eth1"}}},
+	}
+	wanted := []juneauv1alpha1.PodNetworkAttachment{
+		{Interface: "eth0", Subnet: "web"},
+		{Interface: "eth1", Subnet: "db"},
+	}
+	got := podNICsToRelease(endpoints, wanted, "web", "uid-web", "eth0")
+	if strings.Join(got, ",") != "eth0,data0,eth1" {
+		t.Fatalf("got %v, want the primary first and then every NIC either source knows", got)
 	}
 }
