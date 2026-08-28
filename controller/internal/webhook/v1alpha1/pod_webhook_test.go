@@ -800,3 +800,110 @@ var _ = Describe("Pod overlapping NIC subnets", func() {
 		})
 	})
 })
+
+var _ = Describe("Pod NIC on an L2Network", func() {
+	It("accepts an extra NIC on an L2Network with no CIDR", func() {
+		primary := customSubnetFixture()
+		l2Name := createPodWebhookL2Network(primary.Spec.Vpc, "")
+
+		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
+			juneauv1alpha1.PodAnnotationSubnet: primary.Name,
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(
+				`[{"interface":"eth1","l2Network":%q}]`, l2Name),
+		})
+		Expect(webhookK8sClient.Create(context.Background(), pod)).To(Succeed())
+		DeferCleanup(func() {
+			_ = webhookK8sClient.Delete(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: "default"}})
+		})
+	})
+
+	It("rejects an extra NIC whose L2Network does not exist", func() {
+		primary := customSubnetFixture()
+		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
+			juneauv1alpha1.PodAnnotationSubnet: primary.Name,
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(
+				`[{"interface":"eth1","l2Network":%q}]`, webhookUniqueTestName("missing-l2net")),
+		})
+		err := webhookK8sClient.Create(context.Background(), pod)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("L2Network"))
+		Expect(err.Error()).To(ContainSubstring("does not exist"))
+	})
+
+	It("rejects a SecurityGroup from a Vpc other than the one of the L2Network", func() {
+		primary := customSubnetFixture()
+		other := customSubnetFixture()
+		l2Name := createPodWebhookL2Network(primary.Spec.Vpc, "")
+		sgName := createPodWebhookSecurityGroup(other.Spec.Vpc)
+
+		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
+			juneauv1alpha1.PodAnnotationSubnet: primary.Name,
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(
+				`[{"interface":"eth1","l2Network":%q,"securityGroups":[%q]}]`, l2Name, sgName),
+		})
+		err := webhookK8sClient.Create(context.Background(), pod)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(sgName))
+		Expect(err.Error()).To(ContainSubstring("belongs to Vpc"))
+	})
+
+	// Two NICs of one pod may sit in different Vpcs, and Vpcs are free
+	// to reuse a prefix, so this is the only way the two can collide.
+	It("rejects an L2Network whose CIDR overlaps the Subnet of another NIC", func() {
+		primary := customSubnetFixture()
+		l2Name := createPodWebhookL2Network(customSubnetFixture().Spec.Vpc, primary.Spec.CIDR)
+
+		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
+			juneauv1alpha1.PodAnnotationSubnet: primary.Name,
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(
+				`[{"interface":"eth1","l2Network":%q}]`, l2Name),
+		})
+		err := webhookK8sClient.Create(context.Background(), pod)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("overlap"))
+	})
+
+	It("leaves an L2Network with no CIDR out of the overlap check", func() {
+		primary := customSubnetFixture()
+		first := createPodWebhookL2Network(primary.Spec.Vpc, "")
+		second := createPodWebhookL2Network(primary.Spec.Vpc, "")
+
+		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
+			juneauv1alpha1.PodAnnotationSubnet: primary.Name,
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(
+				`[{"interface":"eth1","l2Network":%q},{"interface":"eth2","l2Network":%q}]`, first, second),
+		})
+		Expect(webhookK8sClient.Create(context.Background(), pod)).To(Succeed())
+		DeferCleanup(func() {
+			_ = webhookK8sClient.Delete(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: "default"}})
+		})
+	})
+})
+
+// createPodWebhookL2Network builds a segment inside an existing Vpc. The
+// CIDR is passed in so a spec can decide whether the segment takes part
+// in the NIC overlap check at all.
+func createPodWebhookL2Network(vpcName, cidr string) string {
+	GinkgoHelper()
+	name := webhookUniqueTestName("l2net")
+	l2 := newWebhookL2Network(name, vpcName)
+	l2.Spec.CIDR = cidr
+	Expect(webhookK8sClient.Create(context.Background(), l2)).To(Succeed())
+	DeferCleanup(func() {
+		_ = webhookK8sClient.Delete(context.Background(), &juneauv1alpha1.L2Network{ObjectMeta: metav1.ObjectMeta{Name: name}})
+	})
+	return name
+}
+
+func createPodWebhookSecurityGroup(vpcName string) string {
+	GinkgoHelper()
+	name := webhookUniqueTestName("sg")
+	Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.SecurityGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec:       juneauv1alpha1.SecurityGroupSpec{Vpc: vpcName},
+	})).To(Succeed())
+	DeferCleanup(func() {
+		_ = webhookK8sClient.Delete(context.Background(), &juneauv1alpha1.SecurityGroup{ObjectMeta: metav1.ObjectMeta{Name: name}})
+	})
+	return name
+}

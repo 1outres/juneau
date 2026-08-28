@@ -145,3 +145,18 @@ func TestEndpointAddressToBE(t *testing.T) {
 		})
 	}
 }
+
+func TestPodIfaceSkipsAnEndpointOnAnL2Network(t *testing.T) {
+	endpoint := newPodIfaceEndpoint("10.16.0.5/24")
+	endpoint.Spec.Subnet = ""
+	endpoint.Spec.L2Network = "lab-net"
+
+	r, subnetMap, hostMACMap := newPodIfaceFixture(t, endpoint)
+
+	if err := r.Reconcile(context.Background(), "default/pod-a"); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(subnetMap.entries) != 0 || len(hostMACMap.entries) != 0 {
+		t.Fatalf("wrote %v and %v for an endpoint the L2 data plane owns", subnetMap.entries, hostMACMap.entries)
+	}
+}

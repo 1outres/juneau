@@ -81,15 +81,25 @@ type PodNetworkAttachment struct {
 	// Interface is the name the NIC gets inside the Pod.
 	Interface string `json:"interface"`
 
-	// Subnet is the Subnet the NIC joins.
-	Subnet string `json:"subnet"`
+	// Subnet is the Subnet the NIC joins. Write either this or
+	// L2Network, never both and never neither.
+	Subnet string `json:"subnet,omitempty"`
 
-	// Address pins the NIC's address. Left empty the Subnet's pool
-	// picks one.
+	// L2Network is the L2Network the NIC joins. Write either this or
+	// Subnet, never both and never neither.
+	//
+	// Only an extra NIC may name an L2Network. The primary NIC is
+	// configured with the PodAnnotationSubnet annotation, which takes a
+	// Subnet name.
+	L2Network string `json:"l2Network,omitempty"`
+
+	// Address pins the NIC's address. Left empty the network's pool
+	// picks one. An L2Network without a CIDR has no pool and hands out
+	// no address at all.
 	Address string `json:"address,omitempty"`
 
 	// SecurityGroups lists the SecurityGroups applied to this NIC. All
-	// of them must belong to the same Vpc as Subnet.
+	// of them must belong to the same Vpc as the network the NIC joins.
 	SecurityGroups []string `json:"securityGroups,omitempty"`
 }
 
@@ -187,13 +197,7 @@ func validatePodInterfaceName(path *field.Path, name string) field.ErrorList {
 func validatePodAttachmentTarget(path *field.Path, attachment PodNetworkAttachment) field.ErrorList {
 	var errs field.ErrorList
 
-	if attachment.Subnet == "" {
-		errs = append(errs, field.Required(path.Child("subnet"), "every entry needs a Subnet"))
-	} else {
-		for _, msg := range validation.IsDNS1123Subdomain(attachment.Subnet) {
-			errs = append(errs, field.Invalid(path.Child("subnet"), attachment.Subnet, msg))
-		}
-	}
+	errs = append(errs, validatePodAttachmentNetwork(path, attachment)...)
 
 	if attachment.Address != "" && net.ParseIP(attachment.Address) == nil {
 		errs = append(errs, field.Invalid(path.Child("address"), attachment.Address, "address must be an IP address"))
@@ -214,6 +218,29 @@ func validatePodAttachmentTarget(path *field.Path, attachment PodNetworkAttachme
 			errs = append(errs, field.Duplicate(sgPath.Index(i), name))
 		}
 		seen[name] = struct{}{}
+	}
+	return errs
+}
+
+// validatePodAttachmentNetwork enforces that a NIC names exactly one
+// network. Naming both a Subnet and an L2Network has no single answer,
+// and naming neither leaves Juneau with nothing to attach the NIC to.
+func validatePodAttachmentNetwork(path *field.Path, attachment PodNetworkAttachment) field.ErrorList {
+	switch {
+	case attachment.Subnet == "" && attachment.L2Network == "":
+		return field.ErrorList{field.Required(path, "every entry needs a subnet or an l2Network")}
+	case attachment.Subnet != "" && attachment.L2Network != "":
+		return field.ErrorList{field.Invalid(path.Child("l2Network"), attachment.L2Network,
+			"an entry names either a subnet or an l2Network, not both")}
+	}
+
+	child, name := "subnet", attachment.Subnet
+	if attachment.L2Network != "" {
+		child, name = "l2Network", attachment.L2Network
+	}
+	var errs field.ErrorList
+	for _, msg := range validation.IsDNS1123Subdomain(name) {
+		errs = append(errs, field.Invalid(path.Child(child), name, msg))
 	}
 	return errs
 }

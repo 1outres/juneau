@@ -580,6 +580,26 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /validate-juneau-loutres-me-v1alpha1-l2network
+  failurePolicy: Fail
+  name: vl2network-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - juneau.loutres.me
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - l2networks
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /validate-juneau-loutres-me-v1alpha1-natgateway
   failurePolicy: Fail
   name: vnatgateway-v1alpha1.kb.io

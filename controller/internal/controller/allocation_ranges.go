@@ -21,6 +21,7 @@ import (
 	"net/netip"
 
 	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	"github.com/1outres/juneau/controller/internal/addressrange"
 )
 
 // ipRange is an inclusive address interval. Both bounds belong to the same
@@ -53,7 +54,7 @@ type candidateRange struct {
 // that "192.0.2.5/24" and "192.0.2.0/24" describe the same space.
 func candidateRangeFromPrefix(p netip.Prefix) candidateRange {
 	p = p.Masked()
-	span := ipRange{lo: p.Addr(), hi: lastAddrInPrefix(p)}
+	span := ipRange{lo: p.Addr(), hi: addressrange.LastAddr(p)}
 	if !prefixReservesEdges(p) {
 		return candidateRange{span: span, allocatable: span}
 	}
@@ -91,27 +92,6 @@ func prefixReservesEdges(p netip.Prefix) bool {
 		return p.Bits() < 127
 	}
 	return false
-}
-
-// lastAddrInPrefix returns the broadcast (all-ones) address of the prefix.
-func lastAddrInPrefix(p netip.Prefix) netip.Addr {
-	addr := p.Masked().Addr()
-	bits := p.Bits()
-	bs := addr.As16()
-	totalBits := addr.BitLen()
-	hostBits := totalBits - bits
-	for i := 15; hostBits > 0 && i >= 0; i-- {
-		flip := hostBits
-		if flip > 8 {
-			flip = 8
-		}
-		bs[i] |= byte(1<<flip - 1)
-		hostBits -= flip
-	}
-	if addr.Is4() {
-		return netip.AddrFrom4([4]byte{bs[12], bs[13], bs[14], bs[15]})
-	}
-	return netip.AddrFrom16(bs)
 }
 
 // parsePrefixCandidates converts a list of CIDR strings.

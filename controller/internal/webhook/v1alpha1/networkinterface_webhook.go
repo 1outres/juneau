@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	"github.com/1outres/juneau/controller/internal/podnetwork"
 )
 
 // nolint:unused
@@ -89,16 +90,16 @@ func (v *NetworkInterfaceCustomValidator) ValidateCreate(ctx context.Context, ob
 	var errs field.ErrorList
 	specPath := field.NewPath("spec")
 
-	subnet, subnetErrs, err := validateNetworkInterfaceSubnet(ctx, v.Reader, networkinterface, specPath.Child("subnet"))
+	network, networkErrs, err := validateNetworkInterfaceNetwork(ctx, v.Reader, networkinterface)
 	if err != nil {
 		return nil, err
 	}
-	errs = append(errs, subnetErrs...)
+	errs = append(errs, networkErrs...)
 
-	addressErrs := validateNetworkInterfaceAddress(networkinterface.Spec.Address, subnet, specPath.Child("address"))
+	addressErrs := validateNetworkInterfaceAddress(networkinterface.Spec.Address, network, specPath.Child("address"))
 	errs = append(errs, addressErrs...)
 
-	sgErrs, sgErr := validateNetworkInterfaceSecurityGroups(ctx, v.Reader, networkinterface, subnet, specPath.Child("securityGroups"))
+	sgErrs, sgErr := validateNetworkInterfaceSecurityGroups(ctx, v.Reader, networkinterface, network, specPath.Child("securityGroups"))
 	if sgErr != nil {
 		return nil, sgErr
 	}
@@ -138,6 +139,9 @@ func (v *NetworkInterfaceCustomValidator) ValidateUpdate(ctx context.Context, ol
 	if networkinterface.Spec.Subnet != oldNetworkInterface.Spec.Subnet {
 		errs = append(errs, field.Invalid(specPath.Child("subnet"), networkinterface.Spec.Subnet, "spec.subnet is immutable"))
 	}
+	if networkinterface.Spec.L2Network != oldNetworkInterface.Spec.L2Network {
+		errs = append(errs, field.Invalid(specPath.Child("l2Network"), networkinterface.Spec.L2Network, "spec.l2Network is immutable"))
+	}
 	if networkinterface.Spec.Address != oldNetworkInterface.Spec.Address {
 		errs = append(errs, field.Invalid(specPath.Child("address"), networkinterface.Spec.Address, "spec.address is immutable"))
 	}
@@ -158,29 +162,25 @@ func (v *NetworkInterfaceCustomValidator) ValidateUpdate(ctx context.Context, ol
 	}
 
 	// Re-validate SG references on update so changing SGs goes through
-	// the same vetting as create (existence + same Vpc as Subnet).
+	// the same vetting as create (existence + same Vpc as the network).
 	//
-	// Subnet existence intentionally is NOT re-checked on update.
-	// spec.subnet is immutable (enforced above), so any drift since
-	// admission means the Subnet was deleted out from under the
-	// NetworkInterface — and the controller still needs to take its
-	// finalizer-removal update through to release allocations. A
-	// validating-webhook reject here would deadlock that path.
+	// Whether the network still exists intentionally is NOT re-checked
+	// on update. spec.subnet and spec.l2Network are immutable (enforced
+	// above), so any drift since admission means the network was deleted
+	// out from under the NetworkInterface — and the controller still
+	// needs to take its finalizer-removal update through to release
+	// allocations. A validating-webhook reject here would deadlock that
+	// path.
 	//
-	// We do still need the Subnet object to check that SGs share its
-	// Vpc, so try to fetch it (best-effort: NotFound is OK).
+	// We do still need the network to check that SGs share its Vpc, so
+	// try to read it (best-effort: NotFound is OK).
 	if shouldCheckReferences(networkinterface) {
-		var subnet *juneauv1alpha1.Subnet
-		if networkinterface.Spec.Subnet != "" {
-			var fetched juneauv1alpha1.Subnet
-			if err := v.Get(ctx, client.ObjectKey{Name: networkinterface.Spec.Subnet}, &fetched); err == nil {
-				subnet = &fetched
-			} else if !errors.IsNotFound(err) {
-				return nil, err
-			}
+		network, err := podnetwork.ResolveOptional(ctx, v.Reader, podnetwork.InterfaceReference(networkinterface.Spec))
+		if err != nil {
+			return nil, err
 		}
 
-		sgErrs, sgErr := validateNetworkInterfaceSecurityGroups(ctx, v.Reader, networkinterface, subnet, specPath.Child("securityGroups"))
+		sgErrs, sgErr := validateNetworkInterfaceSecurityGroups(ctx, v.Reader, networkinterface, network, specPath.Child("securityGroups"))
 		if sgErr != nil {
 			return nil, sgErr
 		}
@@ -207,23 +207,36 @@ func (v *NetworkInterfaceCustomValidator) ValidateDelete(ctx context.Context, ob
 	return nil, nil
 }
 
-func validateNetworkInterfaceSubnet(ctx context.Context, c client.Reader, networkinterface *juneauv1alpha1.NetworkInterface, path *field.Path) (*juneauv1alpha1.Subnet, field.ErrorList, error) {
-	if networkinterface.Spec.Subnet == "" {
+// validateNetworkInterfaceNetwork resolves the network the interface
+// joins, whichever kind names it, and reports a reference that points at
+// nothing. The resolved network comes back so the caller can check the
+// address and the SecurityGroups against it.
+func validateNetworkInterfaceNetwork(ctx context.Context, c client.Reader, networkinterface *juneauv1alpha1.NetworkInterface) (*podnetwork.Network, field.ErrorList, error) {
+	ref := podnetwork.InterfaceReference(networkinterface.Spec)
+	if err := ref.Validate(); err != nil {
 		return nil, nil, nil
 	}
 
-	var subnet juneauv1alpha1.Subnet
-	if err := c.Get(ctx, client.ObjectKey{Name: networkinterface.Spec.Subnet}, &subnet); err != nil {
+	network, err := podnetwork.Resolve(ctx, c, ref)
+	if err != nil {
 		if errors.IsNotFound(err) {
-			return nil, field.ErrorList{field.Invalid(path, networkinterface.Spec.Subnet, "referenced Subnet does not exist")}, nil
+			path := field.NewPath("spec").Child("subnet")
+			if ref.Kind() == podnetwork.KindL2Network {
+				path = field.NewPath("spec").Child("l2Network")
+			}
+			return nil, field.ErrorList{field.Invalid(path, ref.Name(), fmt.Sprintf("referenced %s does not exist", ref.Kind()))}, nil
 		}
 		return nil, nil, err
 	}
 
-	return &subnet, nil, nil
+	return network, nil, nil
 }
 
-func validateNetworkInterfaceAddress(address string, subnet *juneauv1alpha1.Subnet, path *field.Path) field.ErrorList {
+// validateNetworkInterfaceAddress checks a pinned address against the
+// network it has to sit in. A network that hands out no address cannot
+// honour a pin at all, so asking for one is rejected instead of being
+// quietly ignored.
+func validateNetworkInterfaceAddress(address string, network *podnetwork.Network, path *field.Path) field.ErrorList {
 	if address == "" {
 		return nil
 	}
@@ -233,17 +246,22 @@ func validateNetworkInterfaceAddress(address string, subnet *juneauv1alpha1.Subn
 		return field.ErrorList{field.Invalid(path, address, "must be a valid IPv4 address")}
 	}
 
-	if subnet == nil {
+	if network == nil {
 		return nil
 	}
 
-	_, cidr, err := net.ParseCIDR(subnet.Spec.CIDR)
+	if !network.AllocatesAddresses() {
+		return field.ErrorList{field.Invalid(path, address,
+			fmt.Sprintf("%s hands out no address; it has no spec.cidr", network.Reference))}
+	}
+
+	_, cidr, err := net.ParseCIDR(network.CIDR)
 	if err != nil {
 		return nil
 	}
 
 	if !cidr.Contains(ip) {
-		return field.ErrorList{field.Invalid(path, address, fmt.Sprintf("must be within Subnet CIDR %q", subnet.Spec.CIDR))}
+		return field.ErrorList{field.Invalid(path, address, fmt.Sprintf("must be within %s CIDR %q", network.Reference, network.CIDR))}
 	}
 
 	return nil
@@ -264,13 +282,13 @@ func validateNetworkInterfaceAllocationIdentity(identity string, path *field.Pat
 
 // validateNetworkInterfaceSecurityGroups checks that every entry in
 // spec.securityGroups names a SecurityGroup that (a) exists, (b)
-// belongs to the same Vpc as the NetworkInterface's Subnet, and (c) is
-// not duplicated within the list.
+// belongs to the same Vpc as the network the NetworkInterface joins,
+// and (c) is not duplicated within the list.
 //
 // The first return is the list of field errors; the second is a
 // transport-level error (e.g. unrelated apiserver failure) that should
 // abort admission.
-func validateNetworkInterfaceSecurityGroups(ctx context.Context, c client.Reader, iface *juneauv1alpha1.NetworkInterface, subnet *juneauv1alpha1.Subnet, path *field.Path) (field.ErrorList, error) {
+func validateNetworkInterfaceSecurityGroups(ctx context.Context, c client.Reader, iface *juneauv1alpha1.NetworkInterface, network *podnetwork.Network, path *field.Path) (field.ErrorList, error) {
 	if len(iface.Spec.SecurityGroups) == 0 {
 		return nil, nil
 	}
@@ -290,12 +308,13 @@ func validateNetworkInterfaceSecurityGroups(ctx context.Context, c client.Reader
 		seen[name] = i
 	}
 
-	// Subnet was either resolved (caller passes it in) or unresolved (we
-	// surfaced the error already). Without a subnet we cannot enforce
-	// the same-Vpc invariant; let the rest of validation flow through.
+	// The network was either resolved (caller passes it in) or
+	// unresolved (we surfaced the error already). Without one we cannot
+	// enforce the same-Vpc invariant; let the rest of validation flow
+	// through.
 	expectedVpc := ""
-	if subnet != nil {
-		expectedVpc = subnet.Spec.Vpc
+	if network != nil {
+		expectedVpc = network.Vpc
 	}
 
 	for i, name := range iface.Spec.SecurityGroups {
@@ -312,7 +331,7 @@ func validateNetworkInterfaceSecurityGroups(ctx context.Context, c client.Reader
 		}
 		if expectedVpc != "" && sg.Spec.Vpc != expectedVpc {
 			errs = append(errs, field.Invalid(path.Index(i), name,
-				fmt.Sprintf("SecurityGroup belongs to Vpc %q (expected %q to match Subnet)", sg.Spec.Vpc, expectedVpc)))
+				fmt.Sprintf("SecurityGroup belongs to Vpc %q (expected %q to match the network)", sg.Spec.Vpc, expectedVpc)))
 		}
 	}
 

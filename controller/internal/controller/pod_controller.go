@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	"github.com/1outres/juneau/controller/internal/podnetwork"
 	"github.com/1outres/juneau/controller/internal/workload"
 )
 
@@ -90,12 +91,12 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{RequeueAfter: requeueDelay}, nil
 	}
 
-	missing, err := r.findMissingSubnet(ctx, attachments)
+	missing, err := r.findMissingNetwork(ctx, attachments)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if missing != "" {
-		logger.Info("waiting for the Subnet of a Pod NIC", "name", req.NamespacedName, "subnet", missing)
+		logger.Info("waiting for the network of a Pod NIC", "name", req.NamespacedName, "network", missing)
 		return ctrl.Result{RequeueAfter: requeueDelay}, nil
 	}
 
@@ -114,16 +115,16 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	return ctrl.Result{}, r.deleteNetworkInterfaces(ctx, &pod, wanted)
 }
 
-// findMissingSubnet returns the name of the first Subnet a NIC needs and
-// the cluster does not have. Nothing is provisioned until every NIC can be
+// findMissingNetwork returns the first network a NIC needs and the
+// cluster does not have. Nothing is provisioned until every NIC can be
 // built, so a pod never comes up holding only some of the NICs it asked
 // for.
-func (r *PodReconciler) findMissingSubnet(ctx context.Context, attachments []juneauv1alpha1.PodNetworkAttachment) (string, error) {
+func (r *PodReconciler) findMissingNetwork(ctx context.Context, attachments []juneauv1alpha1.PodNetworkAttachment) (string, error) {
 	for _, attachment := range attachments {
-		var subnet juneauv1alpha1.Subnet
-		if err := r.Get(ctx, client.ObjectKey{Name: attachment.Subnet}, &subnet); err != nil {
+		ref := podnetwork.AttachmentReference(attachment)
+		if _, err := podnetwork.Resolve(ctx, r.Client, ref); err != nil {
 			if errors.IsNotFound(err) {
-				return attachment.Subnet, nil
+				return ref.String(), nil
 			}
 			return "", err
 		}
@@ -143,6 +144,7 @@ func (r *PodReconciler) applyNetworkInterface(ctx context.Context, pod *corev1.P
 
 		nwiface.Spec.NodeName = pod.Spec.NodeName
 		nwiface.Spec.Subnet = attachment.Subnet
+		nwiface.Spec.L2Network = attachment.L2Network
 		nwiface.Spec.Address = attachment.Address
 		nwiface.Spec.SecurityGroups = attachment.SecurityGroups
 		nwiface.Spec.AllocationIdentity = workload.AllocationIdentity(pod)

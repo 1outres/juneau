@@ -168,6 +168,28 @@ func (v *RouteTableCustomValidator) ValidateDelete(ctx context.Context, obj runt
 		)
 	}
 
+	// Same for an L2Network gateway: traffic that crosses it follows
+	// this RouteTable, and losing the table would leave the gateway with
+	// nowhere to send anything.
+	var l2List juneauv1alpha1.L2NetworkList
+	if err := v.List(ctx, &l2List); err != nil {
+		return nil, fmt.Errorf("list L2Networks: %w", err)
+	}
+	var l2Refs []string
+	for i := range l2List.Items {
+		gateway := l2List.Items[i].Spec.Gateway
+		if gateway != nil && gateway.RouteTable == routeTable.Name {
+			l2Refs = append(l2Refs, l2List.Items[i].Name)
+		}
+	}
+	if len(l2Refs) > 0 {
+		return nil, errors.NewForbidden(
+			schema.GroupResource{Group: juneauv1alpha1.GroupVersion.Group, Resource: "routetables"},
+			routeTable.Name,
+			fmt.Errorf("L2Network(s) %v still references this RouteTable via spec.gateway.routeTable", l2Refs),
+		)
+	}
+
 	return nil, nil
 }
 

@@ -21,6 +21,7 @@ import (
 )
 
 // NetworkInterfaceSpec defines the desired state of NetworkInterface.
+// +kubebuilder:validation:XValidation:rule="has(self.subnet) != has(self.l2Network)",message="set exactly one of spec.subnet and spec.l2Network"
 type NetworkInterfaceSpec struct {
 	// +required
 	PodRef NetworkInterfacePodReference `json:"podRef"`
@@ -29,9 +30,20 @@ type NetworkInterfaceSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	NodeName string `json:"nodeName"`
 
-	// +required
+	// Subnet is the Subnet this interface joins. Exactly one of Subnet
+	// and L2Network is set.
+	// +optional
 	// +kubebuilder:validation:MinLength=1
-	Subnet string `json:"subnet"`
+	Subnet string `json:"subnet,omitempty"`
+
+	// L2Network is the L2Network this interface joins. Exactly one of
+	// Subnet and L2Network is set. An L2Network without a CIDR hands out
+	// no address at all, so an interface on one becomes Allocated with an
+	// empty status.address.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	L2Network string `json:"l2Network,omitempty"`
+
 	// +optional
 	Address string `json:"address,omitempty"`
 
@@ -41,8 +53,8 @@ type NetworkInterfaceSpec struct {
 	// unless the owning Vpc has spec.enforceSecurityGroups=true, in
 	// which case Pod admission rejects unattached Pods.
 	//
-	// All referenced SGs must belong to the same Vpc as this
-	// NetworkInterface's Subnet. Webhook validation enforces this.
+	// All referenced SGs must belong to the same Vpc as the network this
+	// NetworkInterface joins. Webhook validation enforces this.
 	// +optional
 	// +kubebuilder:validation:MaxItems=2
 	// +listType=set
@@ -117,6 +129,7 @@ type NetworkRoute struct {
 // +kubebuilder:resource:shortName={"interface","iface","nwinterface","nwiface"}
 // +kubebuilder:printcolumn:name="Node",type="string",JSONPath=".spec.nodeName"
 // +kubebuilder:printcolumn:name="Subnet",type="string",JSONPath=".spec.subnet"
+// +kubebuilder:printcolumn:name="L2Network",type="string",JSONPath=".spec.l2Network"
 // +kubebuilder:printcolumn:name="Address",type="string",JSONPath=".status.address"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 

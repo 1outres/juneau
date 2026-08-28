@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	"github.com/1outres/juneau/controller/internal/podnetwork"
 )
 
 // NodeReconciler reconciles a Node object for BGPNodeState provisioning,
@@ -123,7 +124,7 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 // controller turns it into the Node's NetworkEndpoint identity.
 func (r *NodeReconciler) ensureJuneauNodeClaim(ctx context.Context, node *corev1.Node) error {
 	gvk := schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Node"}
-	poolName := SubnetIPAllocationPoolName(JuneauNodeDefaultSubnet)
+	poolName := podnetwork.SubnetAllocationPoolName(JuneauNodeDefaultSubnet)
 	claim := newAllocationClaim(poolName, gvk, "", node.Name, JuneauNodeAllocationAttribute)
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, claim, func() error {
 		claim.Spec = newAllocationClaim(poolName, gvk, "", node.Name, JuneauNodeAllocationAttribute).Spec
@@ -145,7 +146,7 @@ const (
 // for a given Node's juneau_node IP.
 func JuneauNodeClaimName(nodeName string) string {
 	gvk := schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Node"}
-	return allocationClaimName(SubnetIPAllocationPoolName(JuneauNodeDefaultSubnet), gvk, "", nodeName, JuneauNodeAllocationAttribute)
+	return allocationClaimName(podnetwork.SubnetAllocationPoolName(JuneauNodeDefaultSubnet), gvk, "", nodeName, JuneauNodeAllocationAttribute)
 }
 
 // ensureJuneauNodeEndpoint publishes the Node's juneau_node identity —

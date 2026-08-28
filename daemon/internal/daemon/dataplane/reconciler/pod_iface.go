@@ -65,6 +65,11 @@ func (r *PodIface) Reconcile(ctx context.Context, key string) error {
 	if nwep.Spec.NodeName != r.nodeName || nwep.Spec.Attachment == nil {
 		return r.delete(key)
 	}
+	if nwep.Spec.Subnet == "" {
+		// An endpoint on an L2Network is left alone: the L2 data plane
+		// keys its own tables and reads none of what this writes.
+		return r.delete(key)
+	}
 	return r.upsert(ctx, key, &nwep)
 }
 

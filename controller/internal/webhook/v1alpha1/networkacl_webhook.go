@@ -114,6 +114,21 @@ func (v *NetworkACLCustomValidator) ValidateDelete(ctx context.Context, obj runt
 		}
 	}
 
+	var l2Networks juneauv1alpha1.L2NetworkList
+	if err := v.List(ctx, &l2Networks); err != nil {
+		return nil, err
+	}
+	for i := range l2Networks.Items {
+		l2 := &l2Networks.Items[i]
+		if l2.Spec.NetworkACL == acl.Name {
+			return nil, errors.NewForbidden(
+				schema.GroupResource{Group: juneauv1alpha1.GroupVersion.Group, Resource: "networkacls"},
+				acl.Name,
+				fmt.Errorf("NetworkACL is referenced by L2Network %q", l2.Name),
+			)
+		}
+	}
+
 	return nil, nil
 }
 
