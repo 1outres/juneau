@@ -119,6 +119,16 @@ const (
 	// answered, the second says the asking is being paced.
 	ReasonL2ArpAsked Reason = 605
 	ReasonL2ArpHeld  Reason = 606
+	// ReasonL2ArpAnswerShared marks an ARP reply addressed to the
+	// gateway that this node put on the overlay as well as handing to
+	// its own gateway. Every node runs a gateway on the same MAC, so a
+	// host answers whichever one is local to it, and the node that asked
+	// is rarely the node the answer came back on.
+	// ReasonL2ArpAnswerLearned is the far end of that: this node read the
+	// address out of an answer another node shared and let the frame go
+	// no further.
+	ReasonL2ArpAnswerShared  Reason = 607
+	ReasonL2ArpAnswerLearned Reason = 608
 )
 
 // Hook mirrors TRACE_HOOK_* in trace.h.

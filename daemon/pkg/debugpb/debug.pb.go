@@ -410,6 +410,8 @@ const (
 	TraceEventReason_TRACE_EVENT_REASON_L2_GW_LOOP_DROP          TraceEventReason = 604
 	TraceEventReason_TRACE_EVENT_REASON_L2_ARP_ASKED             TraceEventReason = 605
 	TraceEventReason_TRACE_EVENT_REASON_L2_ARP_HELD              TraceEventReason = 606
+	TraceEventReason_TRACE_EVENT_REASON_L2_ARP_ANSWER_SHARED     TraceEventReason = 607
+	TraceEventReason_TRACE_EVENT_REASON_L2_ARP_ANSWER_LEARNED    TraceEventReason = 608
 )
 
 // Enum value maps for TraceEventReason.
@@ -465,6 +467,8 @@ var (
 		604: "TRACE_EVENT_REASON_L2_GW_LOOP_DROP",
 		605: "TRACE_EVENT_REASON_L2_ARP_ASKED",
 		606: "TRACE_EVENT_REASON_L2_ARP_HELD",
+		607: "TRACE_EVENT_REASON_L2_ARP_ANSWER_SHARED",
+		608: "TRACE_EVENT_REASON_L2_ARP_ANSWER_LEARNED",
 	}
 	TraceEventReason_value = map[string]int32{
 		"TRACE_EVENT_REASON_UNSPECIFIED":              0,
@@ -517,6 +521,8 @@ var (
 		"TRACE_EVENT_REASON_L2_GW_LOOP_DROP":          604,
 		"TRACE_EVENT_REASON_L2_ARP_ASKED":             605,
 		"TRACE_EVENT_REASON_L2_ARP_HELD":              606,
+		"TRACE_EVENT_REASON_L2_ARP_ANSWER_SHARED":     607,
+		"TRACE_EVENT_REASON_L2_ARP_ANSWER_LEARNED":    608,
 	}
 )
 
@@ -1916,7 +1922,7 @@ const file_pkg_debugpb_debug_proto_rawDesc = "" +
 	"\x19TRACE_VERDICT_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10TRACE_VERDICT_OK\x10\x01\x12\x16\n" +
 	"\x12TRACE_VERDICT_DROP\x10\x02\x12\x1a\n" +
-	"\x16TRACE_VERDICT_REDIRECT\x10\x03*\xea\x0f\n" +
+	"\x16TRACE_VERDICT_REDIRECT\x10\x03*\xc7\x10\n" +
 	"\x10TraceEventReason\x12\"\n" +
 	"\x1eTRACE_EVENT_REASON_UNSPECIFIED\x10\x00\x12'\n" +
 	"#TRACE_EVENT_REASON_ENTER_POD_EGRESS\x10d\x12(\n" +
@@ -1967,7 +1973,9 @@ const file_pkg_debugpb_debug_proto_rawDesc = "" +
 	"\"TRACE_EVENT_REASON_L2_HAIRPIN_DROP\x10\xdb\x04\x12'\n" +
 	"\"TRACE_EVENT_REASON_L2_GW_LOOP_DROP\x10\xdc\x04\x12$\n" +
 	"\x1fTRACE_EVENT_REASON_L2_ARP_ASKED\x10\xdd\x04\x12#\n" +
-	"\x1eTRACE_EVENT_REASON_L2_ARP_HELD\x10\xde\x042\xb9\x03\n" +
+	"\x1eTRACE_EVENT_REASON_L2_ARP_HELD\x10\xde\x04\x12,\n" +
+	"'TRACE_EVENT_REASON_L2_ARP_ANSWER_SHARED\x10\xdf\x04\x12-\n" +
+	"(TRACE_EVENT_REASON_L2_ARP_ANSWER_LEARNED\x10\xe0\x042\xb9\x03\n" +
 	"\x05Debug\x12A\n" +
 	"\n" +
 	"WatchTrace\x12\x1b.debug.v1.WatchTraceRequest\x1a\x14.debug.v1.TraceEvent0\x01\x12N\n" +

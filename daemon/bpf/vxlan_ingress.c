@@ -66,12 +66,24 @@ static __always_inline int handle_l2_overlay(struct __sk_buff *skb,
   // this is where every node learns the addresses of the hosts it does
   // not hold itself. Without it the gateway here could only address the
   // part of the segment that lives on this node.
-  l2_arp_snoop(skb, vni, eth);
+  bool answer_for_gateway = l2_arp_snoop(skb, vni, eth);
 
   if (l2_learn(table, src_mac, 0, remote_vtep))
     trace_emit_map_miss_l3(skb, __trace_id, TRACE_REASON_L2_LEARNED,
                            TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC, vpc_id,
                            vni, remote_vtep);
+
+  // A reply addressed to the gateway was put on the overlay by the node
+  // the host answered on, so that every node could read the address out
+  // of it. Both tables have it now and the frame is spent: the gateway
+  // there has already had it, and every node runs one on the same
+  // address, so passing it on here would answer one question once per
+  // node.
+  if (answer_for_gateway) {
+    trace_emit_drop_l3(skb, __trace_id, TRACE_REASON_L2_ARP_ANSWER_LEARNED,
+                       TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC, vpc_id, vni);
+    return TC_ACT_SHOT;
+  }
 
   if (!l2_is_bum(dst_mac)) {
     struct l2_forward forwarded = {};

@@ -308,3 +308,92 @@ func TestL2EgressRecordsTheAnswerToTheGatewaysQuestion(t *testing.T) {
 		t.Errorf("recorded %s as %s, want %s", host2Address, got, host)
 	}
 }
+
+// The answer to the gateway's question has to reach every node, not
+// only the one it came back on.
+//
+// Every node runs a gateway on the same MAC, so the host addresses its
+// reply to whichever gateway is local to it, and only that node would
+// learn the address. The node that asked is the node the Vpc packet was
+// routed on, which is a different one whenever the client and the host
+// sit apart. So a reply addressed to the gateway is copied to the other
+// nodes as well.
+func TestL2EgressSharesTheAnswerToTheGatewayWithTheOtherNodes(t *testing.T) {
+	ports := newL2EgressPorts(t)
+	gatewayMAC := bpftest.MAC(0xfe)
+	ports.segment.addGatewayPort(t, ports.pod3, gatewayMAC)
+	ports.segment.addRemoteNode(t, "10.0.0.2")
+	host := bpftest.MAC(1)
+
+	frame := bpftest.Frame(t, gatewayMAC, host, bpftest.EtherTypeARP,
+		bpftest.ARP(t, bpftest.ARPReply, host, host2Address, gatewayMAC, gatewayAddress))
+	watched := ports.watch(t)
+	verdict, mark := bpftest.RunMarked(t, ports.program, frame, ports.pod1, 0)
+
+	if verdict != bpftest.ActShot {
+		t.Errorf("verdict %d, want the frame dropped after the copies (%d)", verdict, bpftest.ActShot)
+	}
+	// The gateway takes its copy on the port's ingress, which a dummy
+	// device counts nowhere. The hop it charges for the hand-off is left
+	// in the mark, and that is what says it was offered one.
+	if hops := gatewayHops(mark); hops != 1 {
+		t.Errorf("the frame was handed to a gateway %d times, want the one on this node to take it", hops)
+	}
+	if delivered := watched.Delivered(t, ports.tunnel); delivered != 1 {
+		t.Errorf("the overlay carried %d copies of the answer, want the other nodes to read it", delivered)
+	}
+	if delivered := watched.Delivered(t, ports.pod2); delivered != 0 {
+		t.Errorf("a workload was fed %d copies of an answer addressed to the gateway", delivered)
+	}
+	if got, ok := ports.segment.resolved(t, host2Address); !ok || !bytes.Equal(got, host) {
+		t.Errorf("this node recorded %s as %s, want %s", host2Address, got, host)
+	}
+}
+
+// Only the answer travels. An ARP frame between two workloads is the
+// segment's own business and goes to the one port that holds the MAC,
+// the way any unicast does.
+func TestL2EgressKeepsAnAnswerForAWorkloadOffTheOverlay(t *testing.T) {
+	ports := newL2EgressPorts(t)
+	ports.segment.addGatewayPort(t, ports.pod3, bpftest.MAC(0xfe))
+	ports.segment.addRemoteNode(t, "10.0.0.2")
+	peer := bpftest.MAC(2)
+	ports.segment.learn(t, peer, uint32(ports.pod2.Index), "")
+	host := bpftest.MAC(1)
+
+	frame := bpftest.Frame(t, peer, host, bpftest.EtherTypeARP,
+		bpftest.ARP(t, bpftest.ARPReply, host, host2Address, peer, host3Address))
+	watched := ports.watch(t)
+	verdict := bpftest.Run(t, ports.program, frame, ports.pod1)
+
+	if verdict != bpftest.ActRedirect {
+		t.Errorf("verdict %d, want the frame sent to the port that holds the MAC (%d)", verdict, bpftest.ActRedirect)
+	}
+	if delivered := watched.Delivered(t, ports.tunnel); delivered != 0 {
+		t.Errorf("the overlay carried %d copies of an answer no gateway asked for", delivered)
+	}
+}
+
+// A question addressed to the gateway is not shared. Only the reply
+// carries an address the other nodes could not have learned for
+// themselves; a request is answered by the gateway that received it.
+func TestL2EgressSharesAnAnswerAndNotAQuestion(t *testing.T) {
+	ports := newL2EgressPorts(t)
+	gatewayMAC := bpftest.MAC(0xfe)
+	ports.segment.addGatewayPort(t, ports.pod3, gatewayMAC)
+	ports.segment.addRemoteNode(t, "10.0.0.2")
+	host := bpftest.MAC(1)
+
+	frame := bpftest.Frame(t, gatewayMAC, host, bpftest.EtherTypeARP,
+		bpftest.ARP(t, bpftest.ARPRequest, host, host2Address,
+			net.HardwareAddr{0, 0, 0, 0, 0, 0}, gatewayAddress))
+	watched := ports.watch(t)
+	verdict := bpftest.Run(t, ports.program, frame, ports.pod1)
+
+	if verdict != bpftest.ActRedirect {
+		t.Errorf("verdict %d, want the question handed to the gateway alone (%d)", verdict, bpftest.ActRedirect)
+	}
+	if delivered := watched.Delivered(t, ports.tunnel); delivered != 0 {
+		t.Errorf("the overlay carried %d copies of a question the local gateway answers", delivered)
+	}
+}

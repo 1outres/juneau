@@ -266,3 +266,42 @@ func TestVxlanIngressRecordsTheSenderOfAnArpFromAnotherNode(t *testing.T) {
 		t.Errorf("recorded 10.60.0.7 as %s, want %s", got, sender)
 	}
 }
+
+// The far side of the shared answer. A reply addressed to the gateway
+// that another node put on the overlay is read into this node's tables
+// and goes no further.
+//
+// It is not handed to the gateway here. The node the reply came from
+// has already given it to its own gateway, and every node runs one on
+// the same address, so passing it on would answer a single question
+// once per node.
+func TestVxlanIngressLearnsASharedAnswerAndStopsThere(t *testing.T) {
+	overlay := newOverlaySegment(t)
+	gatewayMAC := bpftest.MAC(0xfe)
+	overlay.segment.addGatewayPort(t, overlay.pod3, gatewayMAC)
+	host := bpftest.MAC(1)
+
+	frame := bpftest.Frame(t, gatewayMAC, host, bpftest.EtherTypeARP,
+		bpftest.ARP(t, bpftest.ARPReply, host, host2Address, gatewayMAC, gatewayAddress))
+	watched := bpftest.WatchPorts(t, overlay.pod2, overlay.pod3)
+	overlay.deliver(t, testVNI, frame)
+	entry := overlay.awaitLearned(t, host)
+
+	got, ok := overlay.segment.resolved(t, host2Address)
+	if !ok {
+		t.Fatalf("this node did not read %s out of the answer another node shared", host2Address)
+	}
+	if !bytes.Equal(got, host) {
+		t.Errorf("recorded %s as %s, want %s", host2Address, got, host)
+	}
+	// The address alone would still flood. With the node that holds the
+	// MAC recorded too, the next packet leaves as a known unicast.
+	if want := hostOrderIPv4(t, loopbackVTEP); entry.VtepIp != want {
+		t.Errorf("learned %s behind vtep %d, want %d", host, entry.VtepIp, want)
+	}
+	for _, device := range []bpftest.Device{overlay.pod2, overlay.pod3} {
+		if delivered := watched.Delivered(t, device); delivered != 0 {
+			t.Errorf("%s was fed %d copies of an answer the other node already delivered", device.Name, delivered)
+		}
+	}
+}

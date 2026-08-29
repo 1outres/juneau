@@ -1383,8 +1383,10 @@ struct l2_fdb_val {
 // l2_fdb_inner_map is one L2Network's learning table. l2_egress learns
 // from the frames a local port sends and vxlan_ingress learns from the
 // frames the overlay delivers. User space writes exactly one entry, the
-// MAC of this node's gateway port, because a gateway sends no frame of
-// its own and there is nothing to learn it from.
+// MAC of this node's gateway port: every node answers on that same MAC,
+// so a frame carrying it says nothing about where it belongs, and the
+// entry has to name the port here rather than the node the frame came
+// from. L2_FDB_FLAG_GATEWAY is what keeps learning from moving it.
 struct l2_fdb_inner_map {
   __uint(type, BPF_MAP_TYPE_LRU_HASH);
   __uint(max_entries, MAX_L2_FDB_PER_NETWORK);
