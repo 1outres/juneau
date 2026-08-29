@@ -105,3 +105,30 @@ const (
 	skbContextOutBytes = 512
 	skbMarkOffset      = 8
 )
+
+// RunRewritten is Run, plus the whole buffer the kernel copied the
+// frame back into.
+//
+// It is what a program that rewrites a frame into a different one needs
+// instead of RunFrame: a request built out of a runt is longer than the
+// frame it came from, and RunFrame cuts the result to the length that
+// was handed in. Nothing in the buffer says where the frame now ends —
+// BPF_PROG_TEST_RUN reports that only through the syscall, which
+// cilium/ebpf does not hand back — so read the length off the port the
+// frame was copied to, with Ports.DeliveredBytes.
+func RunRewritten(t *testing.T, prog *ebpf.Program, frame []byte, device Device) (int, []byte) {
+	t.Helper()
+
+	in := skbContext{Ifindex: uint32(device.Index)}
+	out := make([]byte, len(frame)+256)
+	verdict, err := prog.Run(&ebpf.RunOptions{
+		Data:    frame,
+		DataOut: out,
+		Context: &in,
+		Repeat:  1,
+	})
+	if err != nil {
+		t.Fatalf("bpftest: run the program on %s: %v", device.Name, err)
+	}
+	return int(verdict), out
+}
