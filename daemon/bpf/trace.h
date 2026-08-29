@@ -1076,6 +1076,22 @@ trace_emit_redirect_l3(struct __sk_buff *skb, __u32 trace_id, __u32 reason,
                 target_ifindex);
 }
 
+// trace_emit_drop_aux_l3 is trace_emit_drop_l3 with a number of the
+// hook's own to carry. A hook that drops a packet on purpose usually
+// has one thing worth saying about why, and the alternatives make a
+// drop look like something else: trace_emit_map_miss_l3 carries a
+// number but records the verdict as OK.
+static __always_inline void
+trace_emit_drop_aux_l3(struct __sk_buff *skb, __u32 trace_id, __u32 reason,
+                       __u32 hook, __u8 scope, __u32 vpc_id, __u32 subnet_id,
+                       __u32 aux1) {
+  if (trace_id == 0)
+    return;
+  trace_emit_l3(skb, TRACE_L3_PACK_A(trace_id, reason),
+                TRACE_L3_PACK_B(vpc_id, subnet_id),
+                TRACE_L3_PACK_C(hook, scope, TRACE_VERDICT_DROP), aux1);
+}
+
 static __always_inline void
 trace_emit_map_miss_l3(struct __sk_buff *skb, __u32 trace_id, __u32 reason,
                        __u32 hook, __u8 scope, __u32 vpc_id, __u32 subnet_id,

@@ -80,10 +80,21 @@ static __always_inline int ask_the_segment(struct __sk_buff *skb,
     return TC_ACT_SHOT;
   }
   if (!l2_arp_probe_take(asked, target)) {
-    trace_emit_drop_l3(skb, trace_id, TRACE_REASON_L2_ARP_HELD,
-                       TRACE_HOOK_L2_GATEWAY, TRACE_SCOPE_VPC, vpc_id, vni);
+    trace_emit_drop_aux_l3(skb, trace_id, TRACE_REASON_L2_ARP_HELD,
+                           TRACE_HOOK_L2_GATEWAY, TRACE_SCOPE_VPC, vpc_id, vni,
+                           target);
     return TC_ACT_SHOT;
   }
+
+  // The event goes out while the frame is still the packet that needed
+  // the answer. trace_emit_l3 reads the addresses off the frame, and a
+  // few lines further down there is no packet left to read: the request
+  // is built out of it. An event emitted after that shows the bytes of
+  // an ARP frame parsed as an IPv4 header, which reads as a plausible
+  // flow between two addresses the packet never carried.
+  trace_emit_drop_aux_l3(skb, trace_id, TRACE_REASON_L2_ARP_ASKED,
+                         TRACE_HOOK_L2_GATEWAY, TRACE_SCOPE_VPC, vpc_id, vni,
+                         target);
 
   // The gateway port itself is skipped, because the request leaves from
   // it. A copy handed back would reach l2_egress on that port, which
@@ -91,17 +102,11 @@ static __always_inline int ask_the_segment(struct __sk_buff *skb,
   // the gateway as the owner of the address it is still looking for.
   struct l2_port from = {
       .vni = vni, .in_ifindex = gw_ifindex, .from_overlay = false};
-  int copies = l2_arp_request(skb, &from, gw_mac,
-                              bpf_htonl(boundary->gw_addr), target_be);
-  if (copies < 0) {
+  if (l2_arp_request(skb, &from, gw_mac, bpf_htonl(boundary->gw_addr),
+                     target_be) < 0)
     trace_emit_drop_l3(skb, trace_id, TRACE_REASON_DROP_SHOT,
                        TRACE_HOOK_L2_GATEWAY, TRACE_SCOPE_VPC, vpc_id, vni);
-    return TC_ACT_SHOT;
-  }
 
-  trace_emit_map_miss_l3(skb, trace_id, TRACE_REASON_L2_ARP_ASKED,
-                         TRACE_HOOK_L2_GATEWAY, TRACE_SCOPE_VPC, vpc_id, vni,
-                         (__u32)copies);
   return TC_ACT_SHOT;
 }
 
