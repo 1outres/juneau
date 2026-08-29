@@ -228,6 +228,32 @@ e2eでは対称的に外れました。worker2のPodからworkerにいる`10.92.
 
 複製が走るのは未解決アドレスの初回解決のときだけです。解決してしまえば`l2_arp`に載るのでリクエスト自体が出ません。
 
+#### 聞いたNodeへ返す
+
+共有だけでは届かないNodeが残ります。`l2_bum_remote`に載るのは`reconciler/l2_port.go`がNetworkEndpointから集めたNodeだけで、gatewayポートはNetworkEndpointを作りません。**gatewayしか持たないNodeは、どのNodeの`l2_bum_remote`にも載りません。**
+
+そこで、聞いてきたNodeを覚えておいて、そこへ返します。
+
+```
+l2_arp_asker: HASH_OF_MAPS
+  outer key: VNI
+  inner: LRU_HASH   key: IPv4 (host byte order), value: { vtep_ip, asked_ns }
+```
+
+書くのは`vxlan_ingress`のL2分岐です。overlayから来たARPリクエストの送信元MACがgateway MACだったら、`{VNI, target IP}`に`bpf_skb_get_tunnel_key`の`remote_ipv4`を書きます。質問と、その質問を出したNodeの両方が見えるhookはここだけです。
+
+読むのは`l2_egress`で、gateway MAC宛のリプライを見つけたときに`{VNI, sender IP}`を引きます。当たれば、そのVTEPへ`bpf_skb_set_tunnel_key`してから`bpf_clone_redirect`で1つだけ送ります。`l2_flood_answer`の中で、`l2_bum_remote`への複製が終わった後に走ります。トンネルキーを押した後のフレームをvethに渡せない制約は共有の複製と同じなので、順番は「ローカル → 共有 → 聞いたNode」で固定です。
+
+`l2_bum_remote`に既に載っているNodeへは送りません。共有の複製が同じフレームを運んでいるので、2通目は無駄です。
+
+**共有はやめていません。**2つは目的が違います。共有は「まだ聞いていないNodeにも答えを配る」ためのもので、これがあるおかげで別のNodeが解決したアドレスへの1発目のパケットが落ちません。ユニキャストは「聞いたのに載っていないNode」に限って届けるものです。共有をやめると、記録が上書きされたときや期限切れのときに戻る先がこのPR以前の状態になり、しかも初回解決の1発目が落ちる範囲が広がります。共有が流れるのは未解決アドレスの初回解決のときだけなので、常時のコストはありません。
+
+記録の寿命は5秒です(`L2_ARP_ASKER_TTL_NS`)。レート制限が1秒間隔なので、質問と返事の往復には十分足ります。**期限切れの記録は使いません。**聞くのをやめたNodeへ答えを送ることになり、今聞いているNodeはもう1ラウンド待たされます。時刻は`l2_arp_probe`と同じく`bpf_ktime_get_ns`です。
+
+1アドレスにつき1Nodeだけ覚えます。2つのNodeがほぼ同時に同じアドレスを聞くと後から聞いた方で上書きされ、先に聞いた方はそのラウンドの答えを受け取りません。1秒後に聞き直すので次のラウンドで解決します。Nodeのリストを持つ案は、フラッドを避けるための経路に2つ目のフラッド先リストを置くことになるので採りませんでした。
+
+VNIごとに分けたのは他のL2テーブルと同じ理由です。溢れたときの被害はこのPR以前の状態に戻るだけで`l2_arp_probe`より軽いのですが、軽い被害でも隣のテナントのせいで起きるのは筋が違います。加えて、per-VNIなら`l2/table.go`の`Table`がそのまま使えて、L2Networkの生成と削除に合わせた後始末が他のテーブルと同じ1箇所で済みます。単一のLRUだと、消えたL2Networkのエントリを掃く仕組みを別に持つことになります。
+
 **セグメントの中のARPは素通しのままです。**代理応答を持ち込むと、GARPによるMAC移動の通知も、ユーザが立てたDHCPサーバも、重複アドレス検出も壊れます。`pod_egress`の`handle_arp`が答えるのはgateway自身のアドレスへのリクエストだけで、それ以外はgw vethに届いたコピーを捨てます。元のリクエストは既に全ポートへ複製されているので、答えるべきホストが自分で答えます。
 
 ### gw vethのegressプログラム
@@ -321,11 +347,9 @@ IPv6はセグメントの中ならBUMのフラッドで動きますが、gateway
 
 gatewayはIPのTTLを減らしません。既存のSubnetの`handle_l3`も減らしていないので揃えましたが、セグメント上に置いたルータVMと経路がループした場合、TTLでは止まらず`skb->mark`のホップ数で止まります。
 
-**セグメントにNICを1枚も持たないNodeのgatewayは、juneauが配ったアドレスにしか届きません。**手で振ったアドレスやbridgeの向こうのホストは解決できません。返事の共有先は`l2_bum_remote`、つまりそのセグメントにエンドポイントを持つNodeだけです。gatewayポート自体は全Nodeにありますが、エンドポイントの無いNodeは他のNodeの`l2_bum_remote`に載らないので、共有された返事も届きません。
+セグメントにNICを1枚も持たないNodeのgatewayも、手で振ったアドレスやbridgeの向こうのホストへ届きます。`l2_arp_asker`が「聞いてきたNode」を覚えていて、答えがそこへ返るからです。かつてはここが穴でした。返事の共有先が`l2_bum_remote`だけだった頃は、control-planeのPodから手で振ったアドレスへ100% loss、seed済みのIPAMアドレスへ0% lossという分かれ方をしていました。
 
-e2eで測ると綺麗に分かれました。control-planeのPodから手で振ったアドレスへは100% loss、seed済みのIPAMアドレスへは0% lossです。`l2_arp_probe`にはtargetが載るので、聞いてはいて答えが返っていないことが読めます。
-
-完全に閉じるなら、共有をブロードキャストにせず**聞いたVTEPへユニキャストで返す**形になります。`vxlan_ingress`でgateway発のARPリクエストをsnoopしたときに`{VNI, tpa}`から聞いてきたVTEPを覚えておき、`l2_egress`が対応するリプライをそのVTEPだけへ送ります。マップが1本増えます。`l2_bum_remote`に「このVNIのgatewayを持つNode」を混ぜる案は採りません。全てのブロードキャストが全Nodeへ飛ぶようになります。
+残っているのは、2つのNodeがほぼ同時に同じアドレスを聞いたときの1ラウンドです。記録は1アドレスにつき1Nodeなので、先に聞いた方はそのラウンドの答えを受け取りません。1秒後に聞き直して次のラウンドで解決します。記録がLRUから溢れた場合と5秒の期限を過ぎた場合も同じで、どちらも次のラウンドで拾い直します。
 
 セグメントのprefixの外のアドレスへは、gatewayから届きません。聞きに行かないので`l2_arp`が埋まる道がありません。セグメントの上にルータVMを置いてその先へ出す使い方は、next hopの概念が無いので今のところ成立しません。
 
@@ -337,7 +361,7 @@ e2eで測ると綺麗に分かれました。control-planeのPodから手で振�
 
 両方とも参照カウントで管理しています。1つのセグメントの複数のエンドポイントが同じNodeに乗るのは普通のことで、そのNodeは1回だけリストに入り、最後の1つが消えるまで残らなければなりません。ローカル側も同じ仕組みにしてあるので、再起動したワークロードがvethを引き継ぐ間もリストから抜けません。
 
-L2Networkの側は`reconciler/l2_network.go`が見ます。`l2_network_map`にVNIとvpc_idを書き、`l2_fdb`と`l2_bum_local`と`l2_bum_remote`と`l2_arp`と`l2_arp_probe`のper-VNIテーブルを作ります。まとめて作るのは、一部だけあるセグメントをデータプレーンが壊れたものとして扱うからです。フラッド先のリストを見つけられなかったフレームは、どのテーブルが無かったのかを何も言わずに落ちます。テーブルの作成と破棄には`dataplane/l2/table.go`の`Table`を使います。`policy/rotator.go`と同じ「新しいinnerを作ってouterにアトミックにswapし、古いinnerをClose」という形ですが、swapは1回だけです。policyのinner mapは毎回まるごと書き直すものなので回転させて構いませんが、L2のinner mapはデータプレーンが書いたものと1エンドポイントずつ足したものが入っているので、回転させると全部消えます。
+L2Networkの側は`reconciler/l2_network.go`が見ます。`l2_network_map`にVNIとvpc_idを書き、`l2_fdb`と`l2_bum_local`と`l2_bum_remote`と`l2_arp`と`l2_arp_probe`と`l2_arp_asker`のper-VNIテーブルを作ります。まとめて作るのは、一部だけあるセグメントをデータプレーンが壊れたものとして扱うからです。フラッド先のリストを見つけられなかったフレームは、どのテーブルが無かったのかを何も言わずに落ちます。テーブルの作成と破棄には`dataplane/l2/table.go`の`Table`を使います。`policy/rotator.go`と同じ「新しいinnerを作ってouterにアトミックにswapし、古いinnerをClose」という形ですが、swapは1回だけです。policyのinner mapは毎回まるごと書き直すものなので回転させて構いませんが、L2のinner mapはデータプレーンが書いたものと1エンドポイントずつ足したものが入っているので、回転させると全部消えます。
 
 どちらのreconcilerも`Ensure`を呼ぶので、L2NetworkのイベントとNetworkEndpointのイベントのどちらが先に来ても構いません。
 
@@ -358,13 +382,14 @@ L2Networkの側は`reconciler/l2_network.go`が見ます。`l2_network_map`にVN
 | `l2_bum_remote` | HASH_OF_MAPS | VNI → VTEP IPv4 | 1 | `reconciler/l2_port.go` |
 | `l2_arp` | HASH_OF_MAPS | VNI → IPv4 | MAC | データプレーンと`reconciler/l2_arp.go` |
 | `l2_arp_probe` | HASH_OF_MAPS | VNI → IPv4 | asked_ns | データプレーン |
+| `l2_arp_asker` | HASH_OF_MAPS | VNI → IPv4 | vtep_ip / asked_ns | データプレーン |
 | `l2_gateway` | HASH | VNI | gw vethのifindex / gateway MAC | `reconciler/l2_gateway.go` |
 
 `l2_gateway`だけがNodeごとに違う値を持ちます。vethのifindexはそのNodeのものなので、あるNodeでのdumpは他のNodeについて何も言いません。
 
 `l2_bum_remote`のinner mapは`l2_bum_local`のものと中身が同じですが、別のstructとして定義してあります。1つのmap-def structを2つの`__array(values, ...)`メンバから参照すると、clangがBTF forward declarationを吐いてロード時に`can't get size of BTF key: type is unsized`で落ちます。`fib_inner_map`と`tgw_fib_inner_map`が分かれているのと同じ理由です。
 
-8つとも`dataplane/mapinventory/register.go`に登録してあるので、`kubectl juneau bpf dump`で読めます。
+9つとも`dataplane/mapinventory/register.go`に登録してあるので、`kubectl juneau bpf dump`で読めます。
 
 ```console
 $ kubectl juneau bpf dump l2_fdb --inner-key vni=4242
@@ -394,15 +419,23 @@ L2固有のreasonを追加しました。
 | `L2_ARP_ASKED` | 605 | ARPリクエストを出してパケットを落とした(aux1が聞いたアドレス) |
 | `L2_ARP_HELD` | 606 | 直前に聞いたばかりなのでARPを出さずに落とした(aux1が聞かなかったアドレス) |
 
-**返事の共有はtraceに出ません。**607と608を一度置きましたが、1回も発火しませんでした。traceのidはIPv4のタプルから引きます。ARPフレームにはタプルが無いので`trace_classify_and_emit_enter`が0を返し、その下の`trace_emit_*`は全て何も書かずに戻ります。共有が実際に起きている最中に完全なtraceを取っても、`enter`と`address miss`と`arp request sent`しか出ませんでした。発火しない定数を残しても読む人を惑わせるだけなので消しました。
+**返事の共有もユニキャストもtraceに出ません。**607と608を一度置きましたが、1回も発火しませんでした。traceのidはIPv4のタプルから引きます。ARPフレームにはタプルが無いので`trace_classify_and_emit_enter`が0を返し、その下の`trace_emit_*`は全て何も書かずに戻ります。共有が実際に起きている最中に完全なtraceを取っても、`enter`と`address miss`と`arp request sent`しか出ませんでした。発火しない定数を残しても読む人を惑わせるだけなので消しました。同じ理由で、聞いたNodeへのユニキャストにもreasonを足していません。
 
-共有が効いたかどうかは学習結果で見てください。
+どちらが効いたかはmapで見てください。答えが届いたかどうかは、聞いたNode側の`l2_arp`です。
 
 ```console
 $ kubectl juneau bpf dump l2_arp --inner-key vni=4243
 ```
 
-聞いたNodeでこれを叩いて、手で振ったアドレスが載っていれば共有が届いています。
+手で振ったアドレスが載っていれば答えが届いています。答えを運ぶ側、つまりホストが乗っているNodeでは`l2_arp_asker`を見ます。
+
+```console
+$ kubectl juneau bpf dump l2_arp_asker --inner-key vni=4243
+VNI   IPV4         VTEP_IP     ASKED_NS
+4243  10.92.0.204  10.89.0.11  882431907714
+```
+
+`VTEP_IP`が答えの送り先です。ここが空のまま聞いたNode側の`l2_arp`も空なら、質問がこのNodeまで来ていません。
 
 `L2_ARP_ASKED`と`L2_ARP_HELD`はIPv4パケットの経路で出るので発火します。この2つは、フレームを書き換える前に出しています。`trace_emit_l3`はイベントを作るときにフレームからアドレスを読み直すので、書き換えた後に出すと42バイトのARPフレームをIPv4ヘッダとして読んだ値が乗ります。`174.105.10.92:0->0.1.0.0:0`のような、実在しないのにそれらしく見えるタプルになります。
 
@@ -428,14 +461,16 @@ traceが拾えるのはIPv4のフレームだけです。TraceSessionはIPv4の5
 ```
 OK   pod_egress: tc_pod_egress processed 581856 insns (limit 1000000, 58.2% used)
 OK   pod_ingress: tc_pod_ingress processed 101533 insns (limit 1000000, 10.2% used)
-OK   vxlan_ingress: tc_vxlan_ingress_entry processed 5785 insns (limit 1000000, 0.6% used)
+OK   vxlan_ingress: tc_vxlan_ingress_entry processed 5945 insns (limit 1000000, 0.6% used)
 OK   node_ingress: tc_node_ingress processed 109544 insns (limit 1000000, 11.0% used)
-OK   l2_egress: tc_l2_egress processed 3493 insns (limit 1000000, 0.3% used)
+OK   l2_egress: tc_l2_egress processed 3455 insns (limit 1000000, 0.3% used)
 OK   l2_ingress: tc_l2_ingress processed 43781 insns (limit 1000000, 4.4% used)
-OK   l2_gateway: tc_l2_gateway processed 3488 insns (limit 1000000, 0.3% used)
+OK   l2_gateway: tc_l2_gateway processed 3484 insns (limit 1000000, 0.3% used)
 ```
 
-gatewayを入れる前は`pod_egress`が581,483命令、`vxlan_ingress`が5,166命令、`l2_egress`が2,277命令、`node_ingress`が70,965命令でした。`pod_egress`が373命令増えたのは`fib_val.type`の分岐で、`vxlan_ingress`と`l2_egress`が増えたのはARP snoopingです。`node_ingress`が109,544命令になったのはNATGatewayの応答をgatewayポートへ渡す分岐です。`l2_ingress`が511から43,781になったのは、Serviceの書き戻しとpolicyの評価です。`l2_gateway`はその2つを一度預かって132,527まで行きましたが、ノードを間違えていたので`l2_ingress`へ移し、2,709に戻りました。そこから3,488になったのは能動的なARPの分です。`l2_egress`が2,786から3,493、`vxlan_ingress`が5,282から5,785になったのは、gateway宛のARPリプライを他のNodeへ配る分と、受け取った側で捨てる分です。`vxlan_ingress`は発火しないtraceのemitを消したときに5,675から増えました。呼び出しが1つ減って分岐が単純な`return`になり、verifierが後続を歩き直す形が変わったためです。命令数は書いた行数では決まりません。`vxlan_ingress`はL2分岐を入れる前が3,760命令(0.4%)でした。
+gatewayを入れる前は`pod_egress`が581,483命令、`vxlan_ingress`が5,166命令、`l2_egress`が2,277命令、`node_ingress`が70,965命令でした。`pod_egress`が373命令増えたのは`fib_val.type`の分岐で、`vxlan_ingress`と`l2_egress`が増えたのはARP snoopingです。`node_ingress`が109,544命令になったのはNATGatewayの応答をgatewayポートへ渡す分岐です。`l2_ingress`が511から43,781になったのは、Serviceの書き戻しとpolicyの評価です。`l2_gateway`はその2つを一度預かって132,527まで行きましたが、ノードを間違えていたので`l2_ingress`へ移し、2,709に戻りました。そこから3,488になったのは能動的なARPの分です。`l2_egress`が2,786から3,493、`vxlan_ingress`が5,282から5,785になったのは、gateway宛のARPリプライを他のNodeへ配る分と、受け取った側で捨てる分です。
+
+聞いたNodeへのユニキャストを入れて、`vxlan_ingress`が5,785から5,945、`l2_gateway`が3,488から3,484、`l2_egress`が3,493から**3,455**になりました。**2本は減っています。**`l2_arp_snoop`が返り値をやめて`struct l2_arp_view`に書くようになり、リモートへの複製が`l2_send_over_overlay`に切り出されたので、verifierの歩き方が変わったためです。`vxlan_ingress`は発火しないtraceのemitを消したときにも5,675から増えました。呼び出しが1つ減って分岐が単純な`return`になり、後続を歩き直す形が変わったためです。**命令数は書いた行数では決まりません。**増減に驚かず、上限に収まっているかだけを見てください。`vxlan_ingress`はL2分岐を入れる前が3,760命令(0.4%)でした。
 
 `bpf/`の下を触ったらこれを回してください。命令数が上限を超えてもコンパイラは何も言わず、次に分かるのはdaemonがcrashloopに入ったときです。実行にはrootとマウント済みのbpffsが要ります。
 
@@ -461,6 +496,8 @@ bpftest.Run(t, ports.program, frame, ports.pod1)
 VXLAN側は`BPF_PROG_TEST_RUN`では駆動できません。プログラムがフレームからトンネルキーを読むのに、テストが直接渡したフレームは何も持っていないからです。そこでVXLANデバイスを本当に作り、daemonと同じ場所にプログラムを貼り、自分宛にカプセル化したフレームを送ります。出てくるのは本番と同じskbで、しかも本物のアタッチなので`bpf_redirect`も実際にフレームを運びます。split horizonの検証はこちらで行っています。
 
 gatewayについては、`BPF_PROG_TEST_RUN`では`BPF_F_INGRESS`のredirectが本当にingressへ届いたかを見せられません。dummyデバイスは受信側のカウンタを持たないので、届かなかった場合と区別が付かないからです。`TestGatewayAnswersArpFromTheSegment`はそこを一往復まるごとで確かめます。`pod_egress`、`l2_egress`、`l2_gateway`を1つのpin pathに読み込んでmapを共有させ、gateway vethの両hookにdaemonと同じプログラムを貼り、セグメントのポートからgatewayのアドレス宛のARPリクエストを流します。返事がリクエストを出したポートに届けば、複製がingressに渡って`pod_egress`が答え、その答えが`l2_gateway`を通って戻ってきたということです。この経路以外にそのポートへフレームが届く道はありません。
+
+聞いたNodeへのユニキャストにも同じ問題があります。ダミーデバイスはフレームの数を数えるだけで、押されたトンネルキーについては何も言いません。`TestTheAnswerCrossesTheOverlayToTheNodeThatAsked`は`l2_egress`と`vxlan_ingress`を1つのpin pathに読み込み、本物のVXLANデバイスを`127.0.0.1`に向けて質問と答えを一周させます。`l2_bum_remote`は空にしてあるので、overlayに出る道はユニキャスト1つだけです。答えが戻ってくると`vxlan_ingress`がホストのMACを「あのNodeにいる」と学習し直すので、`l2_fdb`のそのエントリがローカルのifindexからVTEPに変わったことが、トンネルキーが記録どおりのNodeとVNIを指していた証拠になります。
 
 `TestGatewayCarriesAClusterIPFlowBothWays`は同じ足回りでServiceの往復を通します。往路は`pod_egress`をgw vethのifindexで走らせてDNATと逆向きエントリの記録まで、復路は`l2_ingress`にワークロードのポートで応答を渡してアドレスが戻ることまでです。2つのプログラムは`ct_map`でしか出会わないので、片方だけのテストでは「同じscopeを見ているか」が確かめられません。1つのpin pathに両方を読み込むのはそのためです。
 
