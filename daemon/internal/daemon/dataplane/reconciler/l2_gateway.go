@@ -294,10 +294,11 @@ func (r *L2Gateway) stand(key string, network *juneauv1alpha1.L2Network, port *l
 		return fmt.Errorf("update IfindexSubnet: %w", err)
 	}
 
-	// The one forwarding entry user space writes. A gateway sends no
-	// frame of its own, so there is nothing for the data plane to learn
-	// it from, and the flag keeps a workload that claims the address
-	// from taking the entry over.
+	// The one forwarding entry user space writes. Every node answers on
+	// this MAC, so a frame carrying it says nothing about where it
+	// belongs and the entry has to name the port on this node. The flag
+	// keeps both the data plane and a workload that claims the address
+	// from moving it.
 	if err := r.maps.Fdb.Put(port.vni,
 		bpf.PodEgressL2FdbKey{Mac: mac},
 		bpf.PodEgressL2FdbVal{Ifindex: ifindex, Flags: l2.FdbFlagGateway},

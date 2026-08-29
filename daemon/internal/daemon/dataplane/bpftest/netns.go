@@ -108,12 +108,13 @@ func Dummy(t *testing.T, name string) Device {
 	return Device{Name: name, Index: built.Attrs().Index}
 }
 
-// txPackets is how many frames the device has been handed so far.
+// txCounters is how many frames the device has been handed so far and
+// how many bytes they came to.
 //
-// The count comes over netlink and not from /sys/class/net, because
+// The counts come over netlink and not from /sys/class/net, because
 // sysfs still shows the namespace it was mounted in and the devices
 // here live in a namespace made after that.
-func (d Device) txPackets(t *testing.T) uint64 {
+func (d Device) txCounters(t *testing.T) (packets, bytes uint64) {
 	t.Helper()
 	link, err := netlink.LinkByIndex(d.Index)
 	if err != nil {
@@ -123,7 +124,7 @@ func (d Device) txPackets(t *testing.T) uint64 {
 	if stats == nil {
 		t.Fatalf("bpftest: the kernel reported no counters for %s", d.Name)
 	}
-	return stats.TxPackets
+	return stats.TxPackets, stats.TxBytes
 }
 
 // Ports counts the copies of a frame that reach each device.
@@ -133,15 +134,21 @@ func (d Device) txPackets(t *testing.T) uint64 {
 // was fed when nothing fed it. Take a Ports before the run and ask it
 // afterwards.
 type Ports struct {
-	before map[int]uint64
+	before map[int]portCounters
+}
+
+type portCounters struct {
+	packets uint64
+	bytes   uint64
 }
 
 // WatchPorts records where the given devices stand right now.
 func WatchPorts(t *testing.T, devices ...Device) *Ports {
 	t.Helper()
-	p := &Ports{before: make(map[int]uint64, len(devices))}
+	p := &Ports{before: make(map[int]portCounters, len(devices))}
 	for _, device := range devices {
-		p.before[device.Index] = device.txPackets(t)
+		packets, bytes := device.txCounters(t)
+		p.before[device.Index] = portCounters{packets: packets, bytes: bytes}
 	}
 	return p
 }
@@ -151,9 +158,25 @@ func WatchPorts(t *testing.T, devices ...Device) *Ports {
 // rather than a device with nothing delivered, so it fails.
 func (p *Ports) Delivered(t *testing.T, device Device) uint64 {
 	t.Helper()
+	packets, _ := device.txCounters(t)
+	return packets - p.watched(t, device).packets
+}
+
+// DeliveredBytes is how many bytes those frames came to. It is how a
+// test reads the length of a frame a program resized: what the kernel
+// copies back to the caller keeps the room the caller offered, and the
+// port that took the copy is the only place the real length shows.
+func (p *Ports) DeliveredBytes(t *testing.T, device Device) uint64 {
+	t.Helper()
+	_, bytes := device.txCounters(t)
+	return bytes - p.watched(t, device).bytes
+}
+
+func (p *Ports) watched(t *testing.T, device Device) portCounters {
+	t.Helper()
 	before, watched := p.before[device.Index]
 	if !watched {
 		t.Fatalf("bpftest: %s was not watched, so nothing can be said about it", device.Name)
 	}
-	return device.txPackets(t) - before
+	return before
 }

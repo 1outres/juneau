@@ -220,6 +220,22 @@
 #define MAX_L2_BUM_PER_NETWORK 1024
 #endif
 
+#ifndef MAX_L2_ARP_PROBE_PER_NETWORK
+// MAX_L2_ARP_PROBE_PER_NETWORK bounds how many addresses one
+// L2Network's gateway keeps an ask-again time for. It is an LRU, so a
+// segment with more unresolved addresses than this at once loses the
+// oldest times and asks for them again sooner than the interval below
+// says. Only that segment is affected: the table is per VNI.
+#define MAX_L2_ARP_PROBE_PER_NETWORK 8192
+#endif
+
+// L2_ARP_PROBE_INTERVAL_NS is how long the gateway waits before asking
+// the segment for the same address again. One second is what an
+// ordinary router allows itself for a neighbour it cannot resolve.
+// Without the wait, every packet for an address nobody has claimed
+// would put a request on every port of the segment.
+#define L2_ARP_PROBE_INTERVAL_NS 1000000000ULL
+
 // L2_FDB_AGING_NS is how long a learned MAC stays without being seen
 // again. 300 seconds is what an ordinary switch uses.
 #define L2_FDB_AGING_NS 300000000000ULL
@@ -1367,8 +1383,10 @@ struct l2_fdb_val {
 // l2_fdb_inner_map is one L2Network's learning table. l2_egress learns
 // from the frames a local port sends and vxlan_ingress learns from the
 // frames the overlay delivers. User space writes exactly one entry, the
-// MAC of this node's gateway port, because a gateway sends no frame of
-// its own and there is nothing to learn it from.
+// MAC of this node's gateway port: every node answers on that same MAC,
+// so a frame carrying it says nothing about where it belongs, and the
+// entry has to name the port here rather than the node the frame came
+// from. L2_FDB_FLAG_GATEWAY is what keeps learning from moving it.
 struct l2_fdb_inner_map {
   __uint(type, BPF_MAP_TYPE_LRU_HASH);
   __uint(max_entries, MAX_L2_FDB_PER_NETWORK);
@@ -1474,6 +1492,48 @@ struct {
   __uint(pinning, LIBBPF_PIN_BY_NAME);
   __array(values, struct l2_arp_inner_map);
 } l2_arp SEC(".maps");
+
+struct l2_arp_probe_key {
+  // ipv4 of the address the gateway is looking for, host byte order,
+  // the same form l2_arp is keyed on.
+  __u32 ipv4;
+};
+
+struct l2_arp_probe_val {
+  // asked_ns is the CLOCK_MONOTONIC stamp of the last request the
+  // gateway put on the segment for this address.
+  __u64 asked_ns;
+};
+
+// l2_arp_probe_inner_map is what keeps one L2Network's gateway from
+// turning an address nobody answers for into a broadcast storm. The
+// gateway asks the segment for an address it cannot resolve, and this
+// says when it last asked.
+//
+// Nothing ages it: the map is an LRU and an address that stops being
+// asked for falls out on its own once the table needs the room.
+struct l2_arp_probe_inner_map {
+  __uint(type, BPF_MAP_TYPE_LRU_HASH);
+  __uint(max_entries, MAX_L2_ARP_PROBE_PER_NETWORK);
+  __type(key, struct l2_arp_probe_key);
+  __type(value, struct l2_arp_probe_val);
+};
+
+struct l2_arp_probe_inner_map l2_arp_probe_inner SEC(".maps");
+
+// l2_arp_probe is per VNI for the reason l2_fdb and l2_arp are. One
+// table for the whole node would let a segment asking for thousands of
+// addresses push another segment's entries out, and a segment that has
+// lost them asks again for every packet — which is the storm this
+// table exists to prevent, moved to a tenant that did nothing.
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
+  __uint(max_entries, MAX_L2_NETWORKS);
+  __type(key, __u32); // VNI
+  __type(value, __u32);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+  __array(values, struct l2_arp_probe_inner_map);
+} l2_arp_probe SEC(".maps");
 
 struct l2_gateway_key {
   __u32 vni;

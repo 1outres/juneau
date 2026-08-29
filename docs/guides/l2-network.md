@@ -272,7 +272,15 @@ VNI   IPV4        MAC
 4243  10.92.0.2   1a:2b:3c:00:00:03
 ```
 
-ここに載っていないアドレスへは、Vpcの側から届きません。gatewayは自分からARPを出さないので、そのホストが一度もARPを流していないと解決できないからです。
+ここに載っていないアドレス宛のパケットが来ると、gatewayはセグメントにARPリクエストを出して、そのパケットは落とします。返事が返れば次から通ります。同じアドレスへ聞くのは1秒に1回までで、聞いた時刻は`l2_arp_probe`に残ります。
+
+```console
+$ kubectl juneau bpf dump l2_arp_probe --inner-key vni=4243
+VNI   IPV4        ASKED_NS
+4243  10.92.0.7   882431907714
+```
+
+ここに載っていて`l2_arp`に載らないアドレスは、聞いても誰も答えていないアドレスです。
 
 ## 注意点
 
@@ -311,11 +319,15 @@ Error from server (Forbidden): ... address 10.92.0.1 is already held by Allocati
 
 `spec.gateway.address`に空いているアドレスを書くか、そのアドレスを持っているPodを消してから足してください。
 
-### 自分で振ったアドレスはgatewayから見えません
+### 未解決の宛先への1発目は落ちます
 
-gatewayは、Juneauが配ったアドレスと、セグメントを流れるARPから見えたアドレスしか解決できません。`spec.cidr`の外のアドレスをPodの中で自分で振ったり、NICの後ろのbridgeにホストをぶら下げたりすると、そのホストが一度ARPを出すまでVpc側から届きません。`kubectl juneau trace`では`MISS_L2_ARP`として見えます。
+gatewayがまだ知らないアドレス宛のパケットが来ると、ARPリクエストを出してそのパケットは捨てます。返事を待つ間パケットを持っておく手段がデータプレーンに無いためです。TCPは再送が拾うのでほとんど気付きませんが、`ping -c 1`のような単発は1つ目が返ってきません。`kubectl juneau trace`では`MISS_L2_ARP`の後に`L2_ARP_ASKED`が並びます。
 
-出てしまったら、そのホストから何か1つ外へ向けて送れば埋まります。
+聞きに行くのは`spec.cidr`の中のアドレスだけです。その外へは`l2_arp`に載る道が無いので届きません。
+
+返事はNodeを跨いでも届きます。gatewayは全Nodeが同じMACで答えるので、ホストの返事はそのホストが乗っているNodeのgatewayに渡ります。聞いたのが別のNodeでも困らないように、gateway宛のARPリプライはセグメントに参加している全Nodeへ配られ、各Nodeがそこからアドレスを読みます。この共有は`kubectl juneau trace`には出ません。ARPフレームにはtraceが引くタプルが無いためです。届いたかどうかは`kubectl juneau bpf dump l2_arp`で見てください。
+
+ただし配る先はそのセグメントにNICを持つNodeだけです。セグメントのNICが1枚も無いNodeのPodからだと、Juneauが配っていないアドレスへは今も届きません。そのアドレスをNetworkEndpointに載せるか、対象のホストから一度何か外へ送ってください。
 
 ### IPv6はgatewayを越えられません
 

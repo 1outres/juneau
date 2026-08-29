@@ -316,11 +316,10 @@ func gatewayHops(mark uint32) uint32 { return (mark & gatewayHopMask) >> gateway
 
 func markWithHops(hops uint32) uint32 { return hops << gatewayHopShift }
 
-// The gateway has no way of its own to learn which MAC owns which
-// address: it never sends an ARP request, because answering one on
-// behalf of a host would break the DHCP server, the router and the
-// duplicate-address probes a segment is built to carry. So it reads the
-// ARP that crosses the segment anyway.
+// Most of what the gateway knows about the segment it reads off the ARP
+// that was going to cross it anyway. Asking is the fallback, and it
+// costs a round trip and a lost packet; a host that speaks first is
+// already resolved by the time the Vpc reaches for it.
 func TestL2EgressRecordsTheSenderOfAnArpRequest(t *testing.T) {
 	ports := newL2EgressPorts(t)
 	sender := bpftest.MAC(1)

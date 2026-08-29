@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/cilium/ebpf"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,6 +38,7 @@ type l2Segment struct {
 	bumLocal  *l2.Table
 	bumRemote *l2.Table
 	arp       *l2.Table
+	arpProbe  *l2.Table
 }
 
 // newL2Segment loads one generated object and brings testVNI up as an
@@ -58,9 +60,10 @@ func newL2Segment(t *testing.T, load func() (*ebpf.CollectionSpec, error)) *l2Se
 		bumLocal:  l2.NewTable("bum-local", objs.Map(t, "l2_bum_local"), objs.MapSpec(t, "l2_bum_local_inner")),
 		bumRemote: l2.NewTable("bum-remote", objs.Map(t, "l2_bum_remote"), objs.MapSpec(t, "l2_bum_remote_inner")),
 		arp:       l2.NewTable("arp", objs.Map(t, "l2_arp"), objs.MapSpec(t, "l2_arp_inner")),
+		arpProbe:  l2.NewTable("arp-probe", objs.Map(t, "l2_arp_probe"), objs.MapSpec(t, "l2_arp_probe_inner")),
 	}
 	t.Cleanup(func() {
-		for _, table := range []*l2.Table{seg.fdb, seg.bumLocal, seg.bumRemote, seg.arp} {
+		for _, table := range []*l2.Table{seg.fdb, seg.bumLocal, seg.bumRemote, seg.arp, seg.arpProbe} {
 			if err := table.CloseAll(); err != nil {
 				t.Errorf("close the per-VNI tables: %v", err)
 			}
@@ -84,7 +87,13 @@ func newL2Segment(t *testing.T, load func() (*ebpf.CollectionSpec, error)) *l2Se
 	).Build()
 
 	network := reconciler.NewL2Network(client, objs.Map(t, "l2_network_map"),
-		seg.fdb, seg.bumLocal, seg.bumRemote, seg.arp)
+		reconciler.L2NetworkTables{
+			Fdb:       seg.fdb,
+			BumLocal:  seg.bumLocal,
+			BumRemote: seg.bumRemote,
+			Arp:       seg.arp,
+			ArpProbe:  seg.arpProbe,
+		})
 	if err := network.Reconcile(context.Background(), "lab-net"); err != nil {
 		t.Fatalf("bring the segment up: %v", err)
 	}
@@ -97,6 +106,7 @@ func newL2Segment(t *testing.T, load func() (*ebpf.CollectionSpec, error)) *l2Se
 		"l2_bum_local":  seg.bumLocal,
 		"l2_bum_remote": seg.bumRemote,
 		"l2_arp":        seg.arp,
+		"l2_arp_probe":  seg.arpProbe,
 	} {
 		built := false
 		table.ForEachInner(func(vni uint32, _ *ebpf.Map) {
@@ -269,6 +279,43 @@ func (s *l2Segment) resolved(t *testing.T, address string) (net.HardwareAddr, bo
 		return nil, false
 	}
 	return net.HardwareAddr(val.Mac[:]), true
+}
+
+// askedAt reads the moment the gateway last put a request for one
+// address on the segment.
+func (s *l2Segment) askedAt(t *testing.T, address string) (uint64, bool) {
+	t.Helper()
+	var (
+		val   bpf.PodEgressL2ArpProbeVal
+		found bool
+	)
+	s.arpProbe.ForEachInner(func(vni uint32, inner *ebpf.Map) {
+		if vni != testVNI {
+			return
+		}
+		found = inner.Lookup(&bpf.PodEgressL2ArpProbeKey{Ipv4: hostOrderIPv4(t, address)}, &val) == nil
+	})
+	if !found {
+		return 0, false
+	}
+	return val.AskedNs, true
+}
+
+// rewindAsk moves the record of the last request back by d, which is
+// how a test reaches the far side of the interval without waiting
+// through it.
+func (s *l2Segment) rewindAsk(t *testing.T, address string, d time.Duration) {
+	t.Helper()
+	asked, ok := s.askedAt(t, address)
+	if !ok {
+		t.Fatalf("the gateway has asked for nothing about %s", address)
+	}
+	if err := s.arpProbe.Put(testVNI,
+		bpf.PodEgressL2ArpProbeKey{Ipv4: hostOrderIPv4(t, address)},
+		bpf.PodEgressL2ArpProbeVal{AskedNs: asked - uint64(d.Nanoseconds())},
+	); err != nil {
+		t.Fatalf("move the last request for %s back: %v", address, err)
+	}
 }
 
 // addRemoteNode puts a node's underlay address on the remote flood

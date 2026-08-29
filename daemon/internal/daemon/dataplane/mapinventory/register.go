@@ -57,6 +57,7 @@ func RegisterPodEgress(inv *Inventory, p *program.PodEgress) error {
 		registerL2BumLocal,
 		registerL2BumRemote,
 		registerL2Arp,
+		registerL2ArpProbe,
 		registerL2Gateway,
 	} {
 		if err := fn(inv, p); err != nil {
@@ -822,6 +823,27 @@ func registerL2Arp(inv *Inventory, p *program.PodEgress) error {
 		InnerValue: Schema{Fields: []Field{
 			FieldMACNamed("mac"),
 			FieldPadOf(2),
+		}},
+	})
+}
+
+// registerL2ArpProbe exposes when the gateway of a segment last asked
+// it for an address it could not resolve. An address here that is not
+// in l2_arp is a question nobody has answered, which is where to look
+// when one host on a segment stays unreachable.
+func registerL2ArpProbe(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name:       "l2_arp_probe",
+		Map:        p.Objs.L2ArpProbe,
+		HashOfMaps: true,
+		InnerProto: p.MapSpecs.L2ArpProbeInner,
+		Key: Schema{Fields: []Field{
+			FieldU32Named("vni"),
+		}},
+		Value:    Schema{},
+		InnerKey: Schema{Fields: []Field{FieldIPv4Named("ipv4")}},
+		InnerValue: Schema{Fields: []Field{
+			FieldU64Named("asked_ns", "CLOCK_MONOTONIC stamp of the last request"),
 		}},
 	})
 }

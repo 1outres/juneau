@@ -82,7 +82,7 @@ static __always_inline int handle(struct __sk_buff *skb) {
   // The addresses an ARP frame carries are recorded before anything
   // else reads the segment: the gateway resolves a destination address
   // to a MAC out of this table, and it has no other way to fill it in.
-  l2_arp_snoop(skb, vni, eth);
+  bool answer_for_gateway = l2_arp_snoop(skb, vni, eth);
 
   // Whatever MAC the workload puts in the frame is learned as its own.
   // An L2Network is a segment the user builds, so who claims which
@@ -92,6 +92,20 @@ static __always_inline int handle(struct __sk_buff *skb) {
     trace_emit_map_miss_l3(skb, __trace_id, TRACE_REASON_L2_LEARNED,
                            TRACE_HOOK_L2_EGRESS, TRACE_SCOPE_VPC, vpc_id, vni,
                            in_ifindex);
+
+  // A reply addressed to the gateway answers a question one of them
+  // asked, and the one that asked is usually on another node. It goes
+  // to the gateway here and to every other node instead of to the one
+  // port that holds the MAC.
+  //
+  // Nothing is traced here. The trace plane keys on an IPv4 tuple and an
+  // ARP frame has none, so trace_classify_and_emit_enter hands back the
+  // id 0 and every emit under it returns without writing. What the
+  // copies achieved is read out of l2_arp instead.
+  if (answer_for_gateway) {
+    l2_flood_answer(skb, &from);
+    return TC_ACT_SHOT;
+  }
 
   if (!l2_is_bum(dst_mac)) {
     struct l2_forward forwarded = {};

@@ -127,16 +127,50 @@ func newL2TestNetwork(vni uint32) *juneauv1alpha1.L2Network {
 	}
 }
 
-func newL2NetworkFixture(t *testing.T, objs ...runtime.Object) (*L2Network, *fakeBpfMap, *fakeL2Table, *fakeL2Table, *fakeL2Table, *fakeL2Table) {
+// fakeL2Tables is one segment's tables as the reconciler tests hold
+// them: the same set L2NetworkTables names, kept as fakes so the
+// assertions can read what was written into each.
+type fakeL2Tables struct {
+	fdb       *fakeL2Table
+	bumLocal  *fakeL2Table
+	bumRemote *fakeL2Table
+	arp       *fakeL2Table
+	arpProbe  *fakeL2Table
+}
+
+func (f fakeL2Tables) byName() map[string]*fakeL2Table {
+	return map[string]*fakeL2Table{
+		"fdb":        f.fdb,
+		"bum-local":  f.bumLocal,
+		"bum-remote": f.bumRemote,
+		"arp":        f.arp,
+		"arp-probe":  f.arpProbe,
+	}
+}
+
+func newL2NetworkFixture(t *testing.T, objs ...runtime.Object) (*L2Network, *fakeBpfMap, fakeL2Tables) {
 	t.Helper()
 	cl := fake.NewClientBuilder().WithScheme(newNatTestScheme(t)).WithRuntimeObjects(objs...).Build()
 	networkMap := newFakeBpfMap()
-	fdb, local, remote, arp := newFakeL2Table(), newFakeL2Table(), newFakeL2Table(), newFakeL2Table()
-	return NewL2Network(cl, networkMap, fdb, local, remote, arp), networkMap, fdb, local, remote, arp
+	tables := fakeL2Tables{
+		fdb:       newFakeL2Table(),
+		bumLocal:  newFakeL2Table(),
+		bumRemote: newFakeL2Table(),
+		arp:       newFakeL2Table(),
+		arpProbe:  newFakeL2Table(),
+	}
+	reconciler := NewL2Network(cl, networkMap, L2NetworkTables{
+		Fdb:       tables.fdb,
+		BumLocal:  tables.bumLocal,
+		BumRemote: tables.bumRemote,
+		Arp:       tables.arp,
+		ArpProbe:  tables.arpProbe,
+	})
+	return reconciler, networkMap, tables
 }
 
 func TestL2NetworkClaimsItsVniAndBuildsItsTables(t *testing.T) {
-	r, networkMap, fdb, local, remote, arp := newL2NetworkFixture(t, newL2TestNetwork(4242), newL2TestVpc())
+	r, networkMap, tables := newL2NetworkFixture(t, newL2TestNetwork(4242), newL2TestVpc())
 
 	if err := r.Reconcile(context.Background(), "lab-net"); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -149,7 +183,7 @@ func TestL2NetworkClaimsItsVniAndBuildsItsTables(t *testing.T) {
 	if want := (bpf.PodEgressL2NetworkVal{VpcId: 11}); got != want {
 		t.Errorf("l2_network_map value = %+v, want %+v", got, want)
 	}
-	for name, table := range map[string]*fakeL2Table{"fdb": fdb, "bum-local": local, "bum-remote": remote, "arp": arp} {
+	for name, table := range tables.byName() {
 		if !table.has(4242) {
 			t.Errorf("%s has no table for VNI 4242", name)
 		}
@@ -160,7 +194,7 @@ func TestL2NetworkClaimsItsVniAndBuildsItsTables(t *testing.T) {
 // data plane keys is keyed by it. Programming anything before it lands
 // would write under VNI 0, which is no network at all.
 func TestL2NetworkWaitsForItsVni(t *testing.T) {
-	r, networkMap, fdb, _, _, _ := newL2NetworkFixture(t, newL2TestNetwork(0), newL2TestVpc())
+	r, networkMap, tables := newL2NetworkFixture(t, newL2TestNetwork(0), newL2TestVpc())
 
 	if err := r.Reconcile(context.Background(), "lab-net"); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -169,13 +203,13 @@ func TestL2NetworkWaitsForItsVni(t *testing.T) {
 	if len(networkMap.entries) != 0 {
 		t.Errorf("l2_network_map was written before the VNI landed: %v", networkMap.entries)
 	}
-	if fdb.has(0) {
+	if tables.fdb.has(0) {
 		t.Error("a forwarding table was built under VNI 0")
 	}
 }
 
 func TestL2NetworkDropsItsTablesWhenTheNetworkGoesAway(t *testing.T) {
-	r, networkMap, fdb, local, remote, arp := newL2NetworkFixture(t, newL2TestNetwork(4242), newL2TestVpc())
+	r, networkMap, tables := newL2NetworkFixture(t, newL2TestNetwork(4242), newL2TestVpc())
 
 	if err := r.Reconcile(context.Background(), "lab-net"); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -193,7 +227,7 @@ func TestL2NetworkDropsItsTablesWhenTheNetworkGoesAway(t *testing.T) {
 	if len(networkMap.entries) != 0 {
 		t.Errorf("l2_network_map still holds %v", networkMap.entries)
 	}
-	for name, table := range map[string]*fakeL2Table{"fdb": fdb, "bum-local": local, "bum-remote": remote, "arp": arp} {
+	for name, table := range tables.byName() {
 		if table.has(4242) {
 			t.Errorf("%s still holds a table for a network that is gone", name)
 		}
