@@ -177,6 +177,18 @@ type PodIngressIpv4FragVal struct {
 	LastSeenNs uint64
 }
 
+type PodIngressL2ArpAskerKey struct {
+	_    structs.HostLayout
+	Ipv4 uint32
+}
+
+type PodIngressL2ArpAskerVal struct {
+	_       structs.HostLayout
+	VtepIp  uint32
+	Pad     uint32
+	AskedNs uint64
+}
+
 type PodIngressL2ArpKey struct {
 	_    structs.HostLayout
 	Ipv4 uint32
@@ -561,6 +573,8 @@ type PodIngressMapSpecs struct {
 	IfindexSubnet         *ebpf.MapSpec `ebpf:"ifindex_subnet"`
 	Ipv4FragMap           *ebpf.MapSpec `ebpf:"ipv4_frag_map"`
 	L2Arp                 *ebpf.MapSpec `ebpf:"l2_arp"`
+	L2ArpAsker            *ebpf.MapSpec `ebpf:"l2_arp_asker"`
+	L2ArpAskerInner       *ebpf.MapSpec `ebpf:"l2_arp_asker_inner"`
 	L2ArpInner            *ebpf.MapSpec `ebpf:"l2_arp_inner"`
 	L2ArpProbe            *ebpf.MapSpec `ebpf:"l2_arp_probe"`
 	L2ArpProbeInner       *ebpf.MapSpec `ebpf:"l2_arp_probe_inner"`
@@ -646,6 +660,8 @@ type PodIngressMaps struct {
 	IfindexSubnet         *ebpf.Map `ebpf:"ifindex_subnet"`
 	Ipv4FragMap           *ebpf.Map `ebpf:"ipv4_frag_map"`
 	L2Arp                 *ebpf.Map `ebpf:"l2_arp"`
+	L2ArpAsker            *ebpf.Map `ebpf:"l2_arp_asker"`
+	L2ArpAskerInner       *ebpf.Map `ebpf:"l2_arp_asker_inner"`
 	L2ArpInner            *ebpf.Map `ebpf:"l2_arp_inner"`
 	L2ArpProbe            *ebpf.Map `ebpf:"l2_arp_probe"`
 	L2ArpProbeInner       *ebpf.Map `ebpf:"l2_arp_probe_inner"`
@@ -705,6 +721,8 @@ func (m *PodIngressMaps) Close() error {
 		m.IfindexSubnet,
 		m.Ipv4FragMap,
 		m.L2Arp,
+		m.L2ArpAsker,
+		m.L2ArpAskerInner,
 		m.L2ArpInner,
 		m.L2ArpProbe,
 		m.L2ArpProbeInner,

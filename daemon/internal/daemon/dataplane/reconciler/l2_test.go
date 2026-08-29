@@ -136,6 +136,7 @@ type fakeL2Tables struct {
 	bumRemote *fakeL2Table
 	arp       *fakeL2Table
 	arpProbe  *fakeL2Table
+	arpAsker  *fakeL2Table
 }
 
 func (f fakeL2Tables) byName() map[string]*fakeL2Table {
@@ -145,6 +146,7 @@ func (f fakeL2Tables) byName() map[string]*fakeL2Table {
 		"bum-remote": f.bumRemote,
 		"arp":        f.arp,
 		"arp-probe":  f.arpProbe,
+		"arp-asker":  f.arpAsker,
 	}
 }
 
@@ -158,6 +160,7 @@ func newL2NetworkFixture(t *testing.T, objs ...runtime.Object) (*L2Network, *fak
 		bumRemote: newFakeL2Table(),
 		arp:       newFakeL2Table(),
 		arpProbe:  newFakeL2Table(),
+		arpAsker:  newFakeL2Table(),
 	}
 	reconciler := NewL2Network(cl, networkMap, L2NetworkTables{
 		Fdb:       tables.fdb,
@@ -165,6 +168,7 @@ func newL2NetworkFixture(t *testing.T, objs ...runtime.Object) (*L2Network, *fak
 		BumRemote: tables.bumRemote,
 		Arp:       tables.arp,
 		ArpProbe:  tables.arpProbe,
+		ArpAsker:  tables.arpAsker,
 	})
 	return reconciler, networkMap, tables
 }

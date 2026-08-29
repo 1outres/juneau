@@ -32,10 +32,13 @@ type L2NetworkTables struct {
 	// ArpProbe is l2_arp_probe, when the gateway last asked the segment
 	// for an address it could not resolve.
 	ArpProbe l2NetworkTable
+	// ArpAsker is l2_arp_asker, which node asked the segment for an
+	// address, so the answer can be carried back to it.
+	ArpAsker l2NetworkTable
 }
 
 func (t L2NetworkTables) all() []l2NetworkTable {
-	return []l2NetworkTable{t.Fdb, t.BumLocal, t.BumRemote, t.Arp, t.ArpProbe}
+	return []l2NetworkTable{t.Fdb, t.BumLocal, t.BumRemote, t.Arp, t.ArpProbe, t.ArpAsker}
 }
 
 // L2Network keeps l2_network_map in sync with L2Network objects and

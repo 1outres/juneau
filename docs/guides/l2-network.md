@@ -282,6 +282,16 @@ VNI   IPV4        ASKED_NS
 
 ここに載っていて`l2_arp`に載らないアドレスは、聞いても誰も答えていないアドレスです。
 
+返事は聞いたNodeへ返ります。gatewayは全Nodeが同じMACで答えるので、ホストは自分の乗っているNodeのgatewayに返事をします。そのNodeが聞いてきたNodeへ送り直すので、そのL2NetworkのNICを1枚も持たないNodeのPodからでも、手で振ったアドレスやNICの後ろのbridgeの向こうのホストに届きます。誰が聞いたかは、答えを運ぶ側のNodeで読めます。
+
+```console
+$ kubectl juneau bpf dump l2_arp_asker --inner-key vni=4243
+VNI   IPV4         VTEP_IP     ASKED_NS
+4243  10.92.0.204  10.89.0.11  882431907714
+```
+
+`VTEP_IP`が答えの送り先のNodeです。
+
 ## 注意点
 
 ### eth0には使えません

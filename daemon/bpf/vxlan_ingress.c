@@ -66,7 +66,20 @@ static __always_inline int handle_l2_overlay(struct __sk_buff *skb,
   // this is where every node learns the addresses of the hosts it does
   // not hold itself. Without it the gateway here could only address the
   // part of the segment that lives on this node.
-  bool answer_for_gateway = l2_arp_snoop(skb, vni, eth);
+  struct l2_arp_view arp = {};
+  l2_arp_snoop(skb, vni, eth, &arp);
+
+  // A question the gateway of another node asked names the node that
+  // is waiting for the answer, and this is the only hook that sees
+  // both. The answer comes back to whichever node the host sits on,
+  // and l2_egress there reads this to know where to send it.
+  //
+  // A node that runs a gateway and holds no port on the segment is the
+  // one this is for. It publishes no NetworkEndpoint, so it is on no
+  // flood list, and the copy of the answer that goes to the nodes with
+  // ports never reaches it.
+  if (arp.question_from_gateway)
+    l2_arp_remember_ask(vni, arp.target, remote_vtep);
 
   if (l2_learn(table, src_mac, 0, remote_vtep))
     trace_emit_map_miss_l3(skb, __trace_id, TRACE_REASON_L2_LEARNED,
@@ -74,15 +87,15 @@ static __always_inline int handle_l2_overlay(struct __sk_buff *skb,
                            vni, remote_vtep);
 
   // A reply addressed to the gateway was put on the overlay by the node
-  // the host answered on, so that every node could read the address out
-  // of it. Both tables have it now and the frame is spent: the gateway
-  // there has already had it, and every node runs one on the same
-  // address, so passing it on here would answer one question once per
-  // node.
+  // the host answered on, either as a copy for every node that holds a
+  // port or addressed to this one because its gateway asked. Both
+  // tables have it now and the frame is spent: the gateway there has
+  // already had it, and every node runs one on the same address, so
+  // passing it on here would answer one question once per node.
   // Untraced for the reason the sending side gives: an ARP frame
   // carries no tuple, so the trace id is 0 and an event would never
   // leave.
-  if (answer_for_gateway)
+  if (arp.answer_to_gateway)
     return TC_ACT_SHOT;
 
   if (!l2_is_bum(dst_mac)) {
