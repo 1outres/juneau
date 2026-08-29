@@ -31,6 +31,12 @@ const (
 // plane's, so this is here to be read rather than to be applied.
 const ArpProbeInterval = time.Second
 
+// ArpAskerTTL mirrors L2_ARP_ASKER_TTL_NS in daemon/bpf/maps.h: how
+// long the node that asked the segment for an address is still worth
+// sending the answer to. Like the interval above, the data plane
+// applies it and this is here to be read.
+const ArpAskerTTL = 5 * time.Second
+
 // FdbFlagGateway mirrors L2_FDB_FLAG_GATEWAY in daemon/bpf/maps.h. It
 // marks the one forwarding entry user space writes: the MAC of this
 // node's gateway port. A frame that claims that address cannot take the

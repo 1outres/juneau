@@ -58,6 +58,7 @@ func RegisterPodEgress(inv *Inventory, p *program.PodEgress) error {
 		registerL2BumRemote,
 		registerL2Arp,
 		registerL2ArpProbe,
+		registerL2ArpAsker,
 		registerL2Gateway,
 	} {
 		if err := fn(inv, p); err != nil {
@@ -844,6 +845,29 @@ func registerL2ArpProbe(inv *Inventory, p *program.PodEgress) error {
 		InnerKey: Schema{Fields: []Field{FieldIPv4Named("ipv4")}},
 		InnerValue: Schema{Fields: []Field{
 			FieldU64Named("asked_ns", "CLOCK_MONOTONIC stamp of the last request"),
+		}},
+	})
+}
+
+// registerL2ArpAsker exposes which node asked a segment for an
+// address. The answer is carried to that node, so an address missing
+// here on the node holding the host is why a gateway elsewhere keeps
+// asking for it.
+func registerL2ArpAsker(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name:       "l2_arp_asker",
+		Map:        p.Objs.L2ArpAsker,
+		HashOfMaps: true,
+		InnerProto: p.MapSpecs.L2ArpAskerInner,
+		Key: Schema{Fields: []Field{
+			FieldU32Named("vni"),
+		}},
+		Value:    Schema{},
+		InnerKey: Schema{Fields: []Field{FieldIPv4Named("ipv4")}},
+		InnerValue: Schema{Fields: []Field{
+			FieldIPv4Named("vtep_ip", "underlay address of the node that asked"),
+			FieldPadOf(4),
+			FieldU64Named("asked_ns", "CLOCK_MONOTONIC stamp of the question"),
 		}},
 	})
 }

@@ -229,6 +229,23 @@
 #define MAX_L2_ARP_PROBE_PER_NETWORK 8192
 #endif
 
+#ifndef MAX_L2_ARP_ASKER_PER_NETWORK
+// MAX_L2_ARP_ASKER_PER_NETWORK bounds how many addresses one L2Network
+// keeps the asking node of. It is an LRU, so a segment with more
+// questions in flight than this loses the oldest ones: the answer to
+// one of those reaches only the nodes the shared copy reaches, and the
+// node that asked gets it on a later round.
+#define MAX_L2_ARP_ASKER_PER_NETWORK 8192
+#endif
+
+// L2_ARP_ASKER_TTL_NS is how long the node that asked for an address
+// is still worth sending the answer to. Five seconds covers several
+// rounds of L2_ARP_PROBE_INTERVAL_NS, which is more than a question
+// and its answer ever take. An older record names a node that has
+// stopped asking, and sending the answer there would leave the node
+// asking now waiting another round.
+#define L2_ARP_ASKER_TTL_NS 5000000000ULL
+
 // L2_ARP_PROBE_INTERVAL_NS is how long the gateway waits before asking
 // the segment for the same address again. One second is what an
 // ordinary router allows itself for a neighbour it cannot resolve.
@@ -1534,6 +1551,58 @@ struct {
   __uint(pinning, LIBBPF_PIN_BY_NAME);
   __array(values, struct l2_arp_probe_inner_map);
 } l2_arp_probe SEC(".maps");
+
+struct l2_arp_asker_key {
+  // ipv4 of the address that was asked for, host byte order, the same
+  // form l2_arp is keyed on.
+  __u32 ipv4;
+};
+
+struct l2_arp_asker_val {
+  // vtep_ip of the node whose gateway asked, host byte order, the form
+  // bpf_tunnel_key.remote_ipv4 takes.
+  __u32 vtep_ip;
+  __u32 _pad;
+  // asked_ns is the CLOCK_MONOTONIC stamp of the question.
+  __u64 asked_ns;
+};
+
+// l2_arp_asker_inner_map is which node asked one L2Network for an
+// address.
+//
+// A gateway that cannot resolve an address asks the whole segment,
+// the other nodes included. The host that owns the address answers the
+// gateway of the node it sits on, which is rarely the node that asked,
+// so the answer has to be carried to the node that asked. This says
+// which node that is.
+//
+// It is written where the question arrives, in the L2 branch of
+// vxlan_ingress: that is the one place a question names the node it
+// came from. l2_egress reads it when the answer comes back.
+struct l2_arp_asker_inner_map {
+  __uint(type, BPF_MAP_TYPE_LRU_HASH);
+  __uint(max_entries, MAX_L2_ARP_ASKER_PER_NETWORK);
+  __type(key, struct l2_arp_asker_key);
+  __type(value, struct l2_arp_asker_val);
+};
+
+struct l2_arp_asker_inner_map l2_arp_asker_inner SEC(".maps");
+
+// l2_arp_asker is per VNI for the reason every other L2 table is. One
+// table for the whole node would let a segment with many unresolved
+// addresses push another segment's records out, and that segment would
+// then lose the answers its gateway is waiting for — which is the very
+// fault this table is here to fix, moved onto a tenant that did
+// nothing. Being per VNI also means it is built and dropped with the
+// network by the reconciler that builds the others.
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
+  __uint(max_entries, MAX_L2_NETWORKS);
+  __type(key, __u32); // VNI
+  __type(value, __u32);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+  __array(values, struct l2_arp_asker_inner_map);
+} l2_arp_asker SEC(".maps");
 
 struct l2_gateway_key {
   __u32 vni;

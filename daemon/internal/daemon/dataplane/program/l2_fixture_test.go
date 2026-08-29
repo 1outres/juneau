@@ -14,6 +14,7 @@ import (
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	bpf "github.com/1outres/juneau/daemon/internal/daemon/bpf"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/bpftest"
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/monotonic"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/l2"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/reconciler"
 )
@@ -39,6 +40,7 @@ type l2Segment struct {
 	bumRemote *l2.Table
 	arp       *l2.Table
 	arpProbe  *l2.Table
+	arpAsker  *l2.Table
 }
 
 // newL2Segment loads one generated object and brings testVNI up as an
@@ -61,14 +63,56 @@ func newL2Segment(t *testing.T, load func() (*ebpf.CollectionSpec, error)) *l2Se
 		bumRemote: l2.NewTable("bum-remote", objs.Map(t, "l2_bum_remote"), objs.MapSpec(t, "l2_bum_remote_inner")),
 		arp:       l2.NewTable("arp", objs.Map(t, "l2_arp"), objs.MapSpec(t, "l2_arp_inner")),
 		arpProbe:  l2.NewTable("arp-probe", objs.Map(t, "l2_arp_probe"), objs.MapSpec(t, "l2_arp_probe_inner")),
+		arpAsker:  l2.NewTable("arp-asker", objs.Map(t, "l2_arp_asker"), objs.MapSpec(t, "l2_arp_asker_inner")),
 	}
 	t.Cleanup(func() {
-		for _, table := range []*l2.Table{seg.fdb, seg.bumLocal, seg.bumRemote, seg.arp, seg.arpProbe} {
+		for _, table := range []*l2.Table{seg.fdb, seg.bumLocal, seg.bumRemote, seg.arp, seg.arpProbe, seg.arpAsker} {
 			if err := table.CloseAll(); err != nil {
 				t.Errorf("close the per-VNI tables: %v", err)
 			}
 		}
 	})
+
+	BringUpSegment(t, objs.Map(t, "l2_network_map"), reconciler.L2NetworkTables{
+		Fdb:       seg.fdb,
+		BumLocal:  seg.bumLocal,
+		BumRemote: seg.bumRemote,
+		Arp:       seg.arp,
+		ArpProbe:  seg.arpProbe,
+		ArpAsker:  seg.arpAsker,
+	})
+
+	// Said out loud rather than left to whichever test happens to read
+	// the table that is missing. A table the reconciler forgot is a
+	// segment that silently loses one kind of traffic.
+	for name, table := range map[string]*l2.Table{
+		"l2_fdb":        seg.fdb,
+		"l2_bum_local":  seg.bumLocal,
+		"l2_bum_remote": seg.bumRemote,
+		"l2_arp":        seg.arp,
+		"l2_arp_probe":  seg.arpProbe,
+		"l2_arp_asker":  seg.arpAsker,
+	} {
+		built := false
+		table.ForEachInner(func(vni uint32, _ *ebpf.Map) {
+			built = built || vni == testVNI
+		})
+		if !built {
+			t.Fatalf("the reconciler brought the segment up without %s", name)
+		}
+	}
+	return seg
+}
+
+// BringUpSegment reconciles testVNI as an L2Network onto the given
+// maps, through reconciler.L2Network.
+//
+// Every harness in this package goes through it rather than writing
+// l2_network_map and the per-VNI tables itself, so a table the daemon
+// would have built is always there and a table it stopped building is
+// missing here too.
+func BringUpSegment(t *testing.T, networkMap *ebpf.Map, tables reconciler.L2NetworkTables) {
+	t.Helper()
 
 	scheme := runtime.NewScheme()
 	if err := juneauv1alpha1.AddToScheme(scheme); err != nil {
@@ -86,37 +130,10 @@ func newL2Segment(t *testing.T, load func() (*ebpf.CollectionSpec, error)) *l2Se
 		},
 	).Build()
 
-	network := reconciler.NewL2Network(client, objs.Map(t, "l2_network_map"),
-		reconciler.L2NetworkTables{
-			Fdb:       seg.fdb,
-			BumLocal:  seg.bumLocal,
-			BumRemote: seg.bumRemote,
-			Arp:       seg.arp,
-			ArpProbe:  seg.arpProbe,
-		})
-	if err := network.Reconcile(context.Background(), "lab-net"); err != nil {
+	if err := reconciler.NewL2Network(client, networkMap, tables).
+		Reconcile(context.Background(), "lab-net"); err != nil {
 		t.Fatalf("bring the segment up: %v", err)
 	}
-
-	// Said out loud rather than left to whichever test happens to read
-	// the table that is missing. A table the reconciler forgot is a
-	// segment that silently loses one kind of traffic.
-	for name, table := range map[string]*l2.Table{
-		"l2_fdb":        seg.fdb,
-		"l2_bum_local":  seg.bumLocal,
-		"l2_bum_remote": seg.bumRemote,
-		"l2_arp":        seg.arp,
-		"l2_arp_probe":  seg.arpProbe,
-	} {
-		built := false
-		table.ForEachInner(func(vni uint32, _ *ebpf.Map) {
-			built = built || vni == testVNI
-		})
-		if !built {
-			t.Fatalf("the reconciler brought the segment up without %s", name)
-		}
-	}
-	return seg
 }
 
 // addLocalPort makes a device a port of the segment: the data plane
@@ -301,6 +318,50 @@ func (s *l2Segment) askedAt(t *testing.T, address string) (uint64, bool) {
 	return val.AskedNs, true
 }
 
+// recordAsk writes down that a node asked the segment for an address,
+// as the data plane does when the question arrives over the overlay.
+// age moves the record back in time, which is how a test reaches the
+// far side of the TTL without waiting through it.
+func (s *l2Segment) recordAsk(t *testing.T, address, vtep string, age time.Duration) {
+	t.Helper()
+	if err := s.arpAsker.Put(testVNI,
+		bpf.PodEgressL2ArpAskerKey{Ipv4: hostOrderIPv4(t, address)},
+		bpf.PodEgressL2ArpAskerVal{
+			VtepIp:  hostOrderIPv4(t, vtep),
+			AskedNs: monotonic.Ns() - uint64(age.Nanoseconds()),
+		},
+	); err != nil {
+		t.Fatalf("record that %s asked for %s: %v", vtep, address, err)
+	}
+}
+
+// asker reads back which node the segment has written down as having
+// asked for one address.
+func (s *l2Segment) asker(t *testing.T, address string) (bpf.PodEgressL2ArpAskerVal, bool) {
+	t.Helper()
+	return lookupAsker(t, s.arpAsker, address)
+}
+
+// lookupAsker is asker over a table a harness holds itself, which is
+// what the one that loads several programs under a pin path has.
+func lookupAsker(t *testing.T, table *l2.Table, address string) (bpf.PodEgressL2ArpAskerVal, bool) {
+	t.Helper()
+	var (
+		val   bpf.PodEgressL2ArpAskerVal
+		found bool
+	)
+	table.ForEachInner(func(vni uint32, inner *ebpf.Map) {
+		if vni != testVNI {
+			return
+		}
+		found = inner.Lookup(&bpf.PodEgressL2ArpAskerKey{Ipv4: hostOrderIPv4(t, address)}, &val) == nil
+	})
+	if !found {
+		return bpf.PodEgressL2ArpAskerVal{}, false
+	}
+	return val, true
+}
+
 // rewindAsk moves the record of the last request back by d, which is
 // how a test reaches the far side of the interval without waiting
 // through it.
@@ -383,6 +444,25 @@ func (s *l2Segment) lookup(t *testing.T, mac net.HardwareAddr) (bpf.PodEgressL2F
 		found bool
 	)
 	s.withFdb(t, func(inner *ebpf.Map) {
+		found = inner.Lookup(&bpf.PodEgressL2FdbKey{Mac: macArray(t, mac)}, &val) == nil
+	})
+	if !found {
+		return bpf.PodEgressL2FdbVal{}, false
+	}
+	return val, true
+}
+
+// lookupFdb is lookup over a table a harness holds itself.
+func lookupFdb(t *testing.T, table *l2.Table, mac net.HardwareAddr) (bpf.PodEgressL2FdbVal, bool) {
+	t.Helper()
+	var (
+		val   bpf.PodEgressL2FdbVal
+		found bool
+	)
+	table.ForEachInner(func(vni uint32, inner *ebpf.Map) {
+		if vni != testVNI {
+			return
+		}
 		found = inner.Lookup(&bpf.PodEgressL2FdbKey{Mac: macArray(t, mac)}, &val) == nil
 	})
 	if !found {

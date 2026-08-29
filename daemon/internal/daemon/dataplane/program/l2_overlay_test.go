@@ -41,10 +41,12 @@ type overlaySegment struct {
 	pod3    bpftest.Device
 }
 
-func newOverlaySegment(t *testing.T) *overlaySegment {
+// buildOverlayDevice brings up a flow-based VXLAN device and the
+// loopback the encapsulated datagrams travel over. Flow-based is what
+// the daemon builds, and it is what lets bpf_skb_set_tunnel_key name
+// the node a frame goes to.
+func buildOverlayDevice(t *testing.T) bpftest.Device {
 	t.Helper()
-	bpftest.Require(t)
-	bpftest.Netns(t)
 
 	loopback, err := netlink.LinkByName("lo")
 	if err != nil {
@@ -70,11 +72,20 @@ func newOverlaySegment(t *testing.T) *overlaySegment {
 	if err != nil {
 		t.Fatalf("look up the VXLAN device: %v", err)
 	}
+	return bpftest.Device{Name: "vxlan0", Index: built.Attrs().Index}
+}
+
+func newOverlaySegment(t *testing.T) *overlaySegment {
+	t.Helper()
+	bpftest.Require(t)
+	bpftest.Netns(t)
+
+	vxlan := buildOverlayDevice(t)
 
 	segment := newL2Segment(t, bpf.LoadVxlanIngress)
 	overlay := &overlaySegment{
 		segment: segment,
-		vxlan:   bpftest.Device{Name: "vxlan0", Index: built.Attrs().Index},
+		vxlan:   vxlan,
 		pod2:    bpftest.Dummy(t, "pod2"),
 		pod3:    bpftest.Dummy(t, "pod3"),
 	}
@@ -99,6 +110,14 @@ func newOverlaySegment(t *testing.T) *overlaySegment {
 // datagram goes to this host, so the program sees loopbackVTEP as the
 // node that holds the source MAC.
 func (o *overlaySegment) deliver(t *testing.T, vni uint32, frame []byte) {
+	t.Helper()
+	deliverOverOverlay(t, vni, frame)
+}
+
+// deliverOverOverlay encapsulates one frame the way a node does and
+// sends it to this host, where the VXLAN device that carries the data
+// plane takes it.
+func deliverOverOverlay(t *testing.T, vni uint32, frame []byte) {
 	t.Helper()
 
 	conn, err := net.Dial("udp", net.JoinHostPort(loopbackVTEP, "4789"))

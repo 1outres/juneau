@@ -91,8 +91,30 @@ static __always_inline bool l2_is_gateway_mac(const __u8 *mac, __u32 vni) {
   return true;
 }
 
+// l2_arp_view is what one ARP frame said. l2_arp_snoop fills it in
+// while it records the sender, so no caller reads the header twice.
+//
+// The two flags never both hold: one describes a reply and the other a
+// request.
+struct l2_arp_view {
+  // answer_to_gateway marks a reply addressed to the gateway of the
+  // segment. It is the answer to a question a gateway asked, and the
+  // only ARP frame the other nodes cannot see for themselves.
+  bool answer_to_gateway;
+  // question_from_gateway marks a request the gateway of the segment
+  // signed. It names an address a gateway is waiting for.
+  bool question_from_gateway;
+  // sender and target are the two addresses of the frame, in host byte
+  // order — the form l2_arp is keyed on. Read them under the flag that
+  // makes them interesting: sender is who answered, target is what was
+  // asked for.
+  __u32 sender;
+  __u32 target;
+};
+
 // l2_arp_snoop records the sender of an ARP frame so the gateway can
-// address a packet the Vpc sent into the segment.
+// address a packet the Vpc sent into the segment, and describes the
+// frame in view.
 //
 // Every opcode is read, not just the request: a reply and a gratuitous
 // announcement both carry the sender pair, and a host that moves
@@ -100,49 +122,54 @@ static __always_inline bool l2_is_gateway_mac(const __u8 *mac, __u32 vni) {
 // here. The segment carries the user's own DHCP server, router and
 // duplicate-address probes, and a proxy reply would break all three.
 //
-// It reports whether the frame is a reply addressed to the gateway.
-// That one is the answer to a question a gateway asked, and it is the
-// only ARP frame the other nodes have to be given rather than left to
-// see for themselves; l2_flood_answer is what gives it to them. The
-// classification is returned from here because it needs the same parse
-// the recording needs, and reading the header twice would pay for it
-// twice on every frame the segment carries.
+// The two ways a frame can concern a gateway are told apart here
+// because they need the same parse the recording needs, and reading
+// the header a second time would pay for it on every frame the segment
+// carries. Only one of them is looked for on any frame, so this costs
+// the one l2_gateway lookup it always cost.
 //
 // The frame is only read, so the caller may call this before it copies
 // the addresses it needs out of the header.
-static __always_inline bool l2_arp_snoop(struct __sk_buff *skb, __u32 vni,
-                                         const struct ethhdr *eth) {
+static __always_inline void l2_arp_snoop(struct __sk_buff *skb, __u32 vni,
+                                         const struct ethhdr *eth,
+                                         struct l2_arp_view *view) {
   if (eth->h_proto != bpf_htons(ETH_P_ARP))
-    return false;
+    return;
 
   void *data_end = (void *)(long)skb->data_end;
   struct arphdr *arp = (void *)(eth + 1);
   if ((void *)(arp + 1) > data_end)
-    return false;
+    return;
   if (arp->ar_hrd != bpf_htons(ARP_HRD_ETHER))
-    return false;
+    return;
   if (arp->ar_pro != bpf_htons(ARP_PRO_IPV4))
-    return false;
+    return;
   if (arp->ar_hln != ARP_ETH_ALEN || arp->ar_pln != 4)
-    return false;
+    return;
 
   struct arp_payload *payload = (void *)(arp + 1);
   if ((void *)(payload + 1) > data_end)
-    return false;
+    return;
 
-  struct l2_arp_key key = {.ipv4 = bpf_ntohl(payload->spa)};
-  if (key.ipv4 != 0) {
+  view->sender = bpf_ntohl(payload->spa);
+  view->target = bpf_ntohl(payload->tpa);
+
+  if (view->sender != 0) {
     struct l2_arp_inner_map *table = l2_arp_for(vni);
     if (table) {
+      struct l2_arp_key key = {.ipv4 = view->sender};
       struct l2_arp_val val = {};
       __builtin_memcpy(val.mac, payload->sha, ETH_ALEN);
       bpf_map_update_elem(table, &key, &val, BPF_ANY);
     }
   }
 
-  if (arp->ar_op != bpf_htons(ARP_OP_REPLY))
-    return false;
-  return l2_is_gateway_mac(eth->h_dest, vni);
+  if (arp->ar_op == bpf_htons(ARP_OP_REPLY)) {
+    view->answer_to_gateway = l2_is_gateway_mac(eth->h_dest, vni);
+    return;
+  }
+  if (arp->ar_op == bpf_htons(ARP_OP_REQUEST))
+    view->question_from_gateway = l2_is_gateway_mac(eth->h_source, vni);
 }
 
 // l2_arp_probe_for returns the ask-again table of one segment.
@@ -175,6 +202,61 @@ l2_arp_probe_take(struct l2_arp_probe_inner_map *table, __u32 target) {
 
   struct l2_arp_probe_val fresh = {.asked_ns = now};
   return bpf_map_update_elem(table, &key, &fresh, BPF_ANY) == 0;
+}
+
+// l2_arp_asker_for returns the who-asked table of one segment.
+static __always_inline struct l2_arp_asker_inner_map *
+l2_arp_asker_for(__u32 vni) {
+  return bpf_map_lookup_elem(&l2_arp_asker, &vni);
+}
+
+// l2_arp_remember_ask writes down that the gateway on vtep asked the
+// segment for target, so the answer can be carried back there.
+//
+// target is in host byte order and vtep is in the form
+// bpf_tunnel_key.remote_ipv4 takes.
+//
+// One node is kept per address and the last to ask replaces the one
+// before it. Two nodes wanting the same address at the same moment is
+// the case that costs something: the answer goes to the later of them
+// and the other asks again a second later. A list of nodes instead
+// would put a second flood list on the path that exists to stop
+// flooding.
+static __always_inline void l2_arp_remember_ask(__u32 vni, __u32 target,
+                                                __u32 vtep) {
+  if (target == 0 || vtep == 0)
+    return;
+
+  struct l2_arp_asker_inner_map *table = l2_arp_asker_for(vni);
+  if (!table)
+    return;
+
+  struct l2_arp_asker_key key = {.ipv4 = target};
+  struct l2_arp_asker_val val = {
+      .vtep_ip = vtep,
+      .asked_ns = bpf_ktime_get_ns(),
+  };
+  bpf_map_update_elem(table, &key, &val, BPF_ANY);
+}
+
+// l2_arp_recall_asker returns the node whose gateway asked the segment
+// for target, or 0 when none did recently enough.
+//
+// A record older than L2_ARP_ASKER_TTL_NS is left where it is rather
+// than used. The node it names has stopped asking, and sending the
+// answer there would not reach whoever is asking now.
+static __always_inline __u32 l2_arp_recall_asker(__u32 vni, __u32 target) {
+  struct l2_arp_asker_inner_map *table = l2_arp_asker_for(vni);
+  if (!table)
+    return 0;
+
+  struct l2_arp_asker_key key = {.ipv4 = target};
+  const struct l2_arp_asker_val *asked = bpf_map_lookup_elem(table, &key);
+  if (!asked)
+    return 0;
+  if (bpf_ktime_get_ns() - asked->asked_ns >= L2_ARP_ASKER_TTL_NS)
+    return 0;
+  return asked->vtep_ip;
 }
 
 // l2_flood_ctx is what the two bpf_for_each_map_elem callbacks below
@@ -295,27 +377,34 @@ static long l2_flood_local_cb(struct bpf_map *map, const __u32 *key,
   return 0;
 }
 
-// l2_flood_remote_cb copies the frame to one remote node. The tunnel
-// key is stamped on the frame before every copy, because the copy
-// carries the tunnel metadata of the frame it was made from.
-static long l2_flood_remote_cb(struct bpf_map *map, const __u32 *key,
-                               __u8 *value, struct l2_flood_ctx *fctx) {
+// l2_send_over_overlay copies the frame to one node. The tunnel key is
+// stamped on the frame before every copy, because the copy carries the
+// tunnel metadata of the frame it was made from.
+static __always_inline void l2_send_over_overlay(struct l2_flood_ctx *fctx,
+                                                 __u32 vtep) {
   struct bpf_tunnel_key tkey = {};
-  tkey.remote_ipv4 = *key;
+  tkey.remote_ipv4 = vtep;
   tkey.tunnel_id = fctx->vni;
   tkey.tunnel_ttl = L2_TUNNEL_TTL;
 
   if (bpf_skb_set_tunnel_key(fctx->skb, &tkey, sizeof(tkey), 0) < 0)
-    return 0;
+    return;
   if (bpf_clone_redirect(fctx->skb, fctx->vxlan_ifindex, 0) < 0)
-    return 0;
+    return;
   fctx->copies++;
+}
+
+// l2_flood_remote_cb copies the frame to one node of the flood list.
+static long l2_flood_remote_cb(struct bpf_map *map, const __u32 *key,
+                               __u8 *value, struct l2_flood_ctx *fctx) {
+  l2_send_over_overlay(fctx, *key);
   return 0;
 }
 
 // l2_flood_ports copies the frame to the ports of the segment and
-// returns how many copies it made. gateway_only holds the local pass to
-// the gateway port; the two wrappers below are what callers use.
+// returns how many copies it made. gateway_only holds the local pass
+// to the gateway port, and asker_vtep names one more node to copy to;
+// the two wrappers below are what callers use.
 //
 // A frame the overlay delivered reaches local ports only. The node
 // that sent it already copied it to every other node, so sending it
@@ -330,10 +419,12 @@ static long l2_flood_remote_cb(struct bpf_map *map, const __u32 *key,
 // nothing hands the frame to a local port again. It is also why a
 // caller that wants both a local port and the other nodes has to take
 // this path rather than redirect the frame itself: the redirect would
-// hand a stamped frame to a veth.
+// hand a stamped frame to a veth. asker_vtep is served last for the
+// same reason.
 static __always_inline __u32 l2_flood_ports(struct __sk_buff *skb,
                                             const struct l2_port *port,
-                                            bool gateway_only) {
+                                            bool gateway_only,
+                                            __u32 asker_vtep) {
   struct l2_flood_ctx fctx = {
       .skb = skb,
       .skip_ifindex = port->in_ifindex,
@@ -354,7 +445,7 @@ static __always_inline __u32 l2_flood_ports(struct __sk_buff *skb,
 
   struct l2_bum_remote_inner_map *remote =
       bpf_map_lookup_elem(&l2_bum_remote, &vni);
-  if (!remote)
+  if (!remote && asker_vtep == 0)
     return fctx.copies;
 
   __u32 vx_key = 0;
@@ -363,7 +454,16 @@ static __always_inline __u32 l2_flood_ports(struct __sk_buff *skb,
     return fctx.copies;
   fctx.vxlan_ifindex = *vx_if;
 
-  bpf_for_each_map_elem(remote, l2_flood_remote_cb, &fctx, 0);
+  if (remote)
+    bpf_for_each_map_elem(remote, l2_flood_remote_cb, &fctx, 0);
+
+  // A node that runs a gateway and holds no port on the segment is on
+  // nobody's flood list, so the walk above cannot have reached it. It
+  // gets a copy of its own, unless the list carried it one already.
+  if (asker_vtep != 0 &&
+      (!remote || !bpf_map_lookup_elem(remote, &asker_vtep)))
+    l2_send_over_overlay(&fctx, asker_vtep);
+
   return fctx.copies;
 }
 
@@ -371,18 +471,26 @@ static __always_inline __u32 l2_flood_ports(struct __sk_buff *skb,
 // came in on.
 static __always_inline __u32 l2_flood(struct __sk_buff *skb,
                                       const struct l2_port *port) {
-  return l2_flood_ports(skb, port, false);
+  return l2_flood_ports(skb, port, false, 0);
 }
 
 // l2_flood_answer copies an ARP reply addressed to the gateway to the
-// gateway port of this node and to every other node.
+// gateway port of this node, to the node named by asker_vtep, and to
+// every node that holds a port on the segment.
 //
-// The other nodes need it because the gateway is anycast. Each node
-// runs one on the same address and the same MAC, so a host answers
-// whichever gateway is local to it, and only that node would learn the
-// address. The node that asked is the node the packet from the Vpc was
-// routed on, which is a different one whenever the client and the host
-// sit apart, and it would go on asking forever.
+// The gateway is anycast: each node runs one on the same address and
+// the same MAC, so a host answers whichever gateway is local to it,
+// and only that node would learn the address. The node that asked is
+// the node the packet from the Vpc was routed on, which is a different
+// one whenever the client and the host sit apart, and it would go on
+// asking forever.
+//
+// asker_vtep is what closes that gap for good, because a node whose
+// only port on the segment is its gateway appears on no flood list at
+// all — a gateway publishes no NetworkEndpoint, so nothing puts it
+// there. The flood to the other nodes stays because it is what gives a
+// node the address before it ever asks: those nodes read it out of the
+// copy and their first packet leaves without a question.
 //
 // Only the reply travels. A request is answered by the gateway that
 // received it, and everything else on the segment is the workloads'
@@ -392,8 +500,9 @@ static __always_inline __u32 l2_flood(struct __sk_buff *skb,
 // branch of vxlan_ingress. Nothing sends it on from there, so it cannot
 // go round.
 static __always_inline __u32 l2_flood_answer(struct __sk_buff *skb,
-                                             const struct l2_port *port) {
-  return l2_flood_ports(skb, port, true);
+                                             const struct l2_port *port,
+                                             __u32 asker_vtep) {
+  return l2_flood_ports(skb, port, true, asker_vtep);
 }
 
 // L2_ARP_FRAME_LEN is the length of an Ethernet/IPv4 ARP frame: the
