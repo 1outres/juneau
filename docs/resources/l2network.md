@@ -4,9 +4,6 @@ L2Networkは、JuneauがL3を一切解釈しないL2セグメントです。宛�
 
 VMの中でbridgeを組む、自前のDHCPサーバを立てる、ルータVMを置く、といった使い方を想定しています。Subnetと同じくクラスタスコープで、shortNameは `l2net` です。
 
-!!! warning "gatewayはまだ動きません"
-    セグメントの中の転送は動きます。`spec.gateway`を書いてもgatewayのポートはまだ生えないので、VpcのRouteTableやNATGatewayには繋がりません。
-
 手順は[L2Networkで自由なセグメントを作る](../guides/l2-network.md)に、実装は[L2Networkの転送を追う](../developer/l2-data-plane.md)にあります。
 
 ## Vpc との関係
@@ -45,13 +42,31 @@ L2Networkは、書いたフィールドの数だけ機能が増えます。
 
 `spec.gateway.routeTable` を省略すると、所属VpcのメインルートテーブルがL2Networkの経路制御に使われます。指定する場合、そのRouteTableは同じVpcに属している必要があります。
 
+gatewayを書くと、全Nodeにルータのポートが1つずつ立ちます。アドレスもMACも全Nodeで同じなので、ワークロードは自分のNodeのgatewayを使い、L3の通信のためにNodeを跨ぎません。そのセグメント宛のパケットがどのNodeで経路を引かれるかは、セグメントのPodがどこにいるかと関係がないので、ポートはどのNodeにも要ります。
+
+gatewayを書くと、そのCIDR宛の経路がVpcの全RouteTableに自動で入ります。Subnetのconnected routeと同じ扱いです。
+
+gatewayを跨ぐ先には、同じVpcのSubnet、NATGateway経由の外部、ClusterIP Serviceが含まれます。Podの中で、その宛先をgatewayへ向ける経路を足してください。JuneauがPodに入れる経路は1枚目のNICのデフォルトルートだけです。
+
+`spec.gateway` は作成後にも変更することができます。ただし、そのアドレスを既にワークロードが持っている場合は拒否されます。`computeL2NetworkExcluded` はプールからの払い出しを止めるだけで、配ってしまったアドレスを取り返しません。別のアドレスを `spec.gateway.address` に書くか、持っているワークロードを消してから足してください。
+
 Subnetと違って、L2NetworkはDNSリゾルバを持ちません。自前でDNSを立てたい人にとって予約アドレスは邪魔なだけなので、`spec.cidr` があってもgatewayの1アドレスしか予約しません。
+
+gatewayは自分からARPを出しません。宛先のMACは、Juneauが配ったアドレスと、セグメントを流れるARPの送信者から引きます。前者はNICが作られた時点で分かるので、Vpcの側から先に接続しても届きます。`spec.cidr` の外のアドレスをPodの中で自分で振った場合や、NICの後ろのbridgeにホストをぶら下げた場合は、そのホストが一度ARPを出すまで届きません。
+
+## SecurityGroup
+
+L2NetworkのNICにも、`juneau.loutres.me/networks` アノテーションのエントリでSecurityGroupを付けることができます。参照されるのはgatewayを跨ぐ通信だけで、セグメントの中の通信には一切効きません。
+
+そのため、`spec.gateway` を書いていないL2NetworkのNICにSecurityGroupを付けることはできません。`spec.networkACL` と同じ理由です。同じ理由で、Vpcの `spec.enforceSecurityGroups` はgatewayを持たないセグメントのNICには要求しません。
 
 ## NetworkACL
 
 `spec.networkACL` には、同じVpcに属するNetworkACLを指定することができます。
 
 このACLはgatewayを跨ぐ通信にだけ適用されます。同じL2Network上のNIC同士の通信には一切効きません。L2のデータプレーンはpolicyを読まないためです。
+
+gatewayを跨ぐ通信には、ingressルールもegressルールも効きます。セグメントから出ていく方向と入ってくる方向をそれぞれ別のhookが評価しますが、許可の記録は共有されるので、セグメント側から張った接続の応答がingressルールで落ちることはありません。
 
 そのため、`spec.gateway` を書いていないL2Networkは `spec.networkACL` を書くことができません。効いているつもりの設定が残るくらいなら、作成時に拒否する方がましだと判断しました。
 
@@ -78,6 +93,8 @@ L2NetworkのVNIは、Subnetと同じ `subnet-vni` AllocationPoolから払い出�
 `status.gateway` は、解決済みのgatewayアドレスです。gatewayを持たないセグメントでは空のままです。
 
 `status.gatewayMAC` は、gatewayがARPに応答するMACアドレスです。controllerが一度決めたらgatewayが存在する限り変わりません。
+
+`status.networkACL` は、解決済みの `spec.networkACL` です。daemonがgatewayの境界に書き込む `aclID` と、解決した時点の `rulesetVersion` が入ります。ACLを指定していない場合は空のままです。
 
 ## Podへの接続
 

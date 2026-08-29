@@ -164,3 +164,67 @@ func TestResolve(t *testing.T) {
 		}
 	})
 }
+
+func TestL2NetworkGatewayAddress(t *testing.T) {
+	tests := []struct {
+		name    string
+		l2      juneauv1alpha1.L2Network
+		want    string
+		wantErr bool
+	}{
+		{
+			name: "no gateway",
+			l2:   juneauv1alpha1.L2Network{Spec: juneauv1alpha1.L2NetworkSpec{CIDR: "10.0.0.0/24"}},
+			want: "",
+		},
+		{
+			name: "the first address of the prefix by default",
+			l2: juneauv1alpha1.L2Network{Spec: juneauv1alpha1.L2NetworkSpec{
+				CIDR:    "10.0.0.0/24",
+				Gateway: &juneauv1alpha1.L2NetworkGateway{},
+			}},
+			want: "10.0.0.1",
+		},
+		{
+			name: "the address the user pinned",
+			l2: juneauv1alpha1.L2Network{Spec: juneauv1alpha1.L2NetworkSpec{
+				CIDR:    "10.0.0.0/24",
+				Gateway: &juneauv1alpha1.L2NetworkGateway{Address: "10.0.0.254"},
+			}},
+			want: "10.0.0.254",
+		},
+		{
+			name: "a gateway with no prefix to take an address from",
+			l2: juneauv1alpha1.L2Network{Spec: juneauv1alpha1.L2NetworkSpec{
+				Gateway: &juneauv1alpha1.L2NetworkGateway{},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "a prefix too narrow to hold a gateway",
+			l2: juneauv1alpha1.L2Network{Spec: juneauv1alpha1.L2NetworkSpec{
+				CIDR:    "10.0.0.0/32",
+				Gateway: &juneauv1alpha1.L2NetworkGateway{},
+			}},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := L2NetworkGatewayAddress(&tt.l2)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("got %q, want an error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

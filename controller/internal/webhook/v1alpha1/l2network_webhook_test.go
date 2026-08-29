@@ -10,6 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	"github.com/1outres/juneau/controller/internal/podnetwork"
 )
 
 var _ = Describe("L2Network webhook", func() {
@@ -414,6 +415,15 @@ func createWebhookNetworkACLIn(vpcName string) string {
 	return name
 }
 
+func createWebhookSecurityGroupIn(vpcName string) string {
+	name := webhookUniqueTestName("sg")
+	Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.SecurityGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec:       juneauv1alpha1.SecurityGroupSpec{Vpc: vpcName},
+	})).To(Succeed())
+	return name
+}
+
 var _ = Describe("NetworkInterface ↔ L2Network webhook", func() {
 	It("rejects an interface that names neither a Subnet nor an L2Network", func() {
 		iface := newValidNetworkInterface(webhookUniqueTestName("networkinterface"), "", "")
@@ -472,5 +482,120 @@ var _ = Describe("NetworkInterface ↔ L2Network webhook", func() {
 		err := webhookK8sClient.Update(context.Background(), &current)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("spec.l2Network is immutable"))
+	})
+})
+
+var _ = Describe("L2Network gateway address webhook", func() {
+	It("rejects a gateway whose address a workload already holds", func() {
+		name := webhookUniqueTestName("l2net")
+		l2 := newWebhookL2Network(name, createWebhookVpc())
+		l2.Spec.CIDR = "10.226.0.0/24"
+		Expect(webhookK8sClient.Create(context.Background(), l2)).To(Succeed())
+
+		leaseL2NetworkAddress(name, "10.226.0.1")
+
+		var current juneauv1alpha1.L2Network
+		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Name: name}, &current)).To(Succeed())
+		current.Spec.Gateway = &juneauv1alpha1.L2NetworkGateway{}
+
+		err := webhookK8sClient.Update(context.Background(), &current)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("10.226.0.1"))
+		Expect(err.Error()).To(ContainSubstring("already held"))
+	})
+
+	It("accepts a gateway on another address once the default one is taken", func() {
+		name := webhookUniqueTestName("l2net")
+		l2 := newWebhookL2Network(name, createWebhookVpc())
+		l2.Spec.CIDR = "10.227.0.0/24"
+		Expect(webhookK8sClient.Create(context.Background(), l2)).To(Succeed())
+
+		leaseL2NetworkAddress(name, "10.227.0.1")
+
+		var current juneauv1alpha1.L2Network
+		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Name: name}, &current)).To(Succeed())
+		current.Spec.Gateway = &juneauv1alpha1.L2NetworkGateway{Address: "10.227.0.254"}
+
+		Expect(webhookK8sClient.Update(context.Background(), &current)).To(Succeed())
+	})
+
+	It("leaves a segment whose gateway address did not change alone", func() {
+		name := webhookUniqueTestName("l2net")
+		l2 := newWebhookL2Network(name, createWebhookVpc())
+		l2.Spec.CIDR = "10.228.0.0/24"
+		l2.Spec.Gateway = &juneauv1alpha1.L2NetworkGateway{}
+		Expect(webhookK8sClient.Create(context.Background(), l2)).To(Succeed())
+
+		leaseL2NetworkAddress(name, "10.228.0.1")
+
+		var current juneauv1alpha1.L2Network
+		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Name: name}, &current)).To(Succeed())
+		current.Spec.MTU = ptr.To(int32(1400))
+
+		Expect(webhookK8sClient.Update(context.Background(), &current)).To(Succeed())
+	})
+
+	It("ignores a lease that belongs to another segment", func() {
+		name := webhookUniqueTestName("l2net")
+		l2 := newWebhookL2Network(name, createWebhookVpc())
+		l2.Spec.CIDR = "10.229.0.0/24"
+		Expect(webhookK8sClient.Create(context.Background(), l2)).To(Succeed())
+
+		leaseL2NetworkAddress(webhookUniqueTestName("other-l2net"), "10.229.0.1")
+
+		var current juneauv1alpha1.L2Network
+		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Name: name}, &current)).To(Succeed())
+		current.Spec.Gateway = &juneauv1alpha1.L2NetworkGateway{}
+
+		Expect(webhookK8sClient.Update(context.Background(), &current)).To(Succeed())
+	})
+})
+
+// leaseL2NetworkAddress records address as taken out of the address pool
+// of the named L2Network, the way a running workload's NIC would.
+func leaseL2NetworkAddress(l2Name, address string) {
+	name := webhookUniqueTestName("lease")
+	Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.AllocationLease{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: juneauv1alpha1.AllocationLeaseSpec{
+			PoolRef: juneauv1alpha1.AllocationPoolReference{
+				Name: podnetwork.L2NetworkAllocationPoolName(l2Name),
+			},
+			Value:    juneauv1alpha1.AllocationValue{IP: address},
+			ClaimRef: juneauv1alpha1.AllocationLeaseClaimReference{Name: name, UID: name},
+		},
+	})).To(Succeed())
+}
+
+var _ = Describe("SecurityGroups on an L2Network NIC", func() {
+	It("rejects a SecurityGroup on a NIC of a segment with no gateway", func() {
+		vpcName := createWebhookVpc()
+		l2Name := webhookUniqueTestName("l2net")
+		l2 := newWebhookL2Network(l2Name, vpcName)
+		l2.Spec.CIDR = "10.230.0.0/24"
+		Expect(webhookK8sClient.Create(context.Background(), l2)).To(Succeed())
+
+		iface := newValidNetworkInterface(webhookUniqueTestName("networkinterface"), "", "")
+		iface.Spec.L2Network = l2Name
+		iface.Spec.SecurityGroups = []string{createWebhookSecurityGroupIn(vpcName)}
+
+		err := webhookK8sClient.Create(context.Background(), iface)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("only applies to traffic crossing the gateway"))
+	})
+
+	It("accepts a SecurityGroup once the segment has a gateway", func() {
+		vpcName := createWebhookVpc()
+		l2Name := webhookUniqueTestName("l2net")
+		l2 := newWebhookL2Network(l2Name, vpcName)
+		l2.Spec.CIDR = "10.231.0.0/24"
+		l2.Spec.Gateway = &juneauv1alpha1.L2NetworkGateway{}
+		Expect(webhookK8sClient.Create(context.Background(), l2)).To(Succeed())
+
+		iface := newValidNetworkInterface(webhookUniqueTestName("networkinterface"), "", "")
+		iface.Spec.L2Network = l2Name
+		iface.Spec.SecurityGroups = []string{createWebhookSecurityGroupIn(vpcName)}
+
+		Expect(webhookK8sClient.Create(context.Background(), iface)).To(Succeed())
 	})
 })

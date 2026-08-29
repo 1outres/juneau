@@ -29,6 +29,7 @@ const (
 	fibRouteTypeTransit         = 8
 	fibRouteTypeBlackhole       = 9
 	fibRouteTypeVpcEndpoint     = 10
+	fibRouteTypeL2Gateway       = 11
 )
 
 // Fib keeps podEgress.FibMap in sync with RouteTable objects. Each
@@ -171,6 +172,21 @@ func (r *Fib) populateRoute(ctx context.Context, fib *ebpf.Map, route *juneauv1a
 func (r *Fib) buildFibVal(ctx context.Context, route *juneauv1alpha1.Route) (bpf.PodEgressFibVal, bool, error) {
 	switch route.Via.Type {
 	case juneauv1alpha1.ViaConnected:
+		// A connected route leads either to a Subnet or, when the
+		// controller resolved one, to the gateway port of an
+		// L2Network. The two forward differently enough to be separate
+		// route types, but from the Vpc they are the same statement:
+		// this prefix is attached here.
+		if route.L2Network != "" {
+			var network juneauv1alpha1.L2Network
+			if err := r.client.Get(ctx, client.ObjectKey{Name: route.L2Network}, &network); err != nil {
+				return bpf.PodEgressFibVal{}, false, err
+			}
+			if network.Status.VNI == 0 {
+				return bpf.PodEgressFibVal{}, true, nil
+			}
+			return buildL2GatewayFibVal(&network), false, nil
+		}
 		var subnet juneauv1alpha1.Subnet
 		if err := r.client.Get(ctx, client.ObjectKey{Name: route.Subnet}, &subnet); err != nil {
 			return bpf.PodEgressFibVal{}, false, err
@@ -260,6 +276,17 @@ func buildSubnetFibVal(subnet *juneauv1alpha1.Subnet, routeType uint8) (bpf.PodE
 		Smac:     mac,
 		SubnetId: subnet.Status.VNI,
 	}, nil
+}
+
+// buildL2GatewayFibVal builds a FIB value for a route into an
+// L2Network. Only the type and the VNI travel: the ifindex of the
+// gateway port is node-local, so every node reads the same route and
+// looks its own port up in l2_gateway.
+func buildL2GatewayFibVal(network *juneauv1alpha1.L2Network) bpf.PodEgressFibVal {
+	return bpf.PodEgressFibVal{
+		Type:     fibRouteTypeL2Gateway,
+		SubnetId: network.Status.VNI,
+	}
 }
 
 func buildEndpointFibVal(subnet *juneauv1alpha1.Subnet, nwep *juneauv1alpha1.NetworkEndpoint) (bpf.PodEgressFibVal, error) {

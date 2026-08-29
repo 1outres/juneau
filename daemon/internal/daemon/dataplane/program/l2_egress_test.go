@@ -1,6 +1,7 @@
 package program_test
 
 import (
+	"bytes"
 	"net"
 	"testing"
 
@@ -300,5 +301,165 @@ func TestL2EgressDropsAFrameAimedAtItsOwnPort(t *testing.T) {
 		if got := watched.Delivered(t, device); got != 0 {
 			t.Errorf("%s received %d copies of a frame aimed back at its source port", device.Name, got)
 		}
+	}
+}
+
+// The gateway hop count juneau keeps in skb->mark. Mirrors
+// L2_MARK_GW_HOP_* and L2_GW_MAX_HOPS in daemon/bpf/maps.h.
+const (
+	gatewayHopShift = 24
+	gatewayHopMask  = 0x0f000000
+	maxGatewayHops  = 4
+)
+
+func gatewayHops(mark uint32) uint32 { return (mark & gatewayHopMask) >> gatewayHopShift }
+
+func markWithHops(hops uint32) uint32 { return hops << gatewayHopShift }
+
+// The gateway has no way of its own to learn which MAC owns which
+// address: it never sends an ARP request, because answering one on
+// behalf of a host would break the DHCP server, the router and the
+// duplicate-address probes a segment is built to carry. So it reads the
+// ARP that crosses the segment anyway.
+func TestL2EgressRecordsTheSenderOfAnArpRequest(t *testing.T) {
+	ports := newL2EgressPorts(t)
+	sender := bpftest.MAC(1)
+
+	frame := bpftest.Frame(t, bpftest.Broadcast, sender, bpftest.EtherTypeARP,
+		bpftest.ARP(t, bpftest.ARPRequest, sender, "10.60.0.7", net.HardwareAddr{0, 0, 0, 0, 0, 0}, "10.60.0.1"))
+	bpftest.Run(t, ports.program, frame, ports.pod1)
+
+	got, ok := ports.segment.resolved(t, "10.60.0.7")
+	if !ok {
+		t.Fatal("the segment did not record the sender of the request")
+	}
+	if !bytes.Equal(got, sender) {
+		t.Errorf("recorded 10.60.0.7 as %s, want %s", got, sender)
+	}
+}
+
+// A reply and a gratuitous announcement carry the sender pair too, and
+// a host that moves announces itself before it sends anything else.
+func TestL2EgressRecordsTheSenderOfAnArpReply(t *testing.T) {
+	ports := newL2EgressPorts(t)
+	sender := bpftest.MAC(1)
+
+	frame := bpftest.Frame(t, bpftest.MAC(2), sender, bpftest.EtherTypeARP,
+		bpftest.ARP(t, bpftest.ARPReply, sender, "10.60.0.7", bpftest.MAC(2), "10.60.0.8"))
+	bpftest.Run(t, ports.program, frame, ports.pod1)
+
+	if _, ok := ports.segment.resolved(t, "10.60.0.7"); !ok {
+		t.Fatal("the segment did not record the sender of the reply")
+	}
+	if _, ok := ports.segment.resolved(t, "10.60.0.8"); ok {
+		t.Error("the segment recorded the target of the reply, which the frame says nothing about")
+	}
+}
+
+// Reading the ARP must not turn into answering it. The request still
+// has to reach every port, or the host that owns the address never gets
+// to answer for itself.
+func TestL2EgressStillFloodsTheArpItReads(t *testing.T) {
+	ports := newL2EgressPorts(t)
+	sender := bpftest.MAC(1)
+
+	frame := bpftest.Frame(t, bpftest.Broadcast, sender, bpftest.EtherTypeARP,
+		bpftest.ARP(t, bpftest.ARPRequest, sender, "10.60.0.7", net.HardwareAddr{0, 0, 0, 0, 0, 0}, "10.60.0.1"))
+	watched := ports.watch(t)
+	bpftest.Run(t, ports.program, frame, ports.pod1)
+
+	for _, device := range []bpftest.Device{ports.pod2, ports.pod3} {
+		if delivered := watched.Delivered(t, device); delivered != 1 {
+			t.Errorf("%s was fed %d copies of the request, want 1", device.Name, delivered)
+		}
+	}
+}
+
+// The gateway MAC is the one forwarding entry the data plane does not
+// own. A workload that sends from it is claiming the way out of the
+// segment for itself.
+func TestL2EgressWillNotMoveTheGatewayToAWorkload(t *testing.T) {
+	ports := newL2EgressPorts(t)
+	gatewayMAC := bpftest.MAC(0xfe)
+	ports.segment.addGatewayPort(t, ports.pod3, gatewayMAC)
+
+	frame := bpftest.Frame(t, bpftest.MAC(2), gatewayMAC, bpftest.EtherTypeIPv4, nil)
+	bpftest.Run(t, ports.program, frame, ports.pod1)
+
+	entry, ok := ports.segment.lookup(t, gatewayMAC)
+	if !ok {
+		t.Fatal("the gateway entry is gone")
+	}
+	if entry.Ifindex != uint32(ports.pod3.Index) {
+		t.Errorf("the gateway moved to ifindex %d, want it to stay on %d", entry.Ifindex, ports.pod3.Index)
+	}
+}
+
+// Nothing counts the hand-offs to a gateway port for us: redirecting to
+// an ingress has no recursion limit in the kernel, and bpf_redirect
+// leaves the IP TTL alone. The count in skb->mark is what ends a loop
+// between the gateway and something on the segment that keeps sending
+// the frame back.
+func TestL2EgressCountsEveryHandOffToTheGateway(t *testing.T) {
+	ports := newL2EgressPorts(t)
+	gatewayMAC := bpftest.MAC(0xfe)
+	ports.segment.addGatewayPort(t, ports.pod3, gatewayMAC)
+
+	frame := bpftest.Frame(t, gatewayMAC, bpftest.MAC(1), bpftest.EtherTypeIPv4, nil)
+	verdict, mark := bpftest.RunMarked(t, ports.program, frame, ports.pod1, 0)
+
+	if verdict != bpftest.ActRedirect {
+		t.Fatalf("verdict %d, want a redirect (%d)", verdict, bpftest.ActRedirect)
+	}
+	if got := gatewayHops(mark); got != 1 {
+		t.Errorf("the frame left with %d hops counted, want 1", got)
+	}
+}
+
+func TestL2EgressStopsAFrameThatKeepsComingBackToTheGateway(t *testing.T) {
+	ports := newL2EgressPorts(t)
+	gatewayMAC := bpftest.MAC(0xfe)
+	ports.segment.addGatewayPort(t, ports.pod3, gatewayMAC)
+
+	frame := bpftest.Frame(t, gatewayMAC, bpftest.MAC(1), bpftest.EtherTypeIPv4, nil)
+	verdict, _ := bpftest.RunMarked(t, ports.program, frame, ports.pod1, markWithHops(maxGatewayHops))
+
+	if verdict != bpftest.ActShot {
+		t.Errorf("verdict %d, want a drop (%d)", verdict, bpftest.ActShot)
+	}
+}
+
+// Only the hop bits are juneau's. A frame the gateway hands back to the
+// host stack carries its mark into netfilter, where kube-proxy reads
+// marks of its own.
+func TestL2EgressLeavesTheRestOfTheMarkAlone(t *testing.T) {
+	ports := newL2EgressPorts(t)
+	gatewayMAC := bpftest.MAC(0xfe)
+	ports.segment.addGatewayPort(t, ports.pod3, gatewayMAC)
+
+	frame := bpftest.Frame(t, gatewayMAC, bpftest.MAC(1), bpftest.EtherTypeIPv4, nil)
+	_, mark := bpftest.RunMarked(t, ports.program, frame, ports.pod1, 0x4000)
+
+	if mark&^gatewayHopMask != 0x4000 {
+		t.Errorf("the frame left with mark %#x, want everything but the hop bits kept at %#x", mark, 0x4000)
+	}
+}
+
+// The gateway takes its copy of a broadcast on the port's ingress, not
+// its egress: it is a port juneau reads from rather than a workload
+// that receives what is put in front of it.
+func TestL2EgressDoesNotPutABroadcastOnTheGatewaysEgress(t *testing.T) {
+	ports := newL2EgressPorts(t)
+	ports.segment.addGatewayPort(t, ports.pod3, bpftest.MAC(0xfe))
+
+	frame := bpftest.Frame(t, bpftest.Broadcast, bpftest.MAC(1), bpftest.EtherTypeARP, nil)
+	watched := ports.watch(t)
+	bpftest.Run(t, ports.program, frame, ports.pod1)
+
+	if delivered := watched.Delivered(t, ports.pod2); delivered != 1 {
+		t.Errorf("pod2 was fed %d copies, want 1", delivered)
+	}
+	if delivered := watched.Delivered(t, ports.pod3); delivered != 0 {
+		t.Errorf("the gateway was fed %d copies on its egress, want them on its ingress", delivered)
 	}
 }

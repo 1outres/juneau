@@ -33,6 +33,7 @@ func targets() []target {
 		{name: "node_ingress", load: bpf.LoadNodeIngress},
 		{name: "l2_egress", load: bpf.LoadL2Egress},
 		{name: "l2_ingress", load: bpf.LoadL2Ingress},
+		{name: "l2_gateway", load: bpf.LoadL2Gateway},
 	}
 }
 

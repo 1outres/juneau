@@ -131,6 +131,30 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		subnetNames = append(subnetNames, subnet.Name)
 	}
 
+	// An L2Network is reachable from the Vpc only through its gateway,
+	// so only a segment that declares one gets a route. A segment with
+	// no CIDR has no destination to write down at all.
+	var l2Networks juneauloutresmev1alpha1.L2NetworkList
+	if err := r.List(ctx, &l2Networks, client.MatchingFields{"spec.vpc": resource.Spec.Vpc}); err != nil {
+		if updateErr := r.updateStatus(ctx, &resource, resource.Status.Routes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, "failed to list l2networks for VPC"); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{}, err
+	}
+	for i := range l2Networks.Items {
+		l2 := &l2Networks.Items[i]
+		if l2.Spec.Gateway == nil || l2.Spec.CIDR == "" {
+			continue
+		}
+		statusRoutes = append(statusRoutes, juneauloutresmev1alpha1.Route{
+			Dst:       l2.Spec.CIDR,
+			L2Network: l2.Name,
+			Via: juneauloutresmev1alpha1.RouteVia{
+				Type: juneauloutresmev1alpha1.ViaConnected,
+			},
+		})
+	}
+
 	if vpc.Spec.ServiceEnabled() && r.ServiceCIDR != nil {
 		statusRoutes = append(statusRoutes, juneauloutresmev1alpha1.Route{
 			Dst: r.ServiceCIDR.String(),
@@ -471,6 +495,7 @@ func (r *RouteTableReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&juneauloutresmev1alpha1.RouteTable{}).
 		Watches(&juneauloutresmev1alpha1.Subnet{}, handler.EnqueueRequestsFromMapFunc(r.mapSubnetToRouteTables)).
+		Watches(&juneauloutresmev1alpha1.L2Network{}, handler.EnqueueRequestsFromMapFunc(r.mapL2NetworkToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.NetworkEndpoint{}, handler.EnqueueRequestsFromMapFunc(r.mapNetworkEndpointToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.Vpc{}, handler.EnqueueRequestsFromMapFunc(r.mapVpcToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.AllocationClaim{}, handler.EnqueueRequestsFromMapFunc(r.mapClaimToRouteTables)).
@@ -516,6 +541,31 @@ func (r *RouteTableReconciler) ensureNumberClaim(ctx context.Context, resource *
 		return nil, err
 	}
 	return claim, nil
+}
+
+// mapL2NetworkToRouteTables wakes every RouteTable of the Vpc a
+// segment belongs to. A connected route for the segment goes into all
+// of them, and whether there is one at all follows spec.gateway, which
+// the user may add or remove at any time.
+func (r *RouteTableReconciler) mapL2NetworkToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
+	l2, ok := obj.(*juneauloutresmev1alpha1.L2Network)
+	if !ok || l2.Spec.Vpc == "" {
+		return nil
+	}
+
+	var routeTableList juneauloutresmev1alpha1.RouteTableList
+	if err := r.List(ctx, &routeTableList); err != nil {
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(routeTableList.Items))
+	for i := range routeTableList.Items {
+		rt := &routeTableList.Items[i]
+		if rt.Spec.Vpc != l2.Spec.Vpc {
+			continue
+		}
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: rt.Name}})
+	}
+	return requests
 }
 
 func (r *RouteTableReconciler) mapSubnetToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {

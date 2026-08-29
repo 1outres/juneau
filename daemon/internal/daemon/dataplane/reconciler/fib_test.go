@@ -221,3 +221,54 @@ func TestBuildFibValVpcEndpointDiffersFromServiceOnlyByType(t *testing.T) {
 		t.Errorf("values differ beyond the type: %+v vs %+v", service, endpoint)
 	}
 }
+
+// An L2Network reached through its gateway is a connected route with a
+// port instead of a Subnet behind it. The ifindex of that port is
+// node-local, so the route carries only the VNI and the data plane
+// looks the port up itself.
+func TestBuildFibValL2GatewayRoute(t *testing.T) {
+	network := &juneauv1alpha1.L2Network{
+		ObjectMeta: metav1.ObjectMeta{Name: "lab-net"},
+		Status:     juneauv1alpha1.L2NetworkStatus{VNI: 4242, GatewayMAC: "02:00:00:00:00:fe"},
+	}
+	r := &Fib{client: fake.NewClientBuilder().WithScheme(newNatTestScheme(t)).WithRuntimeObjects(network).Build()}
+
+	val, skip, err := r.buildFibVal(context.Background(), &juneauv1alpha1.Route{
+		Dst:       "10.60.0.0/24",
+		L2Network: "lab-net",
+		Via:       juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaConnected},
+	})
+	if err != nil {
+		t.Fatalf("buildFibVal: %v", err)
+	}
+	if skip {
+		t.Fatal("the route was skipped although the segment has a VNI")
+	}
+	if val.Type != fibRouteTypeL2Gateway {
+		t.Errorf("route type %d, want %d", val.Type, fibRouteTypeL2Gateway)
+	}
+	if val.SubnetId != 4242 {
+		t.Errorf("route names VNI %d, want 4242", val.SubnetId)
+	}
+}
+
+// The VNI lands after the object exists. A route programmed under 0
+// would name no segment at all.
+func TestBuildFibValSkipsAnL2NetworkWithoutAVni(t *testing.T) {
+	network := &juneauv1alpha1.L2Network{
+		ObjectMeta: metav1.ObjectMeta{Name: "lab-net"},
+	}
+	r := &Fib{client: fake.NewClientBuilder().WithScheme(newNatTestScheme(t)).WithRuntimeObjects(network).Build()}
+
+	_, skip, err := r.buildFibVal(context.Background(), &juneauv1alpha1.Route{
+		Dst:       "10.60.0.0/24",
+		L2Network: "lab-net",
+		Via:       juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaConnected},
+	})
+	if err != nil {
+		t.Fatalf("buildFibVal: %v", err)
+	}
+	if !skip {
+		t.Error("a segment with no VNI was programmed anyway")
+	}
+}

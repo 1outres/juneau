@@ -177,6 +177,17 @@ type L2EgressIpv4FragVal struct {
 	LastSeenNs uint64
 }
 
+type L2EgressL2ArpKey struct {
+	_    structs.HostLayout
+	Ipv4 uint32
+}
+
+type L2EgressL2ArpVal struct {
+	_   structs.HostLayout
+	Mac [6]uint8
+	Pad [2]uint8
+}
+
 type L2EgressL2FdbKey struct {
 	_   structs.HostLayout
 	Mac [6]uint8
@@ -187,6 +198,20 @@ type L2EgressL2FdbVal struct {
 	Ifindex    uint32
 	VtepIp     uint32
 	LastSeenNs uint64
+	Flags      uint32
+	Pad        uint32
+}
+
+type L2EgressL2GatewayKey struct {
+	_   structs.HostLayout
+	Vni uint32
+}
+
+type L2EgressL2GatewayVal struct {
+	_       structs.HostLayout
+	Ifindex uint32
+	Mac     [6]uint8
+	Pad     [2]uint8
 }
 
 type L2EgressL2IfindexKey struct {
@@ -525,12 +550,15 @@ type L2EgressMapSpecs struct {
 	IfindexHostMac        *ebpf.MapSpec `ebpf:"ifindex_host_mac"`
 	IfindexSubnet         *ebpf.MapSpec `ebpf:"ifindex_subnet"`
 	Ipv4FragMap           *ebpf.MapSpec `ebpf:"ipv4_frag_map"`
+	L2Arp                 *ebpf.MapSpec `ebpf:"l2_arp"`
+	L2ArpInner            *ebpf.MapSpec `ebpf:"l2_arp_inner"`
 	L2BumLocal            *ebpf.MapSpec `ebpf:"l2_bum_local"`
 	L2BumLocalInner       *ebpf.MapSpec `ebpf:"l2_bum_local_inner"`
 	L2BumRemote           *ebpf.MapSpec `ebpf:"l2_bum_remote"`
 	L2BumRemoteInner      *ebpf.MapSpec `ebpf:"l2_bum_remote_inner"`
 	L2Fdb                 *ebpf.MapSpec `ebpf:"l2_fdb"`
 	L2FdbInner            *ebpf.MapSpec `ebpf:"l2_fdb_inner"`
+	L2Gateway             *ebpf.MapSpec `ebpf:"l2_gateway"`
 	L2Ifindex             *ebpf.MapSpec `ebpf:"l2_ifindex"`
 	L2NetworkMap          *ebpf.MapSpec `ebpf:"l2_network_map"`
 	LbBackendMap          *ebpf.MapSpec `ebpf:"lb_backend_map"`
@@ -603,12 +631,15 @@ type L2EgressMaps struct {
 	IfindexHostMac        *ebpf.Map `ebpf:"ifindex_host_mac"`
 	IfindexSubnet         *ebpf.Map `ebpf:"ifindex_subnet"`
 	Ipv4FragMap           *ebpf.Map `ebpf:"ipv4_frag_map"`
+	L2Arp                 *ebpf.Map `ebpf:"l2_arp"`
+	L2ArpInner            *ebpf.Map `ebpf:"l2_arp_inner"`
 	L2BumLocal            *ebpf.Map `ebpf:"l2_bum_local"`
 	L2BumLocalInner       *ebpf.Map `ebpf:"l2_bum_local_inner"`
 	L2BumRemote           *ebpf.Map `ebpf:"l2_bum_remote"`
 	L2BumRemoteInner      *ebpf.Map `ebpf:"l2_bum_remote_inner"`
 	L2Fdb                 *ebpf.Map `ebpf:"l2_fdb"`
 	L2FdbInner            *ebpf.Map `ebpf:"l2_fdb_inner"`
+	L2Gateway             *ebpf.Map `ebpf:"l2_gateway"`
 	L2Ifindex             *ebpf.Map `ebpf:"l2_ifindex"`
 	L2NetworkMap          *ebpf.Map `ebpf:"l2_network_map"`
 	LbBackendMap          *ebpf.Map `ebpf:"lb_backend_map"`
@@ -657,12 +688,15 @@ func (m *L2EgressMaps) Close() error {
 		m.IfindexHostMac,
 		m.IfindexSubnet,
 		m.Ipv4FragMap,
+		m.L2Arp,
+		m.L2ArpInner,
 		m.L2BumLocal,
 		m.L2BumLocalInner,
 		m.L2BumRemote,
 		m.L2BumRemoteInner,
 		m.L2Fdb,
 		m.L2FdbInner,
+		m.L2Gateway,
 		m.L2Ifindex,
 		m.L2NetworkMap,
 		m.LbBackendMap,

@@ -90,6 +90,13 @@ func (g *FdbGC) sweepOne(vni uint32, inner *ebpf.Map, nowNs uint64) {
 	)
 	iter := inner.Iterate()
 	for iter.Next(&key, &val) {
+		// The gateway entry is not learned and never goes stale: the
+		// port sends no frame to refresh its stamp with, and taking it
+		// out would cut the segment off from the rest of the Vpc until
+		// the reconciler noticed.
+		if val.Flags&FdbFlagGateway != 0 {
+			continue
+		}
 		// A stamp from the future means the data plane refreshed the
 		// entry between the read of the clock and the read of the
 		// entry. It is fresh by definition, so leave it.

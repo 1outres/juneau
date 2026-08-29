@@ -12,6 +12,7 @@ L2Networkは宛先MACアドレスだけで転送するセグメントです。Ju
 - CIDRを持たないL2Network (`lab-net`)
 - eth0が`lab-subnet`、eth1が`lab-net`のPod 2つ
 - eth1に手で付けたアドレス同士でのpingと、非IPのフレームの通過
+- gatewayを持つL2Network (`lab-gw-net`) と、そこからSubnetのPodへの疎通
 
 ## 前提条件
 
@@ -162,6 +163,117 @@ $ kubectl exec lab-a -- ping -c 1 192.168.50.2
 
 Subnetでは事情が違います。policyの付いたPodの非IPv4フレームは`POLICY_ETHERTYPE_DROP`で落ち、ARPだけがデータプレーンの都合で例外として通ります。L2Networkにはpolicyの評価そのものがありません。IPv6もSTPも独自のEtherTypeも同じように通ります。
 
+## gatewayを足してVpcに繋ぐ
+
+ここまでのセグメントは閉じています。`lab-net`のeth1同士は届きますが、`lab-subnet`のPodにも、外にも届きません。
+
+`spec.gateway`を書くと、セグメントに出口が生えます。ここからは`spec.cidr`を持つ別のL2Network (`lab-gw-net`) を作って、そのPodから同じVpcのSubnetのPodへ届くところまでを見ます。
+
+### 1. CIDRとgatewayを持つL2Networkを作成
+
+```yaml
+apiVersion: juneau.loutres.me/v1alpha1
+kind: L2Network
+metadata:
+  name: lab-gw-net
+spec:
+  vpc: lab-vpc
+  cidr: 10.92.0.0/24
+  gateway: {}
+```
+
+`gateway: {}`だけで、アドレスは`spec.cidr`の先頭、つまり`10.92.0.1`になります。RouteTableはVpcのメインのものが使われます。
+
+```console
+$ kubectl get l2network lab-gw-net -o jsonpath='{.status.gateway} {.status.gatewayMAC}{"\n"}'
+10.92.0.1 92:1c:4d:0a:33:7e
+```
+
+同じVpcのRouteTableには、このセグメントへのconnected routeが自動で入ります。
+
+```console
+$ kubectl get routetable lab-vpc -o jsonpath='{range .status.routes[*]}{.dst} {.subnet}{.l2Network}{"\n"}{end}'
+10.91.0.0/24 lab-subnet
+10.92.0.0/24 lab-gw-net
+```
+
+### 2. gatewayを使うPodを作成
+
+`spec.cidr`があるので、JuneauがNICにアドレスを配ります。手でアドレスを振る必要はありません。
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: lab-c
+  annotations:
+    juneau.loutres.me/subnet: lab-subnet
+    juneau.loutres.me/networks: |
+      [
+        {"interface": "eth1", "l2Network": "lab-gw-net"}
+      ]
+spec:
+  containers:
+    - name: shell
+      image: nicolaka/netshoot:v0.16
+      command: ["sleep", "3600"]
+```
+
+```console
+$ kubectl exec lab-c -- ip -4 addr show eth1
+3: eth1@if55: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1450 ...
+    inet 10.92.0.2/24 scope global eth1
+```
+
+デフォルトルートを持つのはPodの1枚目のNICだけなので、eth1側の経路はPodの中で自分で足します。
+
+```console
+$ kubectl exec lab-c -- ip route add 10.91.0.0/24 via 10.92.0.1 dev eth1
+```
+
+### 3. Subnetのpodへ届くことを確認
+
+`lab-subnet`にPodを1つ置いて、そのアドレスへpingを打ちます。
+
+```console
+$ kubectl get pod lab-a -o jsonpath='{.status.podIP}{"\n"}'
+10.91.0.5
+$ kubectl exec lab-c -- ping -c 3 10.91.0.5
+PING 10.91.0.5 (10.91.0.5) 56(84) bytes of data.
+64 bytes from 10.91.0.5: icmp_seq=1 ttl=64 time=0.283 ms
+```
+
+パケットはeth1から出て、gatewayのMAC宛のフレームとしてgateway vethに渡り、そこから先はSubnetのPodと同じ経路を通ります。gatewayが何をするかを決めるのは、そのVpcのRouteTableです。
+
+ClusterIP Serviceも同じ経路で叩けます。Podの中でServiceのCIDRをこのgatewayへ向けてください。
+
+```console
+$ kubectl exec lab-c -- ip route add 10.96.0.0/12 via 10.92.0.1 dev eth1
+$ kubectl exec lab-c -- curl -s -o /dev/null -w '%{http_code}\n' http://my-service.default.svc:80/
+200
+```
+
+0.0.0.0/0を向ければ、NATGateway経由の外部にも同じ経路で出られます。ただしeth0のデフォルトルートを置き換えることになるので、eth0側の通信が要らない場合だけにしてください。
+
+### 4. gatewayを通ったことを確認
+
+```console
+$ kubectl juneau trace --from-pod default/lab-c --from-interface eth1 --from-ip 10.92.0.2 \
+    --to-pod default/lab-a --to-ip 10.91.0.5 --proto icmp
+```
+
+`l2_egress`でgateway MACへのredirectが出て、次に`pod_egress`がgateway vethで動き、fib lookupの後にSubnet側へ転送されるところまで並びます。
+
+gatewayが宛先を引くために覚えたアドレスは、`l2_arp`で読めます。
+
+```console
+$ kubectl juneau bpf dump l2_arp --inner-key vni=4243
+VNI   IPV4        MAC
+4243  10.92.0.2   1a:2b:3c:00:00:03
+```
+
+ここに載っていないアドレスへは、Vpcの側から届きません。gatewayは自分からARPを出さないので、そのホストが一度もARPを流していないと解決できないからです。
+
 ## 注意点
 
 ### eth0には使えません
@@ -172,7 +284,7 @@ CIDRを持たないL2NetworkのNICにはアドレスが載りません。コン�
 
 ### セグメントの中にpolicyは効きません
 
-SecurityGroupもNetworkACLも、L2Network上のNIC同士の通信には一切効きません。データプレーンがpolicyを読まないからです。`spec.networkACL`を書けるのはgatewayを持つL2Networkだけで、そのACLもgatewayを跨ぐ通信にしか適用されません。
+SecurityGroupもNetworkACLも、L2Network上のNIC同士の通信には一切効きません。データプレーンがpolicyを読まないからです。どちらもgatewayを跨ぐ通信にだけ適用されるので、`spec.networkACL`もNICのSecurityGroupも、gatewayを持つL2Networkでしか書くことができません。
 
 同じL2Networkに繋いだPod同士は、互いに何でもできます。テナント境界は`spec.vpc`で引いてください。
 
@@ -183,6 +295,31 @@ SecurityGroupもNetworkACLも、L2Network上のNIC同士の通信には一切効
 ### ブロードキャストは全ポートに複製されます
 
 ブロードキャストも、マルチキャストも、まだ学習していない宛先へのユニキャストも、セグメントの全ポートに複製されます。参加しているNodeが多いほどNodeを跨ぐ複製が増えるので、ブロードキャストの多いワークロードを大きなセグメントに置くときは気をつけてください。
+
+### 追加NICには経路が入りません
+
+`spec.cidr`のあるL2NetworkはNICにアドレスを配りますが、経路は入れません。デフォルトルートを持つのはPodの1枚目のNICだけで、2枚目が同じ経路を入れようとすると失敗してPodごと落ちるからです。gatewayの先へ出したい宛先は、Podの中で自分で経路を足してください。
+
+### gatewayを後から足すときはアドレスに注意
+
+`spec.gateway`は後から足すことができます。ただし、既定の`.1`をワークロードが持っている場合、webhookが拒否します。
+
+```console
+$ kubectl apply -f l2network-with-gateway.yaml
+Error from server (Forbidden): ... address 10.92.0.1 is already held by AllocationLease ...
+```
+
+`spec.gateway.address`に空いているアドレスを書くか、そのアドレスを持っているPodを消してから足してください。
+
+### 自分で振ったアドレスはgatewayから見えません
+
+gatewayは、Juneauが配ったアドレスと、セグメントを流れるARPから見えたアドレスしか解決できません。`spec.cidr`の外のアドレスをPodの中で自分で振ったり、NICの後ろのbridgeにホストをぶら下げたりすると、そのホストが一度ARPを出すまでVpc側から届きません。`kubectl juneau trace`では`MISS_L2_ARP`として見えます。
+
+出てしまったら、そのホストから何か1つ外へ向けて送れば埋まります。
+
+### IPv6はgatewayを越えられません
+
+セグメントの中のIPv6はBUMのフラッドで動きます。gatewayが解決に使うテーブルはIPv4専用なので、IPv6のパケットをgatewayへ送っても落ちます。
 
 ### MTUを合わせてください
 

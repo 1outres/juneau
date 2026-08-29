@@ -212,6 +212,39 @@ spec:
                   spec.mtu when it is set, the controller default otherwise.
                 format: int32
                 type: integer
+              networkACL:
+                description: |-
+                  NetworkACL mirrors the resolved spec.networkACL reference in the
+                  same shape a Subnet publishes it, because the daemon programs the
+                  gateway port of a segment out of the same subnet_map the Subnet
+                  data plane reads. Empty (nil) when spec.networkACL is unset.
+                properties:
+                  aclID:
+                    description: |-
+                      ACLID is the resolved cluster-wide identifier from the
+                      referenced NetworkACL's status.aclID. Zero means "the ACL
+                      exists in spec but has not been allocated yet"; the daemon
+                      treats zero as "no ACL programmed" and falls back to default-allow
+                      until the controller publishes a non-zero value.
+                    format: int32
+                    type: integer
+                  name:
+                    description: |-
+                      Name mirrors spec.networkACL — the user-facing reference. Kept
+                      in status so daemons consume one struct without cross-checking
+                      spec.
+                    type: string
+                  rulesetVersion:
+                    description: |-
+                      RulesetVersion mirrors the referenced ACL's
+                      status.rulesetVersion at the moment the reference was resolved.
+                      Daemons compare this against their last-applied value to decide
+                      whether to flush CT entries.
+                    format: int64
+                    type: integer
+                required:
+                - name
+                type: object
               observedGeneration:
                 format: int64
                 type: integer

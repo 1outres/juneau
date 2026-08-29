@@ -6,12 +6,29 @@ package l2
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"sync"
 
 	"github.com/cilium/ebpf"
 	"go.uber.org/zap"
 )
+
+// The value of one entry of a flood list, mirroring L2_PORT_FLAG_* in
+// daemon/bpf/maps.h. An ordinary local veth and a remote node carry
+// PortFlagPresent; the gateway port of the segment carries the two
+// together, which is what tells the data plane to hand it its copy of a
+// flooded frame on ingress rather than on egress.
+const (
+	PortFlagPresent uint8 = 1
+	PortFlagGateway uint8 = 2
+)
+
+// FdbFlagGateway mirrors L2_FDB_FLAG_GATEWAY in daemon/bpf/maps.h. It
+// marks the one forwarding entry user space writes: the MAC of this
+// node's gateway port. A frame that claims that address cannot take the
+// entry over, and the aging sweep leaves it alone.
+const FdbFlagGateway uint32 = 1
 
 // Table owns the inner maps of one HASH_OF_MAPS keyed by VNI.
 //
@@ -82,10 +99,9 @@ func (t *Table) ensureLocked(vni uint32) (*ebpf.Map, error) {
 	return inner, nil
 }
 
-// AddMember puts one member into the inner map of vni, building the
-// table first if this is the first member. Members are a set: the
-// value the data plane reads is always 1 and only the key matters.
-func (t *Table) AddMember(vni, member uint32) error {
+// Put writes one entry into the inner map of vni, building the table
+// first when this is the first entry.
+func (t *Table) Put(vni uint32, key, value any) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -93,18 +109,52 @@ func (t *Table) AddMember(vni, member uint32) error {
 	if err != nil {
 		return err
 	}
-	var present uint8 = 1
-	if err := inner.Update(member, present, ebpf.UpdateAny); err != nil {
-		return fmt.Errorf("l2/%s: add member %d to vni %d: %w", t.name, member, vni, err)
+	if err := inner.Update(key, value, ebpf.UpdateAny); err != nil {
+		return fmt.Errorf("l2/%s: write %v into vni %d: %w", t.name, key, vni, err)
 	}
 	return nil
 }
 
-// RemoveMember takes one member out of the inner map of vni. A VNI
-// this node holds no table for, and a member that is already gone, are
-// both fine: the caller is undoing what an earlier pass wrote, and the
-// network itself may have been deleted in between.
-func (t *Table) RemoveMember(vni, member uint32) error {
+// PutIfAbsent writes one entry into the inner map of vni only while
+// nothing holds that key yet, building the table first when this is the
+// first entry.
+//
+// It is how user space offers what the control plane knows without
+// taking anything away from what the data plane has seen. An entry that
+// is already there was either written by an earlier pass or learned
+// from a frame, and a frame is the better source: it says what the
+// segment is really doing, while the control plane only knows what it
+// handed out.
+func (t *Table) PutIfAbsent(vni uint32, key, value any) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	inner, err := t.ensureLocked(vni)
+	if err != nil {
+		return err
+	}
+	if err := inner.Update(key, value, ebpf.UpdateNoExist); err != nil {
+		if errors.Is(err, ebpf.ErrKeyExist) {
+			return nil
+		}
+		return fmt.Errorf("l2/%s: write %v into vni %d: %w", t.name, key, vni, err)
+	}
+	return nil
+}
+
+// RemoveIfEqual takes one entry out of the inner map of vni, but only
+// while it still holds the value the caller wrote.
+//
+// The pair of this and PutIfAbsent is what keeps user space from
+// undoing the data plane. An entry the data plane has since corrected
+// no longer matches, so it stays; the caller is only ever taking back
+// its own.
+//
+// The read and the delete run under the same lock, so nothing user
+// space does lands between them. A frame arriving in that window can
+// still overwrite the entry after the read, which costs one relearn and
+// nothing else.
+func (t *Table) RemoveIfEqual(vni uint32, key, value any) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -112,10 +162,51 @@ func (t *Table) RemoveMember(vni, member uint32) error {
 	if !ok {
 		return nil
 	}
-	if err := inner.Delete(member); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-		return fmt.Errorf("l2/%s: remove member %d from vni %d: %w", t.name, member, vni, err)
+
+	current := reflect.New(reflect.TypeOf(value))
+	if err := inner.Lookup(key, current.Interface()); err != nil {
+		if errors.Is(err, ebpf.ErrKeyNotExist) {
+			return nil
+		}
+		return fmt.Errorf("l2/%s: read %v of vni %d: %w", t.name, key, vni, err)
+	}
+	if !reflect.DeepEqual(current.Elem().Interface(), value) {
+		return nil
+	}
+
+	if err := inner.Delete(key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+		return fmt.Errorf("l2/%s: remove %v from vni %d: %w", t.name, key, vni, err)
 	}
 	return nil
+}
+
+// Remove takes one entry out of the inner map of vni. A VNI this node
+// holds no table for, and an entry that is already gone, are both fine:
+// the caller is undoing what an earlier pass wrote, and the network
+// itself may have been deleted in between.
+func (t *Table) Remove(vni uint32, key any) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	inner, ok := t.inners[vni]
+	if !ok {
+		return nil
+	}
+	if err := inner.Delete(key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+		return fmt.Errorf("l2/%s: remove %v from vni %d: %w", t.name, key, vni, err)
+	}
+	return nil
+}
+
+// AddMember puts one ordinary port on a flood list. The gateway port
+// carries a flag of its own, so it is written with Put instead.
+func (t *Table) AddMember(vni, member uint32) error {
+	return t.Put(vni, member, PortFlagPresent)
+}
+
+// RemoveMember takes one port off a flood list.
+func (t *Table) RemoveMember(vni, member uint32) error {
+	return t.Remove(vni, member)
 }
 
 // ForEachInner runs fn over every inner map this table holds, in VNI

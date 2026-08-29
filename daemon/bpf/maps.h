@@ -204,6 +204,14 @@
 #define MAX_L2_FDB_PER_NETWORK 8192
 #endif
 
+#ifndef MAX_L2_ARP_PER_NETWORK
+// MAX_L2_ARP_PER_NETWORK bounds the addresses one L2Network's gateway
+// has snooped out of the ARP on the segment. It is an LRU as well, so a
+// segment with more hosts than this keeps working: the gateway loses
+// the oldest and drops packets for it until that host speaks again.
+#define MAX_L2_ARP_PER_NETWORK 8192
+#endif
+
 #ifndef MAX_L2_BUM_PER_NETWORK
 // MAX_L2_BUM_PER_NETWORK bounds one L2Network's flood list, counted
 // separately for local ports and for remote VTEPs. Every broadcast
@@ -220,6 +228,38 @@
 // last_seen_ns of a MAC it keeps seeing. Without it every frame would
 // write to the table; with it the write happens once a second per MAC.
 #define L2_FDB_REFRESH_NS 1000000000ULL
+
+// L2_FDB_FLAG_GATEWAY marks the one entry of a learning table the
+// daemon writes itself: the MAC of this node's gateway port. It says
+// three things at once. A frame that claims the address may not take
+// the entry over, the aging sweep may not remove it, and the frame is
+// handed to the port's ingress rather than its egress, because the
+// gateway receives what the segment sends it instead of passing it on.
+#define L2_FDB_FLAG_GATEWAY 1
+
+// L2_PORT_FLAG_* are the value of an entry of a flood list. PRESENT is
+// what an ordinary local veth or a remote node carries; GATEWAY marks
+// this node's gateway port, which takes its copy on ingress.
+#define L2_PORT_FLAG_PRESENT 1
+#define L2_PORT_FLAG_GATEWAY 2
+
+// L2_GW_MAX_HOPS bounds how many times one frame may be handed to a
+// gateway port. Redirecting to an ingress has no recursion limit in the
+// kernel: XMIT_RECURSION_LIMIT guards the transmit path only, and
+// nothing on the receive path counts. bpf_redirect leaves the IP TTL
+// alone as well, so a loop would burn softirq until the machine stops
+// answering. The count rides in skb->mark, which survives a redirect
+// inside one network namespace because skb_scrub_packet only clears it
+// when the frame crosses into another one.
+#define L2_GW_MAX_HOPS 4
+
+// L2_MARK_GW_HOP_MASK is the part of skb->mark juneau counts hops in,
+// and L2_MARK_GW_HOP_SHIFT is where it starts. Nothing else in juneau
+// reads or writes skb->mark. The bits sit high on purpose: a frame the
+// gateway hands back to the host stack carries them into netfilter,
+// and kube-proxy's own marks (0x4000 and 0x8000) must not be touched.
+#define L2_MARK_GW_HOP_SHIFT 24
+#define L2_MARK_GW_HOP_MASK 0x0f000000
 
 #define FIB_ROUTE_TYPE_CONNECTED 1
 #define FIB_ROUTE_TYPE_ENDPOINT 2
@@ -244,6 +284,12 @@
 // extra lookup. 5 is skipped on purpose: it is a retired value and old
 // map dumps may still carry it.
 #define FIB_ROUTE_TYPE_VPC_ENDPOINT 10
+// L2_GATEWAY hands the packet to the gateway port of an L2Network,
+// which the segment's own data plane forwards on from there.
+// fib_val.subnet_id carries the VNI of the segment; the ifindex of the
+// port is node-local, so it comes from l2_gateway rather than from the
+// route.
+#define FIB_ROUTE_TYPE_L2_GATEWAY 11
 
 #define CT_ACTION_DNAT 1
 #define CT_ACTION_SNAT 2
@@ -1313,11 +1359,16 @@ struct l2_fdb_val {
   __u32 ifindex;
   __u32 vtep_ip;
   __u64 last_seen_ns;
+  // flags is a set of L2_FDB_FLAG_*. A learned entry carries none.
+  __u32 flags;
+  __u32 _pad;
 };
 
-// l2_fdb_inner_map is one L2Network's learning table. User space
-// writes no entries: l2_egress learns from the frames a local port
-// sends and vxlan_ingress learns from the frames the overlay delivers.
+// l2_fdb_inner_map is one L2Network's learning table. l2_egress learns
+// from the frames a local port sends and vxlan_ingress learns from the
+// frames the overlay delivers. User space writes exactly one entry, the
+// MAC of this node's gateway port, because a gateway sends no frame of
+// its own and there is nothing to learn it from.
 struct l2_fdb_inner_map {
   __uint(type, BPF_MAP_TYPE_LRU_HASH);
   __uint(max_entries, MAX_L2_FDB_PER_NETWORK);
@@ -1343,7 +1394,7 @@ struct l2_bum_local_inner_map {
   __uint(type, BPF_MAP_TYPE_HASH);
   __uint(max_entries, MAX_L2_BUM_PER_NETWORK);
   __type(key, __u32);  // ifindex
-  __type(value, __u8); // always 1
+  __type(value, __u8); // L2_PORT_FLAG_*
 };
 
 struct l2_bum_local_inner_map l2_bum_local_inner SEC(".maps");
@@ -1372,7 +1423,7 @@ struct l2_bum_remote_inner_map {
   __uint(type, BPF_MAP_TYPE_HASH);
   __uint(max_entries, MAX_L2_BUM_PER_NETWORK);
   __type(key, __u32);  // VTEP IPv4, host byte order
-  __type(value, __u8); // always 1
+  __type(value, __u8); // L2_PORT_FLAG_*
 };
 
 struct l2_bum_remote_inner_map l2_bum_remote_inner SEC(".maps");
@@ -1385,5 +1436,69 @@ struct {
   __uint(pinning, LIBBPF_PIN_BY_NAME);
   __array(values, struct l2_bum_remote_inner_map);
 } l2_bum_remote SEC(".maps");
+
+struct l2_arp_key {
+  // ipv4 in host byte order, the same form arp_table is keyed on.
+  __u32 ipv4;
+};
+
+struct l2_arp_val {
+  __u8 mac[6];
+  __u8 _pad[2];
+};
+
+// l2_arp_inner_map is what one L2Network's gateway resolves a
+// destination address to a MAC with. The L2 programs fill it in from
+// the ARP that crosses the segment; nothing answers ARP on behalf of a
+// host, because a segment carries the user's own DHCP server, router
+// and gratuitous ARP and juneau must not speak for any of them.
+struct l2_arp_inner_map {
+  __uint(type, BPF_MAP_TYPE_LRU_HASH);
+  __uint(max_entries, MAX_L2_ARP_PER_NETWORK);
+  __type(key, struct l2_arp_key);
+  __type(value, struct l2_arp_val);
+};
+
+struct l2_arp_inner_map l2_arp_inner SEC(".maps");
+
+// l2_arp is kept apart from arp_table rather than sharing its key
+// space. arp_table is one flat table for the whole node, and a segment
+// that learns thousands of addresses would fill it and make the writes
+// that answer ARP for a Subnet fail. The reader picks the table from
+// l2_network_map instead of trying one and falling back to the other.
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
+  __uint(max_entries, MAX_L2_NETWORKS);
+  __type(key, __u32); // VNI
+  __type(value, __u32);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+  __array(values, struct l2_arp_inner_map);
+} l2_arp SEC(".maps");
+
+struct l2_gateway_key {
+  __u32 vni;
+};
+
+struct l2_gateway_val {
+  // ifindex of this node's gateway veth. Every node that holds a port
+  // on the segment stands up its own, and they all answer on the same
+  // address and the same MAC, so a workload never leaves its node to
+  // reach its gateway.
+  __u32 ifindex;
+  __u8 mac[6];
+  __u8 _pad[2];
+};
+
+// l2_gateway names the local gateway port of an L2Network. pod_egress
+// reads it to place a packet a route sent to the segment, and the
+// program on the port itself reads the MAC to sign the frames it puts
+// on the segment.
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_L2_NETWORKS);
+  __type(key, struct l2_gateway_key);
+  __type(value, struct l2_gateway_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} l2_gateway SEC(".maps");
 
 #endif // JUNEAU_BPF_MAPS_H

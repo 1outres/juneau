@@ -34,6 +34,7 @@ import (
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	"github.com/1outres/juneau/controller/internal/addressrange"
+	"github.com/1outres/juneau/controller/internal/podnetwork"
 )
 
 // nolint:unused
@@ -95,6 +96,12 @@ func (v *L2NetworkCustomValidator) ValidateCreate(ctx context.Context, obj runti
 	}
 	errs = append(errs, referenceErrs...)
 
+	addressErrs, err := v.validateGatewayAddressFree(ctx, l2, specPath)
+	if err != nil {
+		return nil, err
+	}
+	errs = append(errs, addressErrs...)
+
 	return nil, l2NetworkInvalid(l2, errs)
 }
 
@@ -142,6 +149,22 @@ func (v *L2NetworkCustomValidator) ValidateUpdate(ctx context.Context, oldObj, n
 				return nil, err
 			}
 			errs = append(errs, aclErrs...)
+		}
+
+		// Same rule for the gateway address: an address the segment
+		// already answers on is excluded from its own pool, so it can
+		// only be taken while it is moving.
+		moved, err := l2NetworkGatewayAddressMoved(old, l2)
+		if err != nil {
+			// Reported on its own path by validateL2NetworkGateway.
+			moved = false
+		}
+		if moved {
+			addressErrs, err := v.validateGatewayAddressFree(ctx, l2, specPath)
+			if err != nil {
+				return nil, err
+			}
+			errs = append(errs, addressErrs...)
 		}
 	}
 
@@ -242,6 +265,93 @@ func (v *L2NetworkCustomValidator) validateNetworkACL(ctx context.Context, l2 *j
 	}
 
 	return nil, nil
+}
+
+// validateGatewayAddressFree rejects a gateway whose address a NIC on
+// the segment already holds.
+//
+// spec.gateway is mutable, and a segment that ran without one long
+// enough to hand out its first address would otherwise put the gateway
+// on an address a workload is using. computeL2NetworkExcluded only
+// stops the pool from handing that address out again; it never takes
+// one back. Naming another address in spec.gateway.address, or removing
+// whoever holds this one, both clear the way, so this is a check the
+// user can act on rather than a dead end.
+func (v *L2NetworkCustomValidator) validateGatewayAddressFree(ctx context.Context, l2 *juneauv1alpha1.L2Network, specPath *field.Path) (field.ErrorList, error) {
+	address, err := podnetwork.L2NetworkGatewayAddress(l2)
+	if err != nil || address == "" {
+		// A gateway with no readable address is reported by
+		// validateL2NetworkGateway on the field that carries it.
+		return nil, nil
+	}
+
+	holder, err := v.findAddressHolder(ctx, podnetwork.L2NetworkAllocationPoolName(l2.Name), address)
+	if err != nil {
+		return nil, err
+	}
+	if holder == "" {
+		return nil, nil
+	}
+
+	return field.ErrorList{field.Invalid(specPath.Child("gateway", "address"), address,
+		fmt.Sprintf("address %s is already held by %s; name a free address in spec.gateway.address or remove what holds this one", address, holder))}, nil
+}
+
+// findAddressHolder reports what holds address out of the named pool,
+// or the empty string when nothing does.
+//
+// Both an allocated AllocationClaim and an AllocationLease count. The
+// lease is what keeps an address reserved once its claim is gone, so
+// reading only the claims would let the gateway land on an address a
+// restarting workload is about to take back.
+func (v *L2NetworkCustomValidator) findAddressHolder(ctx context.Context, poolName, address string) (string, error) {
+	var claims juneauv1alpha1.AllocationClaimList
+	if err := v.List(ctx, &claims); err != nil {
+		return "", err
+	}
+	for i := range claims.Items {
+		claim := &claims.Items[i]
+		if claim.Status.Phase != juneauv1alpha1.AllocationClaimPhaseAllocated {
+			continue
+		}
+		if claim.Status.Value.IP != address {
+			continue
+		}
+		for _, ref := range claim.Spec.PoolRefs {
+			if ref.Name == poolName {
+				return "AllocationClaim " + claim.Name, nil
+			}
+		}
+	}
+
+	var leases juneauv1alpha1.AllocationLeaseList
+	if err := v.List(ctx, &leases); err != nil {
+		return "", err
+	}
+	for i := range leases.Items {
+		lease := &leases.Items[i]
+		if lease.Spec.PoolRef.Name != poolName || lease.Spec.Value.IP != address {
+			continue
+		}
+		return "AllocationLease " + lease.Name, nil
+	}
+
+	return "", nil
+}
+
+// l2NetworkGatewayAddressMoved reports whether an update puts the
+// gateway on a different address than it answered on before. Adding a
+// gateway to a segment that had none counts as a move.
+func l2NetworkGatewayAddressMoved(old, updated *juneauv1alpha1.L2Network) (bool, error) {
+	before, err := podnetwork.L2NetworkGatewayAddress(old)
+	if err != nil {
+		return false, err
+	}
+	after, err := podnetwork.L2NetworkGatewayAddress(updated)
+	if err != nil {
+		return false, err
+	}
+	return after != "" && after != before, nil
 }
 
 // validateL2NetworkCIDR checks the prefix an L2Network declares. On top

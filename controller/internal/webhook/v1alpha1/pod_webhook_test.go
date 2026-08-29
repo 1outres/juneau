@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -58,6 +59,14 @@ func patchDefaultSubnetDNS() juneauv1alpha1.Subnet {
 //
 // All resources clean themselves up via DeferCleanup so each spec
 // remains hermetic across the parallel envtest run.
+// fixtureSubnetOctet hands out the second octet of a fixture Subnet,
+// walking 112..211 so no two live fixtures share a prefix.
+var fixtureSubnetOctetCounter atomic.Int64
+
+func fixtureSubnetOctet() int64 {
+	return fixtureSubnetOctetCounter.Add(1)%100 + 112
+}
+
 func customSubnetFixture() juneauv1alpha1.Subnet {
 	GinkgoHelper()
 	return subnetFixtureForVpc(juneauv1alpha1.VpcSpec{Service: &juneauv1alpha1.VpcServiceSpec{Consume: true}})
@@ -96,7 +105,12 @@ func subnetFixtureForVpc(vpcSpec juneauv1alpha1.VpcSpec) juneauv1alpha1.Subnet {
 	subnetName := webhookUniqueTestName("subnet")
 	// Avoid the Service CIDR 10.96.0.0/12 (10.96-111.x.x); Vpc enables Service so
 	// overlapping Subnets are rejected by the validating webhook.
-	octet := time.Now().UnixNano()%100 + 112
+	//
+	// The octet comes from a counter and not from the clock. Several
+	// specs build two of these and then assert that the two prefixes do
+	// not overlap, and two calls close enough together read the same
+	// nanosecond count modulo the range.
+	octet := fixtureSubnetOctet()
 	cidr := fmt.Sprintf("10.%d.0.0/24", octet)
 	dnsVIP := fmt.Sprintf("10.%d.0.2", octet)
 	gateway := fmt.Sprintf("10.%d.0.1", octet)
@@ -833,7 +847,10 @@ var _ = Describe("Pod NIC on an L2Network", func() {
 	It("rejects a SecurityGroup from a Vpc other than the one of the L2Network", func() {
 		primary := customSubnetFixture()
 		other := customSubnetFixture()
-		l2Name := createPodWebhookL2Network(primary.Spec.Vpc, "")
+		// The segment needs a gateway, or the NIC is rejected for
+		// naming a SecurityGroup that could never be consulted before
+		// the Vpc of that group is ever looked at.
+		l2Name := createPodWebhookGatewayL2Network(primary.Spec.Vpc)
 		sgName := createPodWebhookSecurityGroup(other.Spec.Vpc)
 
 		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
@@ -888,6 +905,22 @@ func createPodWebhookL2Network(vpcName, cidr string) string {
 	name := webhookUniqueTestName("l2net")
 	l2 := newWebhookL2Network(name, vpcName)
 	l2.Spec.CIDR = cidr
+	Expect(webhookK8sClient.Create(context.Background(), l2)).To(Succeed())
+	DeferCleanup(func() {
+		_ = webhookK8sClient.Delete(context.Background(), &juneauv1alpha1.L2Network{ObjectMeta: metav1.ObjectMeta{Name: name}})
+	})
+	return name
+}
+
+// createPodWebhookGatewayL2Network builds a segment that can carry a
+// SecurityGroup: one with a CIDR and a gateway for the rules to be read
+// at.
+func createPodWebhookGatewayL2Network(vpcName string) string {
+	GinkgoHelper()
+	name := webhookUniqueTestName("l2net")
+	l2 := newWebhookL2Network(name, vpcName)
+	l2.Spec.CIDR = fmt.Sprintf("10.%d.0.0/24", time.Now().UnixNano()%20+232)
+	l2.Spec.Gateway = &juneauv1alpha1.L2NetworkGateway{}
 	Expect(webhookK8sClient.Create(context.Background(), l2)).To(Succeed())
 	DeferCleanup(func() {
 		_ = webhookK8sClient.Delete(context.Background(), &juneauv1alpha1.L2Network{ObjectMeta: metav1.ObjectMeta{Name: name}})

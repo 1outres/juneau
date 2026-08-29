@@ -125,6 +125,13 @@ type L2NetworkStatus struct {
 	// keeps it for as long as the gateway exists, so attached workloads
 	// never have to relearn it. Empty when the segment has no gateway.
 	GatewayMAC string `json:"gatewayMAC,omitempty"`
+
+	// NetworkACL mirrors the resolved spec.networkACL reference in the
+	// same shape a Subnet publishes it, because the daemon programs the
+	// gateway port of a segment out of the same subnet_map the Subnet
+	// data plane reads. Empty (nil) when spec.networkACL is unset.
+	// +optional
+	NetworkACL *NetworkACLRef `json:"networkACL,omitempty"`
 }
 
 // +kubebuilder:object:root=true

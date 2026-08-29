@@ -186,6 +186,49 @@ var _ = Describe("L2Network controller", func() {
 		}).Should(Succeed())
 	})
 
+	It("mirrors the NetworkACL it names into status", func() {
+		vpcName := createReadyTestVpc()
+		aclName := createControllerNetworkACL(vpcName, nil, nil)
+
+		name := uniqueTestName("l2net")
+		l2 := newTestL2Network(name, vpcName, "10.157.0.0/24")
+		l2.Spec.Gateway = &juneauv1alpha1.L2NetworkGateway{}
+		l2.Spec.NetworkACL = aclName
+		Expect(k8sClient.Create(context.Background(), l2)).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			var current juneauv1alpha1.L2Network
+			g.Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: name}, &current)).To(Succeed())
+			g.Expect(current.Status.NetworkACL).NotTo(BeNil())
+			g.Expect(current.Status.NetworkACL.Name).To(Equal(aclName))
+			g.Expect(current.Status.NetworkACL.ACLID).NotTo(BeZero())
+		}).Should(Succeed())
+	})
+
+	It("says an ACL that is gone is dangling rather than dropping the reference", func() {
+		vpcName := createReadyTestVpc()
+
+		name := uniqueTestName("l2net")
+		l2 := newTestL2Network(name, vpcName, "10.158.0.0/24")
+		l2.Spec.Gateway = &juneauv1alpha1.L2NetworkGateway{}
+		l2.Spec.NetworkACL = uniqueTestName("gone-acl")
+		Expect(k8sClient.Create(context.Background(), l2)).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			var current juneauv1alpha1.L2Network
+			g.Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: name}, &current)).To(Succeed())
+			g.Expect(current.Status.NetworkACL).NotTo(BeNil())
+			g.Expect(current.Status.NetworkACL.Name).To(Equal(l2.Spec.NetworkACL))
+			g.Expect(current.Status.NetworkACL.ACLID).To(BeZero())
+		}).Should(Succeed())
+	})
+
+	It("leaves status.networkACL empty when the segment names none", func() {
+		name := createTestL2Network(createReadyTestVpc(), "")
+
+		Expect(waitForReadyL2Network(name).Status.NetworkACL).To(BeNil())
+	})
+
 	// envtest runs no garbage collector, so a spec can only check the
 	// ownerReference the real collector acts on.
 	It("leaves every child owned by the segment so deleting it takes them along", func() {

@@ -106,7 +106,7 @@ func TestWriteReportShowsTheFailure(t *testing.T) {
 func TestTargetsCoverEveryAttachedProgram(t *testing.T) {
 	// A program missing from this list is a program nobody checks
 	// before it reaches a cluster.
-	want := []string{"pod_egress", "pod_ingress", "vxlan_ingress", "node_ingress", "l2_egress", "l2_ingress"}
+	want := []string{"pod_egress", "pod_ingress", "vxlan_ingress", "node_ingress", "l2_egress", "l2_ingress", "l2_gateway"}
 
 	got := make([]string, 0, len(targets()))
 	for _, tg := range targets() {

@@ -62,6 +62,12 @@ static __always_inline int handle_l2_overlay(struct __sk_buff *skb,
   __builtin_memcpy(src_mac, eth->h_source, ETH_ALEN);
   __builtin_memcpy(dst_mac, eth->h_dest, ETH_ALEN);
 
+  // A host on another node announces itself with a broadcast ARP, so
+  // this is where every node learns the addresses of the hosts it does
+  // not hold itself. Without it the gateway here could only address the
+  // part of the segment that lives on this node.
+  l2_arp_snoop(skb, vni, eth);
+
   if (l2_learn(table, src_mac, 0, remote_vtep))
     trace_emit_map_miss_l3(skb, __trace_id, TRACE_REASON_L2_LEARNED,
                            TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC, vpc_id,

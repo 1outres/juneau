@@ -40,6 +40,7 @@ const (
 	ReasonEnterNodeIngress  Reason = 103
 	ReasonEnterL2Egress     Reason = 104
 	ReasonEnterL2Ingress    Reason = 105
+	ReasonEnterL2Gateway    Reason = 106
 
 	ReasonMissIfindexSubnet Reason = 200
 	ReasonMissSubnet        Reason = 201
@@ -56,6 +57,8 @@ const (
 	ReasonMissL2Port        Reason = 212
 	ReasonMissL2Network     Reason = 213
 	ReasonMissL2FDB         Reason = 214
+	ReasonMissL2ARP         Reason = 215
+	ReasonMissL2Gateway     Reason = 216
 
 	ReasonPolicyACLPass Reason = 300
 	ReasonPolicyACLDrop Reason = 301
@@ -100,6 +103,12 @@ const (
 	// there, and a workload with its own bridge behind the NIC would
 	// send it straight back.
 	ReasonL2HairpinDrop Reason = 603
+	// ReasonL2GWLoopDrop marks a frame that has been handed to the
+	// gateway port of a segment more times than juneau allows. The
+	// kernel counts nothing on that path and bpf_redirect leaves the IP
+	// TTL alone, so a routing loop through the gateway would run until
+	// the machine stopped answering.
+	ReasonL2GWLoopDrop Reason = 604
 )
 
 // Hook mirrors TRACE_HOOK_* in trace.h.
@@ -113,6 +122,7 @@ const (
 	HookNodeIngress  Hook = 4
 	HookL2Egress     Hook = 5
 	HookL2Ingress    Hook = 6
+	HookL2Gateway    Hook = 7
 )
 
 // Verdict mirrors TRACE_VERDICT_* in trace.h.

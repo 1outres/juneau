@@ -1,6 +1,7 @@
 package bpftest
 
 import (
+	"encoding/binary"
 	"structs"
 	"testing"
 
@@ -49,3 +50,58 @@ func Run(t *testing.T, prog *ebpf.Program, frame []byte, device Device) int {
 	}
 	return int(verdict)
 }
+
+// RunFrame is Run, plus the frame as the program left it. A program
+// that rewrites the addresses of a frame before it forwards it can only
+// be checked this way: the redirect itself carries nothing under
+// BPF_PROG_TEST_RUN, so what the frame became is the whole result.
+func RunFrame(t *testing.T, prog *ebpf.Program, frame []byte, device Device) (int, []byte) {
+	t.Helper()
+
+	in := skbContext{Ifindex: uint32(device.Index)}
+	out := make([]byte, len(frame)+256)
+	verdict, err := prog.Run(&ebpf.RunOptions{
+		Data:    frame,
+		DataOut: out,
+		Context: &in,
+		Repeat:  1,
+	})
+	if err != nil {
+		t.Fatalf("bpftest: run the program on %s: %v", device.Name, err)
+	}
+	return int(verdict), out[:len(frame)]
+}
+
+// RunMarked is Run with a starting skb->mark, and it reports the mark
+// the program left behind. juneau counts how often a frame has been
+// handed to a gateway port there, so a test that drives that counter
+// has to be able to both set it and read it back.
+func RunMarked(t *testing.T, prog *ebpf.Program, frame []byte, device Device, mark uint32) (int, uint32) {
+	t.Helper()
+
+	in := skbContext{Ifindex: uint32(device.Index), Mark: mark}
+	// The kernel writes the whole of its struct __sk_buff back, and it
+	// refuses the call with ENOSPC when the room offered is smaller
+	// than that. The struct grows between releases, so the buffer is
+	// sized past any of them and only the mark is read out of it.
+	out := make([]byte, skbContextOutBytes)
+	verdict, err := prog.Run(&ebpf.RunOptions{
+		Data:       frame,
+		DataOut:    make([]byte, len(frame)+256),
+		Context:    &in,
+		ContextOut: out,
+		Repeat:     1,
+	})
+	if err != nil {
+		t.Fatalf("bpftest: run the program on %s: %v", device.Name, err)
+	}
+	return int(verdict), binary.NativeEndian.Uint32(out[skbMarkOffset : skbMarkOffset+4])
+}
+
+// skbContextOutBytes is the room offered for the context the kernel
+// writes back, and skbMarkOffset is where mark sits in it: the third
+// word of struct __sk_buff, after len and pkt_type.
+const (
+	skbContextOutBytes = 512
+	skbMarkOffset      = 8
+)
