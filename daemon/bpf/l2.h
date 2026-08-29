@@ -388,9 +388,9 @@ static __always_inline __u32 l2_flood(struct __sk_buff *skb,
 // received it, and everything else on the segment is the workloads'
 // own business.
 //
-// The other nodes read the address out of it and drop it; see the
-// handling of TRACE_REASON_L2_ARP_ANSWER_LEARNED in vxlan_ingress.
-// Nothing sends it on from there, so it cannot go round.
+// The other nodes read the address out of it and drop it, in the L2
+// branch of vxlan_ingress. Nothing sends it on from there, so it cannot
+// go round.
 static __always_inline __u32 l2_flood_answer(struct __sk_buff *skb,
                                              const struct l2_port *port) {
   return l2_flood_ports(skb, port, true);

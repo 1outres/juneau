@@ -280,10 +280,6 @@ func reasonString(r debugpb.TraceEventReason) string {
 		return "l2 arp request sent (packet dropped)"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_L2_ARP_HELD:
 		return "l2 arp request held back (asked too recently)"
-	case debugpb.TraceEventReason_TRACE_EVENT_REASON_L2_ARP_ANSWER_SHARED:
-		return "l2 arp reply shared with the other nodes"
-	case debugpb.TraceEventReason_TRACE_EVENT_REASON_L2_ARP_ANSWER_LEARNED:
-		return "l2 arp reply read from another node (dropped)"
 	}
 	return r.String()
 }

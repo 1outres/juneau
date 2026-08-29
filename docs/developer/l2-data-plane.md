@@ -321,7 +321,11 @@ IPv6はセグメントの中ならBUMのフラッドで動きますが、gateway
 
 gatewayはIPのTTLを減らしません。既存のSubnetの`handle_l3`も減らしていないので揃えましたが、セグメント上に置いたルータVMと経路がループした場合、TTLでは止まらず`skb->mark`のホップ数で止まります。
 
-返事の共有先は`l2_bum_remote`、つまり**そのセグメントにエンドポイントを持つNodeだけ**です。gatewayポート自体は全Nodeにありますが、エンドポイントを1つも持たないNodeは他のNodeの`l2_bum_remote`に載らないので、共有された返事も届きません。そういうNodeのgatewayは、juneauが配っていないアドレスを今も解決できません。塞ぐには「このVNIのgatewayを持つNode」という集合を新しく持つ必要があり、それを`l2_bum_remote`に混ぜると全てのブロードキャストが全Nodeへ飛ぶようになります。`l2_arp`のseedが同じ形の穴を埋めているのと同じ範囲です。
+**セグメントにNICを1枚も持たないNodeのgatewayは、juneauが配ったアドレスにしか届きません。**手で振ったアドレスやbridgeの向こうのホストは解決できません。返事の共有先は`l2_bum_remote`、つまりそのセグメントにエンドポイントを持つNodeだけです。gatewayポート自体は全Nodeにありますが、エンドポイントの無いNodeは他のNodeの`l2_bum_remote`に載らないので、共有された返事も届きません。
+
+e2eで測ると綺麗に分かれました。control-planeのPodから手で振ったアドレスへは100% loss、seed済みのIPAMアドレスへは0% lossです。`l2_arp_probe`にはtargetが載るので、聞いてはいて答えが返っていないことが読めます。
+
+完全に閉じるなら、共有をブロードキャストにせず**聞いたVTEPへユニキャストで返す**形になります。`vxlan_ingress`でgateway発のARPリクエストをsnoopしたときに`{VNI, tpa}`から聞いてきたVTEPを覚えておき、`l2_egress`が対応するリプライをそのVTEPだけへ送ります。マップが1本増えます。`l2_bum_remote`に「このVNIのgatewayを持つNode」を混ぜる案は採りません。全てのブロードキャストが全Nodeへ飛ぶようになります。
 
 セグメントのprefixの外のアドレスへは、gatewayから届きません。聞きに行かないので`l2_arp`が埋まる道がありません。セグメントの上にルータVMを置いてその先へ出す使い方は、next hopの概念が無いので今のところ成立しません。
 
@@ -389,10 +393,18 @@ L2固有のreasonを追加しました。
 | `L2_GW_LOOP_DROP` | 604 | gatewayを渡った回数が上限を超えた |
 | `L2_ARP_ASKED` | 605 | ARPリクエストを出してパケットを落とした(aux1が聞いたアドレス) |
 | `L2_ARP_HELD` | 606 | 直前に聞いたばかりなのでARPを出さずに落とした(aux1が聞かなかったアドレス) |
-| `L2_ARP_ANSWER_SHARED` | 607 | gateway宛のARPリプライを他のNodeにも配った(aux1が複製数) |
-| `L2_ARP_ANSWER_LEARNED` | 608 | 他のNodeが配ったARPリプライを読んで捨てた |
 
-`L2_ARP_ASKED`と`L2_ARP_HELD`は、フレームを書き換える前に出しています。`trace_emit_l3`はイベントを作るときにフレームからアドレスを読み直すので、書き換えた後に出すと42バイトのARPフレームをIPv4ヘッダとして読んだ値が乗ります。`174.105.10.92:0->0.1.0.0:0`のような、実在しないのにそれらしく見えるタプルになります。
+**返事の共有はtraceに出ません。**607と608を一度置きましたが、1回も発火しませんでした。traceのidはIPv4のタプルから引きます。ARPフレームにはタプルが無いので`trace_classify_and_emit_enter`が0を返し、その下の`trace_emit_*`は全て何も書かずに戻ります。共有が実際に起きている最中に完全なtraceを取っても、`enter`と`address miss`と`arp request sent`しか出ませんでした。発火しない定数を残しても読む人を惑わせるだけなので消しました。
+
+共有が効いたかどうかは学習結果で見てください。
+
+```console
+$ kubectl juneau bpf dump l2_arp --inner-key vni=4243
+```
+
+聞いたNodeでこれを叩いて、手で振ったアドレスが載っていれば共有が届いています。
+
+`L2_ARP_ASKED`と`L2_ARP_HELD`はIPv4パケットの経路で出るので発火します。この2つは、フレームを書き換える前に出しています。`trace_emit_l3`はイベントを作るときにフレームからアドレスを読み直すので、書き換えた後に出すと42バイトのARPフレームをIPv4ヘッダとして読んだ値が乗ります。`174.105.10.92:0->0.1.0.0:0`のような、実在しないのにそれらしく見えるタプルになります。
 
 hookは`TRACE_HOOK_L2_EGRESS`(5)、`TRACE_HOOK_L2_INGRESS`(6)、`TRACE_HOOK_L2_GATEWAY`(7)です。
 
@@ -416,14 +428,14 @@ traceが拾えるのはIPv4のフレームだけです。TraceSessionはIPv4の5
 ```
 OK   pod_egress: tc_pod_egress processed 581856 insns (limit 1000000, 58.2% used)
 OK   pod_ingress: tc_pod_ingress processed 101533 insns (limit 1000000, 10.2% used)
-OK   vxlan_ingress: tc_vxlan_ingress_entry processed 5675 insns (limit 1000000, 0.6% used)
+OK   vxlan_ingress: tc_vxlan_ingress_entry processed 5785 insns (limit 1000000, 0.6% used)
 OK   node_ingress: tc_node_ingress processed 109544 insns (limit 1000000, 11.0% used)
-OK   l2_egress: tc_l2_egress processed 3512 insns (limit 1000000, 0.4% used)
+OK   l2_egress: tc_l2_egress processed 3493 insns (limit 1000000, 0.3% used)
 OK   l2_ingress: tc_l2_ingress processed 43781 insns (limit 1000000, 4.4% used)
 OK   l2_gateway: tc_l2_gateway processed 3488 insns (limit 1000000, 0.3% used)
 ```
 
-gatewayを入れる前は`pod_egress`が581,483命令、`vxlan_ingress`が5,166命令、`l2_egress`が2,277命令、`node_ingress`が70,965命令でした。`pod_egress`が373命令増えたのは`fib_val.type`の分岐で、`vxlan_ingress`と`l2_egress`が増えたのはARP snoopingです。`node_ingress`が109,544命令になったのはNATGatewayの応答をgatewayポートへ渡す分岐です。`l2_ingress`が511から43,781になったのは、Serviceの書き戻しとpolicyの評価です。`l2_gateway`はその2つを一度預かって132,527まで行きましたが、ノードを間違えていたので`l2_ingress`へ移し、2,709に戻りました。そこから3,488になったのは能動的なARPの分です。`l2_egress`が2,786から3,512、`vxlan_ingress`が5,282から5,675になったのは、gateway宛のARPリプライを他のNodeへ配る分と、受け取った側で捨てる分です。`vxlan_ingress`はL2分岐を入れる前が3,760命令(0.4%)でした。
+gatewayを入れる前は`pod_egress`が581,483命令、`vxlan_ingress`が5,166命令、`l2_egress`が2,277命令、`node_ingress`が70,965命令でした。`pod_egress`が373命令増えたのは`fib_val.type`の分岐で、`vxlan_ingress`と`l2_egress`が増えたのはARP snoopingです。`node_ingress`が109,544命令になったのはNATGatewayの応答をgatewayポートへ渡す分岐です。`l2_ingress`が511から43,781になったのは、Serviceの書き戻しとpolicyの評価です。`l2_gateway`はその2つを一度預かって132,527まで行きましたが、ノードを間違えていたので`l2_ingress`へ移し、2,709に戻りました。そこから3,488になったのは能動的なARPの分です。`l2_egress`が2,786から3,493、`vxlan_ingress`が5,282から5,785になったのは、gateway宛のARPリプライを他のNodeへ配る分と、受け取った側で捨てる分です。`vxlan_ingress`は発火しないtraceのemitを消したときに5,675から増えました。呼び出しが1つ減って分岐が単純な`return`になり、verifierが後続を歩き直す形が変わったためです。命令数は書いた行数では決まりません。`vxlan_ingress`はL2分岐を入れる前が3,760命令(0.4%)でした。
 
 `bpf/`の下を触ったらこれを回してください。命令数が上限を超えてもコンパイラは何も言わず、次に分かるのはdaemonがcrashloopに入ったときです。実行にはrootとマウント済みのbpffsが要ります。
 

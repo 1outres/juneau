@@ -79,11 +79,11 @@ static __always_inline int handle_l2_overlay(struct __sk_buff *skb,
   // there has already had it, and every node runs one on the same
   // address, so passing it on here would answer one question once per
   // node.
-  if (answer_for_gateway) {
-    trace_emit_drop_l3(skb, __trace_id, TRACE_REASON_L2_ARP_ANSWER_LEARNED,
-                       TRACE_HOOK_VXLAN_INGRESS, TRACE_SCOPE_VPC, vpc_id, vni);
+  // Untraced for the reason the sending side gives: an ARP frame
+  // carries no tuple, so the trace id is 0 and an event would never
+  // leave.
+  if (answer_for_gateway)
     return TC_ACT_SHOT;
-  }
 
   if (!l2_is_bum(dst_mac)) {
     struct l2_forward forwarded = {};

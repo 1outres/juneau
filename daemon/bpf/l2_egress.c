@@ -97,11 +97,13 @@ static __always_inline int handle(struct __sk_buff *skb) {
   // asked, and the one that asked is usually on another node. It goes
   // to the gateway here and to every other node instead of to the one
   // port that holds the MAC.
+  //
+  // Nothing is traced here. The trace plane keys on an IPv4 tuple and an
+  // ARP frame has none, so trace_classify_and_emit_enter hands back the
+  // id 0 and every emit under it returns without writing. What the
+  // copies achieved is read out of l2_arp instead.
   if (answer_for_gateway) {
-    __u32 shared = l2_flood_answer(skb, &from);
-    trace_emit_map_miss_l3(skb, __trace_id, TRACE_REASON_L2_ARP_ANSWER_SHARED,
-                           TRACE_HOOK_L2_EGRESS, TRACE_SCOPE_VPC, vpc_id, vni,
-                           shared);
+    l2_flood_answer(skb, &from);
     return TC_ACT_SHOT;
   }
 
