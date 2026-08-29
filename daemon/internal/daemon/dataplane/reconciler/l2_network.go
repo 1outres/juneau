@@ -15,24 +15,44 @@ import (
 	bpf "github.com/1outres/juneau/daemon/internal/daemon/bpf"
 )
 
+// L2NetworkTables are the per-VNI tables of one segment. They are
+// named rather than passed in order because they all have the same
+// type, and a caller that swapped two of them would build a segment
+// that floods to the addresses it has learned.
+type L2NetworkTables struct {
+	// Fdb is l2_fdb, the forwarding table the data plane learns into.
+	Fdb l2NetworkTable
+	// BumLocal is l2_bum_local, the local ports a broadcast reaches.
+	BumLocal l2NetworkTable
+	// BumRemote is l2_bum_remote, the nodes a broadcast reaches.
+	BumRemote l2NetworkTable
+	// Arp is l2_arp, what the gateway of the segment resolves a
+	// destination address to a MAC with.
+	Arp l2NetworkTable
+	// ArpProbe is l2_arp_probe, when the gateway last asked the segment
+	// for an address it could not resolve.
+	ArpProbe l2NetworkTable
+}
+
+func (t L2NetworkTables) all() []l2NetworkTable {
+	return []l2NetworkTable{t.Fdb, t.BumLocal, t.BumRemote, t.Arp, t.ArpProbe}
+}
+
 // L2Network keeps l2_network_map in sync with L2Network objects and
 // owns the per-VNI tables the L2 programs read.
 //
 // l2_network_map is what tells vxlan_ingress that a VNI belongs to an
 // L2Network rather than to a Subnet, so it decides which of the two
-// data planes an arriving frame takes. The four tables beside it hold
-// what the L2 programs learn and flood to; this reconciler creates
-// them when the network appears and drops them when it goes away, but
-// never writes an entry into l2_fdb. Learning is the data plane's
-// alone: a controller-written entry would be overwritten by the next
-// frame and would make it impossible to say who owns a MAC.
+// data planes an arriving frame takes. The tables beside it hold what
+// the L2 programs learn and flood to; this reconciler creates them when
+// the network appears and drops them when it goes away, but never
+// writes an entry into l2_fdb. Learning is the data plane's alone: a
+// controller-written entry would be overwritten by the next frame and
+// would make it impossible to say who owns a MAC.
 type L2Network struct {
 	client     client.Client
 	networkMap bpfMap
-	fdb        l2NetworkTable
-	bumLocal   l2NetworkTable
-	bumRemote  l2NetworkTable
-	arp        l2NetworkTable
+	tables     L2NetworkTables
 
 	mu        sync.Mutex
 	snapshots map[string]l2NetworkSnapshot
@@ -45,14 +65,11 @@ type l2NetworkSnapshot struct {
 	vni uint32
 }
 
-func NewL2Network(cl client.Client, networkMap bpfMap, fdb, bumLocal, bumRemote, arp l2NetworkTable) *L2Network {
+func NewL2Network(cl client.Client, networkMap bpfMap, tables L2NetworkTables) *L2Network {
 	return &L2Network{
 		client:     cl,
 		networkMap: networkMap,
-		fdb:        fdb,
-		bumLocal:   bumLocal,
-		bumRemote:  bumRemote,
-		arp:        arp,
+		tables:     tables,
 		snapshots:  make(map[string]l2NetworkSnapshot),
 	}
 }
@@ -114,12 +131,12 @@ func (r *L2Network) upsert(ctx context.Context, network *juneauv1alpha1.L2Networ
 	return nil
 }
 
-// ensureTables builds the four per-VNI tables. They are created
-// together because the data plane treats a network with only some of
-// them as broken: a frame that finds no flood list is dropped without
-// anything saying which of the four was missing.
+// ensureTables builds every per-VNI table. They are created together
+// because the data plane treats a network with only some of them as
+// broken: a frame that finds no flood list is dropped without anything
+// saying which table was missing.
 func (r *L2Network) ensureTables(vni uint32) error {
-	for _, table := range []l2NetworkTable{r.fdb, r.bumLocal, r.bumRemote, r.arp} {
+	for _, table := range r.tables.all() {
 		if err := table.Ensure(vni); err != nil {
 			return err
 		}
@@ -147,7 +164,7 @@ func (r *L2Network) release(vni uint32) error {
 		!errors.Is(err, ebpf.ErrKeyNotExist) {
 		return fmt.Errorf("delete L2NetworkMap: %w", err)
 	}
-	for _, table := range []l2NetworkTable{r.fdb, r.bumLocal, r.bumRemote, r.arp} {
+	for _, table := range r.tables.all() {
 		if err := table.Delete(vni); err != nil {
 			return err
 		}

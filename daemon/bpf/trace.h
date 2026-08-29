@@ -107,6 +107,8 @@
 #define TRACE_REASON_L2_SPLIT_HORIZON 602
 #define TRACE_REASON_L2_HAIRPIN_DROP  603
 #define TRACE_REASON_L2_GW_LOOP_DROP  604
+#define TRACE_REASON_L2_ARP_ASKED     605
+#define TRACE_REASON_L2_ARP_HELD      606
 
 // Hook identifiers. Embedded into trace_event.hook so the userspace
 // renderer can attribute events to a specific BPF program without

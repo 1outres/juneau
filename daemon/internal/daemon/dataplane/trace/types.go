@@ -109,6 +109,16 @@ const (
 	// TTL alone, so a routing loop through the gateway would run until
 	// the machine stopped answering.
 	ReasonL2GWLoopDrop Reason = 604
+	// ReasonL2ArpAsked marks a packet the gateway could not address:
+	// it put an ARP request for the destination on the segment and
+	// dropped the packet, because BPF has nowhere to hold one until
+	// the answer arrives. ReasonL2ArpHeld marks the same drop with no
+	// request sent, because one went out for that address too
+	// recently. The two look alike from outside and mean different
+	// things: the first says the segment was asked and nobody
+	// answered, the second says the asking is being paced.
+	ReasonL2ArpAsked Reason = 605
+	ReasonL2ArpHeld  Reason = 606
 )
 
 // Hook mirrors TRACE_HOOK_* in trace.h.

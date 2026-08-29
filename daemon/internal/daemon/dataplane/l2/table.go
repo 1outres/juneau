@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"go.uber.org/zap"
@@ -23,6 +24,12 @@ const (
 	PortFlagPresent uint8 = 1
 	PortFlagGateway uint8 = 2
 )
+
+// ArpProbeInterval mirrors L2_ARP_PROBE_INTERVAL_NS in
+// daemon/bpf/maps.h: how long the gateway of a segment waits before
+// asking it for the same address again. The pacing itself is the data
+// plane's, so this is here to be read rather than to be applied.
+const ArpProbeInterval = time.Second
 
 // FdbFlagGateway mirrors L2_FDB_FLAG_GATEWAY in daemon/bpf/maps.h. It
 // marks the one forwarding entry user space writes: the MAC of this

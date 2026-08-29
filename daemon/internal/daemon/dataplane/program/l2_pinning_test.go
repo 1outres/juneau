@@ -76,6 +76,7 @@ func TestEveryProgramSeesTheSameL2Maps(t *testing.T) {
 		{"l2_bum_local", []*ebpf.Map{podEgress.Objs.L2BumLocal, l2Egress.Objs.L2BumLocal, l2Gateway.Objs.L2BumLocal}},
 		{"l2_bum_remote", []*ebpf.Map{podEgress.Objs.L2BumRemote, l2Egress.Objs.L2BumRemote, l2Gateway.Objs.L2BumRemote}},
 		{"l2_arp", []*ebpf.Map{podEgress.Objs.L2Arp, l2Egress.Objs.L2Arp, l2Gateway.Objs.L2Arp}},
+		{"l2_arp_probe", []*ebpf.Map{podEgress.Objs.L2ArpProbe, l2Egress.Objs.L2ArpProbe, l2Gateway.Objs.L2ArpProbe}},
 		{"l2_gateway", []*ebpf.Map{podEgress.Objs.L2Gateway, l2Egress.Objs.L2Gateway, l2Gateway.Objs.L2Gateway}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

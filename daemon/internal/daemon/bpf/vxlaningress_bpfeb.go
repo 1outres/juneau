@@ -182,6 +182,16 @@ type VxlanIngressL2ArpKey struct {
 	Ipv4 uint32
 }
 
+type VxlanIngressL2ArpProbeKey struct {
+	_    structs.HostLayout
+	Ipv4 uint32
+}
+
+type VxlanIngressL2ArpProbeVal struct {
+	_       structs.HostLayout
+	AskedNs uint64
+}
+
 type VxlanIngressL2ArpVal struct {
 	_   structs.HostLayout
 	Mac [6]uint8
@@ -552,6 +562,8 @@ type VxlanIngressMapSpecs struct {
 	Ipv4FragMap           *ebpf.MapSpec `ebpf:"ipv4_frag_map"`
 	L2Arp                 *ebpf.MapSpec `ebpf:"l2_arp"`
 	L2ArpInner            *ebpf.MapSpec `ebpf:"l2_arp_inner"`
+	L2ArpProbe            *ebpf.MapSpec `ebpf:"l2_arp_probe"`
+	L2ArpProbeInner       *ebpf.MapSpec `ebpf:"l2_arp_probe_inner"`
 	L2BumLocal            *ebpf.MapSpec `ebpf:"l2_bum_local"`
 	L2BumLocalInner       *ebpf.MapSpec `ebpf:"l2_bum_local_inner"`
 	L2BumRemote           *ebpf.MapSpec `ebpf:"l2_bum_remote"`
@@ -633,6 +645,8 @@ type VxlanIngressMaps struct {
 	Ipv4FragMap           *ebpf.Map `ebpf:"ipv4_frag_map"`
 	L2Arp                 *ebpf.Map `ebpf:"l2_arp"`
 	L2ArpInner            *ebpf.Map `ebpf:"l2_arp_inner"`
+	L2ArpProbe            *ebpf.Map `ebpf:"l2_arp_probe"`
+	L2ArpProbeInner       *ebpf.Map `ebpf:"l2_arp_probe_inner"`
 	L2BumLocal            *ebpf.Map `ebpf:"l2_bum_local"`
 	L2BumLocalInner       *ebpf.Map `ebpf:"l2_bum_local_inner"`
 	L2BumRemote           *ebpf.Map `ebpf:"l2_bum_remote"`
@@ -690,6 +704,8 @@ func (m *VxlanIngressMaps) Close() error {
 		m.Ipv4FragMap,
 		m.L2Arp,
 		m.L2ArpInner,
+		m.L2ArpProbe,
+		m.L2ArpProbeInner,
 		m.L2BumLocal,
 		m.L2BumLocalInner,
 		m.L2BumRemote,

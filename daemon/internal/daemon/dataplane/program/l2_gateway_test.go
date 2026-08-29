@@ -88,26 +88,6 @@ func TestL2GatewayAddressesAPacketToTheHostThatOwnsIt(t *testing.T) {
 	}
 }
 
-// A host juneau has never seen speak cannot be addressed: the gateway
-// snoops the segment's ARP and sends none of its own, so there is
-// nothing to resolve the address with. Flooding instead would put a
-// packet for one host on every port.
-func TestL2GatewayDropsAPacketForAnAddressNobodyHasClaimed(t *testing.T) {
-	ports := newL2GatewayPorts(t)
-
-	watched := ports.watch(t)
-	verdict := bpftest.Run(t, ports.program, routed(t, host2Address), ports.gateway)
-
-	if verdict != bpftest.ActShot {
-		t.Errorf("verdict %d, want a drop (%d)", verdict, bpftest.ActShot)
-	}
-	for _, device := range []bpftest.Device{ports.pod2, ports.pod3, ports.tunnel} {
-		if delivered := watched.Delivered(t, device); delivered != 0 {
-			t.Errorf("%s was fed %d copies of a packet nobody claimed", device.Name, delivered)
-		}
-	}
-}
-
 // The address resolved but the MAC behind it has gone quiet. The frame
 // already carries the destination's own MAC, so copying it to every
 // port reaches that host and no one else takes it — the same answer a

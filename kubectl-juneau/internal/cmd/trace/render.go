@@ -276,6 +276,10 @@ func reasonString(r debugpb.TraceEventReason) string {
 		return "l2 drop (destination is on the source port)"
 	case debugpb.TraceEventReason_TRACE_EVENT_REASON_L2_GW_LOOP_DROP:
 		return "l2 drop (too many hops through the gateway)"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_L2_ARP_ASKED:
+		return "l2 arp request sent (packet dropped)"
+	case debugpb.TraceEventReason_TRACE_EVENT_REASON_L2_ARP_HELD:
+		return "l2 arp request held back (asked too recently)"
 	}
 	return r.String()
 }

@@ -117,6 +117,38 @@ static __always_inline void l2_arp_snoop(struct __sk_buff *skb, __u32 vni,
   bpf_map_update_elem(table, &key, &val, BPF_ANY);
 }
 
+// l2_arp_probe_for returns the ask-again table of one segment.
+static __always_inline struct l2_arp_probe_inner_map *
+l2_arp_probe_for(__u32 vni) {
+  return bpf_map_lookup_elem(&l2_arp_probe, &vni);
+}
+
+// l2_arp_probe_take reports whether the gateway may ask the segment for
+// target now, and writes down the ask when it may.
+//
+// target is in host byte order, the form l2_arp is keyed on.
+//
+// Two CPUs asking at the same moment can both be let through. The cost
+// is one extra frame on the segment, which is far below what the pacing
+// is there to prevent, and the alternative is a lock on a table every
+// packet for an unresolved address touches.
+static __always_inline bool
+l2_arp_probe_take(struct l2_arp_probe_inner_map *table, __u32 target) {
+  struct l2_arp_probe_key key = {.ipv4 = target};
+  __u64 now = bpf_ktime_get_ns();
+
+  struct l2_arp_probe_val *asked = bpf_map_lookup_elem(table, &key);
+  if (asked) {
+    if (now - asked->asked_ns < L2_ARP_PROBE_INTERVAL_NS)
+      return false;
+    asked->asked_ns = now;
+    return true;
+  }
+
+  struct l2_arp_probe_val fresh = {.asked_ns = now};
+  return bpf_map_update_elem(table, &key, &fresh, BPF_ANY) == 0;
+}
+
 // l2_flood_ctx is what the two bpf_for_each_map_elem callbacks below
 // read. The callback signature has one context pointer, so everything
 // they need travels in here.
@@ -293,6 +325,68 @@ static __always_inline __u32 l2_flood(struct __sk_buff *skb,
 
   bpf_for_each_map_elem(remote, l2_flood_remote_cb, &fctx, 0);
   return fctx.copies;
+}
+
+// L2_ARP_FRAME_LEN is the length of an Ethernet/IPv4 ARP frame: the
+// header, the fixed part and the four addresses.
+#define L2_ARP_FRAME_LEN                                                       \
+  (sizeof(struct ethhdr) + sizeof(struct arphdr) + sizeof(struct arp_payload))
+
+// l2_arp_request turns the frame into an ARP request from sender_mac
+// and copies it to every port of the segment but the one it came in on.
+// It returns how many copies it made, or -1 when the frame could not be
+// turned into a request.
+//
+// The frame the caller is holding is reused rather than a new one
+// built, because a BPF program has no way to make a frame of its own:
+// the flood copies whatever skb it was handed. What is left of the
+// original is the caller's to drop, and dropping it is why the packet
+// that needed the answer is lost. A router would hold that packet until
+// the reply came back; there is nowhere in BPF to hold an skb.
+//
+// bpf_skb_change_tail invalidates every pointer into the frame, so the
+// caller must copy out whatever it still needs before calling this, and
+// the bounds are read again here.
+//
+// sender_ip and target_ip are in network byte order, the form they are
+// written to the wire in.
+static __always_inline int l2_arp_request(struct __sk_buff *skb,
+                                          const struct l2_port *from,
+                                          const __u8 *sender_mac,
+                                          __be32 sender_ip,
+                                          __be32 target_ip) {
+  if (bpf_skb_change_tail(skb, L2_ARP_FRAME_LEN, 0) < 0)
+    return -1;
+
+  void *data = (void *)(long)skb->data;
+  void *data_end = (void *)(long)skb->data_end;
+
+  struct ethhdr *eth = data;
+  if ((void *)(eth + 1) > data_end)
+    return -1;
+  struct arphdr *arp = (void *)(eth + 1);
+  if ((void *)(arp + 1) > data_end)
+    return -1;
+  struct arp_payload *payload = (void *)(arp + 1);
+  if ((void *)(payload + 1) > data_end)
+    return -1;
+
+  __builtin_memset(eth->h_dest, 0xff, ETH_ALEN);
+  __builtin_memcpy(eth->h_source, sender_mac, ETH_ALEN);
+  eth->h_proto = bpf_htons(ETH_P_ARP);
+
+  arp->ar_hrd = bpf_htons(ARP_HRD_ETHER);
+  arp->ar_pro = bpf_htons(ARP_PRO_IPV4);
+  arp->ar_hln = ARP_ETH_ALEN;
+  arp->ar_pln = 4;
+  arp->ar_op = bpf_htons(ARP_OP_REQUEST);
+
+  __builtin_memcpy(payload->sha, sender_mac, ETH_ALEN);
+  payload->spa = sender_ip;
+  __builtin_memset(payload->tha, 0, ETH_ALEN);
+  payload->tpa = target_ip;
+
+  return (int)l2_flood(skb, from);
 }
 
 // l2_forward is what l2_forward_unicast decided. verdict is the value
