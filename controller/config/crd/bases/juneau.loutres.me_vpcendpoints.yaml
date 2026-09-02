@@ -49,6 +49,14 @@ spec:
             description: VpcEndpointSpec defines a Vpc-local frontend for a Kubernetes
               Service.
             properties:
+              dnsNames:
+                description: |-
+                  DNSNames lists fully-qualified names that resolve to the endpoint address
+                  for callers in this Vpc.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
               service:
                 properties:
                   name:

@@ -272,6 +272,12 @@ func (r *NetworkInterfaceReconciler) ensureClaim(ctx context.Context, resource *
 		ReuseKey:     leaseNameForNetworkInterface(resource),
 		RetainWhile:  resource.Spec.RetainWhile.DeepCopy(),
 	}
+	if len(resource.Spec.DNSNames) > 0 {
+		desiredSpec.DNS = &juneauv1alpha1.AllocationDNSBinding{
+			Vpc:   network.Vpc,
+			Names: append([]string(nil), resource.Spec.DNSNames...),
+		}
+	}
 	if resource.Spec.Address != "" {
 		ip := resource.Spec.Address
 		desiredSpec.RequestedIP = &ip

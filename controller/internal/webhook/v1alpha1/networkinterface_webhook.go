@@ -107,6 +107,7 @@ func (v *NetworkInterfaceCustomValidator) ValidateCreate(ctx context.Context, ob
 
 	errs = append(errs, validateNetworkInterfaceAllocationIdentity(networkinterface.Spec.AllocationIdentity, specPath.Child("allocationIdentity"))...)
 	errs = append(errs, validateRetainReference(networkinterface.Spec.RetainWhile, specPath.Child("retainWhile"))...)
+	errs = append(errs, validateDNSNames(networkinterface.Spec.DNSNames, specPath.Child("dnsNames"))...)
 
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "NetworkInterface"}, networkinterface.Name, errs)
@@ -160,6 +161,7 @@ func (v *NetworkInterfaceCustomValidator) ValidateUpdate(ctx context.Context, ol
 	if !retainReferenceEqual(networkinterface.Spec.RetainWhile, oldNetworkInterface.Spec.RetainWhile) {
 		errs = append(errs, field.Invalid(specPath.Child("retainWhile"), networkinterface.Spec.RetainWhile, "spec.retainWhile is immutable"))
 	}
+	errs = append(errs, validateDNSNames(networkinterface.Spec.DNSNames, specPath.Child("dnsNames"))...)
 
 	// Re-validate SG references on update so changing SGs goes through
 	// the same vetting as create (existence + same Vpc as the network).

@@ -238,6 +238,7 @@ func (r *AllocationClaimReconciler) ensureLease(ctx context.Context, claim *june
 				Value:       juneauloutresmev1alpha1.AllocationValue{Number: result.number, IP: result.ip},
 				ClaimRef:    claimRef,
 				RetainWhile: claim.Spec.RetainWhile.DeepCopy(),
+				DNS:         claim.Spec.DNS.DeepCopy(),
 			},
 		}
 		if err := controllerutil.SetControllerReference(pool, lease, r.Scheme); err != nil {
@@ -269,6 +270,7 @@ func (r *AllocationClaimReconciler) ensureLease(ctx context.Context, claim *june
 	desired.Spec.OwnerDeletionTimestamp = nil
 	desired.Spec.TTLSeconds = nil
 	desired.Spec.RetainWhile = claim.Spec.RetainWhile.DeepCopy()
+	desired.Spec.DNS = claim.Spec.DNS.DeepCopy()
 	if reflect.DeepEqual(existing.Spec, desired.Spec) {
 		return nil
 	}

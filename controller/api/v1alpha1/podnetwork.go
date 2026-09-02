@@ -48,7 +48,37 @@ const (
 	// that manage resolv.conf themselves). Value is expected to be the
 	// literal string "true".
 	PodAnnotationDNSInjectSkip = "juneau.loutres.me/dns-inject-skip"
+
+	// PodAnnotationDNSNames carries comma-separated fully-qualified DNS names
+	// for the Pod's primary interface.
+	PodAnnotationDNSNames = "juneau.loutres.me/dns-names"
 )
+
+// ParseDNSNames validates, normalizes and deduplicates a comma-separated list
+// of fully-qualified DNS names. Stored names omit the trailing root dot.
+func ParseDNSNames(value string) ([]string, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	seen := map[string]struct{}{}
+	var names []string
+	for _, item := range strings.Split(value, ",") {
+		name := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(item)), ".")
+		if name == "" {
+			continue
+		}
+		if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 {
+			return nil, fmt.Errorf("invalid DNS name %q: %s", item, strings.Join(errs, "; "))
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
+}
 
 const (
 	// PodPrimaryInterfaceName is the NIC every Pod gets. The container
