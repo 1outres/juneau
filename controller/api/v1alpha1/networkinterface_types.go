@@ -77,6 +77,13 @@ type NetworkInterfaceSpec struct {
 	// deleted.
 	// +optional
 	RetainWhile *RetainReference `json:"retainWhile,omitempty"`
+
+	// DNSNames lists fully-qualified names that resolve to this interface's
+	// allocated address inside its Vpc. Juneau treats the names as opaque DNS
+	// identities and does not assign product semantics to them.
+	// +optional
+	// +listType=set
+	DNSNames []string `json:"dnsNames,omitempty"`
 }
 
 // NetworkInterfaceStatus defines the observed state of NetworkInterface.

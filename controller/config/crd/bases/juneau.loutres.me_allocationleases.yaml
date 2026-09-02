@@ -82,6 +82,23 @@ spec:
                   uid:
                     type: string
                 type: object
+              dns:
+                description: DNS is the Vpc-scoped name binding retained with this
+                  IP reservation.
+                properties:
+                  names:
+                    items:
+                      type: string
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: set
+                  vpc:
+                    minLength: 1
+                    type: string
+                required:
+                - names
+                - vpc
+                type: object
               ownerDeletionTimestamp:
                 description: |-
                   OwnerDeletionTimestamp records when the owning AllocationClaim was

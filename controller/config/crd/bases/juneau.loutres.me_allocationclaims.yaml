@@ -72,6 +72,25 @@ spec:
                   status.vni or status.tableID.
                 minLength: 1
                 type: string
+              dns:
+                description: |-
+                  DNS associates names with an allocated IP for one Vpc. Allocation
+                  consumers populate this optional infrastructure-level binding; the
+                  allocation controller copies it to the lease that owns the address.
+                properties:
+                  names:
+                    items:
+                      type: string
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: set
+                  vpc:
+                    minLength: 1
+                    type: string
+                required:
+                - names
+                - vpc
+                type: object
               poolRefs:
                 description: |-
                   PoolRefs lists candidate pools, evaluated in order. The first pool

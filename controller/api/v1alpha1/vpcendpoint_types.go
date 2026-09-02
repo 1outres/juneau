@@ -34,6 +34,12 @@ type VpcEndpointSpec struct {
 	Vpc string `json:"vpc"`
 	// +required
 	Service VpcEndpointServiceReference `json:"service"`
+
+	// DNSNames lists fully-qualified names that resolve to the endpoint address
+	// for callers in this Vpc.
+	// +optional
+	// +listType=set
+	DNSNames []string `json:"dnsNames,omitempty"`
 }
 
 type VpcEndpointStatus struct {

@@ -71,6 +71,15 @@ spec:
                   the value must be unique per workload within the namespace. Must be a
                   DNS-1123 subdomain.
                 type: string
+              dnsNames:
+                description: |-
+                  DNSNames lists fully-qualified names that resolve to this interface's
+                  allocated address inside its Vpc. Juneau treats the names as opaque DNS
+                  identities and does not assign product semantics to them.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
               l2Network:
                 description: |-
                   L2Network is the L2Network this interface joins. Exactly one of

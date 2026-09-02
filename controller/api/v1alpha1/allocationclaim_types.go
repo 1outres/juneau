@@ -71,6 +71,25 @@ type AllocationClaimSpec struct {
 	// claim. The value is copied onto the lease.
 	// +optional
 	RetainWhile *RetainReference `json:"retainWhile,omitempty"`
+
+	// DNS associates names with an allocated IP for one Vpc. Allocation
+	// consumers populate this optional infrastructure-level binding; the
+	// allocation controller copies it to the lease that owns the address.
+	// +optional
+	DNS *AllocationDNSBinding `json:"dns,omitempty"`
+}
+
+// AllocationDNSBinding is a Vpc-scoped set of fully-qualified DNS names for
+// an IP allocation. It intentionally carries no workload or product identity.
+type AllocationDNSBinding struct {
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	Vpc string `json:"vpc"`
+
+	// +required
+	// +kubebuilder:validation:MinItems=1
+	// +listType=set
+	Names []string `json:"names"`
 }
 
 type AllocationFilter struct {

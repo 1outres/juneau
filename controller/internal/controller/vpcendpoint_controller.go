@@ -182,6 +182,12 @@ func (r *VpcEndpointReconciler) buildStatus(ctx context.Context, endpoint *junea
 func (r *VpcEndpointReconciler) ensureClaim(ctx context.Context, endpoint *juneauv1alpha1.VpcEndpoint) (*juneauv1alpha1.AllocationClaim, error) {
 	gvk := schema.GroupVersionKind{Group: juneauv1alpha1.GroupVersion.Group, Version: juneauv1alpha1.GroupVersion.Version, Kind: "VpcEndpoint"}
 	desired := newAllocationClaim(VpcEndpointIPAllocationPoolName(endpoint.Spec.Vpc), gvk, "", endpoint.Name, vpcEndpointAllocationAttribute)
+	if len(endpoint.Spec.DNSNames) > 0 {
+		desired.Spec.DNS = &juneauv1alpha1.AllocationDNSBinding{
+			Vpc:   endpoint.Spec.Vpc,
+			Names: append([]string(nil), endpoint.Spec.DNSNames...),
+		}
+	}
 	claim := &juneauv1alpha1.AllocationClaim{ObjectMeta: metav1.ObjectMeta{Name: desired.Name}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, claim, func() error {
 		claim.Spec = desired.Spec

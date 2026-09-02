@@ -69,6 +69,10 @@ type AllocationLeaseSpec struct {
 	// claim generation may point the same lease at a different object.
 	// +optional
 	RetainWhile *RetainReference `json:"retainWhile,omitempty"`
+
+	// DNS is the Vpc-scoped name binding retained with this IP reservation.
+	// +optional
+	DNS *AllocationDNSBinding `json:"dns,omitempty"`
 }
 
 // AllocationLeaseClaimReference names the AllocationClaim that holds a lease.

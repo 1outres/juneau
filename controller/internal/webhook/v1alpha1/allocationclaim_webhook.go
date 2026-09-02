@@ -163,6 +163,7 @@ func validateAllocationClaimSpec(claim *juneauloutresmev1alpha1.AllocationClaim)
 	}
 
 	errs = append(errs, validateRetainReference(claim.Spec.RetainWhile, specPath.Child("retainWhile"))...)
+	errs = append(errs, validateAllocationDNS(claim.Spec.DNS, specPath.Child("dns"))...)
 	return errs
 }
 

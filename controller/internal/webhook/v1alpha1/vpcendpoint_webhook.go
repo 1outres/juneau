@@ -70,6 +70,7 @@ func (v *VpcEndpointCustomValidator) ValidateCreate(ctx context.Context, obj run
 		}
 		errs = append(errs, vpcErrs...)
 	}
+	errs = append(errs, validateDNSNames(endpoint.Spec.DNSNames, field.NewPath("spec").Child("dnsNames"))...)
 
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "VpcEndpoint"}, endpoint.Name, errs)
@@ -102,6 +103,7 @@ func (v *VpcEndpointCustomValidator) ValidateUpdate(ctx context.Context, oldObj,
 	if endpoint.Spec.Vpc != oldEndpoint.Spec.Vpc {
 		errs = append(errs, field.Invalid(specPath.Child("vpc"), endpoint.Spec.Vpc, "spec.vpc is immutable"))
 	}
+	errs = append(errs, validateDNSNames(endpoint.Spec.DNSNames, specPath.Child("dnsNames"))...)
 
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "VpcEndpoint"}, endpoint.Name, errs)

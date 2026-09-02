@@ -126,5 +126,6 @@ func validateAllocationLeaseSpec(lease *juneauloutresmev1alpha1.AllocationLease)
 	// spec.retainWhile is not immutable: a later claim generation may point
 	// the same lease at a different object, so only its shape is checked.
 	errs = append(errs, validateRetainReference(lease.Spec.RetainWhile, specPath.Child("retainWhile"))...)
+	errs = append(errs, validateAllocationDNS(lease.Spec.DNS, specPath.Child("dns"))...)
 	return errs
 }

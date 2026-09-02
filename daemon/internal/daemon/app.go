@@ -161,6 +161,7 @@ func NewApp() *cli.Command {
 					&juneauv1alpha1.TraceSession{}:              {},
 					&juneauv1alpha1.ServiceLoadBalancer{}:       {},
 					&juneauv1alpha1.VpcEndpoint{}:               {},
+					&juneauv1alpha1.AllocationLease{}:           {},
 					&corev1.Service{}:                           {},
 					&corev1.Pod{}: {
 						Field: fields.OneTermEqualSelector("spec.nodeName", nodeName),
@@ -300,6 +301,21 @@ func NewApp() *cli.Command {
 			apiClient, err := client.New(kubecfg, client.Options{Scheme: scheme})
 			if err != nil {
 				return fmt.Errorf("create uncached client: %w", err)
+			}
+
+			if err := cache.IndexField(
+				ctx,
+				&juneauv1alpha1.AllocationLease{},
+				dns.AllocationLeaseDNSNameField,
+				func(obj client.Object) []string {
+					lease := obj.(*juneauv1alpha1.AllocationLease)
+					if lease.Spec.DNS == nil {
+						return nil
+					}
+					return lease.Spec.DNS.Names
+				},
+			); err != nil {
+				return fmt.Errorf("index AllocationLease by DNS name: %w", err)
 			}
 
 			if err := cache.IndexField(
@@ -639,7 +655,10 @@ func NewApp() *cli.Command {
 // in the right order (Service first to drop registry bindings before
 // the runner exits and stops feeding Reconcile calls).
 func startDNSService(ctx context.Context, cl client.Client, registry virtservice.Registry, bpfManager *dataplane.Manager, dnsUpstream string) (*dns.Service, *runner.Runner, error) {
-	resolvers := []dns.Resolver{dns.NewClusterZone(cl, dns.DefaultClusterDomain, 30)}
+	resolvers := []dns.Resolver{
+		dns.NewPrivateZone(cl, 30),
+		dns.NewClusterZone(cl, dns.DefaultClusterDomain, 30),
+	}
 	upstream := strings.Split(dnsUpstream, ",")
 	cleaned := upstream[:0]
 	for _, s := range upstream {
