@@ -97,6 +97,8 @@ static __always_inline long host_fib_lookup(struct __sk_buff *skb,
 
   fib_params->family = AF_INET;
   fib_params->l4_protocol = iph->protocol;
+  // Preserve the (possibly translated) source for policy routing.
+  fib_params->ipv4_src = iph->saddr;
   fib_params->ipv4_dst = iph->daddr;
   fib_params->ifindex = skb->ifindex;
 
