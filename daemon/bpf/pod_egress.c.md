@@ -35,9 +35,36 @@ ElasticIPを直接持つNIC(ExternalNetworkのNIC)から出るパケットを扱
 1. ARPならhandle_external_nic_arp関数を呼び出し、その返り値を返す
 2. IPv4でなければドロップ
 3. 送信元IPアドレスがifindex_external_networkのipv4(NICのElasticIP)でなければドロップ。SNATしないので、別のアドレスを名乗ったパケットがそのままunderlayに出てしまう
-4. route_external_nic_via_host関数を呼び出し、その返り値を返す
+4. 宛先IPアドレスがexternal_address_poolsにあれば(external_address_owned、external.h)、hairpin_to_node_ingress関数を呼び出し、その返り値を返す
+5. route_external_nic_via_host関数を呼び出し、その返り値を返す
 
 traceイベントは出さない。traceはVpcのスコープでtupleを引くが、このNICにはVpcが無い。
+
+## hairpin_to_node_ingress
+
+juneauが引き受けるアドレス宛のパケットを、node_ingressがついているインターフェースのingressに渡す。underlayから届いたのと同じ扱いになる。
+
+1. node_ingress_ifindex mapを引く。無いか0ならドロップ
+2. そのifindexにbpf_redirect(BPF_F_INGRESS)する
+
+external_address_poolsにあるアドレスの行き先を決めるのはnode_ingressで、中身は次のとおり。
+
+- ElasticIPを直接持つNIC(このNodeでも別のNodeでも)
+- NATGatewayのflowの戻り(NAPT_IN)
+- ElasticIPAttachmentのElasticIP
+- LoadBalancerのVIP
+
+この仕組みを選んだ理由は3つある。
+
+- node_ingressの処理をpod_egressに取り込むと、tc_pod_egressの命令数にnode_ingressの分(約11万命令)が足される。58%を使っている今、それは入らない
+- tail callにすると、pod_egressが呼ぶsubprogramと512バイトのstackを分け合うことになる。tc_pod_egressは408バイトを使っていて、余裕が無い
+- uplinkから外に出すと、routerが同じNodeに戻してくれるとは限らない
+
+BPF_F_INGRESSでredirectすると、kernelはパケットをuplinkの受信キューに入れ直し、そのTCX ingressでnode_ingressが走る。宛先MACはhost側vethのMACのままなのでPACKET_OTHERHOSTになるが、external_address_poolsにあるアドレスについてnode_ingressはredirectかドロップしか返さないので、kernelに渡ることは無い。
+
+pod_egressとnode_ingressは「引き受けるアドレス」の判定をexternal.hのexternal_address_ownedで共有している。判定がずれると、hairpinしたパケットをnode_ingressがhost stackに渡し、OTHERHOSTとして捨てられる。
+
+別のNodeにあるNATGatewayのアドレス宛は、このNodeのnode_ingressがそのアドレスをどう扱うかで決まる。underlayからこのNodeに着いたパケットと同じ結果になる。
 
 ## route_external_nic_via_host
 

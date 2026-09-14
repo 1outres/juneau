@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include "arp.h"
 #include "ct.h"
+#include "external.h"
 #include "lb.h"
 #include "maps.h"
 #include "nat.h"
@@ -738,13 +739,7 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
     // Fall through to external_address_pools below.
   }
 
-  struct external_address_pools_key pool_key = {
-      .prefixlen = 32,
-      .addr = iph->daddr,
-  };
-  const __u8 *pool_val =
-      bpf_map_lookup_elem(&external_address_pools, &pool_key);
-  if (!pool_val || *pool_val == 0)
+  if (!external_address_owned(iph->daddr))
     return TC_ACT_OK;
 
   // First try NAPT reverse: ct_map keyed on (HOST, src=internet,

@@ -202,12 +202,19 @@ func buildUplink(t *testing.T) bpftest.Device {
 // publishes the NetworkEndpoint the CNI publishes for it.
 func (n *externalNode) addLocalNIC(t *testing.T, name, elasticIP string, podMAC, hostMAC net.HardwareAddr) externalNIC {
 	t.Helper()
+	return n.addLocalNICOn(t, bpftest.Dummy(t, name), name, elasticIP, podMAC, hostMAC)
+}
+
+// addLocalNICOn is addLocalNIC on a device the test built itself, such as
+// one end of a real veth pair.
+func (n *externalNode) addLocalNICOn(t *testing.T, veth bpftest.Device, name, elasticIP string, podMAC, hostMAC net.HardwareAddr) externalNIC {
+	t.Helper()
 	nic := externalNIC{
 		name:      name,
 		elasticIP: elasticIP,
 		podMAC:    podMAC,
 		hostMAC:   hostMAC,
-		veth:      bpftest.Dummy(t, name),
+		veth:      veth,
 	}
 	endpoint := externalEndpoint(nic, thisNode)
 	endpoint.Spec.Attachment = &juneauv1alpha1.NetworkEndpointAttachment{

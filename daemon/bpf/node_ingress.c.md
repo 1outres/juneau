@@ -33,8 +33,8 @@ traceイベントを出さない理由: trace_emit_*_l3はL3タプル(protocol/s
 ## handle_l3
 
 1. L3ヘッダーのパースを行う
-2. 宛先IPアドレスでexternal_address_pools mapを引く
-3. 見つからないもしくはvalueが0だったらTC_ACT_OK
+2. 宛先IPアドレスでexternal_address_pools mapを引く(external_address_owned、external.h)
+3. 見つからないもしくはvalueが0だったらTC_ACT_OK。pod_egressはElasticIPを直接持つNICから送られたパケットを同じ判定でこのプログラムにhairpinするので、判定はexternal.hで共有する
 4. nat_dnat_mapを引く
 5. 見つかったら、nat_dnat_mapを引いた結果も含めてhandle_dnatに渡す
 6. elastic_ip_direct mapを宛先IPアドレスで引く

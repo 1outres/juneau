@@ -659,6 +659,7 @@ type PodEgressMapSpecs struct {
 	NaptSrc                *ebpf.MapSpec `ebpf:"napt_src"`
 	NatDnatMap             *ebpf.MapSpec `ebpf:"nat_dnat_map"`
 	NatSnatMap             *ebpf.MapSpec `ebpf:"nat_snat_map"`
+	NodeIngressIfindex     *ebpf.MapSpec `ebpf:"node_ingress_ifindex"`
 	NodeUnderlays          *ebpf.MapSpec `ebpf:"node_underlays"`
 	PodEgressEmitScratch   *ebpf.MapSpec `ebpf:"pod_egress_emit_scratch"`
 	PodEgressNatScratch    *ebpf.MapSpec `ebpf:"pod_egress_nat_scratch"`
@@ -750,6 +751,7 @@ type PodEgressMaps struct {
 	NaptSrc                *ebpf.Map `ebpf:"napt_src"`
 	NatDnatMap             *ebpf.Map `ebpf:"nat_dnat_map"`
 	NatSnatMap             *ebpf.Map `ebpf:"nat_snat_map"`
+	NodeIngressIfindex     *ebpf.Map `ebpf:"node_ingress_ifindex"`
 	NodeUnderlays          *ebpf.Map `ebpf:"node_underlays"`
 	PodEgressEmitScratch   *ebpf.Map `ebpf:"pod_egress_emit_scratch"`
 	PodEgressNatScratch    *ebpf.Map `ebpf:"pod_egress_nat_scratch"`
@@ -815,6 +817,7 @@ func (m *PodEgressMaps) Close() error {
 		m.NaptSrc,
 		m.NatDnatMap,
 		m.NatSnatMap,
+		m.NodeIngressIfindex,
 		m.NodeUnderlays,
 		m.PodEgressEmitScratch,
 		m.PodEgressNatScratch,

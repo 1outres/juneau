@@ -615,6 +615,7 @@ type VxlanIngressMapSpecs struct {
 	NaptSrc                *ebpf.MapSpec `ebpf:"napt_src"`
 	NatDnatMap             *ebpf.MapSpec `ebpf:"nat_dnat_map"`
 	NatSnatMap             *ebpf.MapSpec `ebpf:"nat_snat_map"`
+	NodeIngressIfindex     *ebpf.MapSpec `ebpf:"node_ingress_ifindex"`
 	NodeUnderlays          *ebpf.MapSpec `ebpf:"node_underlays"`
 	PolicyCtMap            *ebpf.MapSpec `ebpf:"policy_ct_map"`
 	PolicyEpochMap         *ebpf.MapSpec `ebpf:"policy_epoch_map"`
@@ -702,6 +703,7 @@ type VxlanIngressMaps struct {
 	NaptSrc                *ebpf.Map `ebpf:"napt_src"`
 	NatDnatMap             *ebpf.Map `ebpf:"nat_dnat_map"`
 	NatSnatMap             *ebpf.Map `ebpf:"nat_snat_map"`
+	NodeIngressIfindex     *ebpf.Map `ebpf:"node_ingress_ifindex"`
 	NodeUnderlays          *ebpf.Map `ebpf:"node_underlays"`
 	PolicyCtMap            *ebpf.Map `ebpf:"policy_ct_map"`
 	PolicyEpochMap         *ebpf.Map `ebpf:"policy_epoch_map"`
@@ -765,6 +767,7 @@ func (m *VxlanIngressMaps) Close() error {
 		m.NaptSrc,
 		m.NatDnatMap,
 		m.NatSnatMap,
+		m.NodeIngressIfindex,
 		m.NodeUnderlays,
 		m.PolicyCtMap,
 		m.PolicyEpochMap,

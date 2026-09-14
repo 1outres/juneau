@@ -528,6 +528,17 @@ struct {
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } vxlan_ifindex SEC(".maps");
 
+// node_ingress_ifindex holds the interface node_ingress is attached to.
+// pod_egress hands a packet a NIC on an ElasticIP sends to an owned
+// address to that interface's ingress, so node_ingress decides it.
+struct {
+  __uint(type, BPF_MAP_TYPE_ARRAY);
+  __uint(max_entries, 1);
+  __type(key, __u32);
+  __type(value, __u32); // node ingress ifindex
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} node_ingress_ifindex SEC(".maps");
+
 // host_underlay holds this node's underlay IPv4 (the Node's
 // InternalIP, in network byte order). Single-entry array map shared
 // across programs. pod_egress writes the source IP for host-network

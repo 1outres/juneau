@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include "arp.h"
 #include "ct.h"
+#include "external.h"
 #include "lb.h"
 #include "maps.h"
 #include "nat.h"
@@ -400,6 +401,26 @@ handle_external_nic_arp(struct __sk_buff *skb, void *data_end,
   return bpf_redirect(skb->ifindex, 0);
 }
 
+// hairpin_to_node_ingress hands a packet a NIC on an ElasticIP sends to an
+// address juneau owns to the ingress of the interface node_ingress runs
+// on, as if it had arrived from the underlay.
+//
+// node_ingress is what decides a packet for such an address: a direct
+// ElasticIP here or on another node, the reply to a NATGateway flow, a
+// LoadBalancer VIP. Redirecting into it gives the packet exactly that
+// handling. Running the same code inside this program instead would add
+// all of node_ingress to tc_pod_egress, which is already close to the
+// verifier's budget, and a tail call would have to share the 512-byte
+// stack with the subprograms this program calls. Sending the packet out of
+// the uplink would leave it to a router that may not send it back.
+static __always_inline int hairpin_to_node_ingress(void) {
+  __u32 key = 0;
+  const __u32 *ifindex = bpf_map_lookup_elem(&node_ingress_ifindex, &key);
+  if (!ifindex || *ifindex == 0)
+    return TC_ACT_SHOT;
+  return bpf_redirect(*ifindex, BPF_F_INGRESS);
+}
+
 // handle_external_nic carries what a NIC on an ElasticIP sends. Such a
 // NIC joins no Vpc, so none of what handle_l2 does for a Subnet applies:
 // no Service, no SNAT, no NetworkACL or SecurityGroup, no Vpc FIB.
@@ -423,6 +444,9 @@ handle_external_nic(struct __sk_buff *skb, struct ethhdr *eth, void *data_end,
   // underlay as it stands.
   if (iph->saddr != nic->ipv4)
     return TC_ACT_SHOT;
+
+  if (external_address_owned(iph->daddr))
+    return hairpin_to_node_ingress();
 
   return route_external_nic_via_host(skb);
 }
