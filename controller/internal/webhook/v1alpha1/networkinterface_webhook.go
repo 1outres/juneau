@@ -108,6 +108,12 @@ func (v *NetworkInterfaceCustomValidator) ValidateCreate(ctx context.Context, ob
 	errs = append(errs, validateNetworkInterfaceAllocationIdentity(networkinterface.Spec.AllocationIdentity, specPath.Child("allocationIdentity"))...)
 	errs = append(errs, validateRetainReference(networkinterface.Spec.RetainWhile, specPath.Child("retainWhile"))...)
 
+	elasticIPErrs, err := validateNetworkInterfaceElasticIP(ctx, v.Reader, networkinterface, specPath.Child("elasticIP"))
+	if err != nil {
+		return nil, err
+	}
+	errs = append(errs, elasticIPErrs...)
+
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "NetworkInterface"}, networkinterface.Name, errs)
 		networkinterfacelog.Info("Validation failed for NetworkInterface", "name", networkinterface.GetName(), "error", err)
@@ -142,6 +148,9 @@ func (v *NetworkInterfaceCustomValidator) ValidateUpdate(ctx context.Context, ol
 	if networkinterface.Spec.L2Network != oldNetworkInterface.Spec.L2Network {
 		errs = append(errs, field.Invalid(specPath.Child("l2Network"), networkinterface.Spec.L2Network, "spec.l2Network is immutable"))
 	}
+	if networkinterface.Spec.ElasticIP != oldNetworkInterface.Spec.ElasticIP {
+		errs = append(errs, field.Invalid(specPath.Child("elasticIP"), networkinterface.Spec.ElasticIP, "spec.elasticIP is immutable"))
+	}
 	if networkinterface.Spec.Address != oldNetworkInterface.Spec.Address {
 		errs = append(errs, field.Invalid(specPath.Child("address"), networkinterface.Spec.Address, "spec.address is immutable"))
 	}
@@ -173,8 +182,9 @@ func (v *NetworkInterfaceCustomValidator) ValidateUpdate(ctx context.Context, ol
 	// path.
 	//
 	// We do still need the network to check that SGs share its Vpc, so
-	// try to read it (best-effort: NotFound is OK).
-	if shouldCheckReferences(networkinterface) {
+	// try to read it (best-effort: NotFound is OK). An interface on an
+	// ElasticIP joins no network and the schema forbids SGs on it.
+	if shouldCheckReferences(networkinterface) && networkinterface.Spec.ElasticIP == "" {
 		network, err := podnetwork.ResolveOptional(ctx, v.Reader, podnetwork.InterfaceReference(networkinterface.Spec))
 		if err != nil {
 			return nil, err
@@ -265,6 +275,22 @@ func validateNetworkInterfaceAddress(address string, network *podnetwork.Network
 	}
 
 	return nil
+}
+
+// validateNetworkInterfaceElasticIP applies the direct-use rules to an
+// interface that carries an ElasticIP. It runs on create only: the
+// ElasticIP is immutable, and a holder admitted earlier must still be
+// able to take its finalizer-removal updates.
+func validateNetworkInterfaceElasticIP(ctx context.Context, c client.Reader, networkinterface *juneauv1alpha1.NetworkInterface, path *field.Path) (field.ErrorList, error) {
+	if networkinterface.Spec.ElasticIP == "" {
+		return nil, nil
+	}
+	return validateElasticIPDirectUse(ctx, c, elasticIPDirectUse{
+		namespace:          networkinterface.Namespace,
+		elasticIP:          networkinterface.Spec.ElasticIP,
+		allocationIdentity: networkinterface.Spec.AllocationIdentity,
+		networkInterface:   networkinterface.Name,
+	}, path, networkinterface.Spec.ElasticIP)
 }
 
 func validateNetworkInterfaceAllocationIdentity(identity string, path *field.Path) field.ErrorList {

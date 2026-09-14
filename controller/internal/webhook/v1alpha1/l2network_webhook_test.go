@@ -430,7 +430,7 @@ var _ = Describe("NetworkInterface ↔ L2Network webhook", func() {
 
 		err := webhookK8sClient.Create(context.Background(), iface)
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("set exactly one of spec.subnet and spec.l2Network"))
+		Expect(err.Error()).To(ContainSubstring("set exactly one of spec.subnet, spec.l2Network and spec.elasticIP"))
 	})
 
 	It("rejects an interface that names both a Subnet and an L2Network", func() {
@@ -439,7 +439,7 @@ var _ = Describe("NetworkInterface ↔ L2Network webhook", func() {
 
 		err := webhookK8sClient.Create(context.Background(), iface)
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("set exactly one of spec.subnet and spec.l2Network"))
+		Expect(err.Error()).To(ContainSubstring("set exactly one of spec.subnet, spec.l2Network and spec.elasticIP"))
 	})
 
 	It("rejects an interface whose L2Network does not exist", func() {

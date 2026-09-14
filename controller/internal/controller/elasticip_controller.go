@@ -170,7 +170,7 @@ func (r *ElasticIPReconciler) reconcileNormal(ctx context.Context, resource *jun
 	}
 
 	if requeue {
-		if err := r.updateStatus(ctx, resource, juneauv1alpha1.ElasticIPPhasePending, "", "",
+		if err := r.updateStatus(ctx, resource, juneauv1alpha1.ElasticIPPhasePending, "", nil,
 			metav1.Condition{
 				Type:    elasticIPConditionAllocated,
 				Status:  metav1.ConditionFalse,
@@ -191,7 +191,7 @@ func (r *ElasticIPReconciler) reconcileNormal(ctx context.Context, resource *jun
 
 	if address == "" {
 		// Claim exists but has not yet reached Allocated. Treat as Pending.
-		if err := r.updateStatus(ctx, resource, juneauv1alpha1.ElasticIPPhasePending, "", "",
+		if err := r.updateStatus(ctx, resource, juneauv1alpha1.ElasticIPPhasePending, "", nil,
 			metav1.Condition{
 				Type:    elasticIPConditionAllocated,
 				Status:  metav1.ConditionFalse,
@@ -212,7 +212,7 @@ func (r *ElasticIPReconciler) reconcileNormal(ctx context.Context, resource *jun
 
 	switch len(attachments) {
 	case 0:
-		if err := r.updateStatus(ctx, resource, juneauv1alpha1.ElasticIPPhaseAvailable, address, "",
+		if err := r.updateStatus(ctx, resource, juneauv1alpha1.ElasticIPPhaseAvailable, address, nil,
 			metav1.Condition{
 				Type:    elasticIPConditionAllocated,
 				Status:  metav1.ConditionTrue,
@@ -229,7 +229,10 @@ func (r *ElasticIPReconciler) reconcileNormal(ctx context.Context, resource *jun
 			return ctrl.Result{}, err
 		}
 	case 1:
-		if err := r.updateStatus(ctx, resource, juneauv1alpha1.ElasticIPPhaseAttached, address, attachments[0].Name,
+		if err := r.updateStatus(ctx, resource, juneauv1alpha1.ElasticIPPhaseAttached, address, &juneauv1alpha1.ElasticIPStatusAttachment{
+			Kind: juneauv1alpha1.ElasticIPStatusAttachmentKindElasticIPAttachment,
+			Name: attachments[0].Name,
+		},
 			metav1.Condition{
 				Type:    elasticIPConditionAllocated,
 				Status:  metav1.ConditionTrue,
@@ -479,7 +482,7 @@ func (r *ElasticIPReconciler) listActiveAttachments(ctx context.Context, resourc
 }
 
 func (r *ElasticIPReconciler) updateErrorStatus(ctx context.Context, resource *juneauv1alpha1.ElasticIP, reason, message string) error {
-	return r.updateStatus(ctx, resource, juneauv1alpha1.ElasticIPPhaseError, resource.Status.Address, "",
+	return r.updateStatus(ctx, resource, juneauv1alpha1.ElasticIPPhaseError, resource.Status.Address, nil,
 		metav1.Condition{
 			Type:    elasticIPConditionAllocated,
 			Status:  metav1.ConditionFalse,
@@ -500,14 +503,14 @@ func (r *ElasticIPReconciler) updateStatus(
 	resource *juneauv1alpha1.ElasticIP,
 	phase juneauv1alpha1.ElasticIPPhase,
 	address string,
-	attachmentName string,
+	attachment *juneauv1alpha1.ElasticIPStatusAttachment,
 	conditions ...metav1.Condition,
 ) error {
 	updated := resource.Status
 	updated.ObservedGeneration = resource.Generation
 	updated.Phase = phase
 	updated.Address = address
-	updated.AttachmentName = attachmentName
+	updated.Attachment = attachment
 
 	for _, condition := range conditions {
 		condition.ObservedGeneration = resource.Generation

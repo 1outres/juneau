@@ -72,7 +72,7 @@ var _ = Describe("ElasticIP controller", func() {
 			g.Expect(reconcileElasticIP(name)).To(Succeed())
 			elasticIP := getControllerElasticIP(name)
 			g.Expect(elasticIP.Status.Phase).To(Equal(juneauv1alpha1.ElasticIPPhaseAvailable))
-			g.Expect(elasticIP.Status.AttachmentName).To(BeEmpty())
+			g.Expect(elasticIP.Status.Attachment).To(BeNil())
 		}).Should(Succeed())
 
 		elasticIP := getControllerElasticIP(name)
@@ -106,12 +106,18 @@ var _ = Describe("ElasticIP controller", func() {
 			g.Expect(reconcileElasticIP(name)).To(Succeed())
 			elasticIP := getControllerElasticIP(name)
 			g.Expect(elasticIP.Status.Phase).To(Equal(juneauv1alpha1.ElasticIPPhaseAttached))
-			g.Expect(elasticIP.Status.AttachmentName).To(Equal(attachmentName))
+			g.Expect(elasticIP.Status.Attachment).To(Equal(&juneauv1alpha1.ElasticIPStatusAttachment{
+				Kind: juneauv1alpha1.ElasticIPStatusAttachmentKindElasticIPAttachment,
+				Name: attachmentName,
+			}))
 		}).Should(Succeed())
 
 		elasticIP := getControllerElasticIP(name)
 		Expect(elasticIP.Status.Phase).To(Equal(juneauv1alpha1.ElasticIPPhaseAttached))
-		Expect(elasticIP.Status.AttachmentName).To(Equal(attachmentName))
+		Expect(elasticIP.Status.Attachment).To(Equal(&juneauv1alpha1.ElasticIPStatusAttachment{
+			Kind: juneauv1alpha1.ElasticIPStatusAttachmentKindElasticIPAttachment,
+			Name: attachmentName,
+		}))
 
 		allocated := meta.FindStatusCondition(elasticIP.Status.Conditions, "Allocated")
 		Expect(allocated).NotTo(BeNil())

@@ -29,6 +29,9 @@ spec:
     - jsonPath: .spec.l2Network
       name: L2Network
       type: string
+    - jsonPath: .spec.elasticIP
+      name: ElasticIP
+      type: string
     - jsonPath: .status.address
       name: Address
       type: string
@@ -70,13 +73,30 @@ spec:
                   interfaces that share an identity share the address reservation, so
                   the value must be unique per workload within the namespace. Must be a
                   DNS-1123 subdomain.
+
+                  An interface on an ElasticIP allocates nothing. There the identity
+                  only lets a new interface of the same workload ask for the
+                  ElasticIP while the old interface still holds it.
+                type: string
+              elasticIP:
+                description: |-
+                  ElasticIP names an ElasticIP in the namespace of this interface.
+                  The interface carries the address of that ElasticIP directly, with
+                  no NAT in between, and joins no Vpc. Exactly one of Subnet,
+                  L2Network and ElasticIP is set.
+
+                  The ElasticIP owns the address, so such an interface has no
+                  AllocationClaim, no Address and no SecurityGroups. Its
+                  status.address is the ElasticIP address as a /32. One ElasticIP is
+                  carried by at most one interface at a time.
+                minLength: 1
                 type: string
               l2Network:
                 description: |-
                   L2Network is the L2Network this interface joins. Exactly one of
-                  Subnet and L2Network is set. An L2Network without a CIDR hands out
-                  no address at all, so an interface on one becomes Allocated with an
-                  empty status.address.
+                  Subnet, L2Network and ElasticIP is set. An L2Network without a CIDR
+                  hands out no address at all, so an interface on one becomes
+                  Allocated with an empty status.address.
                 minLength: 1
                 type: string
               nodeName:
@@ -142,8 +162,8 @@ spec:
                 x-kubernetes-list-type: set
               subnet:
                 description: |-
-                  Subnet is the Subnet this interface joins. Exactly one of Subnet
-                  and L2Network is set.
+                  Subnet is the Subnet this interface joins. Exactly one of Subnet,
+                  L2Network and ElasticIP is set.
                 minLength: 1
                 type: string
             required:
@@ -151,8 +171,14 @@ spec:
             - podRef
             type: object
             x-kubernetes-validations:
-            - message: set exactly one of spec.subnet and spec.l2Network
-              rule: has(self.subnet) != has(self.l2Network)
+            - message: set exactly one of spec.subnet, spec.l2Network and spec.elasticIP
+              rule: '[has(self.subnet), has(self.l2Network), has(self.elasticIP)].filter(x,
+                x).size() == 1'
+            - message: spec.address and spec.securityGroups must be empty when spec.elasticIP
+                is set
+              rule: '!has(self.elasticIP) || ((!has(self.address) || size(self.address)
+                == 0) && (!has(self.securityGroups) || size(self.securityGroups) ==
+                0))'
           status:
             description: NetworkInterfaceStatus defines the observed state of NetworkInterface.
             properties:
@@ -249,14 +275,67 @@ spec:
                 type: string
               routes:
                 items:
+                  description: |-
+                    NetworkRoute is one route the CNI server adds to the pod network
+                    namespace, through the interface it is listed on.
                   properties:
                     dst:
                       type: string
                     gw:
                       type: string
+                    onLink:
+                      description: |-
+                        OnLink says GW is on the link even though no address of the
+                        interface covers it. An interface on an ElasticIP holds only a /32
+                        and reaches PodElasticIPGateway this way.
+                      type: boolean
+                    table:
+                      description: |-
+                        Table is the route table the route goes into. Zero means the main
+                        table. See PodElasticIPRouteTable for the numbers Juneau uses.
+                      format: int64
+                      maximum: 4294967295
+                      minimum: 0
+                      type: integer
                   required:
                   - dst
                   - gw
+                  type: object
+                type: array
+              rules:
+                description: |-
+                  Rules lists the policy routing rules the CNI server adds to the pod
+                  network namespace for this interface. An extra interface on an
+                  ElasticIP uses one to send traffic from its address to its own
+                  route table.
+                items:
+                  description: |-
+                    NetworkRoutingRule is one policy routing rule the CNI server adds to the
+                    pod network namespace.
+                  properties:
+                    from:
+                      description: From is the source prefix the rule matches, in
+                        CIDR form.
+                      minLength: 1
+                      type: string
+                    priority:
+                      description: |-
+                        Priority orders the rule among the other rules of the network
+                        namespace. A lower number is looked at first.
+                      format: int32
+                      minimum: 0
+                      type: integer
+                    table:
+                      description: Table is the route table a packet that matches
+                        is looked up in.
+                      format: int64
+                      maximum: 4294967295
+                      minimum: 1
+                      type: integer
+                  required:
+                  - from
+                  - priority
+                  - table
                   type: object
                 type: array
             type: object

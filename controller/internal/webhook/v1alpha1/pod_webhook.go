@@ -28,6 +28,7 @@ import (
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	"github.com/1outres/juneau/controller/internal/podnetwork"
+	"github.com/1outres/juneau/controller/internal/workload"
 )
 
 // defaultVpcName names the implicit Vpc that holds Pods which do not
@@ -123,7 +124,14 @@ func (d *PodDNSDefaulter) Default(ctx context.Context, obj runtime.Object) error
 		return nil
 	}
 
-	subnetName := juneauv1alpha1.PodPrimaryNetworkAttachment(pod.Annotations).Subnet
+	primary, err := juneauv1alpha1.PodPrimaryNetworkAttachment(pod.Annotations)
+	if err != nil {
+		return err
+	}
+	subnetName := primary.Subnet
+	if subnetName == "" {
+		return nil
+	}
 
 	var subnet juneauv1alpha1.Subnet
 	if err := d.Get(ctx, client.ObjectKey{Name: subnetName}, &subnet); err != nil {
@@ -225,9 +233,13 @@ func mergeDNSConfig(existing *corev1.PodDNSConfig, dnsVIP, podNamespace string) 
 //  3. Every named SG belongs to the same Vpc as the Subnet of that NIC.
 //  4. If that Vpc has spec.enforceSecurityGroups=true, the NIC must list
 //     at least one valid SG.
+//  5. A primary NIC on an L2Network needs one with spec.cidr and
+//     spec.gateway.
+//  6. A NIC on an ElasticIP follows the direct-use rules of
+//     validateElasticIPDirectUse.
 //
-// It also rejects a juneau.loutres.me/networks annotation Juneau cannot
-// turn into NICs, and extra NICs whose Subnet does not exist.
+// It also rejects network annotations Juneau cannot turn into NICs, and
+// extra NICs whose Subnet does not exist.
 //
 // Mirror Pods, hostNetwork Pods, and Pods whose primary Subnet cannot be
 // resolved are always exempt — admission must keep working when the
@@ -271,6 +283,15 @@ func (v *PodSecurityGroupValidator) validate(ctx context.Context, pod *corev1.Po
 	nics, errs := podNICsToValidate(pod)
 	networks := make(map[string]*podnetwork.Network, len(nics))
 	for _, nic := range nics {
+		if nic.attachment.ElasticIP != "" {
+			nicErrs, err := v.validateElasticIPNIC(ctx, pod, nic)
+			if err != nil {
+				return nil, err
+			}
+			errs = append(errs, nicErrs...)
+			continue
+		}
+
 		network, nicErrs, err := v.validateNIC(ctx, nic)
 		if err != nil {
 			return nil, err
@@ -305,35 +326,41 @@ type podNIC struct {
 }
 
 // podNICsToValidate splits a Pod into the NICs admission has to check.
-// Errors come back for entries the annotation itself cannot describe, and
-// those NICs are dropped from the returned list.
+// When the annotations themselves cannot describe the NICs, the errors
+// come back and no NIC does: which NIC is the primary one is unknown.
 func podNICsToValidate(pod *corev1.Pod) ([]podNIC, field.ErrorList) {
-	annotations := pod.Annotations
-	nics := []podNIC{{
-		attachment: juneauv1alpha1.PodPrimaryNetworkAttachment(annotations),
-		path:       field.NewPath("metadata", "annotations").Key(juneauv1alpha1.PodAnnotationSecurityGroups),
-		value:      annotations[juneauv1alpha1.PodAnnotationSecurityGroups],
-	}}
-
-	networksPath := field.NewPath("metadata", "annotations").Key(juneauv1alpha1.PodAnnotationNetworks)
-	networks := annotations[juneauv1alpha1.PodAnnotationNetworks]
-	extra, err := juneauv1alpha1.ParsePodNetworkAttachments(networks)
-	if err != nil {
-		return nics, field.ErrorList{field.Invalid(networksPath, networks, err.Error())}
-	}
-	if errs := juneauv1alpha1.ValidatePodNetworkAttachments(networksPath, extra); len(errs) > 0 {
-		return nics, errs
+	resolved, errs := juneauv1alpha1.ResolvePodNetworkAttachments(pod.Annotations)
+	if len(errs) > 0 {
+		return nil, errs
 	}
 
-	for i, attachment := range extra {
+	nics := make([]podNIC, 0, len(resolved))
+	for _, nic := range resolved {
+		path, value := podNICErrorLocation(pod.Annotations, nic)
 		nics = append(nics, podNIC{
-			attachment:      attachment,
-			path:            networksPath.Index(i),
-			value:           attachment,
-			networkRequired: true,
+			attachment:      nic.PodNetworkAttachment,
+			path:            path,
+			value:           value,
+			networkRequired: nic.Interface != juneauv1alpha1.PodPrimaryInterfaceName,
 		})
 	}
 	return nics, nil
+}
+
+// podNICErrorLocation picks where admission reports a problem with a NIC.
+// A networks entry is reported as the entry. A primary NIC the Subnet
+// annotations describe is reported at the security-groups annotation,
+// because every check that can fail for it is about its SecurityGroups.
+func podNICErrorLocation(annotations map[string]string, nic juneauv1alpha1.ResolvedPodNetworkAttachment) (*field.Path, any) {
+	switch nic.Source.Annotation {
+	case juneauv1alpha1.PodAnnotationSubnet:
+		key := juneauv1alpha1.PodAnnotationSecurityGroups
+		return field.NewPath("metadata", "annotations").Key(key), annotations[key]
+	case juneauv1alpha1.PodAnnotationElasticIP:
+		return nic.Source.Path(), annotations[nic.Source.Annotation]
+	default:
+		return nic.Source.Path(), nic.PodNetworkAttachment
+	}
 }
 
 // validateNIC checks one NIC against the cluster: its SecurityGroups have
@@ -353,6 +380,10 @@ func (v *PodSecurityGroupValidator) validateNIC(ctx context.Context, nic podNIC)
 			return nil, nic.missingReference(fmt.Sprintf("%s does not exist", ref)), nil
 		}
 		return nil, nil, err
+	}
+
+	if errs := validatePrimaryNICNetwork(nic, network); len(errs) > 0 {
+		return network, errs, nil
 	}
 
 	var vpc juneauv1alpha1.Vpc
@@ -402,6 +433,33 @@ func (v *PodSecurityGroupValidator) validateNIC(ctx context.Context, nic podNIC)
 				vpc.Name, nic.attachment.Interface)))
 	}
 	return network, errs, nil
+}
+
+// validateElasticIPNIC checks a NIC that carries an ElasticIP directly.
+// It has no network, Vpc or SecurityGroup to look up.
+func (v *PodSecurityGroupValidator) validateElasticIPNIC(ctx context.Context, pod *corev1.Pod, nic podNIC) (field.ErrorList, error) {
+	return validateElasticIPDirectUse(ctx, v.Reader, elasticIPDirectUse{
+		namespace:          pod.Namespace,
+		elasticIP:          nic.attachment.ElasticIP,
+		allocationIdentity: workload.AllocationIdentity(pod),
+		podUID:             pod.UID,
+	}, nic.path, nic.value)
+}
+
+// validatePrimaryNICNetwork rejects a primary NIC on an L2Network that
+// cannot carry it. The container runtime refuses a sandbox whose eth0 has
+// no address, and the Pod needs a gateway for its default route.
+func validatePrimaryNICNetwork(nic podNIC, network *podnetwork.Network) field.ErrorList {
+	if nic.attachment.Interface != juneauv1alpha1.PodPrimaryInterfaceName ||
+		network.Reference.Kind() != podnetwork.KindL2Network {
+		return nil
+	}
+	if network.AllocatesAddresses() && network.HasGateway {
+		return nil
+	}
+	return field.ErrorList{field.Invalid(nic.path, nic.value,
+		fmt.Sprintf("interface %q can join %s only when it has both spec.cidr and spec.gateway",
+			juneauv1alpha1.PodPrimaryInterfaceName, network.Reference))}
 }
 
 // validateNICNetworksDoNotOverlap rejects a pod whose NICs would land on

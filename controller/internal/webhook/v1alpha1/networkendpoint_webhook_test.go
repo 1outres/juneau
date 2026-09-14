@@ -39,7 +39,45 @@ var _ = Describe("NetworkEndpoint webhook", func() {
 		})
 
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("set exactly one of spec.subnet and spec.l2Network"))
+		Expect(err.Error()).To(ContainSubstring("set exactly one of spec.subnet, spec.l2Network and spec.externalNetwork"))
+	})
+
+	It("rejects an endpoint that names both a Subnet and an ExternalNetwork", func() {
+		networkEndpoint := newValidNetworkEndpoint(webhookUniqueTestName("networkendpoint"))
+		networkEndpoint.Spec.ExternalNetwork = "public"
+
+		err := webhookK8sClient.Create(context.Background(), networkEndpoint)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("set exactly one of spec.subnet, spec.l2Network and spec.externalNetwork"))
+	})
+
+	It("accepts a Pod endpoint on an ExternalNetwork", func() {
+		networkEndpoint := newExternalNetworkEndpoint(webhookUniqueTestName("networkendpoint"), "public")
+
+		Expect(webhookK8sClient.Create(context.Background(), networkEndpoint)).To(Succeed())
+	})
+
+	It("rejects an ExternalNetwork on an endpoint that is not a Pod", func() {
+		networkEndpoint := newExternalNetworkEndpoint(webhookUniqueTestName("networkendpoint"), "public")
+		networkEndpoint.Spec.Kind = juneauv1alpha1.EndpointKindNode
+		networkEndpoint.Spec.PodRef = nil
+
+		err := webhookK8sClient.Create(context.Background(), networkEndpoint)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.externalNetwork is only allowed when spec.kind is Pod"))
+	})
+
+	It("rejects an immutable spec.externalNetwork update", func() {
+		networkEndpoint := newExternalNetworkEndpoint(webhookUniqueTestName("networkendpoint"), "public")
+		Expect(webhookK8sClient.Create(context.Background(), networkEndpoint)).To(Succeed())
+
+		var current juneauv1alpha1.NetworkEndpoint
+		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKeyFromObject(networkEndpoint), &current)).To(Succeed())
+		current.Spec.ExternalNetwork = "other"
+
+		err := webhookK8sClient.Update(context.Background(), &current)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.externalNetwork is immutable"))
 	})
 
 	It("requires PodRef when kind=Pod", func() {
@@ -178,6 +216,14 @@ var _ = Describe("NetworkEndpoint webhook", func() {
 		Expect(webhookK8sClient.Update(context.Background(), &current)).To(Succeed())
 	})
 })
+
+func newExternalNetworkEndpoint(name, externalNetwork string) *juneauv1alpha1.NetworkEndpoint {
+	networkEndpoint := newValidNetworkEndpoint(name)
+	networkEndpoint.Spec.Subnet = ""
+	networkEndpoint.Spec.ExternalNetwork = externalNetwork
+	networkEndpoint.Spec.Address = "203.0.113.10/32"
+	return networkEndpoint
+}
 
 func newValidNetworkEndpoint(name string) *juneauv1alpha1.NetworkEndpoint {
 	return &juneauv1alpha1.NetworkEndpoint{

@@ -21,7 +21,8 @@ import (
 )
 
 // NetworkInterfaceSpec defines the desired state of NetworkInterface.
-// +kubebuilder:validation:XValidation:rule="has(self.subnet) != has(self.l2Network)",message="set exactly one of spec.subnet and spec.l2Network"
+// +kubebuilder:validation:XValidation:rule="[has(self.subnet), has(self.l2Network), has(self.elasticIP)].filter(x, x).size() == 1",message="set exactly one of spec.subnet, spec.l2Network and spec.elasticIP"
+// +kubebuilder:validation:XValidation:rule="!has(self.elasticIP) || ((!has(self.address) || size(self.address) == 0) && (!has(self.securityGroups) || size(self.securityGroups) == 0))",message="spec.address and spec.securityGroups must be empty when spec.elasticIP is set"
 type NetworkInterfaceSpec struct {
 	// +required
 	PodRef NetworkInterfacePodReference `json:"podRef"`
@@ -30,19 +31,32 @@ type NetworkInterfaceSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	NodeName string `json:"nodeName"`
 
-	// Subnet is the Subnet this interface joins. Exactly one of Subnet
-	// and L2Network is set.
+	// Subnet is the Subnet this interface joins. Exactly one of Subnet,
+	// L2Network and ElasticIP is set.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	Subnet string `json:"subnet,omitempty"`
 
 	// L2Network is the L2Network this interface joins. Exactly one of
-	// Subnet and L2Network is set. An L2Network without a CIDR hands out
-	// no address at all, so an interface on one becomes Allocated with an
-	// empty status.address.
+	// Subnet, L2Network and ElasticIP is set. An L2Network without a CIDR
+	// hands out no address at all, so an interface on one becomes
+	// Allocated with an empty status.address.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	L2Network string `json:"l2Network,omitempty"`
+
+	// ElasticIP names an ElasticIP in the namespace of this interface.
+	// The interface carries the address of that ElasticIP directly, with
+	// no NAT in between, and joins no Vpc. Exactly one of Subnet,
+	// L2Network and ElasticIP is set.
+	//
+	// The ElasticIP owns the address, so such an interface has no
+	// AllocationClaim, no Address and no SecurityGroups. Its
+	// status.address is the ElasticIP address as a /32. One ElasticIP is
+	// carried by at most one interface at a time.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	ElasticIP string `json:"elasticIP,omitempty"`
 
 	// +optional
 	Address string `json:"address,omitempty"`
@@ -66,6 +80,10 @@ type NetworkInterfaceSpec struct {
 	// interfaces that share an identity share the address reservation, so
 	// the value must be unique per workload within the namespace. Must be a
 	// DNS-1123 subdomain.
+	//
+	// An interface on an ElasticIP allocates nothing. There the identity
+	// only lets a new interface of the same workload ask for the
+	// ElasticIP while the old interface still holds it.
 	// +optional
 	AllocationIdentity string `json:"allocationIdentity,omitempty"`
 
@@ -91,6 +109,12 @@ type NetworkInterfaceStatus struct {
 	AllocationClaim string         `json:"allocationClaim,omitempty"`
 	Address         string         `json:"address,omitempty"`
 	Routes          []NetworkRoute `json:"routes,omitempty"`
+
+	// Rules lists the policy routing rules the CNI server adds to the pod
+	// network namespace for this interface. An extra interface on an
+	// ElasticIP uses one to send traffic from its address to its own
+	// route table.
+	Rules []NetworkRoutingRule `json:"rules,omitempty"`
 
 	// EffectiveSecurityGroups echoes spec.securityGroups after the
 	// controller resolved them (filtered by existence + same-Vpc) and
@@ -119,9 +143,45 @@ type NetworkInterfacePodReference struct {
 	Interface string `json:"interface"`
 }
 
+// NetworkRoute is one route the CNI server adds to the pod network
+// namespace, through the interface it is listed on.
 type NetworkRoute struct {
 	Dst string `json:"dst"`
 	GW  string `json:"gw"`
+
+	// OnLink says GW is on the link even though no address of the
+	// interface covers it. An interface on an ElasticIP holds only a /32
+	// and reaches PodElasticIPGateway this way.
+	// +optional
+	OnLink bool `json:"onLink,omitempty"`
+
+	// Table is the route table the route goes into. Zero means the main
+	// table. See PodElasticIPRouteTable for the numbers Juneau uses.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=4294967295
+	Table int64 `json:"table,omitempty"`
+}
+
+// NetworkRoutingRule is one policy routing rule the CNI server adds to the
+// pod network namespace.
+type NetworkRoutingRule struct {
+	// From is the source prefix the rule matches, in CIDR form.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	From string `json:"from"`
+
+	// Table is the route table a packet that matches is looked up in.
+	// +required
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=4294967295
+	Table int64 `json:"table"`
+
+	// Priority orders the rule among the other rules of the network
+	// namespace. A lower number is looked at first.
+	// +required
+	// +kubebuilder:validation:Minimum=0
+	Priority int32 `json:"priority"`
 }
 
 // +kubebuilder:object:root=true
@@ -130,6 +190,7 @@ type NetworkRoute struct {
 // +kubebuilder:printcolumn:name="Node",type="string",JSONPath=".spec.nodeName"
 // +kubebuilder:printcolumn:name="Subnet",type="string",JSONPath=".spec.subnet"
 // +kubebuilder:printcolumn:name="L2Network",type="string",JSONPath=".spec.l2Network"
+// +kubebuilder:printcolumn:name="ElasticIP",type="string",JSONPath=".spec.elasticIP"
 // +kubebuilder:printcolumn:name="Address",type="string",JSONPath=".status.address"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 

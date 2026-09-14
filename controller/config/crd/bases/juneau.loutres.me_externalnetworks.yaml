@@ -57,6 +57,17 @@ spec:
             type: object
           status:
             description: ExternalNetworkStatus defines the observed state of ExternalNetwork.
+            properties:
+              networkID:
+                description: |-
+                  NetworkID identifies this ExternalNetwork on the overlay. It comes
+                  from the same pool as Subnet and L2Network VNIs, because the data
+                  plane keys its forwarding tables on that number alone: NICs that
+                  carry an ElasticIP of this ExternalNetwork reach each other across
+                  nodes as if they shared one L2 segment with this VNI. Zero until the
+                  controller has allocated it.
+                format: int32
+                type: integer
             type: object
         type: object
     served: true
