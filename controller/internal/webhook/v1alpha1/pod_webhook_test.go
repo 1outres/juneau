@@ -287,6 +287,53 @@ var _ = Describe("Pod DNS injection webhook", func() {
 		Expect(fetched.Spec.DNSConfig.Nameservers).To(ContainElement(subnet.Status.DNS))
 	})
 
+	It("sends a Pod whose eth0 carries an ElasticIP to the resolver of its node", func() {
+		fetched := createDNSTestPod(map[string]string{
+			juneauv1alpha1.PodAnnotationElasticIP: webhookUniqueTestName("dns-eip"),
+		}, "")
+
+		Expect(fetched.Spec.DNSPolicy).To(Equal(corev1.DNSDefault))
+		Expect(fetched.Spec.DNSConfig).To(BeNil())
+	})
+
+	It("sends a Pod whose eth0 is on an L2Network to the resolver of its node", func() {
+		l2Name := createPodWebhookGatewayL2Network(customSubnetFixture().Spec.Vpc)
+		fetched := createDNSTestPod(map[string]string{
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(`[{"interface":"eth0","l2Network":%q}]`, l2Name),
+		}, corev1.DNSClusterFirst)
+
+		Expect(fetched.Spec.DNSPolicy).To(Equal(corev1.DNSDefault))
+		Expect(fetched.Spec.DNSConfig).To(BeNil())
+	})
+
+	It("keeps the Vpc resolver out of a Pod whose extra NIC is on a custom Subnet but eth0 carries an ElasticIP", func() {
+		extra := customSubnetFixture()
+		fetched := createDNSTestPod(map[string]string{
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(
+				`[{"interface":"eth0","elasticIP":%q},{"interface":"eth1","subnet":%q}]`, webhookUniqueTestName("dns-eip"), extra.Name),
+		}, "")
+
+		Expect(fetched.Spec.DNSPolicy).To(Equal(corev1.DNSDefault))
+		Expect(fetched.Spec.DNSConfig).To(BeNil())
+	})
+
+	It("leaves dnsPolicy None alone on a Pod whose eth0 carries an ElasticIP", func() {
+		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
+			juneauv1alpha1.PodAnnotationElasticIP: webhookUniqueTestName("dns-eip"),
+		})
+		pod.Spec.DNSPolicy = corev1.DNSNone
+		pod.Spec.DNSConfig = &corev1.PodDNSConfig{Nameservers: []string{"9.9.9.9"}}
+		Expect(webhookK8sClient.Create(context.Background(), pod)).To(Succeed())
+		DeferCleanup(func() {
+			_ = webhookK8sClient.Delete(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: "default"}})
+		})
+
+		var fetched corev1.Pod
+		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKeyFromObject(pod), &fetched)).To(Succeed())
+		Expect(fetched.Spec.DNSPolicy).To(Equal(corev1.DNSNone))
+		Expect(fetched.Spec.DNSConfig.Nameservers).To(Equal([]string{"9.9.9.9"}))
+	})
+
 	It("preserves user-supplied search list when injecting", func() {
 		subnet := customSubnetFixture()
 		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
@@ -304,6 +351,90 @@ var _ = Describe("Pod DNS injection webhook", func() {
 		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Name: pod.Name, Namespace: "default"}, &fetched)).To(Succeed())
 		Expect(fetched.Spec.DNSPolicy).To(Equal(corev1.DNSNone))
 		Expect(fetched.Spec.DNSConfig.Searches).To(Equal([]string{"custom.example.com"}))
+	})
+})
+
+// createDNSTestPod creates a Pod with the given annotations and dnsPolicy
+// and returns it as admission left it.
+func createDNSTestPod(annotations map[string]string, dnsPolicy corev1.DNSPolicy) *corev1.Pod {
+	GinkgoHelper()
+	pod := makePodWithImage(uniquePodName(), "default", annotations)
+	pod.Spec.DNSPolicy = dnsPolicy
+	Expect(webhookK8sClient.Create(context.Background(), pod)).To(Succeed())
+	DeferCleanup(func() {
+		_ = webhookK8sClient.Delete(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: "default"}})
+	})
+
+	var fetched corev1.Pod
+	Expect(webhookK8sClient.Get(context.Background(), client.ObjectKeyFromObject(pod), &fetched)).To(Succeed())
+	return &fetched
+}
+
+// createProbeTestPod creates a Pod with an HTTP readiness probe and returns
+// it as admission left it.
+func createProbeTestPod(annotations map[string]string) *corev1.Pod {
+	GinkgoHelper()
+	pod := makePodWithImage(uniquePodName(), "default", annotations)
+	pod.Spec.Containers[0].ReadinessProbe = &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+		HTTPGet: &corev1.HTTPGetAction{Path: "/ready", Port: intstr.FromInt32(8080)},
+	}}
+	Expect(webhookK8sClient.Create(context.Background(), pod)).To(Succeed())
+	DeferCleanup(func() {
+		_ = webhookK8sClient.Delete(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: "default"}})
+	})
+
+	var fetched corev1.Pod
+	Expect(webhookK8sClient.Get(context.Background(), client.ObjectKeyFromObject(pod), &fetched)).To(Succeed())
+	return &fetched
+}
+
+var _ = Describe("Pod network probe rewrite by the network of eth0", func() {
+	It("rewrites probes of a Pod whose eth0 Subnet comes from a networks entry", func() {
+		subnet := customSubnetFixture()
+		fetched := createProbeTestPod(map[string]string{
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(`[{"interface":"eth0","subnet":%q}]`, subnet.Name),
+		})
+
+		Expect(fetched.Spec.Containers[0].ReadinessProbe.HTTPGet.Host).To(Equal("127.0.0.1"))
+		Expect(fetched.Annotations).To(HaveKeyWithValue(probeconfig.AnnotationRewriteVersion, probeconfig.RewriteVersion))
+	})
+
+	It("rewrites probes of a Pod whose eth0 is on an L2Network of a custom Vpc", func() {
+		l2Name := createPodWebhookGatewayL2Network(customSubnetFixture().Spec.Vpc)
+		fetched := createProbeTestPod(map[string]string{
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(`[{"interface":"eth0","l2Network":%q}]`, l2Name),
+		})
+
+		Expect(fetched.Spec.Containers[0].ReadinessProbe.HTTPGet.Host).To(Equal("127.0.0.1"))
+		Expect(fetched.Annotations).To(HaveKeyWithValue(probeconfig.AnnotationRewriteVersion, probeconfig.RewriteVersion))
+	})
+
+	It("rewrites probes of a Pod whose eth0 network does not exist yet", func() {
+		fetched := createProbeTestPod(map[string]string{
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(`[{"interface":"eth0","l2Network":%q}]`, webhookUniqueTestName("missing-l2net")),
+		})
+
+		Expect(fetched.Spec.Containers[0].ReadinessProbe.HTTPGet.Host).To(Equal("127.0.0.1"))
+		Expect(fetched.Annotations).To(HaveKeyWithValue(probeconfig.AnnotationRewriteVersion, probeconfig.RewriteVersion))
+	})
+
+	It("leaves probes of a Pod whose eth0 carries an ElasticIP to kubelet", func() {
+		fetched := createProbeTestPod(map[string]string{
+			juneauv1alpha1.PodAnnotationElasticIP: webhookUniqueTestName("probe-eip"),
+		})
+
+		Expect(fetched.Spec.Containers[0].ReadinessProbe.HTTPGet.Host).To(BeEmpty())
+		Expect(fetched.Annotations).NotTo(HaveKey(probeconfig.AnnotationRewriteVersion))
+	})
+
+	It("leaves probes of a Pod with a custom extra NIC but eth0 on the default Subnet to kubelet", func() {
+		extra := customSubnetFixture()
+		fetched := createProbeTestPod(map[string]string{
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(`[{"interface":"eth1","subnet":%q}]`, extra.Name),
+		})
+
+		Expect(fetched.Spec.Containers[0].ReadinessProbe.HTTPGet.Host).To(BeEmpty())
+		Expect(fetched.Annotations).NotTo(HaveKey(probeconfig.AnnotationRewriteVersion))
 	})
 })
 

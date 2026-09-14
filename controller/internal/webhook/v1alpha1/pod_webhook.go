@@ -65,7 +65,7 @@ var podlog = logf.Log.WithName("pod-resource")
 //   - PodProbeDefaulter (mutating): routes kubelet network probes through
 //     the node-local Juneau probe proxy for overlapping custom VPC
 //     addresses. When enabled, it has a separate fail-closed handler scoped
-//     to custom Subnet Pods.
+//     to Pods whose eth0 may be on a custom Vpc network.
 //
 // All three use the same API reader. Probe rewriting is registered on a
 // distinct path; DNS mutation and SecurityGroup validation retain their
@@ -87,7 +87,8 @@ func SetupPodWebhookWithManager(mgr ctrl.Manager, enableProbeRewrite bool, probe
 
 // PodDNSDefaulter is the CustomDefaulter that rewrites a Pod's
 // dnsPolicy / dnsConfig to point at the per-Subnet virtual DNS
-// resolver. It runs only on CREATE; once a Pod exists the kubelet
+// resolver. A Pod whose eth0 is not on a Subnet gets dnsPolicy Default
+// instead. It runs only on CREATE; once a Pod exists the kubelet
 // will never read its dnsConfig again so re-injecting on UPDATE is
 // pointless and would surprise users who deliberately changed it.
 type PodDNSDefaulter struct {
@@ -128,10 +129,11 @@ func (d *PodDNSDefaulter) Default(ctx context.Context, obj runtime.Object) error
 	if err != nil {
 		return err
 	}
-	subnetName := primary.Subnet
-	if subnetName == "" {
+	if podnetwork.AttachmentReference(pod.Namespace, primary).Kind() != podnetwork.KindSubnet {
+		defaultDNSPolicyOutsideVpcDNS(pod)
 		return nil
 	}
+	subnetName := primary.Subnet
 
 	var subnet juneauv1alpha1.Subnet
 	if err := d.Get(ctx, client.ObjectKey{Name: subnetName}, &subnet); err != nil {
@@ -164,6 +166,18 @@ func (d *PodDNSDefaulter) Default(ctx context.Context, obj runtime.Object) error
 	pod.Spec.DNSPolicy = corev1.DNSNone
 	pod.Spec.DNSConfig = mergeDNSConfig(pod.Spec.DNSConfig, subnet.Status.DNS, pod.Namespace)
 	return nil
+}
+
+// defaultDNSPolicyOutsideVpcDNS sends a Pod whose eth0 is not on a Subnet
+// to the resolver of its node. Such an eth0 carries an ElasticIP or sits on
+// an L2Network, and reaches neither the cluster DNS Service ClusterFirst
+// points at nor a per-Subnet DNS VIP. Any other dnsPolicy was chosen on
+// purpose and is left alone.
+func defaultDNSPolicyOutsideVpcDNS(pod *corev1.Pod) {
+	switch pod.Spec.DNSPolicy {
+	case "", corev1.DNSClusterFirst:
+		pod.Spec.DNSPolicy = corev1.DNSDefault
+	}
 }
 
 // mergeDNSConfig returns a *corev1.PodDNSConfig that points at the
