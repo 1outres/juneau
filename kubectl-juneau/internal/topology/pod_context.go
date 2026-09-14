@@ -134,6 +134,17 @@ func buildInterfaceContext(ctx context.Context, v View, nic *juneauv1alpha1.Netw
 		ic.SecurityGroups = append(ic.SecurityGroups, summariseSecurityGroup(sg))
 	}
 
+	// Admission never lets an ElasticIPAttachment target a NIC that
+	// carries an ElasticIP, so such a NIC has no NAT use to look up.
+	if nic.Spec.ElasticIP != "" {
+		elasticIP, err := v.ElasticIP(ctx, nic.Namespace, nic.Spec.ElasticIP)
+		if err != nil {
+			return ic, err
+		}
+		ic.DirectElasticIP = elasticIP
+		return ic, nil
+	}
+
 	// ElasticIP: take the first attachment that targets this NIC. Two
 	// is unusual (and would be webhook-rejected today) but if it
 	// happens we surface only the first to keep the tree readable.

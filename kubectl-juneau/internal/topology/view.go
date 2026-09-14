@@ -52,7 +52,7 @@ type View interface {
 	NetworkInterfacesBySubnet(ctx context.Context, subnet string) ([]juneauv1alpha1.NetworkInterface, error)
 
 	ElasticIPAttachmentsForNIC(ctx context.Context, nicName string) ([]juneauv1alpha1.ElasticIPAttachment, error)
-	ElasticIP(ctx context.Context, name string) (*juneauv1alpha1.ElasticIP, error)
+	ElasticIP(ctx context.Context, ns, name string) (*juneauv1alpha1.ElasticIP, error)
 
 	// ServiceLoadBalancer returns the SLB resource that fronts a
 	// Juneau-managed LoadBalancer Service. The SLB name is the same

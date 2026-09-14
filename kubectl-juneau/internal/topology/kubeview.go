@@ -481,9 +481,9 @@ func (v *kubeView) ElasticIPAttachmentsForNIC(ctx context.Context, nicName strin
 	return out, nil
 }
 
-func (v *kubeView) ElasticIP(ctx context.Context, name string) (*juneauv1alpha1.ElasticIP, error) {
+func (v *kubeView) ElasticIP(ctx context.Context, ns, name string) (*juneauv1alpha1.ElasticIP, error) {
 	var obj juneauv1alpha1.ElasticIP
-	if err := v.cl.Get(ctx, client.ObjectKey{Name: name}, &obj); err != nil {
+	if err := v.cl.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &obj); err != nil {
 		return nil, ignoreNotFound(err)
 	}
 	return &obj, nil
