@@ -268,6 +268,10 @@ func (c *CNIServer) attachPodInterface(
 	if err != nil {
 		return nil, err
 	}
+	endpointNetwork, err := c.podEndpointNetwork(ctx, nwiface)
+	if err != nil {
+		return nil, err
+	}
 
 	// A NIC on an L2Network without a CIDR carries no address. It still
 	// gets a veth, and the L2 data plane still forwards its frames; what
@@ -341,8 +345,6 @@ func (c *CNIServer) attachPodInterface(
 				UID:       podUID,
 			},
 			NodeName:   nwiface.Spec.NodeName,
-			Subnet:     nwiface.Spec.Subnet,
-			L2Network:  nwiface.Spec.L2Network,
 			Address:    nwiface.Status.Address,
 			MACAddress: peerHWAddr.String(),
 			Attachment: &juneauv1alpha1.NetworkEndpointAttachment{
@@ -353,6 +355,7 @@ func (c *CNIServer) attachPodInterface(
 		},
 		Status: juneauv1alpha1.NetworkEndpointStatus{},
 	}
+	endpointNetwork.applyTo(&nwep.Spec)
 
 	createdByUs, err := c.upsertNetworkEndpoint(ctx, nwep, podUID)
 	if err != nil {
@@ -925,11 +928,12 @@ func (c *CNIServer) createVethPair(veth *netlink.Veth) error {
 // upsertNetworkEndpoint creates the NetworkEndpoint resource, or when a
 // record with the same key already exists (e.g. ADD retried after a crash
 // or a sandbox recreation with the same Pod UID) refreshes its attachment
-// generation in place. Identity fields (kind, nodeName, subnet, address,
-// podRef) are immutable and describe who the endpoint is. MACAddress and
-// Attachment (ifindex, host MAC, CNI container ID) belong to the sandbox
-// generation and are refreshed together. A UID mismatch indicates a stale
-// record for a different pod and is reported as a hard error.
+// generation in place. Identity fields (kind, nodeName, subnet, l2Network,
+// externalNetwork, address, podRef) are immutable and describe who the
+// endpoint is. MACAddress and Attachment (ifindex, host MAC, CNI container
+// ID) belong to the sandbox generation and are refreshed together. A UID
+// mismatch indicates a stale record for a different pod and is reported as
+// a hard error.
 //
 // A concurrent DEL of the previous sandbox can remove the record between
 // the create and the read, and a concurrent write can move it between the
