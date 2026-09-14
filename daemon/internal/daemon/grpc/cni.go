@@ -278,6 +278,11 @@ func (c *CNIServer) attachPodInterface(
 		zap.L().Error("failed to read the addressing of a NIC", zap.Error(err))
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to read the addressing of a NIC", err.Error())
 	}
+	routeFromHost, err := hostRouteToPod(nwiface)
+	if err != nil {
+		zap.L().Error("failed to read the host route of a NIC", zap.Error(err))
+		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to read the host route of a NIC", err.Error())
+	}
 
 	vethHost, peerHWAddr, err := c.createPodVeth(ifname, index, req, netns, mtu, undo)
 	if err != nil {
@@ -298,6 +303,14 @@ func (c *CNIServer) attachPodInterface(
 	}); err != nil {
 		zap.L().Error("failed to configure interface in netns", zap.Error(err))
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to configure interface in netns", err.Error())
+	}
+
+	if routeFromHost != nil {
+		if err := installHostRouteToPod(routeFromHost, vethHost.Index); err != nil {
+			zap.L().Error("failed to add the host route to a NIC", zap.Error(err))
+			return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to add the host route to a NIC", err.Error())
+		}
+		undo.push(func() { c.cleanupHostRoute(routeFromHost, vethHost.Index) })
 	}
 
 	hostRefreshed, err := netlink.LinkByIndex(vethHost.Index)
@@ -553,7 +566,18 @@ func (c *CNIServer) Check(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.
 			return nil, makeError(cnipb.ErrorCode_INTERNAL, "Failed to lookup host-side veth", err.Error())
 		}
 
-		// 4. Pod netns still has the expected interface, carrying the
+		// 4. The node still routes to the pod where the NIC needs it.
+		routeFromHost, err := hostRouteToPod(nwif)
+		if err != nil {
+			return nil, makeError(cnipb.ErrorCode_INTERNAL, "Failed to read the host route of a NIC", err.Error())
+		}
+		if routeFromHost != nil {
+			if err := verifyHostRouteToPod(routeFromHost, hostName); err != nil {
+				return nil, makeError(cnipb.ErrorCode_INTERNAL, "host route to the pod missing", err.Error())
+			}
+		}
+
+		// 5. Pod netns still has the expected interface, carrying the
 		// expected IP where the network hands one out.
 		if err := c.verifyPodInterface(req.Netns, ifname, nwif.Status.Address); err != nil {
 			return nil, err
@@ -674,6 +698,10 @@ func (c *CNIServer) Del(ctx context.Context, req *cnipb.CNIRequest) (*emptypb.Em
 // with them. Every name a link is deleted under is rebuilt from the
 // container ID of this very request, so a stale DEL can only ever take
 // down links of its own sandbox.
+//
+// The host routes through a veth go first. The kernel would drop them with
+// the link anyway, but taking them down by the veth they leave through is
+// what keeps a route that moved to a newer sandbox standing.
 func (c *CNIServer) deleteSandboxVeths(containerID string) error {
 	links, err := netlink.LinkList()
 	if err != nil {
@@ -683,6 +711,9 @@ func (c *CNIServer) deleteSandboxVeths(containerID string) error {
 		name := link.Attrs().Name
 		if !isSandboxVethName(name, containerID) {
 			continue
+		}
+		if err := removeHostRoutesVia(link); err != nil {
+			return err
 		}
 		if err := netlink.LinkDel(link); err != nil {
 			if errors.Is(err, syscall.ENODEV) {
@@ -987,6 +1018,15 @@ func (c *CNIServer) cleanupVeth(name string) {
 		return
 	}
 	zap.S().Debugf("rollback: deleted veth %s", name)
+}
+
+// cleanupHostRoute best-effort deletes the host route an ADD added.
+func (c *CNIServer) cleanupHostRoute(route *hostRoute, hostIfindex int) {
+	if err := removeHostRouteToPod(route, hostIfindex); err != nil {
+		zap.S().Warnf("rollback: %v", err)
+		return
+	}
+	zap.S().Debugf("rollback: deleted host route %s", route)
 }
 
 // cleanupPodRules best-effort deletes the policy routing rules an ADD
