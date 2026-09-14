@@ -27,13 +27,13 @@ func newBgpPool(t *testing.T, objs []runtime.Object) (*BgpPool, *fakeBpfMap) {
 	t.Helper()
 	cl := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithRuntimeObjects(objs...).Build()
 	poolMap := newFakeBpfMap()
-	return NewBgpPool(cl, ownedaddr.NewStore(poolMap)), poolMap
+	return NewBgpPool(cl, ownedaddr.NewStore(poolMap), "node-a"), poolMap
 }
 
-func prefixStrings(keys []ownedaddr.Key) []string {
-	out := make([]string, 0, len(keys))
-	for _, key := range keys {
-		out = append(out, key.String())
+func claimStrings(claims []ownedaddr.Claim) []string {
+	out := make([]string, 0, len(claims))
+	for _, claim := range claims {
+		out = append(out, claim.Key.String()+" "+claim.Delivery.String())
 	}
 	sort.Strings(out)
 	return out
@@ -56,6 +56,16 @@ func newBgpTestAdvertisement(name string, pools ...string) *juneauv1alpha1.BGPAd
 	}
 }
 
+// newBgpTestPinnedAdvertisement is an advertisement one node makes by
+// itself, the way the ExternalNetworkAttachment controller advertises the
+// NAPT address of a node.
+func newBgpTestPinnedAdvertisement(name, nodeName, prefix string, pools ...string) *juneauv1alpha1.BGPAdvertisement {
+	adv := newBgpTestAdvertisement(name, pools...)
+	adv.Spec.NodeName = nodeName
+	adv.Spec.Prefix = prefix
+	return adv
+}
+
 func TestBgpPool_BuildDesired(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -70,7 +80,7 @@ func TestBgpPool_BuildDesired(t *testing.T) {
 				newBgpTestPool("arp", juneauv1alpha1.AddressPoolAdvertiseModeARP, "10.2.0.0/24"),
 				newBgpTestAdvertisement("adv", "bgp", "arp"),
 			},
-			wantCanon:    []string{"10.1.0.0/24", "192.168.1.1/32"},
+			wantCanon:    []string{"10.1.0.0/24 here", "192.168.1.1/32 here"},
 			wantWarnRegx: []string{"advertiseMode"},
 		},
 		{
@@ -94,7 +104,7 @@ func TestBgpPool_BuildDesired(t *testing.T) {
 				newBgpTestPool("bgp", juneauv1alpha1.AddressPoolAdvertiseModeBGP, "bogus", "10.4.0.0/24"),
 				newBgpTestAdvertisement("adv", "bgp"),
 			},
-			wantCanon:    []string{"10.4.0.0/24"},
+			wantCanon:    []string{"10.4.0.0/24 here"},
 			wantWarnRegx: []string{"invalid address"},
 		},
 		{
@@ -104,7 +114,42 @@ func TestBgpPool_BuildDesired(t *testing.T) {
 				newBgpTestPool("b", juneauv1alpha1.AddressPoolAdvertiseModeBGP, "10.5.0.0/24"),
 				newBgpTestAdvertisement("adv", "a", "b"),
 			},
-			wantCanon: []string{"10.5.0.0/24"},
+			wantCanon: []string{"10.5.0.0/24 here"},
+		},
+		{
+			name: "an advertisement pinned to this node is delivered here",
+			objs: []runtime.Object{
+				newBgpTestPool("nat", juneauv1alpha1.AddressPoolAdvertiseModeBGP, "10.6.0.0/24"),
+				newBgpTestPinnedAdvertisement("ena-a", "node-a", "10.6.0.10/32", "nat"),
+			},
+			wantCanon: []string{"10.6.0.0/24 here"},
+		},
+		{
+			name: "the prefix of an advertisement pinned to another node is delivered elsewhere",
+			objs: []runtime.Object{
+				newBgpTestPool("nat", juneauv1alpha1.AddressPoolAdvertiseModeBGP, "10.6.0.0/24"),
+				newBgpTestPinnedAdvertisement("ena-a", "node-a", "10.6.0.10/32", "nat"),
+				newBgpTestPinnedAdvertisement("ena-b", "node-b", "10.6.0.20/32", "nat"),
+			},
+			wantCanon: []string{"10.6.0.0/24 here", "10.6.0.20/32 elsewhere"},
+		},
+		{
+			name: "a pool only another node advertises is delivered elsewhere",
+			objs: []runtime.Object{
+				newBgpTestPool("nat", juneauv1alpha1.AddressPoolAdvertiseModeBGP, "10.6.0.0/24"),
+				newBgpTestPinnedAdvertisement("ena-b", "node-b", "", "nat"),
+			},
+			wantCanon: []string{"10.6.0.0/24 elsewhere"},
+		},
+		{
+			name: "a pool advertised by every node stays here beside another node's own prefix",
+			objs: []runtime.Object{
+				newBgpTestPool("nat", juneauv1alpha1.AddressPoolAdvertiseModeBGP, "10.6.0.0/24"),
+				newBgpTestAdvertisement("adv", "nat"),
+				newBgpTestPinnedAdvertisement("ena-b", "node-b", "10.6.0.20/32", "nat"),
+				newBgpTestPinnedAdvertisement("all-b", "node-b", "", "nat"),
+			},
+			wantCanon: []string{"10.6.0.0/24 here", "10.6.0.20/32 elsewhere"},
 		},
 	}
 
@@ -116,7 +161,7 @@ func TestBgpPool_BuildDesired(t *testing.T) {
 				t.Fatalf("buildDesired: %v", err)
 			}
 
-			gotCanon := prefixStrings(desired)
+			gotCanon := claimStrings(desired)
 			want := append([]string{}, tt.wantCanon...)
 			sort.Strings(want)
 			if len(gotCanon) != len(want) || (len(gotCanon) > 0 && !reflect.DeepEqual(gotCanon, want)) {
@@ -187,7 +232,7 @@ func TestBgpPool_ReconcileKeepsPrefixClaimedByNapt(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithRuntimeObjects(objs...).Build()
 	poolMap := newFakeBpfMap()
 	store := ownedaddr.NewStore(poolMap)
-	r := NewBgpPool(cl, store)
+	r := NewBgpPool(cl, store, "node-a")
 
 	naptClaim, err := ownedaddr.ParsePrefix("192.0.2.5")
 	if err != nil {

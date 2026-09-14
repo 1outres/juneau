@@ -71,3 +71,26 @@ func TestAHairpinReachesADirectElasticIPOnTheSameNodeThroughNodeIngress(t *testi
 		t.Errorf("the uplink sent %d frames, want the packet kept on the node", got)
 	}
 }
+
+// The NAPT address of another node is in a pool this node advertises too,
+// but that node also advertises the address by itself, and the router
+// sends the reply of its NATGateway flow there. Handing it to node_ingress
+// here would drop it, since the flow lives on the other node: it leaves
+// through the host like any other destination.
+func TestPodEgressSendsWhatANICOnAnElasticIPSendsToAnotherNodesOwnPrefixOutOfTheNode(t *testing.T) {
+	node := newExternalNode(t)
+	web := node.addLocalNIC(t, "web", webElasticIP, webPodMAC, webHostMAC)
+	node.claimPool(t, "198.51.100.64/26")
+	node.claimElsewhere(t, "198.51.100.70/32")
+
+	frame := bpftest.Frame(t, webHostMAC, webPodMAC, bpftest.EtherTypeIPv4,
+		bpftest.TCPv4(t, webElasticIP, "198.51.100.70", 443, 40000))
+	verdict, out := bpftest.RunFrame(t, node.podEgress.Objs.TcPodEgress, frame, web.veth)
+
+	if verdict != bpftest.ActRedirect {
+		t.Fatalf("verdict %d, want the packet sent out of the uplink (%d)", verdict, bpftest.ActRedirect)
+	}
+	if got := net.HardwareAddr(out[0:6]); got.String() != routerMAC.String() {
+		t.Errorf("the packet leaves for %s, want the router %s", got, routerMAC)
+	}
+}

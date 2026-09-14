@@ -140,3 +140,15 @@ func TestVxlanIngressKeepsADirectElasticIPOnItsOwnNetwork(t *testing.T) {
 		t.Errorf("the veth was handed %d frames, want only the one on its own network", got)
 	}
 }
+
+// A prefix another node advertises by itself is still juneau's on this
+// node: a packet for it that lands here is handled and dropped as before,
+// not handed to the host stack.
+func TestNodeIngressStillHandlesAPrefixDeliveredToAnotherNode(t *testing.T) {
+	node := newExternalNode(t)
+	node.claimElsewhere(t, "198.51.100.70/32")
+
+	if verdict := bpftest.Run(t, node.nodeIngress.Objs.TcNodeIngress, inbound(t, "198.51.100.70"), node.uplink); verdict != bpftest.ActShot {
+		t.Fatalf("verdict %d, want a drop (%d)", verdict, bpftest.ActShot)
+	}
+}

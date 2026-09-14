@@ -658,8 +658,18 @@ struct external_address_pools_key {
 // the destination address and handles the packet itself, a miss means
 // the packet belongs to the host stack and is passed through. It is
 // not tied to BGP. Every way juneau claims an external address (BGP
-// advertisement, per-node NAPT address, ARP advertisement) writes this
-// same map.
+// advertisement, per-node NAPT address, ARP advertisement, an ElasticIP
+// a Pod NIC carries directly) writes this same map.
+//
+// The value says which node the network delivers the prefix to, and
+// must match ownedaddr.Delivery. node_ingress handles either kind the
+// same. pod_egress only hands a packet for a prefix delivered here to
+// node_ingress: one another node advertises by itself, such as the NAPT
+// address of that node, is routed out of this one.
+#define EXTERNAL_ADDRESS_UNCLAIMED 0
+#define EXTERNAL_ADDRESS_DELIVERED_HERE 1
+#define EXTERNAL_ADDRESS_DELIVERED_ELSEWHERE 2
+
 struct {
   __uint(type, BPF_MAP_TYPE_LPM_TRIE);
   __uint(max_entries, MAX_ADDRESS_POOLS_MAP);

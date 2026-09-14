@@ -445,7 +445,7 @@ handle_external_nic(struct __sk_buff *skb, struct ethhdr *eth, void *data_end,
   if (iph->saddr != nic->ipv4)
     return TC_ACT_SHOT;
 
-  if (external_address_owned(iph->daddr))
+  if (external_address_claim(iph->daddr) == EXTERNAL_ADDRESS_DELIVERED_HERE)
     return hairpin_to_node_ingress();
 
   return route_external_nic_via_host(skb);

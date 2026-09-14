@@ -739,7 +739,7 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
     // Fall through to external_address_pools below.
   }
 
-  if (!external_address_owned(iph->daddr))
+  if (external_address_claim(iph->daddr) == EXTERNAL_ADDRESS_UNCLAIMED)
     return TC_ACT_OK;
 
   // First try NAPT reverse: ct_map keyed on (HOST, src=internet,

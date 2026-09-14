@@ -363,7 +363,7 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	}
 	m.natRunner.Start(ctx, 1)
 
-	m.bgpPoolRunner = runner.New(reconciler.NewBgpPool(m.client, m.ownedAddresses))
+	m.bgpPoolRunner = runner.New(reconciler.NewBgpPool(m.client, m.ownedAddresses, m.nodeName))
 	bgpPoolKey := runner.ConstantKey(runner.SingletonKey)
 	if err := m.bgpPoolRunner.Watch(m.addressPoolInformer, bgpPoolKey); err != nil {
 		return fmt.Errorf("watch AddressPool: %w", err)

@@ -284,7 +284,7 @@ func registerExternalAddressPools(inv *Inventory, p *program.PodEgress) error {
 			FieldIPv4BENamed("addr"),
 		}},
 		Value: Schema{Fields: []Field{
-			FieldU8Named("present"),
+			FieldEnumNamed("delivery", 1, ExternalAddressDeliveryEnum, "which node the network delivers the prefix to"),
 		}},
 	})
 }

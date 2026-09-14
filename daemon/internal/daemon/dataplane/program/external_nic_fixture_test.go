@@ -263,6 +263,20 @@ func (n *externalNode) claimPool(t *testing.T, prefix string) {
 	}
 }
 
+// claimElsewhere records a prefix another node advertises by itself, the
+// way the bgp-pool reconciler records the NAPT address of another node.
+func (n *externalNode) claimElsewhere(t *testing.T, prefix string) {
+	t.Helper()
+	key, err := ownedaddr.ParsePrefix(prefix)
+	if err != nil {
+		t.Fatalf("parse %s: %v", prefix, err)
+	}
+	claim := ownedaddr.Claim{Key: key, Delivery: ownedaddr.DeliveredElsewhere}
+	if err := n.owned.Scope("bgp-pool").SetClaims("elsewhere "+prefix, []ownedaddr.Claim{claim}); err != nil {
+		t.Fatalf("claim %s for another node: %v", prefix, err)
+	}
+}
+
 func externalEndpoint(nic externalNIC, nodeName string) *juneauv1alpha1.NetworkEndpoint {
 	return &juneauv1alpha1.NetworkEndpoint{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: nic.name + ".eth0"},

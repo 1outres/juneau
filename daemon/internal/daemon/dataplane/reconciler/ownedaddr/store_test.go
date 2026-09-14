@@ -50,6 +50,10 @@ func (m *fakeMap) prefixes() []string {
 	return out
 }
 
+func (m *fakeMap) value(key Key) uint8 {
+	return m.entries[key.bpfKey()]
+}
+
 func mustParse(t *testing.T, raw string) Key {
 	t.Helper()
 	key, err := ParsePrefix(raw)
@@ -227,4 +231,53 @@ func TestStoreRetriesUpdateAfterMapFailure(t *testing.T) {
 		t.Fatalf("Set after recovery: %v", err)
 	}
 	assertPrefixes(t, m, "10.0.0.0/24")
+}
+
+func TestStoreWritesWhichNodeAClaimIsDeliveredTo(t *testing.T) {
+	m := newFakeMap()
+	scope := NewStore(m).Scope("bgp-pool")
+	pool := mustParse(t, "192.0.2.0/24")
+	foreign := mustParse(t, "192.0.2.20/32")
+
+	if err := scope.SetClaims("pools", []Claim{
+		{Key: pool, Delivery: DeliveredHere},
+		{Key: foreign, Delivery: DeliveredElsewhere},
+	}); err != nil {
+		t.Fatalf("SetClaims: %v", err)
+	}
+
+	if got := m.value(pool); got != uint8(DeliveredHere) {
+		t.Errorf("value of %s = %d, want %d", pool, got, DeliveredHere)
+	}
+	if got := m.value(foreign); got != uint8(DeliveredElsewhere) {
+		t.Errorf("value of %s = %d, want %d", foreign, got, DeliveredElsewhere)
+	}
+}
+
+// Two nodes may advertise the same prefix by themselves. This node claims
+// it as its own and sees the other node's claim too, and the network
+// delivers the prefix here either way.
+func TestStoreLetsAClaimDeliveredHereWinTheSamePrefix(t *testing.T) {
+	m := newFakeMap()
+	store := NewStore(m)
+	bgp := store.Scope("bgp-pool")
+	napt := store.Scope("napt")
+	shared := mustParse(t, "192.0.2.20/32")
+
+	if err := bgp.SetClaims("pools", []Claim{{Key: shared, Delivery: DeliveredElsewhere}}); err != nil {
+		t.Fatalf("SetClaims bgp-pool: %v", err)
+	}
+	if err := napt.Set("attachment-a", []Key{shared}); err != nil {
+		t.Fatalf("Set napt: %v", err)
+	}
+	if got := m.value(shared); got != uint8(DeliveredHere) {
+		t.Fatalf("value with both claims = %d, want %d", got, DeliveredHere)
+	}
+
+	if err := napt.Release("attachment-a"); err != nil {
+		t.Fatalf("Release napt: %v", err)
+	}
+	if got := m.value(shared); got != uint8(DeliveredElsewhere) {
+		t.Errorf("value after the claim delivered here is gone = %d, want %d", got, DeliveredElsewhere)
+	}
 }
