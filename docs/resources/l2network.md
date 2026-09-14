@@ -46,7 +46,7 @@ gatewayを書くと、全Nodeにルータのポートが1つずつ立ちます�
 
 gatewayを書くと、そのCIDR宛の経路がVpcの全RouteTableに自動で入ります。Subnetのconnected routeと同じ扱いです。
 
-gatewayを跨ぐ先には、同じVpcのSubnet、NATGateway経由の外部、ClusterIP Serviceが含まれます。Podの中で、その宛先をgatewayへ向ける経路を足してください。JuneauがPodに入れる経路は1枚目のNICのデフォルトルートだけです。
+gatewayを跨ぐ先には、同じVpcのSubnet、NATGateway経由の外部、ClusterIP Serviceが含まれます。追加NICの場合は、Podの中でその宛先をgatewayへ向ける経路を足してください。JuneauがPodのmainテーブルに入れる経路は1枚目のNICのデフォルトルートだけです。eth0をL2Networkに置いた場合は、そのデフォルトルートがgatewayを向きます。
 
 `spec.gateway` は作成後にも変更することができます。ただし、そのアドレスを既にワークロードが持っている場合は拒否されます。`computeL2NetworkExcluded` はプールからの払い出しを止めるだけで、配ってしまったアドレスを取り返しません。別のアドレスを `spec.gateway.address` に書くか、持っているワークロードを消してから足してください。
 
@@ -98,7 +98,7 @@ L2NetworkのVNIは、Subnetと同じ `subnet-vni` AllocationPoolから払い出�
 
 ## Podへの接続
 
-L2Networkは、追加NICとしてPodに接続します。`juneau.loutres.me/networks` アノテーションのエントリで `l2Network` を指定してください。
+L2NetworkをPodに接続するには、`juneau.loutres.me/networks` アノテーションのエントリで `l2Network` を指定してください。
 
 ```yaml
 annotations:
@@ -109,13 +109,31 @@ annotations:
     ]
 ```
 
-1つのエントリに `subnet` と `l2Network` の両方を書くことはできません。どちらか一方が必要です。
-
-eth0にL2Networkを指定することはできません。`juneau.loutres.me/subnet` はSubnet名だけを受け付けます。
+1つのエントリに書けるのは `subnet`、`l2Network`、`elasticIP` のうち1つだけです。どれか1つが必要です。
 
 `spec.cidr` を持たないL2NetworkのNICにはIPが載りません。追加NICなら、アドレスが無いままvethが作られて通信することができます。アドレスはPodの中で自分で振るか、セグメントに置いたDHCPサーバから受け取ってください。
 
-eth0だけは例外です。コンテナランタイムはCNIの結果のeth0にアドレスが1つも無いとsandboxの作成を失敗させるので、`spec.cidr` を持たないL2NetworkはPodの1枚目のNICには使えません。
+### eth0をL2Networkに置く
+
+`networks` に `interface: eth0` のエントリを書くと、eth0をL2Networkに置くことができます。`juneau.loutres.me/subnet` はSubnet名だけを受け付けるので、eth0のL2Networkはこの書き方でしか指定できません。
+
+```yaml
+annotations:
+  juneau.loutres.me/networks: |
+    [
+      {"interface": "eth0", "l2Network": "lab-net"}
+    ]
+```
+
+eth0に使えるのは、`spec.cidr` と `spec.gateway` の両方を持つL2Networkだけです。どちらかが無いとPodの作成が拒否されます。コンテナランタイムはCNIの結果のeth0にアドレスが1つも無いとsandboxの作成を失敗させるので `spec.cidr` が要り、Podのデフォルトルートの行き先として `spec.gateway` が要ります。
+
+eth0をL2Networkに置いたPodは、SubnetのPodと次の点が違います。
+
+- dnsPolicyが `Default` になります。L2NetworkはSubnetのような仮想DNSを持たないからです。PodはNodeの `resolv.conf` のDNSサーバを使うので、gatewayの先からそのサーバに届く経路(NATGatewayなど)が要ります
+- NodeからPodへの経路は作りません。Vpc同士はアドレスが重なってよいので、Nodeに経路を入れるとVpc同士でぶつかるからです。kubeletのhttpGetやtcpSocketのプローブを使うなら、custom VpcのSubnetと同じく、controllerの `--enable-probe-rewrite` でプローブの書き換えを有効にしてください
+- ServiceやServiceLoadBalancerのバックエンドにはなれません。ClusterIP Serviceへgatewayを跨いで行くことはできます
+
+詳しくは[PodにNICを追加する](../guides/multi-nic-pod.md)を参照してください。
 
 ## 転送
 
