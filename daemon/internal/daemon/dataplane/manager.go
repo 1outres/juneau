@@ -62,29 +62,30 @@ type Manager struct {
 	vpcEndpointInformer               cache.Informer
 	l2NetworkInformer                 cache.Informer
 
-	subnetRunner       *runner.Runner
-	arpRunner          *runner.Runner
-	fdbRunner          *runner.Runner
-	podIfaceRunner     *runner.Runner
-	podAttacherRunner  *runner.Runner
-	fibRunner          *runner.Runner
-	tgwFibRunner       *runner.Runner
-	natRunner          *runner.Runner
-	bgpPoolRunner      *runner.Runner
-	serviceRunner      *runner.Runner
-	vpcEndpointRunner  *runner.Runner
-	naptRunner         *runner.Runner
-	externalArpRunner  *runner.Runner
-	serviceNATRunner   *runner.Runner
-	sgRunner           *runner.Runner
-	sgMembershipRunner *runner.Runner
-	aclRunner          *runner.Runner
-	traceRunner        *runner.Runner
-	nodeUnderlayRunner *runner.Runner
-	l2NetworkRunner    *runner.Runner
-	l2PortRunner       *runner.Runner
-	l2GatewayRunner    *runner.Runner
-	l2ArpRunner        *runner.Runner
+	subnetRunner          *runner.Runner
+	arpRunner             *runner.Runner
+	fdbRunner             *runner.Runner
+	podIfaceRunner        *runner.Runner
+	podAttacherRunner     *runner.Runner
+	fibRunner             *runner.Runner
+	tgwFibRunner          *runner.Runner
+	natRunner             *runner.Runner
+	bgpPoolRunner         *runner.Runner
+	serviceRunner         *runner.Runner
+	vpcEndpointRunner     *runner.Runner
+	naptRunner            *runner.Runner
+	externalArpRunner     *runner.Runner
+	elasticIPDirectRunner *runner.Runner
+	serviceNATRunner      *runner.Runner
+	sgRunner              *runner.Runner
+	sgMembershipRunner    *runner.Runner
+	aclRunner             *runner.Runner
+	traceRunner           *runner.Runner
+	nodeUnderlayRunner    *runner.Runner
+	l2NetworkRunner       *runner.Runner
+	l2PortRunner          *runner.Runner
+	l2GatewayRunner       *runner.Runner
+	l2ArpRunner           *runner.Runner
 
 	serviceLoadBalancerInformer cache.Informer
 	serviceLBProgrammer         servicelbreconciler.Programmer
@@ -101,9 +102,10 @@ type Manager struct {
 	aclStore        *policy.ACLStore
 	membershipStore *policy.MembershipStore
 
-	napt           *reconciler.Napt
-	externalArp    *reconciler.ExternalArp
-	ownedAddresses *ownedaddr.Store
+	napt            *reconciler.Napt
+	externalArp     *reconciler.ExternalArp
+	elasticIPDirect *reconciler.ElasticIPDirect
+	ownedAddresses  *ownedaddr.Store
 
 	juNodeUnderlayIP net.IP
 
@@ -426,6 +428,18 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 		}
 		m.externalArpRunner.Start(ctx, 1)
 	}
+
+	m.elasticIPDirect = reconciler.NewElasticIPDirect(m.client, m.podEgress, m.ownedAddresses)
+	m.elasticIPDirectRunner = runner.New(m.elasticIPDirect)
+	if err := m.elasticIPDirectRunner.Watch(m.nwepInformer, runner.MetaNamespaceKey); err != nil {
+		return fmt.Errorf("watch NWEP (elastic-ip-direct): %w", err)
+	}
+	if m.externalNetworkInformer != nil {
+		if err := m.elasticIPDirectRunner.WatchFanOut(m.externalNetworkInformer, m.elasticIPDirect.FanOutExternalNetworkToEndpoints); err != nil {
+			return fmt.Errorf("watch ExternalNetwork (elastic-ip-direct fan-out): %w", err)
+		}
+	}
+	m.elasticIPDirectRunner.Start(ctx, 1)
 
 	if m.serviceNATAttachmentInformer != nil {
 		serviceNAT := reconciler.NewServiceNAT(m.client, m.podEgress, m.nodeName)
@@ -911,6 +925,11 @@ func (m *Manager) Stop() error {
 			return err
 		}
 	}
+	if m.elasticIPDirect != nil {
+		if err := m.elasticIPDirect.CloseAll(); err != nil {
+			return err
+		}
+	}
 	if m.sgStore != nil {
 		if err := m.sgStore.CloseAll(); err != nil {
 			return err
@@ -957,6 +976,7 @@ func (m *Manager) Stop() error {
 		m.serviceLBRunner,
 		m.naptRunner,
 		m.externalArpRunner,
+		m.elasticIPDirectRunner,
 		m.serviceNATRunner,
 		m.sgRunner,
 		m.sgMembershipRunner,

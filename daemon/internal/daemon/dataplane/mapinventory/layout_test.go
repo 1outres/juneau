@@ -48,6 +48,13 @@ func TestSchemaLayoutMatchesGenerated(t *testing.T) {
 			valueSize: unsafe.Sizeof(bpf.PodEgressIfindexExternalNetworkVal{}),
 		},
 		{
+			name:      "elastic_ip_direct",
+			key:       Schema{Fields: []Field{FieldIPv4Named("addr")}},
+			val:       Schema{Fields: []Field{FieldU32Named("network_id")}},
+			keySize:   unsafe.Sizeof(bpf.PodEgressElasticIpDirectKey{}),
+			valueSize: unsafe.Sizeof(bpf.PodEgressElasticIpDirectVal{}),
+		},
+		{
 			name:      "arp_table",
 			key:       schemaArpKey(),
 			val:       schemaArpVal(),

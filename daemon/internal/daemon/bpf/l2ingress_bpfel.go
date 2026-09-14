@@ -91,6 +91,16 @@ type L2IngressCtVal struct {
 	LastSeenNs   uint64
 }
 
+type L2IngressElasticIpDirectKey struct {
+	_    structs.HostLayout
+	Addr uint32
+}
+
+type L2IngressElasticIpDirectVal struct {
+	_         structs.HostLayout
+	NetworkId uint32
+}
+
 type L2IngressExternalAddressPoolsKey struct {
 	_         structs.HostLayout
 	Prefixlen uint32
@@ -574,6 +584,7 @@ type L2IngressMapSpecs struct {
 	ArpTable               *ebpf.MapSpec `ebpf:"arp_table"`
 	BackendMap             *ebpf.MapSpec `ebpf:"backend_map"`
 	CtMap                  *ebpf.MapSpec `ebpf:"ct_map"`
+	ElasticIpDirect        *ebpf.MapSpec `ebpf:"elastic_ip_direct"`
 	ExternalAddressPools   *ebpf.MapSpec `ebpf:"external_address_pools"`
 	ExternalArpTable       *ebpf.MapSpec `ebpf:"external_arp_table"`
 	Fdb                    *ebpf.MapSpec `ebpf:"fdb"`
@@ -662,6 +673,7 @@ type L2IngressMaps struct {
 	ArpTable               *ebpf.Map `ebpf:"arp_table"`
 	BackendMap             *ebpf.Map `ebpf:"backend_map"`
 	CtMap                  *ebpf.Map `ebpf:"ct_map"`
+	ElasticIpDirect        *ebpf.Map `ebpf:"elastic_ip_direct"`
 	ExternalAddressPools   *ebpf.Map `ebpf:"external_address_pools"`
 	ExternalArpTable       *ebpf.Map `ebpf:"external_arp_table"`
 	Fdb                    *ebpf.Map `ebpf:"fdb"`
@@ -724,6 +736,7 @@ func (m *L2IngressMaps) Close() error {
 		m.ArpTable,
 		m.BackendMap,
 		m.CtMap,
+		m.ElasticIpDirect,
 		m.ExternalAddressPools,
 		m.ExternalArpTable,
 		m.Fdb,

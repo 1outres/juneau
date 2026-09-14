@@ -33,6 +33,7 @@ func RegisterPodEgress(inv *Inventory, p *program.PodEgress) error {
 		registerExternalArp,
 		registerNATSnat,
 		registerNATDnat,
+		registerElasticIPDirect,
 		registerService,
 		registerVpcEndpoint,
 		registerServiceACL,
@@ -330,6 +331,20 @@ func registerNATDnat(inv *Inventory, p *program.PodEgress) error {
 		Value: Schema{Fields: []Field{
 			FieldU32Named("subnet_id"),
 			FieldIPv4Named("addr"),
+		}},
+	})
+}
+
+func registerElasticIPDirect(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name: "elastic_ip_direct",
+		Map:  p.Objs.ElasticIpDirect,
+		Key: Schema{Fields: []Field{
+			// addr writer: convert.IPv4ToUint32 (host-order layout).
+			FieldIPv4Named("addr", "ElasticIP a Pod NIC carries directly"),
+		}},
+		Value: Schema{Fields: []Field{
+			FieldU32Named("network_id", "ExternalNetwork status.networkID"),
 		}},
 	})
 }

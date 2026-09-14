@@ -91,6 +91,16 @@ type L2GatewayCtVal struct {
 	LastSeenNs   uint64
 }
 
+type L2GatewayElasticIpDirectKey struct {
+	_    structs.HostLayout
+	Addr uint32
+}
+
+type L2GatewayElasticIpDirectVal struct {
+	_         structs.HostLayout
+	NetworkId uint32
+}
+
 type L2GatewayExternalAddressPoolsKey struct {
 	_         structs.HostLayout
 	Prefixlen uint32
@@ -574,6 +584,7 @@ type L2GatewayMapSpecs struct {
 	ArpTable               *ebpf.MapSpec `ebpf:"arp_table"`
 	BackendMap             *ebpf.MapSpec `ebpf:"backend_map"`
 	CtMap                  *ebpf.MapSpec `ebpf:"ct_map"`
+	ElasticIpDirect        *ebpf.MapSpec `ebpf:"elastic_ip_direct"`
 	ExternalAddressPools   *ebpf.MapSpec `ebpf:"external_address_pools"`
 	ExternalArpTable       *ebpf.MapSpec `ebpf:"external_arp_table"`
 	Fdb                    *ebpf.MapSpec `ebpf:"fdb"`
@@ -660,6 +671,7 @@ type L2GatewayMaps struct {
 	ArpTable               *ebpf.Map `ebpf:"arp_table"`
 	BackendMap             *ebpf.Map `ebpf:"backend_map"`
 	CtMap                  *ebpf.Map `ebpf:"ct_map"`
+	ElasticIpDirect        *ebpf.Map `ebpf:"elastic_ip_direct"`
 	ExternalAddressPools   *ebpf.Map `ebpf:"external_address_pools"`
 	ExternalArpTable       *ebpf.Map `ebpf:"external_arp_table"`
 	Fdb                    *ebpf.Map `ebpf:"fdb"`
@@ -722,6 +734,7 @@ func (m *L2GatewayMaps) Close() error {
 		m.ArpTable,
 		m.BackendMap,
 		m.CtMap,
+		m.ElasticIpDirect,
 		m.ExternalAddressPools,
 		m.ExternalArpTable,
 		m.Fdb,

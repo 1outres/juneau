@@ -626,6 +626,43 @@ static __always_inline int handle_lb_ingress(struct __sk_buff *skb,
   return handle_lb_dnat_apply(skb, eth, iph, cv, &ck, trace_id);
 }
 
+// handle_elastic_ip_direct delivers a packet for an ElasticIP a Pod NIC
+// carries directly. Nothing is translated: the address is the NIC's own,
+// so only the destination MAC changes, to the NIC found on its
+// ExternalNetwork. forward_l2 then places the frame on the local veth, or
+// sends it over the overlay under the network ID to the node the NIC runs
+// on, where vxlan_ingress hands it to the veth. pod_ingress on that veth
+// writes the source MAC.
+static __always_inline int
+handle_elastic_ip_direct(struct __sk_buff *skb, __be32 daddr,
+                         const struct elastic_ip_direct_val *direct,
+                         __u32 trace_id) {
+  __u32 network_id = direct->network_id;
+  struct arp_table_key ak = {
+      .subnet_id = network_id,
+      .ipaddr = bpf_ntohl(daddr),
+  };
+  const struct arp_table_val *av = bpf_map_lookup_elem(&arp_table, &ak);
+  if (!av) {
+    trace_emit_map_miss_l3(skb, trace_id, TRACE_REASON_MISS_ARP,
+                           TRACE_HOOK_NODE_INGRESS, TRACE_SCOPE_HOST, 0,
+                           network_id, bpf_ntohl(daddr));
+    trace_emit_drop_l3(skb, trace_id, TRACE_REASON_DROP_SHOT,
+                       TRACE_HOOK_NODE_INGRESS, TRACE_SCOPE_HOST, 0,
+                       network_id);
+    return TC_ACT_SHOT;
+  }
+
+  void *data = (void *)(long)skb->data;
+  void *data_end = (void *)(long)skb->data_end;
+  struct ethhdr *eth = data;
+  if ((void *)(eth + 1) > data_end)
+    return TC_ACT_SHOT;
+  __builtin_memcpy(eth->h_dest, av->mac, ETH_ALEN);
+
+  return forward_l2(skb, eth, network_id, trace_id);
+}
+
 static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
                                      __u32 trace_id) {
   void *data_end = (void *)(long)skb->data_end;
@@ -758,16 +795,23 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
       .addr = bpf_ntohl(iph->daddr),
   };
   const struct nat_inside *nv = bpf_map_lookup_elem(&nat_dnat_map, &nk);
-  if (!nv) {
-    trace_emit_map_miss_l3(skb, trace_id, TRACE_REASON_MISS_FIB_ROUTE,
-                           TRACE_HOOK_NODE_INGRESS, TRACE_SCOPE_HOST, 0, 0,
-                           bpf_ntohl(iph->daddr));
-    trace_emit_drop_l3(skb, trace_id, TRACE_REASON_DROP_SHOT,
-                       TRACE_HOOK_NODE_INGRESS, TRACE_SCOPE_HOST, 0, 0);
-    return TC_ACT_SHOT;
-  }
+  if (nv)
+    return handle_dnat(skb, eth, iph, nv, trace_id);
 
-  return handle_dnat(skb, eth, iph, nv, trace_id);
+  struct elastic_ip_direct_key direct_key = {
+      .addr = bpf_ntohl(iph->daddr),
+  };
+  const struct elastic_ip_direct_val *direct =
+      bpf_map_lookup_elem(&elastic_ip_direct, &direct_key);
+  if (direct)
+    return handle_elastic_ip_direct(skb, iph->daddr, direct, trace_id);
+
+  trace_emit_map_miss_l3(skb, trace_id, TRACE_REASON_MISS_FIB_ROUTE,
+                         TRACE_HOOK_NODE_INGRESS, TRACE_SCOPE_HOST, 0, 0,
+                         bpf_ntohl(iph->daddr));
+  trace_emit_drop_l3(skb, trace_id, TRACE_REASON_DROP_SHOT,
+                     TRACE_HOOK_NODE_INGRESS, TRACE_SCOPE_HOST, 0, 0);
+  return TC_ACT_SHOT;
 }
 
 static __always_inline int handle_external_arp(struct __sk_buff *skb,

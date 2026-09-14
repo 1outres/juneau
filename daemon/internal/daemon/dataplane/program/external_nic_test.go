@@ -95,7 +95,6 @@ func TestPodEgressDropsEveryOtherARPOfANICOnAnElasticIP(t *testing.T) {
 // hop the host FIB names.
 func TestPodEgressRoutesWhatANICOnAnElasticIPSendsThroughTheHost(t *testing.T) {
 	node := newExternalNode(t)
-	node.addUplink(t)
 	web := node.addLocalNIC(t, "web", webElasticIP, webPodMAC, webHostMAC)
 
 	frame := bpftest.Frame(t, webHostMAC, webPodMAC, bpftest.EtherTypeIPv4,
@@ -121,7 +120,6 @@ func TestPodEgressRoutesWhatANICOnAnElasticIPSendsThroughTheHost(t *testing.T) {
 // host FIB does not forward that, and the node's own stack has to have it.
 func TestPodEgressHandsWhatANICOnAnElasticIPSendsToTheNodeToTheKernel(t *testing.T) {
 	node := newExternalNode(t)
-	node.addUplink(t)
 	web := node.addLocalNIC(t, "web", webElasticIP, webPodMAC, webHostMAC)
 
 	reply := bpftest.Frame(t, webHostMAC, webPodMAC, bpftest.EtherTypeIPv4,
@@ -137,7 +135,6 @@ func TestPodEgressHandsWhatANICOnAnElasticIPSendsToTheNodeToTheKernel(t *testing
 // stands.
 func TestPodEgressDropsWhatANICOnAnElasticIPSendsFromAnotherAddress(t *testing.T) {
 	node := newExternalNode(t)
-	node.addUplink(t)
 	web := node.addLocalNIC(t, "web", webElasticIP, webPodMAC, webHostMAC)
 
 	for name, destination := range map[string]string{

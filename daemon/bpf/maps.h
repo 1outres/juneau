@@ -707,6 +707,29 @@ struct {
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } nat_dnat_map SEC(".maps");
 
+struct elastic_ip_direct_key {
+  // addr is the ElasticIP in host byte order, the form nat_dnat_map and
+  // arp_table are keyed on.
+  __u32 addr;
+};
+
+struct elastic_ip_direct_val {
+  // network_id is ExternalNetwork.status.networkID. The NIC that carries
+  // the address is found in arp_table and fdb under this number.
+  __u32 network_id;
+};
+
+// elastic_ip_direct holds every ElasticIP a Pod NIC carries directly,
+// cluster-wide. node_ingress delivers a packet for such an address to the
+// NIC without any NAT, from whichever node it lands on.
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_NAT_MAP);
+  __type(key, struct elastic_ip_direct_key);
+  __type(value, struct elastic_ip_direct_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} elastic_ip_direct SEC(".maps");
+
 // service_map maps a Kubernetes Service tuple (cluster IP + L4 port +
 // proto) to the metadata that describes which backends it dispatches to
 // and which Vpc owns the Service. Cluster IPs are unique cluster-wide
