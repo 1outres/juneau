@@ -24,11 +24,14 @@ import (
 // hostEgress.Fdb (VTEP IP-valued). Kind-agnostic: handles every NWEP
 // variant uniformly. The snapshot tracks which side an entry was
 // written to so delete/move can clean up the right map.
+//
+// The segment is the VNI of a Subnet or the network ID of an
+// ExternalNetwork; see overlaySegmentID.
 type Fdb struct {
-	client       client.Client
-	hostEgress   *program.PodEgress
-	vxlanIngress *program.VxlanIngress
-	nodeName     string
+	client    client.Client
+	localFdb  bpfMap
+	remoteFdb bpfMap
+	nodeName  string
 
 	mu        sync.Mutex
 	snapshots map[string]fdbSnapshot
@@ -42,11 +45,11 @@ type fdbSnapshot struct {
 
 func NewFdb(cl client.Client, hostEgress *program.PodEgress, vxlanIngress *program.VxlanIngress, nodeName string) *Fdb {
 	return &Fdb{
-		client:       cl,
-		hostEgress:   hostEgress,
-		vxlanIngress: vxlanIngress,
-		nodeName:     nodeName,
-		snapshots:    make(map[string]fdbSnapshot),
+		client:    cl,
+		localFdb:  vxlanIngress.Objs.Fdb,
+		remoteFdb: hostEgress.Objs.Fdb,
+		nodeName:  nodeName,
+		snapshots: make(map[string]fdbSnapshot),
 	}
 }
 
@@ -67,13 +70,31 @@ func (r *Fdb) Reconcile(ctx context.Context, key string) error {
 		return err
 	}
 
-	if nwep.Spec.Subnet == "" {
+	network, err := endpointNetworkOf(&nwep)
+	if err != nil {
+		return err
+	}
+	if network == endpointOnL2Network {
 		// An endpoint on an L2Network is left alone: that data plane
 		// learns its own entries, and a controller-written one would be
 		// overwritten by the next frame anyway.
 		return r.delete(key)
 	}
-	return r.upsert(ctx, key, &nwep)
+
+	vni, ready, err := overlaySegmentID(ctx, r.client, &nwep, network)
+	if err != nil {
+		return err
+	}
+	if !ready {
+		return r.delete(key)
+	}
+	return r.upsert(key, &nwep, vni)
+}
+
+// FanOutExternalNetworkToEndpoints re-enqueues the endpoints of an
+// ExternalNetwork, whose network ID is what their entries are keyed by.
+func (r *Fdb) FanOutExternalNetworkToEndpoints(obj any) []string {
+	return externalNetworkEndpointKeys(r.client, obj)
 }
 
 type fdbDesired struct {
@@ -81,12 +102,7 @@ type fdbDesired struct {
 	val  bpf.PodEgressFdbVal
 }
 
-func (r *Fdb) upsert(ctx context.Context, key string, nwep *juneauv1alpha1.NetworkEndpoint) error {
-	var subnet juneauv1alpha1.Subnet
-	if err := r.client.Get(ctx, client.ObjectKey{Name: nwep.Spec.Subnet}, &subnet); err != nil {
-		return err
-	}
-
+func (r *Fdb) upsert(key string, nwep *juneauv1alpha1.NetworkEndpoint, vni uint32) error {
 	netmac, err := net.ParseMAC(nwep.Spec.MACAddress)
 	if err != nil {
 		return err
@@ -102,7 +118,7 @@ func (r *Fdb) upsert(ctx context.Context, key string, nwep *juneauv1alpha1.Netwo
 	switch {
 	case isLocal && nwep.Spec.Attachment != nil:
 		desired = &fdbDesired{
-			snap: fdbSnapshot{vni: subnet.Status.VNI, mac: mac, isLocal: true},
+			snap: fdbSnapshot{vni: vni, mac: mac, isLocal: true},
 			val:  bpf.PodEgressFdbVal{Ifindex: uint32(nwep.Spec.Attachment.Ifindex)},
 		}
 	case isLocal:
@@ -118,7 +134,7 @@ func (r *Fdb) upsert(ctx context.Context, key string, nwep *juneauv1alpha1.Netwo
 			return err
 		}
 		desired = &fdbDesired{
-			snap: fdbSnapshot{vni: subnet.Status.VNI, mac: mac, isLocal: false},
+			snap: fdbSnapshot{vni: vni, mac: mac, isLocal: false},
 			val:  bpf.PodEgressFdbVal{VtepIp: nodeAddr},
 		}
 	}
@@ -181,9 +197,9 @@ func (r *Fdb) deleteEntry(snap fdbSnapshot) error {
 	return nil
 }
 
-func (r *Fdb) mapFor(isLocal bool) *ebpf.Map {
+func (r *Fdb) mapFor(isLocal bool) bpfMap {
 	if isLocal {
-		return r.vxlanIngress.Objs.Fdb
+		return r.localFdb
 	}
-	return r.hostEgress.Objs.Fdb
+	return r.remoteFdb
 }

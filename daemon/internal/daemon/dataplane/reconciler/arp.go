@@ -20,11 +20,14 @@ import (
 
 // Arp keeps hostEgress.ArpTable in sync with NetworkEndpoint objects.
 // Keyed by NWEP namespace/name. Operates on L2 identity only
-// (subnet+address+macAddress); does not depend on Kind, PodRef, or
+// (segment+address+macAddress); does not depend on Kind, PodRef, or
 // Attachment, so it handles every endpoint variant (Pod, Node, …).
+//
+// The segment is the VNI of a Subnet or the network ID of an
+// ExternalNetwork; see overlaySegmentID.
 type Arp struct {
-	client     client.Client
-	hostEgress *program.PodEgress
+	client   client.Client
+	arpTable bpfMap
 
 	mu        sync.Mutex
 	snapshots map[string]arpSnapshot
@@ -37,9 +40,9 @@ type arpSnapshot struct {
 
 func NewArp(cl client.Client, hostEgress *program.PodEgress) *Arp {
 	return &Arp{
-		client:     cl,
-		hostEgress: hostEgress,
-		snapshots:  make(map[string]arpSnapshot),
+		client:    cl,
+		arpTable:  hostEgress.Objs.ArpTable,
+		snapshots: make(map[string]arpSnapshot),
 	}
 }
 
@@ -60,21 +63,34 @@ func (r *Arp) Reconcile(ctx context.Context, key string) error {
 		return err
 	}
 
-	if nwep.Spec.Subnet == "" {
+	network, err := endpointNetworkOf(&nwep)
+	if err != nil {
+		return err
+	}
+	if network == endpointOnL2Network {
 		// An endpoint on an L2Network is left alone: that data plane
 		// learns its own entries, and a controller-written one would be
 		// overwritten by the next frame anyway.
 		return r.delete(key)
 	}
-	return r.upsert(ctx, key, &nwep)
-}
 
-func (r *Arp) upsert(ctx context.Context, key string, nwep *juneauv1alpha1.NetworkEndpoint) error {
-	var subnet juneauv1alpha1.Subnet
-	if err := r.client.Get(ctx, client.ObjectKey{Name: nwep.Spec.Subnet}, &subnet); err != nil {
+	vni, ready, err := overlaySegmentID(ctx, r.client, &nwep, network)
+	if err != nil {
 		return err
 	}
+	if !ready {
+		return r.delete(key)
+	}
+	return r.upsert(key, &nwep, vni)
+}
 
+// FanOutExternalNetworkToEndpoints re-enqueues the endpoints of an
+// ExternalNetwork, whose network ID is what their entries are keyed by.
+func (r *Arp) FanOutExternalNetworkToEndpoints(obj any) []string {
+	return externalNetworkEndpointKeys(r.client, obj)
+}
+
+func (r *Arp) upsert(key string, nwep *juneauv1alpha1.NetworkEndpoint, vni uint32) error {
 	netaddr, _, err := net.ParseCIDR(nwep.Spec.Address)
 	if err != nil {
 		return err
@@ -93,21 +109,21 @@ func (r *Arp) upsert(ctx context.Context, key string, nwep *juneauv1alpha1.Netwo
 		return err
 	}
 
-	desired := arpSnapshot{vni: subnet.Status.VNI, addr: addr}
+	desired := arpSnapshot{vni: vni, addr: addr}
 
 	r.mu.Lock()
 	old, hadOld := r.snapshots[key]
 	r.mu.Unlock()
 
 	if hadOld && old != desired {
-		if err := r.hostEgress.Objs.ArpTable.Delete(&bpf.PodEgressArpTableKey{
+		if err := r.arpTable.Delete(&bpf.PodEgressArpTableKey{
 			SubnetId: old.vni, Ipaddr: old.addr,
 		}); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 			return fmt.Errorf("delete old ArpTable entry: %w", err)
 		}
 	}
 
-	if err := r.hostEgress.Objs.ArpTable.Update(
+	if err := r.arpTable.Update(
 		&bpf.PodEgressArpTableKey{SubnetId: desired.vni, Ipaddr: desired.addr},
 		&bpf.PodEgressArpTableVal{Mac: mac},
 		ebpf.UpdateAny,
@@ -129,7 +145,7 @@ func (r *Arp) delete(key string) error {
 		return nil
 	}
 
-	if err := r.hostEgress.Objs.ArpTable.Delete(&bpf.PodEgressArpTableKey{
+	if err := r.arpTable.Delete(&bpf.PodEgressArpTableKey{
 		SubnetId: snap.vni, Ipaddr: snap.addr,
 	}); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 		return fmt.Errorf("delete ArpTable: %w", err)

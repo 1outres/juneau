@@ -268,15 +268,27 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	}
 	m.subnetRunner.Start(ctx, 1)
 
-	m.arpRunner = runner.New(reconciler.NewArp(m.client, m.podEgress))
+	arp := reconciler.NewArp(m.client, m.podEgress)
+	m.arpRunner = runner.New(arp)
 	if err := m.arpRunner.Watch(m.nwepInformer, runner.MetaNamespaceKey); err != nil {
 		return fmt.Errorf("watch NWEP (arp): %w", err)
 	}
+	if m.externalNetworkInformer != nil {
+		if err := m.arpRunner.WatchFanOut(m.externalNetworkInformer, arp.FanOutExternalNetworkToEndpoints); err != nil {
+			return fmt.Errorf("watch ExternalNetwork (arp fan-out): %w", err)
+		}
+	}
 	m.arpRunner.Start(ctx, 1)
 
-	m.fdbRunner = runner.New(reconciler.NewFdb(m.client, m.podEgress, m.vxlanIngress, m.nodeName))
+	fdb := reconciler.NewFdb(m.client, m.podEgress, m.vxlanIngress, m.nodeName)
+	m.fdbRunner = runner.New(fdb)
 	if err := m.fdbRunner.Watch(m.nwepInformer, runner.MetaNamespaceKey); err != nil {
 		return fmt.Errorf("watch NWEP (fdb): %w", err)
+	}
+	if m.externalNetworkInformer != nil {
+		if err := m.fdbRunner.WatchFanOut(m.externalNetworkInformer, fdb.FanOutExternalNetworkToEndpoints); err != nil {
+			return fmt.Errorf("watch ExternalNetwork (fdb fan-out): %w", err)
+		}
 	}
 	m.fdbRunner.Start(ctx, 1)
 

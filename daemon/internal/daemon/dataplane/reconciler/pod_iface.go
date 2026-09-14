@@ -65,20 +65,55 @@ func (r *PodIface) Reconcile(ctx context.Context, key string) error {
 	if nwep.Spec.NodeName != r.nodeName || nwep.Spec.Attachment == nil {
 		return r.delete(key)
 	}
-	if nwep.Spec.Subnet == "" {
+	network, err := endpointNetworkOf(&nwep)
+	if err != nil {
+		return err
+	}
+	if network == endpointOnL2Network {
 		// An endpoint on an L2Network is left alone: the L2 data plane
 		// keys its own tables and reads none of what this writes.
 		return r.delete(key)
 	}
-	return r.upsert(ctx, key, &nwep)
-}
 
-func (r *PodIface) upsert(ctx context.Context, key string, nwep *juneauv1alpha1.NetworkEndpoint) error {
-	var subnet juneauv1alpha1.Subnet
-	if err := r.client.Get(ctx, client.ObjectKey{Name: nwep.Spec.Subnet}, &subnet); err != nil {
+	subnetEntry, err := r.ifindexSubnetEntry(ctx, key, &nwep, network)
+	if err != nil {
 		return err
 	}
+	return r.upsert(key, &nwep, subnetEntry)
+}
 
+// ifindexSubnetEntry builds the ifindex_subnet value of a local endpoint,
+// or nil when the endpoint gets none.
+//
+// An endpoint on an ExternalNetwork gets none. pod_egress and pod_ingress
+// read an entry there as "this veth is on the Subnet subnet_id names" and
+// run subnet_map, SNAT, policy and the Vpc FIB on its frames; a network ID
+// in that slot would send a NIC that joins no Vpc down those paths. With no
+// entry the programs take their miss path for the veth: pod_egress drops
+// what the Pod sends and pod_ingress passes what reaches it. The programs
+// need a way of their own to know such a veth before it can carry traffic.
+func (r *PodIface) ifindexSubnetEntry(ctx context.Context, key string, nwep *juneauv1alpha1.NetworkEndpoint, network endpointNetwork) (*bpf.PodEgressIfindexSubnetVal, error) {
+	switch network {
+	case endpointOnSubnet:
+		var subnet juneauv1alpha1.Subnet
+		if err := r.client.Get(ctx, client.ObjectKey{Name: nwep.Spec.Subnet}, &subnet); err != nil {
+			return nil, err
+		}
+		ipv4BE, err := endpointAddressToBE(nwep.Spec.Address)
+		if err != nil {
+			return nil, fmt.Errorf("endpoint %s: %w", key, err)
+		}
+		return &bpf.PodEgressIfindexSubnetVal{SubnetId: subnet.Status.VNI, Ipv4: ipv4BE}, nil
+	case endpointOnExternalNetwork:
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("endpoint %s: a %s has no ifindex_subnet entry", key, network)
+	}
+}
+
+// upsert writes the host MAC of the veth, which every local endpoint with
+// L3 identity has, and the ifindex_subnet entry when there is one.
+func (r *PodIface) upsert(key string, nwep *juneauv1alpha1.NetworkEndpoint, subnetEntry *bpf.PodEgressIfindexSubnetVal) error {
 	hostMAC, err := net.ParseMAC(nwep.Spec.Attachment.HostMACAddress)
 	if err != nil {
 		return err
@@ -86,11 +121,6 @@ func (r *PodIface) upsert(ctx context.Context, key string, nwep *juneauv1alpha1.
 	hostMACArray, err := convert.HardwareAddrToUint8Array(hostMAC)
 	if err != nil {
 		return err
-	}
-
-	ipv4BE, err := endpointAddressToBE(nwep.Spec.Address)
-	if err != nil {
-		return fmt.Errorf("endpoint %s: %w", key, err)
 	}
 
 	newIfindex := uint32(nwep.Spec.Attachment.Ifindex)
@@ -105,12 +135,14 @@ func (r *PodIface) upsert(ctx context.Context, key string, nwep *juneauv1alpha1.
 		}
 	}
 
-	if err := r.ifindexSubnet.Update(
-		&bpf.PodEgressIfindexSubnetKey{Ifindex: newIfindex},
-		&bpf.PodEgressIfindexSubnetVal{SubnetId: subnet.Status.VNI, Ipv4: ipv4BE},
-		ebpf.UpdateAny,
-	); err != nil {
-		return fmt.Errorf("update IfindexSubnet: %w", err)
+	if subnetEntry != nil {
+		if err := r.ifindexSubnet.Update(
+			&bpf.PodEgressIfindexSubnetKey{Ifindex: newIfindex},
+			subnetEntry,
+			ebpf.UpdateAny,
+		); err != nil {
+			return fmt.Errorf("update IfindexSubnet: %w", err)
+		}
 	}
 
 	if err := r.ifindexHostMac.Update(
