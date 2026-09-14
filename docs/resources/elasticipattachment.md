@@ -12,6 +12,21 @@ ElasticIPAttachmentは、ElasticIPをNetworkInterfaceへ関連付けるリソー
 
 セットアップ手順の全体像は[BGPを使ってExternalNetworkを構築する](../guides/external-network-bgp.md)を参照してください。
 
+## ElasticIPを直接持つNICとの関係
+
+ElasticIPは、ElasticIPAttachmentでNATに使うか、PodのNICに直接持たせるか、どちらか一方にしか使えません。[ElasticIP](elasticip.md)の2つの使い方を参照してください。
+
+webhookは次のElasticIPAttachmentを拒否します。
+
+- 参照しているElasticIPを、すでにNetworkInterfaceが直接持っている。エラーには持っているNetworkInterfaceの名前が出ます
+- 対象のNetworkInterfaceが、ElasticIPを直接持つNICである。そのNICにはNATの変換先になるVpc内のアドレスがありません
+
+削除中のNetworkInterfaceは、直接持っているものとして数えません。
+
+逆向きの確認はPodとNetworkInterfaceのwebhookが行います。ElasticIPAttachmentが使っているElasticIPをNICから参照すると、Podの作成が拒否されます。削除中のElasticIPAttachmentは数えないので、ElasticIPAttachmentを消してから直接使うPodを作れば、NATから直接へ移せます。
+
+2つを同時に作るとwebhookをすり抜けることがあります。そのときはElasticIPが`PHASE: Error`、reason `Conflict`になります。どちらかを消してください。
+
 `status.elasticIP`は関連付け対象として解決されたElasticIPのアドレスです。
 `status.podIP`は関連付け先NetworkInterfaceのPod側IPアドレスです。
 `status.nodeName`は関連付け先NetworkInterfaceが存在するノード名です。
