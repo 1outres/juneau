@@ -142,6 +142,12 @@ func (r *Reconciler) resolveBackends(ctx context.Context, svc *corev1.Service, v
 				val.BackendSubnetId = backendSubnetIDUnderlay
 			} else {
 				subnetName := iface.Spec.Subnet
+				if subnetName == "" {
+					// eth0 carries an ElasticIP or sits on an L2Network.
+					// Neither is a Service backend: a Pod backend is
+					// reached by the VNI of its Subnet.
+					continue
+				}
 				var subnet juneauv1alpha1.Subnet
 				if err := r.client.Get(ctx, client.ObjectKey{Name: subnetName}, &subnet); err != nil {
 					if apierrors.IsNotFound(err) {

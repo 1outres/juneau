@@ -137,6 +137,10 @@ func (r *SGMembership) networkVpc(ctx context.Context, iface *juneauv1alpha1.Net
 			return nil, false, err
 		}
 		vpcName = subnet.Spec.Vpc
+	case iface.Spec.ElasticIP != "":
+		// A NIC on an ElasticIP joins no Vpc and admission gives it no
+		// SecurityGroups, so there is no (vpc_id, address) to key it by.
+		return nil, false, nil
 	default:
 		return nil, false, nil
 	}

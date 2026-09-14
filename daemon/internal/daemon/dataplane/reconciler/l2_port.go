@@ -128,8 +128,9 @@ func (r *L2Port) Reconcile(ctx context.Context, key string) error {
 		return err
 	}
 	if nwep.Spec.L2Network == "" {
-		// An endpoint on a Subnet. The Subnet data plane has its own
-		// tables and this one must not put a port on its behalf.
+		// An endpoint on a Subnet or an ExternalNetwork. Those data
+		// planes have their own tables and this one must not put a port
+		// on their behalf.
 		return r.apply(key, l2PortMember{})
 	}
 

@@ -112,9 +112,9 @@ func (r *L2Arp) Reconcile(ctx context.Context, key string) error {
 //
 // Everything that comes back empty is a state the cluster passes
 // through or a segment this table does not serve: an endpoint on a
-// Subnet, a segment with no gateway to read the table, a VNI that has
-// not been handed out, a NIC with no address because the segment hands
-// out none.
+// Subnet or an ExternalNetwork, a segment with no gateway to read the
+// table, a VNI that has not been handed out, a NIC with no address
+// because the segment hands out none.
 func (r *L2Arp) desiredSeed(ctx context.Context, endpoint *juneauv1alpha1.NetworkEndpoint) (l2ArpSeed, error) {
 	if endpoint.Spec.L2Network == "" || endpoint.Spec.Address == "" || endpoint.Spec.MACAddress == "" {
 		return l2ArpSeed{}, nil
