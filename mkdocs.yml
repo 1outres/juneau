@@ -42,6 +42,7 @@ nav:
   - User Guide:
     - BGPを使ってExternalNetworkを構築する: guides/external-network-bgp.md
     - ARPを使ってExternalNetworkを構築する: guides/external-network-arp.md
+    - PodのNICにElasticIPを直接持たせる: guides/elastic-ip-direct.md
     - VPCでServiceを利用する: guides/custom-vpc-service.md
     - Vpcで共有Serviceを利用する: guides/shared-service.md
     - Service LoadBalancerを公開する: guides/service-loadbalancer.md
