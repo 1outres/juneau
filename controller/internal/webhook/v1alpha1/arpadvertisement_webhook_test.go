@@ -226,42 +226,27 @@ var _ = Describe("ARPAdvertisement webhook", func() {
 type webhookARPSpace struct {
 	externalNetwork string
 	addressPool     string
-	base            string
+	block           webhookExternalBlock
 }
 
-var webhookARPSpaceCount int
-
 func newWebhookARPSpace() *webhookARPSpace {
-	webhookARPSpaceCount++
-	base := fmt.Sprintf("10.211.%d", webhookARPSpaceCount)
+	block := newWebhookExternalBlock()
 
-	pool := &juneauv1alpha1.AddressPool{
-		ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("addresspool")},
-		Spec: juneauv1alpha1.AddressPoolSpec{
-			AdvertiseMode: juneauv1alpha1.AddressPoolAdvertiseModeARP,
-			Addresses:     []string{fmt.Sprintf("%s.10-%s.20", base, base)},
-		},
-	}
+	pool := newWebhookAddressPool(juneauv1alpha1.AddressPoolAdvertiseModeARP, block.addressRange(10, 20))
 	Expect(webhookK8sClient.Create(context.Background(), pool)).To(Succeed())
 
-	externalNetwork := &juneauv1alpha1.ExternalNetwork{
-		ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("externalnetwork")},
-		Spec: juneauv1alpha1.ExternalNetworkSpec{
-			Type:         juneauv1alpha1.ExternalNetworkTypeARP,
-			AddressPools: []string{pool.Name},
-		},
-	}
+	externalNetwork := newWebhookExternalNetwork(juneauv1alpha1.ExternalNetworkTypeARP, pool.Name)
 	Expect(webhookK8sClient.Create(context.Background(), externalNetwork)).To(Succeed())
 
 	return &webhookARPSpace{
 		externalNetwork: externalNetwork.Name,
 		addressPool:     pool.Name,
-		base:            base,
+		block:           block,
 	}
 }
 
 func (s *webhookARPSpace) address(host int) string {
-	return fmt.Sprintf("%s.%d", s.base, host)
+	return s.block.address(host)
 }
 
 func (s *webhookARPSpace) advertisement(address, nodeName string) *juneauv1alpha1.ARPAdvertisement {

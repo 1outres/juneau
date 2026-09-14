@@ -2,6 +2,7 @@ package v1alpha1
 
 import (
 	"context"
+	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -179,6 +180,80 @@ var _ = Describe("ExternalNetwork webhook", func() {
 		Expect(webhookK8sClient.Update(context.Background(), &current)).To(Succeed())
 	})
 
+	Describe("AddressPool shared with another ExternalNetwork", func() {
+		It("rejects an AddressPool that another ExternalNetwork already references", func() {
+			pool := newWebhookBGPAddressPool()
+			Expect(webhookK8sClient.Create(context.Background(), pool)).To(Succeed())
+			holder := newWebhookExternalNetwork(juneauv1alpha1.ExternalNetworkTypeBGP, pool.Name)
+			Expect(webhookK8sClient.Create(context.Background(), holder)).To(Succeed())
+
+			err := webhookK8sClient.Create(context.Background(), newWebhookExternalNetwork(juneauv1alpha1.ExternalNetworkTypeBGP, pool.Name))
+
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("spec.addressPools[0]"))
+			Expect(err.Error()).To(ContainSubstring(fmt.Sprintf("AddressPool %q is already referenced by ExternalNetwork %q", pool.Name, holder.Name)))
+		})
+
+		It("names the AddressPool that is shared when several are listed", func() {
+			freePool := newWebhookARPAddressPool()
+			sharedPool := newWebhookARPAddressPool()
+			Expect(webhookK8sClient.Create(context.Background(), freePool)).To(Succeed())
+			Expect(webhookK8sClient.Create(context.Background(), sharedPool)).To(Succeed())
+			holder := newWebhookExternalNetwork(juneauv1alpha1.ExternalNetworkTypeARP, sharedPool.Name)
+			Expect(webhookK8sClient.Create(context.Background(), holder)).To(Succeed())
+
+			err := webhookK8sClient.Create(context.Background(), newWebhookExternalNetwork(juneauv1alpha1.ExternalNetworkTypeARP, freePool.Name, sharedPool.Name))
+
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("spec.addressPools[1]"))
+			Expect(err.Error()).NotTo(ContainSubstring("spec.addressPools[0]"))
+			Expect(err.Error()).To(ContainSubstring(fmt.Sprintf("AddressPool %q is already referenced by ExternalNetwork %q", sharedPool.Name, holder.Name)))
+		})
+
+		It("rejects an update that appends an AddressPool another ExternalNetwork references", func() {
+			ownPool := newWebhookBGPAddressPool()
+			sharedPool := newWebhookBGPAddressPool()
+			Expect(webhookK8sClient.Create(context.Background(), ownPool)).To(Succeed())
+			Expect(webhookK8sClient.Create(context.Background(), sharedPool)).To(Succeed())
+			holder := newWebhookExternalNetwork(juneauv1alpha1.ExternalNetworkTypeBGP, sharedPool.Name)
+			Expect(webhookK8sClient.Create(context.Background(), holder)).To(Succeed())
+			externalNetwork := newWebhookExternalNetwork(juneauv1alpha1.ExternalNetworkTypeBGP, ownPool.Name)
+			Expect(webhookK8sClient.Create(context.Background(), externalNetwork)).To(Succeed())
+
+			var current juneauv1alpha1.ExternalNetwork
+			Expect(webhookK8sClient.Get(context.Background(), client.ObjectKeyFromObject(externalNetwork), &current)).To(Succeed())
+			current.Spec.AddressPools = append(current.Spec.AddressPools, sharedPool.Name)
+
+			err := webhookK8sClient.Update(context.Background(), &current)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("spec.addressPools[1]"))
+			Expect(err.Error()).To(ContainSubstring(fmt.Sprintf("AddressPool %q is already referenced by ExternalNetwork %q", sharedPool.Name, holder.Name)))
+		})
+
+		It("does not count the ExternalNetwork being updated", func() {
+			pool := newWebhookBGPAddressPool()
+			Expect(webhookK8sClient.Create(context.Background(), pool)).To(Succeed())
+			externalNetwork := newWebhookExternalNetwork(juneauv1alpha1.ExternalNetworkTypeBGP, pool.Name)
+			Expect(webhookK8sClient.Create(context.Background(), externalNetwork)).To(Succeed())
+
+			var current juneauv1alpha1.ExternalNetwork
+			Expect(webhookK8sClient.Get(context.Background(), client.ObjectKeyFromObject(externalNetwork), &current)).To(Succeed())
+			current.Labels = map[string]string{"example.com/touched": "true"}
+
+			Expect(webhookK8sClient.Update(context.Background(), &current)).To(Succeed())
+		})
+
+		It("accepts the AddressPool again once the ExternalNetwork that held it is gone", func() {
+			pool := newWebhookBGPAddressPool()
+			Expect(webhookK8sClient.Create(context.Background(), pool)).To(Succeed())
+			holder := newWebhookExternalNetwork(juneauv1alpha1.ExternalNetworkTypeBGP, pool.Name)
+			Expect(webhookK8sClient.Create(context.Background(), holder)).To(Succeed())
+			Expect(webhookK8sClient.Delete(context.Background(), holder)).To(Succeed())
+
+			Expect(webhookK8sClient.Create(context.Background(), newWebhookExternalNetwork(juneauv1alpha1.ExternalNetworkTypeBGP, pool.Name))).To(Succeed())
+		})
+	})
+
 	It("rejects deletion while an active ElasticIP references the ExternalNetwork", func() {
 		pool := newWebhookBGPAddressPool()
 		Expect(webhookK8sClient.Create(context.Background(), pool)).To(Succeed())
@@ -217,22 +292,20 @@ var _ = Describe("ExternalNetwork webhook", func() {
 	})
 })
 
-func newWebhookBGPAddressPool() *juneauv1alpha1.AddressPool {
-	return &juneauv1alpha1.AddressPool{
-		ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("addresspool")},
-		Spec: juneauv1alpha1.AddressPoolSpec{
-			AdvertiseMode: juneauv1alpha1.AddressPoolAdvertiseModeBGP,
-			Addresses:     []string{"10.210.0.0/30"},
+func newWebhookExternalNetwork(networkType juneauv1alpha1.ExternalNetworkType, addressPools ...string) *juneauv1alpha1.ExternalNetwork {
+	return &juneauv1alpha1.ExternalNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("externalnetwork")},
+		Spec: juneauv1alpha1.ExternalNetworkSpec{
+			Type:         networkType,
+			AddressPools: addressPools,
 		},
 	}
 }
 
+func newWebhookBGPAddressPool() *juneauv1alpha1.AddressPool {
+	return newWebhookAddressPool(juneauv1alpha1.AddressPoolAdvertiseModeBGP, newWebhookExternalBlock().cidr(0, 30))
+}
+
 func newWebhookARPAddressPool() *juneauv1alpha1.AddressPool {
-	return &juneauv1alpha1.AddressPool{
-		ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("addresspool")},
-		Spec: juneauv1alpha1.AddressPoolSpec{
-			AdvertiseMode: juneauv1alpha1.AddressPoolAdvertiseModeARP,
-			Addresses:     []string{"10.210.0.10-10.210.0.20"},
-		},
-	}
+	return newWebhookAddressPool(juneauv1alpha1.AddressPoolAdvertiseModeARP, newWebhookExternalBlock().addressRange(10, 20))
 }

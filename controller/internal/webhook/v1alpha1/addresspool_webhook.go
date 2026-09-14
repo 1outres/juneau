@@ -19,7 +19,6 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
-	"net"
 	"slices"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -33,7 +32,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	juneauloutresmev1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
-	"github.com/1outres/juneau/controller/internal/addressrange"
 )
 
 // nolint:unused
@@ -92,7 +90,7 @@ func (v *AddressPoolCustomValidator) ValidateCreate(ctx context.Context, obj run
 	}
 	addresspoollog.Info("Validation for AddressPool upon creation", "name", addresspool.GetName())
 
-	return v.validate(addresspool, nil)
+	return v.validate(ctx, addresspool, nil)
 }
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type AddressPool.
@@ -107,7 +105,7 @@ func (v *AddressPoolCustomValidator) ValidateUpdate(ctx context.Context, oldObj,
 	}
 	addresspoollog.Info("Validation for AddressPool upon update", "name", addresspool.GetName())
 
-	return v.validate(addresspool, oldAddressPool)
+	return v.validate(ctx, addresspool, oldAddressPool)
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type AddressPool.
@@ -155,32 +153,15 @@ func (v *AddressPoolCustomValidator) ValidateDelete(ctx context.Context, obj run
 	return nil, nil
 }
 
-func (v *AddressPoolCustomValidator) validate(newObj *juneauloutresmev1alpha1.AddressPool, oldObj *juneauloutresmev1alpha1.AddressPool) (admission.Warnings, error) {
-	var errs field.ErrorList
+func (v *AddressPoolCustomValidator) validate(ctx context.Context, newObj *juneauloutresmev1alpha1.AddressPool, oldObj *juneauloutresmev1alpha1.AddressPool) (admission.Warnings, error) {
+	spans, errs := parseAddressPoolSpans(newObj)
 
-	switch newObj.Spec.AdvertiseMode {
-	case juneauloutresmev1alpha1.AddressPoolAdvertiseModeBGP:
-		for i, a := range newObj.Spec.Addresses {
-			_, ipnet, err := net.ParseCIDR(a)
-			if err != nil {
-				errs = append(errs, field.Invalid(field.NewPath("spec", "addresses").Index(i), a, "must be a valid CIDR"))
-				continue
-			}
-			if ipnet.IP.To4() == nil {
-				errs = append(errs, field.Invalid(field.NewPath("spec", "addresses").Index(i), a, "only IPv4 CIDR is supported"))
-				continue
-			}
-			ones, _ := ipnet.Mask.Size()
-			if ones < 8 || ones > 32 {
-				errs = append(errs, field.Invalid(field.NewPath("spec", "addresses").Index(i), a, "prefix must be between /8 and /32"))
-			}
+	if shouldCheckReferences(newObj) {
+		overlapErrs, err := validateAddressPoolOverlaps(ctx, v.Reader, newObj.Name, spans)
+		if err != nil {
+			return nil, err
 		}
-	case juneauloutresmev1alpha1.AddressPoolAdvertiseModeARP:
-		for i, a := range newObj.Spec.Addresses {
-			if _, _, err := addressrange.ParseIPv4Range(a); err != nil {
-				errs = append(errs, field.Invalid(field.NewPath("spec", "addresses").Index(i), a, err.Error()))
-			}
-		}
+		errs = append(errs, overlapErrs...)
 	}
 
 	if oldObj != nil {
