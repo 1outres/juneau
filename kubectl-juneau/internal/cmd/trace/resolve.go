@@ -596,6 +596,9 @@ func nicVpcID(ctx context.Context, cl client.Client, nwif *juneauv1alpha1.Networ
 			return 0, fmt.Errorf("l2network %s has no vpc", network.Name)
 		}
 		vpcName = network.Spec.Vpc
+	case nwif.Spec.ElasticIP != "":
+		return 0, fmt.Errorf("NetworkInterface %s carries ElasticIP %s directly and joins no Vpc; tracing such a NIC is not supported yet",
+			nwif.Name, nwif.Spec.ElasticIP)
 	default:
 		return 0, fmt.Errorf("NetworkInterface %s names neither a subnet nor an l2Network", nwif.Name)
 	}
