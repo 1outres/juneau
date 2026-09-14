@@ -82,12 +82,6 @@ func (r *rollback) run() {
 	}
 }
 
-// podRoute is one route of a NIC, already parsed.
-type podRoute struct {
-	dst *net.IPNet
-	gw  net.IP
-}
-
 // attachedInterface is what one attached NIC contributes to the CNI
 // result. address is nil for a NIC on an L2Network that hands out no
 // address: the segment carries frames and the workload decides for
@@ -183,6 +177,9 @@ func (c *CNIServer) Add(ctx context.Context, req *cnipb.CNIRequest) (resp *cnipb
 			})
 		}
 		for _, route := range attached.routes {
+			if !route.inMainTable() {
+				continue
+			}
 			res.Routes = append(res.Routes, &types.Route{Dst: *route.dst, GW: route.gw})
 		}
 	}
@@ -272,38 +269,19 @@ func (c *CNIServer) attachPodInterface(
 		return nil, err
 	}
 
-	vethHost, peerHWAddr, err := c.createPodVeth(ifname, index, req, netns, mtu, undo)
-	if err != nil {
-		return nil, err
-	}
-
 	// A NIC on an L2Network without a CIDR carries no address. It still
 	// gets a veth, and the L2 data plane still forwards its frames; what
 	// it does not get is anything on the CNI result, because the runtime
 	// reads that as the pod's address.
-	var address *net.IPNet
-	if nwiface.Status.Address != "" {
-		ip, ipnet, err := net.ParseCIDR(nwiface.Status.Address)
-		if err != nil {
-			zap.L().Error("failed to parse assigned IP address", zap.Error(err))
-			return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to parse assigned IP address", err.Error())
-		}
-		address = &net.IPNet{IP: ip, Mask: ipnet.Mask}
+	config, err := parsePodInterfaceConfig(&nwiface.Status)
+	if err != nil {
+		zap.L().Error("failed to read the addressing of a NIC", zap.Error(err))
+		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to read the addressing of a NIC", err.Error())
 	}
 
-	routes := make([]podRoute, 0, len(nwiface.Status.Routes))
-	for _, route := range nwiface.Status.Routes {
-		_, dst, err := net.ParseCIDR(route.Dst)
-		if err != nil {
-			zap.L().Error("failed to parse route destination CIDR", zap.Error(err))
-			return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to parse route destination CIDR", err.Error())
-		}
-		gw := net.ParseIP(route.GW)
-		if gw == nil {
-			zap.L().Error("failed to parse route gateway IP", zap.String("gw", route.GW))
-			return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to parse route gateway IP", "")
-		}
-		routes = append(routes, podRoute{dst: dst, gw: gw})
+	vethHost, peerHWAddr, err := c.createPodVeth(ifname, index, req, netns, mtu, undo)
+	if err != nil {
+		return nil, err
 	}
 
 	if err = netns.Do(func(_ ns.NetNS) error {
@@ -312,24 +290,11 @@ func (c *CNIServer) attachPodInterface(
 			return fmt.Errorf("failed to find interface %s in netns: %w", ifname, err)
 		}
 
-		if address != nil {
-			if err := netlink.AddrAdd(link, &netlink.Addr{IPNet: address}); err != nil {
-				return fmt.Errorf("failed to assign IP address to interface %s in netns: %w", ifname, err)
-			}
-			zap.S().Debugf("Assigned IP %s to interface %s in netns", nwiface.Status.Address, ifname)
+		addedRules, err := configurePodInterface(link, config)
+		if len(addedRules) > 0 {
+			undo.push(func() { c.cleanupPodRules(req.Netns, addedRules) })
 		}
-
-		for _, route := range routes {
-			if err := netlink.RouteAdd(&netlink.Route{
-				LinkIndex: link.Attrs().Index,
-				Gw:        route.gw,
-				Dst:       route.dst,
-			}); err != nil {
-				return fmt.Errorf("failed to add route to interface %s in netns: %w", ifname, err)
-			}
-		}
-
-		return nil
+		return err
 	}); err != nil {
 		zap.L().Error("failed to configure interface in netns", zap.Error(err))
 		return nil, makeError(cnipb.ErrorCode_TRY_AGAIN_LATER, "Failed to configure interface in netns", err.Error())
@@ -385,7 +350,7 @@ func (c *CNIServer) attachPodInterface(
 		undo.push(func() { c.cleanupNetworkEndpoint(nwep) })
 	}
 
-	return &attachedInterface{ifname: ifname, address: address, routes: routes}, nil
+	return &attachedInterface{ifname: ifname, address: config.address, routes: config.routes}, nil
 }
 
 // podInterfaceMTU is the MTU juneau gives one NIC.
@@ -394,14 +359,24 @@ func (c *CNIServer) attachPodInterface(
 // be fragmented, so a frame that is too big for the overlay disappears
 // without anything to read about it. A Subnet says nothing and the NIC
 // keeps the kernel default — lowering the MTU of every pod on a running
-// cluster is not a change L2 support gets to make on the way past.
+// cluster is not a change L2 support gets to make on the way past. A NIC
+// on an ElasticIP carries IP and crosses the same overlay a Subnet NIC
+// does, so it follows the Subnet rule.
 //
 // 0 means "leave the NIC alone".
 func (c *CNIServer) podInterfaceMTU(ctx context.Context, nwiface *juneauv1alpha1.NetworkInterface) (int, error) {
-	if nwiface.Spec.L2Network == "" {
+	switch {
+	case nwiface.Spec.L2Network != "":
+		return c.l2NetworkMTU(ctx, nwiface)
+	case nwiface.Spec.Subnet != "", nwiface.Spec.ElasticIP != "":
 		return 0, nil
+	default:
+		return 0, makeError(cnipb.ErrorCode_INTERNAL, "The NetworkInterface names no network",
+			fmt.Sprintf("networkInterface=%s", nwiface.Name))
 	}
+}
 
+func (c *CNIServer) l2NetworkMTU(ctx context.Context, nwiface *juneauv1alpha1.NetworkInterface) (int, error) {
 	var network juneauv1alpha1.L2Network
 	if err := c.cachedClient.Get(ctx, client.ObjectKey{Name: nwiface.Spec.L2Network}, &network); err != nil {
 		zap.L().Error("failed to read the L2Network of a NIC", zap.Error(err))
@@ -1012,6 +987,25 @@ func (c *CNIServer) cleanupVeth(name string) {
 		return
 	}
 	zap.S().Debugf("rollback: deleted veth %s", name)
+}
+
+// cleanupPodRules best-effort deletes the policy routing rules an ADD
+// added to the pod netns. Deleting the veth takes the address and routes
+// of a NIC with it, but a rule belongs to the namespace and would stay.
+// The netns is opened again by path, because the handle the ADD used is
+// closed by the time a rollback runs.
+func (c *CNIServer) cleanupPodRules(netnsPath string, rules []podRule) {
+	netns, err := ns.GetNS(netnsPath)
+	if err != nil {
+		zap.S().Warnf("rollback: open netns %s to delete rules: %v", netnsPath, err)
+		return
+	}
+	defer func() { _ = netns.Close() }()
+	if err := netns.Do(func(_ ns.NetNS) error { return removePodRules(rules) }); err != nil {
+		zap.S().Warnf("rollback: delete rules in netns %s: %v", netnsPath, err)
+		return
+	}
+	zap.S().Debugf("rollback: deleted %d rules in netns %s", len(rules), netnsPath)
 }
 
 // cleanupNetworkEndpoint best-effort deletes a NetworkEndpoint resource.
