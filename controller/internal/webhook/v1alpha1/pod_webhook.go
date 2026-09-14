@@ -292,7 +292,7 @@ func (v *PodSecurityGroupValidator) validate(ctx context.Context, pod *corev1.Po
 			continue
 		}
 
-		network, nicErrs, err := v.validateNIC(ctx, nic)
+		network, nicErrs, err := v.validateNIC(ctx, pod.Namespace, nic)
 		if err != nil {
 			return nil, err
 		}
@@ -366,14 +366,14 @@ func podNICErrorLocation(annotations map[string]string, nic juneauv1alpha1.Resol
 // validateNIC checks one NIC against the cluster: its SecurityGroups have
 // to exist, they have to live in the Vpc of the NIC's own network, and a
 // Vpc that enforces SecurityGroups needs at least one on this NIC.
-func (v *PodSecurityGroupValidator) validateNIC(ctx context.Context, nic podNIC) (*podnetwork.Network, field.ErrorList, error) {
+func (v *PodSecurityGroupValidator) validateNIC(ctx context.Context, namespace string, nic podNIC) (*podnetwork.Network, field.ErrorList, error) {
 	if len(nic.attachment.SecurityGroups) > juneauv1alpha1.PodSecurityGroupsMax {
 		return nil, field.ErrorList{field.Invalid(nic.path, nic.value,
 			fmt.Sprintf("at most %d security groups allowed (got %d)",
 				juneauv1alpha1.PodSecurityGroupsMax, len(nic.attachment.SecurityGroups)))}, nil
 	}
 
-	ref := podnetwork.AttachmentReference(nic.attachment)
+	ref := podnetwork.AttachmentReference(namespace, nic.attachment)
 	network, err := podnetwork.Resolve(ctx, v.Reader, ref)
 	if err != nil {
 		if apierrors.IsNotFound(err) {

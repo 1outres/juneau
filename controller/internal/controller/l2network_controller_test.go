@@ -259,6 +259,29 @@ var _ = Describe("L2Network controller", func() {
 })
 
 var _ = Describe("NetworkInterface on an L2Network", func() {
+	It("sends eth0 out through the gateway of the segment", func() {
+		name := uniqueTestName("l2net")
+		l2 := newTestL2Network(name, createReadyTestVpc(), "10.159.0.0/24")
+		l2.Spec.Gateway = &juneauv1alpha1.L2NetworkGateway{}
+		Expect(k8sClient.Create(context.Background(), l2)).To(Succeed())
+		Expect(waitForReadyL2Network(name).Status.Gateway).To(Equal("10.159.0.1"))
+
+		iface := newTestL2NetworkInterface(uniqueTestName("nwiface"), name)
+		iface.Spec.PodRef.Interface = juneauv1alpha1.PodPrimaryInterfaceName
+		Expect(k8sClient.Create(context.Background(), iface)).To(Succeed())
+		DeferCleanup(func() { cleanupNetworkInterface(context.Background(), iface) })
+
+		Eventually(func(g Gomega) {
+			reconcileNetworkInterface(iface)
+
+			var current juneauv1alpha1.NetworkInterface
+			g.Expect(k8sClient.Get(context.Background(), client.ObjectKeyFromObject(iface), &current)).To(Succeed())
+			g.Expect(current.Status.Address).To(HavePrefix("10.159.0."))
+			g.Expect(current.Status.Routes).To(Equal([]juneauv1alpha1.NetworkRoute{{Dst: "0.0.0.0/0", GW: "10.159.0.1"}}))
+			g.Expect(current.Status.Rules).To(BeEmpty())
+		}).Should(Succeed())
+	})
+
 	It("becomes Allocated without an address when the segment has no CIDR", func() {
 		l2Name := createTestL2Network(createReadyTestVpc(), "")
 		waitForReadyL2Network(l2Name)

@@ -185,7 +185,7 @@ func (v *NetworkInterfaceCustomValidator) ValidateUpdate(ctx context.Context, ol
 	// try to read it (best-effort: NotFound is OK). An interface on an
 	// ElasticIP joins no network and the schema forbids SGs on it.
 	if shouldCheckReferences(networkinterface) && networkinterface.Spec.ElasticIP == "" {
-		network, err := podnetwork.ResolveOptional(ctx, v.Reader, podnetwork.InterfaceReference(networkinterface.Spec))
+		network, err := podnetwork.ResolveOptional(ctx, v.Reader, podnetwork.InterfaceReference(networkinterface))
 		if err != nil {
 			return nil, err
 		}
@@ -217,13 +217,16 @@ func (v *NetworkInterfaceCustomValidator) ValidateDelete(ctx context.Context, ob
 	return nil, nil
 }
 
-// validateNetworkInterfaceNetwork resolves the network the interface
-// joins, whichever kind names it, and reports a reference that points at
-// nothing. The resolved network comes back so the caller can check the
-// address and the SecurityGroups against it.
+// validateNetworkInterfaceNetwork resolves the Subnet or L2Network the
+// interface joins and reports a reference that points at nothing. The
+// resolved network comes back so the caller can check the address and the
+// SecurityGroups against it.
+//
+// An interface on an ElasticIP is left to validateNetworkInterfaceElasticIP,
+// which accepts an ElasticIP that does not exist yet.
 func validateNetworkInterfaceNetwork(ctx context.Context, c client.Reader, networkinterface *juneauv1alpha1.NetworkInterface) (*podnetwork.Network, field.ErrorList, error) {
-	ref := podnetwork.InterfaceReference(networkinterface.Spec)
-	if err := ref.Validate(); err != nil {
+	ref := podnetwork.InterfaceReference(networkinterface)
+	if err := ref.Validate(); err != nil || ref.Kind() == podnetwork.KindElasticIP {
 		return nil, nil, nil
 	}
 
