@@ -6,6 +6,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/vishvananda/netlink"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -110,6 +111,72 @@ func (n *externalNode) addLocalNIC(t *testing.T, name, elasticIP string, podMAC,
 		t.Fatalf("name the veth of %s: %v", name, err)
 	}
 	return nic
+}
+
+// The node's side of the underlay these tests build: the address of the
+// node on its uplink, and the router its default route goes through.
+const (
+	nodeAddress   = "192.0.2.20"
+	routerAddress = "192.0.2.1"
+	internetPeer  = "198.51.100.7"
+)
+
+var (
+	uplinkMAC = bpftest.MAC(0xa0)
+	routerMAC = bpftest.MAC(0xa1)
+)
+
+// addUplink builds the node's uplink the way a node has one: an address
+// of the node, a default route through a router whose MAC is already
+// resolved, and forwarding on. bpf_fib_lookup reads exactly that.
+func (n *externalNode) addUplink(t *testing.T) bpftest.Device {
+	t.Helper()
+
+	for _, path := range []string{
+		"/proc/sys/net/ipv4/conf/all/forwarding",
+		"/proc/sys/net/ipv4/conf/default/forwarding",
+	} {
+		if err := os.WriteFile(path, []byte("1"), 0o644); err != nil {
+			t.Fatalf("turn forwarding on in the test namespace: %v", err)
+		}
+	}
+
+	link := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "uplink", HardwareAddr: uplinkMAC}}
+	if err := netlink.LinkAdd(link); err != nil {
+		t.Fatalf("add the uplink: %v", err)
+	}
+	if err := netlink.LinkSetUp(link); err != nil {
+		t.Fatalf("bring the uplink up: %v", err)
+	}
+	built, err := netlink.LinkByName("uplink")
+	if err != nil {
+		t.Fatalf("look up the uplink: %v", err)
+	}
+
+	address, err := netlink.ParseAddr(nodeAddress + "/24")
+	if err != nil {
+		t.Fatalf("parse the node address: %v", err)
+	}
+	if err := netlink.AddrAdd(built, address); err != nil {
+		t.Fatalf("give the uplink the node address: %v", err)
+	}
+	if err := netlink.NeighAdd(&netlink.Neigh{
+		LinkIndex:    built.Attrs().Index,
+		Family:       netlink.FAMILY_V4,
+		State:        netlink.NUD_PERMANENT,
+		IP:           net.ParseIP(routerAddress),
+		HardwareAddr: routerMAC,
+	}); err != nil {
+		t.Fatalf("resolve the router: %v", err)
+	}
+	if err := netlink.RouteAdd(&netlink.Route{
+		LinkIndex: built.Attrs().Index,
+		Gw:        net.ParseIP(routerAddress),
+	}); err != nil {
+		t.Fatalf("add the default route: %v", err)
+	}
+
+	return bpftest.Device{Name: "uplink", Index: built.Attrs().Index}
 }
 
 func (n *externalNode) publish(t *testing.T, endpoint *juneauv1alpha1.NetworkEndpoint) {

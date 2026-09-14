@@ -33,7 +33,22 @@ ElasticIPを直接持つNIC(ExternalNetworkのNIC)から出るパケットを扱
 分岐はifindex_subnetのmissの中に置いた。subnet_mapやapply_policyより前なので、Subnetの経路の命令数は増えない。tc_pod_egressはverifierの上限に近く、policyの途中で分岐させる余裕はない。
 
 1. ARPならhandle_external_nic_arp関数を呼び出し、その返り値を返す
-2. それ以外はドロップ
+2. IPv4でなければドロップ
+3. 送信元IPアドレスがifindex_external_networkのipv4(NICのElasticIP)でなければドロップ。SNATしないので、別のアドレスを名乗ったパケットがそのままunderlayに出てしまう
+4. route_external_nic_via_host関数を呼び出し、その返り値を返す
+
+traceイベントは出さない。traceはVpcのスコープでtupleを引くが、このNICにはVpcが無い。
+
+## route_external_nic_via_host
+
+hostのFIBに、ポートにつながったhostと同じようにルーティングさせる。
+
+1. bpf_fib_lookupでnext hopを引く(forward_via_host_fibと同じくBPF_FIB_LOOKUP_OUTPUTは付けない)
+2. SUCCESSとNO_NEIGHならforward_via_host_fibと同じようにredirectする
+3. 負の値(引数の誤り)ならドロップ
+4. それ以外はTC_ACT_OK
+
+forward_via_host_fibはNOT_FWDEDをドロップするが、ここではkernelに渡す。node自身のアドレス宛(kubeletのprobeへの応答)はNOT_FWDEDになり、ドロップするとprobeが通らない。broadcast、multicast、routeが無い場合もNOT_FWDEDになるが、どれもkernelの入力経路が自分のルールで配送するか捨てるかを決める。フレームはhost側vethのMAC宛なので、kernelはPACKET_HOSTとして受け取る。
 
 ## handle_external_nic_arp
 

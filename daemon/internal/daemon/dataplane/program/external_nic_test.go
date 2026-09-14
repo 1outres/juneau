@@ -74,18 +74,93 @@ func TestPodEgressDropsEveryOtherARPOfANICOnAnElasticIP(t *testing.T) {
 	node := newExternalNode(t)
 	web := node.addLocalNIC(t, "web", webElasticIP, webPodMAC, webHostMAC)
 
+	// No subtests: they run on another goroutine, which is outside the
+	// network namespace this one is pinned to.
 	for name, payload := range map[string][]byte{
 		"a request for another address": bpftest.ARP(t, bpftest.ARPRequest, webPodMAC, webElasticIP,
 			net.HardwareAddr{0, 0, 0, 0, 0, 0}, "192.0.2.20"),
 		"a reply for another address": bpftest.ARP(t, bpftest.ARPReply, webPodMAC, dbElasticIP,
 			webHostMAC, "192.0.2.20"),
 	} {
-		t.Run(name, func(t *testing.T) {
-			frame := bpftest.Frame(t, bpftest.Broadcast, webPodMAC, bpftest.EtherTypeARP, payload)
-			if verdict := bpftest.Run(t, node.podEgress.Objs.TcPodEgress, frame, web.veth); verdict != bpftest.ActShot {
-				t.Errorf("verdict %d, want a drop (%d)", verdict, bpftest.ActShot)
-			}
-		})
+		frame := bpftest.Frame(t, bpftest.Broadcast, webPodMAC, bpftest.EtherTypeARP, payload)
+		if verdict := bpftest.Run(t, node.podEgress.Objs.TcPodEgress, frame, web.veth); verdict != bpftest.ActShot {
+			t.Errorf("%s: verdict %d, want a drop (%d)", name, verdict, bpftest.ActShot)
+		}
+	}
+}
+
+// A NIC on an ElasticIP is on the internet as itself: no SNAT, so what it
+// sends leaves the node with the ElasticIP as its source. The node does
+// the routing, and the frame goes out of the interface and to the next
+// hop the host FIB names.
+func TestPodEgressRoutesWhatANICOnAnElasticIPSendsThroughTheHost(t *testing.T) {
+	node := newExternalNode(t)
+	node.addUplink(t)
+	web := node.addLocalNIC(t, "web", webElasticIP, webPodMAC, webHostMAC)
+
+	frame := bpftest.Frame(t, webHostMAC, webPodMAC, bpftest.EtherTypeIPv4,
+		bpftest.TCPv4(t, webElasticIP, internetPeer, 40000, 443))
+	verdict, out := bpftest.RunFrame(t, node.podEgress.Objs.TcPodEgress, frame, web.veth)
+
+	if verdict != bpftest.ActRedirect {
+		t.Fatalf("verdict %d, want the packet sent out of the uplink (%d)", verdict, bpftest.ActRedirect)
+	}
+	if got := net.HardwareAddr(out[0:6]); got.String() != routerMAC.String() {
+		t.Errorf("the packet leaves for %s, want the router %s", got, routerMAC)
+	}
+	if got := net.HardwareAddr(out[6:12]); got.String() != uplinkMAC.String() {
+		t.Errorf("the packet leaves from %s, want the uplink %s", got, uplinkMAC)
+	}
+	if got := bpftest.SourceAddress(t, out); got != webElasticIP {
+		t.Errorf("the packet leaves with source %s, want the ElasticIP %s", got, webElasticIP)
+	}
+}
+
+// kubelet reaches a Pod whose eth0 carries an ElasticIP over the host
+// route to it, and the reply comes back to an address of the node. The
+// host FIB does not forward that, and the node's own stack has to have it.
+func TestPodEgressHandsWhatANICOnAnElasticIPSendsToTheNodeToTheKernel(t *testing.T) {
+	node := newExternalNode(t)
+	node.addUplink(t)
+	web := node.addLocalNIC(t, "web", webElasticIP, webPodMAC, webHostMAC)
+
+	reply := bpftest.Frame(t, webHostMAC, webPodMAC, bpftest.EtherTypeIPv4,
+		bpftest.TCPv4(t, webElasticIP, nodeAddress, 8080, 51000))
+
+	if verdict := bpftest.Run(t, node.podEgress.Objs.TcPodEgress, reply, web.veth); verdict != bpftest.ActOK {
+		t.Fatalf("verdict %d, want the reply handed to the kernel (%d)", verdict, bpftest.ActOK)
+	}
+}
+
+// The NIC is on the internet as its ElasticIP and as nothing else. With no
+// SNAT in the way, a source it does not hold would leave the node as it
+// stands.
+func TestPodEgressDropsWhatANICOnAnElasticIPSendsFromAnotherAddress(t *testing.T) {
+	node := newExternalNode(t)
+	node.addUplink(t)
+	web := node.addLocalNIC(t, "web", webElasticIP, webPodMAC, webHostMAC)
+
+	for name, destination := range map[string]string{
+		"to the internet": internetPeer,
+		"to the node":     nodeAddress,
+	} {
+		frame := bpftest.Frame(t, webHostMAC, webPodMAC, bpftest.EtherTypeIPv4,
+			bpftest.TCPv4(t, dbElasticIP, destination, 40000, 443))
+		if verdict := bpftest.Run(t, node.podEgress.Objs.TcPodEgress, frame, web.veth); verdict != bpftest.ActShot {
+			t.Errorf("%s: verdict %d, want a drop (%d)", name, verdict, bpftest.ActShot)
+		}
+	}
+}
+
+// Only IPv4 and ARP are carried for the NIC. An ElasticIP is an IPv4
+// address, and the NIC is given nothing else to speak with.
+func TestPodEgressDropsWhatANICOnAnElasticIPSendsThatIsNotIPv4(t *testing.T) {
+	node := newExternalNode(t)
+	web := node.addLocalNIC(t, "web", webElasticIP, webPodMAC, webHostMAC)
+
+	frame := bpftest.Frame(t, webHostMAC, webPodMAC, bpftest.EtherTypeIPv6, make([]byte, 40))
+	if verdict := bpftest.Run(t, node.podEgress.Objs.TcPodEgress, frame, web.veth); verdict != bpftest.ActShot {
+		t.Fatalf("verdict %d, want a drop (%d)", verdict, bpftest.ActShot)
 	}
 }
 
