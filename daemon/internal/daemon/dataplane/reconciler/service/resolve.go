@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"net"
 
 	corev1 "k8s.io/api/core/v1"
@@ -141,13 +142,16 @@ func (r *Reconciler) resolveBackends(ctx context.Context, svc *corev1.Service, v
 				val.Kind = kind
 				val.BackendSubnetId = backendSubnetIDUnderlay
 			} else {
-				subnetName := iface.Spec.Subnet
-				if subnetName == "" {
-					// eth0 carries an ElasticIP or sits on an L2Network.
-					// Neither is a Service backend: a Pod backend is
-					// reached by the VNI of its Subnet.
+				switch {
+				case iface.Spec.ElasticIP != "", iface.Spec.L2Network != "":
+					// Not supported by design: a Pod backend is reached
+					// by the VNI of its Subnet, and a NIC that carries an
+					// ElasticIP or sits on an L2Network has none.
 					continue
+				case iface.Spec.Subnet == "":
+					return nil, fmt.Errorf("NetworkInterface %s/%s names no network", iface.Namespace, iface.Name)
 				}
+				subnetName := iface.Spec.Subnet
 				var subnet juneauv1alpha1.Subnet
 				if err := r.client.Get(ctx, client.ObjectKey{Name: subnetName}, &subnet); err != nil {
 					if apierrors.IsNotFound(err) {

@@ -339,8 +339,11 @@ func (r *Reconciler) resolvePrimarySubnetID(ctx context.Context, ep localEndpoin
 		return 0, nil
 	}
 	iface := ifaces.Items[0]
-	if iface.Spec.Subnet == "" {
+	switch {
+	case iface.Spec.ElasticIP != "", iface.Spec.L2Network != "":
 		return 0, nil
+	case iface.Spec.Subnet == "":
+		return 0, fmt.Errorf("NetworkInterface %s/%s names no network", iface.Namespace, iface.Name)
 	}
 	var subnet juneauv1alpha1.Subnet
 	if err := r.client.Get(ctx, client.ObjectKey{Name: iface.Spec.Subnet}, &subnet); err != nil {
