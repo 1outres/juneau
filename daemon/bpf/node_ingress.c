@@ -773,7 +773,7 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
 static __always_inline int handle_external_arp(struct __sk_buff *skb,
                                                void *data_end,
                                                struct ethhdr *eth) {
-  struct arp_request req;
+  struct arp_frame req;
   if (arp_parse_request(data_end, eth, &req) != 0)
     return TC_ACT_OK;
 

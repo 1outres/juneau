@@ -138,6 +138,17 @@ type PodIngressFibVal struct {
 	Oif      uint32
 }
 
+type PodIngressIfindexExternalNetworkKey struct {
+	_       structs.HostLayout
+	Ifindex uint32
+}
+
+type PodIngressIfindexExternalNetworkVal struct {
+	_         structs.HostLayout
+	NetworkId uint32
+	Ipv4      uint32
+}
+
 type PodIngressIfindexHostMacKey struct {
 	_       structs.HostLayout
 	Ifindex uint32
@@ -557,63 +568,64 @@ type PodIngressProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type PodIngressMapSpecs struct {
-	AclMetaMap            *ebpf.MapSpec `ebpf:"acl_meta_map"`
-	AclRuleTable          *ebpf.MapSpec `ebpf:"acl_rule_table"`
-	AclRulesInnerProto    *ebpf.MapSpec `ebpf:"acl_rules_inner_proto"`
-	ArpTable              *ebpf.MapSpec `ebpf:"arp_table"`
-	BackendMap            *ebpf.MapSpec `ebpf:"backend_map"`
-	CtMap                 *ebpf.MapSpec `ebpf:"ct_map"`
-	ExternalAddressPools  *ebpf.MapSpec `ebpf:"external_address_pools"`
-	ExternalArpTable      *ebpf.MapSpec `ebpf:"external_arp_table"`
-	Fdb                   *ebpf.MapSpec `ebpf:"fdb"`
-	FibInner              *ebpf.MapSpec `ebpf:"fib_inner"`
-	FibMap                *ebpf.MapSpec `ebpf:"fib_map"`
-	HostUnderlay          *ebpf.MapSpec `ebpf:"host_underlay"`
-	IfindexHostMac        *ebpf.MapSpec `ebpf:"ifindex_host_mac"`
-	IfindexSubnet         *ebpf.MapSpec `ebpf:"ifindex_subnet"`
-	Ipv4FragMap           *ebpf.MapSpec `ebpf:"ipv4_frag_map"`
-	L2Arp                 *ebpf.MapSpec `ebpf:"l2_arp"`
-	L2ArpAsker            *ebpf.MapSpec `ebpf:"l2_arp_asker"`
-	L2ArpAskerInner       *ebpf.MapSpec `ebpf:"l2_arp_asker_inner"`
-	L2ArpInner            *ebpf.MapSpec `ebpf:"l2_arp_inner"`
-	L2ArpProbe            *ebpf.MapSpec `ebpf:"l2_arp_probe"`
-	L2ArpProbeInner       *ebpf.MapSpec `ebpf:"l2_arp_probe_inner"`
-	L2BumLocal            *ebpf.MapSpec `ebpf:"l2_bum_local"`
-	L2BumLocalInner       *ebpf.MapSpec `ebpf:"l2_bum_local_inner"`
-	L2BumRemote           *ebpf.MapSpec `ebpf:"l2_bum_remote"`
-	L2BumRemoteInner      *ebpf.MapSpec `ebpf:"l2_bum_remote_inner"`
-	L2Fdb                 *ebpf.MapSpec `ebpf:"l2_fdb"`
-	L2FdbInner            *ebpf.MapSpec `ebpf:"l2_fdb_inner"`
-	L2Gateway             *ebpf.MapSpec `ebpf:"l2_gateway"`
-	L2Ifindex             *ebpf.MapSpec `ebpf:"l2_ifindex"`
-	L2NetworkMap          *ebpf.MapSpec `ebpf:"l2_network_map"`
-	LbBackendMap          *ebpf.MapSpec `ebpf:"lb_backend_map"`
-	LbServiceMap          *ebpf.MapSpec `ebpf:"lb_service_map"`
-	NaptSrc               *ebpf.MapSpec `ebpf:"napt_src"`
-	NatDnatMap            *ebpf.MapSpec `ebpf:"nat_dnat_map"`
-	NatSnatMap            *ebpf.MapSpec `ebpf:"nat_snat_map"`
-	NodeUnderlays         *ebpf.MapSpec `ebpf:"node_underlays"`
-	PolicyCtMap           *ebpf.MapSpec `ebpf:"policy_ct_map"`
-	PolicyEpochMap        *ebpf.MapSpec `ebpf:"policy_epoch_map"`
-	ServiceAclMap         *ebpf.MapSpec `ebpf:"service_acl_map"`
-	ServiceAffinityMap    *ebpf.MapSpec `ebpf:"service_affinity_map"`
-	ServiceMap            *ebpf.MapSpec `ebpf:"service_map"`
-	ServiceNatIp          *ebpf.MapSpec `ebpf:"service_nat_ip"`
-	SgMembershipMap       *ebpf.MapSpec `ebpf:"sg_membership_map"`
-	SgMetaMap             *ebpf.MapSpec `ebpf:"sg_meta_map"`
-	SgRuleTable           *ebpf.MapSpec `ebpf:"sg_rule_table"`
-	SgRulesInnerProto     *ebpf.MapSpec `ebpf:"sg_rules_inner_proto"`
-	SubnetMap             *ebpf.MapSpec `ebpf:"subnet_map"`
-	TgwFibInner           *ebpf.MapSpec `ebpf:"tgw_fib_inner"`
-	TgwFibMap             *ebpf.MapSpec `ebpf:"tgw_fib_map"`
-	TraceActive           *ebpf.MapSpec `ebpf:"trace_active"`
-	TraceConfigMap        *ebpf.MapSpec `ebpf:"trace_config_map"`
-	TraceEvents           *ebpf.MapSpec `ebpf:"trace_events"`
-	TraceTupleMap         *ebpf.MapSpec `ebpf:"trace_tuple_map"`
-	VirtualServiceFlowMap *ebpf.MapSpec `ebpf:"virtual_service_flow_map"`
-	VirtualServiceMap     *ebpf.MapSpec `ebpf:"virtual_service_map"`
-	VpcEndpointMap        *ebpf.MapSpec `ebpf:"vpc_endpoint_map"`
-	VxlanIfindex          *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
+	AclMetaMap             *ebpf.MapSpec `ebpf:"acl_meta_map"`
+	AclRuleTable           *ebpf.MapSpec `ebpf:"acl_rule_table"`
+	AclRulesInnerProto     *ebpf.MapSpec `ebpf:"acl_rules_inner_proto"`
+	ArpTable               *ebpf.MapSpec `ebpf:"arp_table"`
+	BackendMap             *ebpf.MapSpec `ebpf:"backend_map"`
+	CtMap                  *ebpf.MapSpec `ebpf:"ct_map"`
+	ExternalAddressPools   *ebpf.MapSpec `ebpf:"external_address_pools"`
+	ExternalArpTable       *ebpf.MapSpec `ebpf:"external_arp_table"`
+	Fdb                    *ebpf.MapSpec `ebpf:"fdb"`
+	FibInner               *ebpf.MapSpec `ebpf:"fib_inner"`
+	FibMap                 *ebpf.MapSpec `ebpf:"fib_map"`
+	HostUnderlay           *ebpf.MapSpec `ebpf:"host_underlay"`
+	IfindexExternalNetwork *ebpf.MapSpec `ebpf:"ifindex_external_network"`
+	IfindexHostMac         *ebpf.MapSpec `ebpf:"ifindex_host_mac"`
+	IfindexSubnet          *ebpf.MapSpec `ebpf:"ifindex_subnet"`
+	Ipv4FragMap            *ebpf.MapSpec `ebpf:"ipv4_frag_map"`
+	L2Arp                  *ebpf.MapSpec `ebpf:"l2_arp"`
+	L2ArpAsker             *ebpf.MapSpec `ebpf:"l2_arp_asker"`
+	L2ArpAskerInner        *ebpf.MapSpec `ebpf:"l2_arp_asker_inner"`
+	L2ArpInner             *ebpf.MapSpec `ebpf:"l2_arp_inner"`
+	L2ArpProbe             *ebpf.MapSpec `ebpf:"l2_arp_probe"`
+	L2ArpProbeInner        *ebpf.MapSpec `ebpf:"l2_arp_probe_inner"`
+	L2BumLocal             *ebpf.MapSpec `ebpf:"l2_bum_local"`
+	L2BumLocalInner        *ebpf.MapSpec `ebpf:"l2_bum_local_inner"`
+	L2BumRemote            *ebpf.MapSpec `ebpf:"l2_bum_remote"`
+	L2BumRemoteInner       *ebpf.MapSpec `ebpf:"l2_bum_remote_inner"`
+	L2Fdb                  *ebpf.MapSpec `ebpf:"l2_fdb"`
+	L2FdbInner             *ebpf.MapSpec `ebpf:"l2_fdb_inner"`
+	L2Gateway              *ebpf.MapSpec `ebpf:"l2_gateway"`
+	L2Ifindex              *ebpf.MapSpec `ebpf:"l2_ifindex"`
+	L2NetworkMap           *ebpf.MapSpec `ebpf:"l2_network_map"`
+	LbBackendMap           *ebpf.MapSpec `ebpf:"lb_backend_map"`
+	LbServiceMap           *ebpf.MapSpec `ebpf:"lb_service_map"`
+	NaptSrc                *ebpf.MapSpec `ebpf:"napt_src"`
+	NatDnatMap             *ebpf.MapSpec `ebpf:"nat_dnat_map"`
+	NatSnatMap             *ebpf.MapSpec `ebpf:"nat_snat_map"`
+	NodeUnderlays          *ebpf.MapSpec `ebpf:"node_underlays"`
+	PolicyCtMap            *ebpf.MapSpec `ebpf:"policy_ct_map"`
+	PolicyEpochMap         *ebpf.MapSpec `ebpf:"policy_epoch_map"`
+	ServiceAclMap          *ebpf.MapSpec `ebpf:"service_acl_map"`
+	ServiceAffinityMap     *ebpf.MapSpec `ebpf:"service_affinity_map"`
+	ServiceMap             *ebpf.MapSpec `ebpf:"service_map"`
+	ServiceNatIp           *ebpf.MapSpec `ebpf:"service_nat_ip"`
+	SgMembershipMap        *ebpf.MapSpec `ebpf:"sg_membership_map"`
+	SgMetaMap              *ebpf.MapSpec `ebpf:"sg_meta_map"`
+	SgRuleTable            *ebpf.MapSpec `ebpf:"sg_rule_table"`
+	SgRulesInnerProto      *ebpf.MapSpec `ebpf:"sg_rules_inner_proto"`
+	SubnetMap              *ebpf.MapSpec `ebpf:"subnet_map"`
+	TgwFibInner            *ebpf.MapSpec `ebpf:"tgw_fib_inner"`
+	TgwFibMap              *ebpf.MapSpec `ebpf:"tgw_fib_map"`
+	TraceActive            *ebpf.MapSpec `ebpf:"trace_active"`
+	TraceConfigMap         *ebpf.MapSpec `ebpf:"trace_config_map"`
+	TraceEvents            *ebpf.MapSpec `ebpf:"trace_events"`
+	TraceTupleMap          *ebpf.MapSpec `ebpf:"trace_tuple_map"`
+	VirtualServiceFlowMap  *ebpf.MapSpec `ebpf:"virtual_service_flow_map"`
+	VirtualServiceMap      *ebpf.MapSpec `ebpf:"virtual_service_map"`
+	VpcEndpointMap         *ebpf.MapSpec `ebpf:"vpc_endpoint_map"`
+	VxlanIfindex           *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
 }
 
 // PodIngressVariableSpecs contains global variables before they are loaded into the kernel.
@@ -644,63 +656,64 @@ func (o *PodIngressObjects) Close() error {
 //
 // It can be passed to LoadPodIngressObjects or ebpf.CollectionSpec.LoadAndAssign.
 type PodIngressMaps struct {
-	AclMetaMap            *ebpf.Map `ebpf:"acl_meta_map"`
-	AclRuleTable          *ebpf.Map `ebpf:"acl_rule_table"`
-	AclRulesInnerProto    *ebpf.Map `ebpf:"acl_rules_inner_proto"`
-	ArpTable              *ebpf.Map `ebpf:"arp_table"`
-	BackendMap            *ebpf.Map `ebpf:"backend_map"`
-	CtMap                 *ebpf.Map `ebpf:"ct_map"`
-	ExternalAddressPools  *ebpf.Map `ebpf:"external_address_pools"`
-	ExternalArpTable      *ebpf.Map `ebpf:"external_arp_table"`
-	Fdb                   *ebpf.Map `ebpf:"fdb"`
-	FibInner              *ebpf.Map `ebpf:"fib_inner"`
-	FibMap                *ebpf.Map `ebpf:"fib_map"`
-	HostUnderlay          *ebpf.Map `ebpf:"host_underlay"`
-	IfindexHostMac        *ebpf.Map `ebpf:"ifindex_host_mac"`
-	IfindexSubnet         *ebpf.Map `ebpf:"ifindex_subnet"`
-	Ipv4FragMap           *ebpf.Map `ebpf:"ipv4_frag_map"`
-	L2Arp                 *ebpf.Map `ebpf:"l2_arp"`
-	L2ArpAsker            *ebpf.Map `ebpf:"l2_arp_asker"`
-	L2ArpAskerInner       *ebpf.Map `ebpf:"l2_arp_asker_inner"`
-	L2ArpInner            *ebpf.Map `ebpf:"l2_arp_inner"`
-	L2ArpProbe            *ebpf.Map `ebpf:"l2_arp_probe"`
-	L2ArpProbeInner       *ebpf.Map `ebpf:"l2_arp_probe_inner"`
-	L2BumLocal            *ebpf.Map `ebpf:"l2_bum_local"`
-	L2BumLocalInner       *ebpf.Map `ebpf:"l2_bum_local_inner"`
-	L2BumRemote           *ebpf.Map `ebpf:"l2_bum_remote"`
-	L2BumRemoteInner      *ebpf.Map `ebpf:"l2_bum_remote_inner"`
-	L2Fdb                 *ebpf.Map `ebpf:"l2_fdb"`
-	L2FdbInner            *ebpf.Map `ebpf:"l2_fdb_inner"`
-	L2Gateway             *ebpf.Map `ebpf:"l2_gateway"`
-	L2Ifindex             *ebpf.Map `ebpf:"l2_ifindex"`
-	L2NetworkMap          *ebpf.Map `ebpf:"l2_network_map"`
-	LbBackendMap          *ebpf.Map `ebpf:"lb_backend_map"`
-	LbServiceMap          *ebpf.Map `ebpf:"lb_service_map"`
-	NaptSrc               *ebpf.Map `ebpf:"napt_src"`
-	NatDnatMap            *ebpf.Map `ebpf:"nat_dnat_map"`
-	NatSnatMap            *ebpf.Map `ebpf:"nat_snat_map"`
-	NodeUnderlays         *ebpf.Map `ebpf:"node_underlays"`
-	PolicyCtMap           *ebpf.Map `ebpf:"policy_ct_map"`
-	PolicyEpochMap        *ebpf.Map `ebpf:"policy_epoch_map"`
-	ServiceAclMap         *ebpf.Map `ebpf:"service_acl_map"`
-	ServiceAffinityMap    *ebpf.Map `ebpf:"service_affinity_map"`
-	ServiceMap            *ebpf.Map `ebpf:"service_map"`
-	ServiceNatIp          *ebpf.Map `ebpf:"service_nat_ip"`
-	SgMembershipMap       *ebpf.Map `ebpf:"sg_membership_map"`
-	SgMetaMap             *ebpf.Map `ebpf:"sg_meta_map"`
-	SgRuleTable           *ebpf.Map `ebpf:"sg_rule_table"`
-	SgRulesInnerProto     *ebpf.Map `ebpf:"sg_rules_inner_proto"`
-	SubnetMap             *ebpf.Map `ebpf:"subnet_map"`
-	TgwFibInner           *ebpf.Map `ebpf:"tgw_fib_inner"`
-	TgwFibMap             *ebpf.Map `ebpf:"tgw_fib_map"`
-	TraceActive           *ebpf.Map `ebpf:"trace_active"`
-	TraceConfigMap        *ebpf.Map `ebpf:"trace_config_map"`
-	TraceEvents           *ebpf.Map `ebpf:"trace_events"`
-	TraceTupleMap         *ebpf.Map `ebpf:"trace_tuple_map"`
-	VirtualServiceFlowMap *ebpf.Map `ebpf:"virtual_service_flow_map"`
-	VirtualServiceMap     *ebpf.Map `ebpf:"virtual_service_map"`
-	VpcEndpointMap        *ebpf.Map `ebpf:"vpc_endpoint_map"`
-	VxlanIfindex          *ebpf.Map `ebpf:"vxlan_ifindex"`
+	AclMetaMap             *ebpf.Map `ebpf:"acl_meta_map"`
+	AclRuleTable           *ebpf.Map `ebpf:"acl_rule_table"`
+	AclRulesInnerProto     *ebpf.Map `ebpf:"acl_rules_inner_proto"`
+	ArpTable               *ebpf.Map `ebpf:"arp_table"`
+	BackendMap             *ebpf.Map `ebpf:"backend_map"`
+	CtMap                  *ebpf.Map `ebpf:"ct_map"`
+	ExternalAddressPools   *ebpf.Map `ebpf:"external_address_pools"`
+	ExternalArpTable       *ebpf.Map `ebpf:"external_arp_table"`
+	Fdb                    *ebpf.Map `ebpf:"fdb"`
+	FibInner               *ebpf.Map `ebpf:"fib_inner"`
+	FibMap                 *ebpf.Map `ebpf:"fib_map"`
+	HostUnderlay           *ebpf.Map `ebpf:"host_underlay"`
+	IfindexExternalNetwork *ebpf.Map `ebpf:"ifindex_external_network"`
+	IfindexHostMac         *ebpf.Map `ebpf:"ifindex_host_mac"`
+	IfindexSubnet          *ebpf.Map `ebpf:"ifindex_subnet"`
+	Ipv4FragMap            *ebpf.Map `ebpf:"ipv4_frag_map"`
+	L2Arp                  *ebpf.Map `ebpf:"l2_arp"`
+	L2ArpAsker             *ebpf.Map `ebpf:"l2_arp_asker"`
+	L2ArpAskerInner        *ebpf.Map `ebpf:"l2_arp_asker_inner"`
+	L2ArpInner             *ebpf.Map `ebpf:"l2_arp_inner"`
+	L2ArpProbe             *ebpf.Map `ebpf:"l2_arp_probe"`
+	L2ArpProbeInner        *ebpf.Map `ebpf:"l2_arp_probe_inner"`
+	L2BumLocal             *ebpf.Map `ebpf:"l2_bum_local"`
+	L2BumLocalInner        *ebpf.Map `ebpf:"l2_bum_local_inner"`
+	L2BumRemote            *ebpf.Map `ebpf:"l2_bum_remote"`
+	L2BumRemoteInner       *ebpf.Map `ebpf:"l2_bum_remote_inner"`
+	L2Fdb                  *ebpf.Map `ebpf:"l2_fdb"`
+	L2FdbInner             *ebpf.Map `ebpf:"l2_fdb_inner"`
+	L2Gateway              *ebpf.Map `ebpf:"l2_gateway"`
+	L2Ifindex              *ebpf.Map `ebpf:"l2_ifindex"`
+	L2NetworkMap           *ebpf.Map `ebpf:"l2_network_map"`
+	LbBackendMap           *ebpf.Map `ebpf:"lb_backend_map"`
+	LbServiceMap           *ebpf.Map `ebpf:"lb_service_map"`
+	NaptSrc                *ebpf.Map `ebpf:"napt_src"`
+	NatDnatMap             *ebpf.Map `ebpf:"nat_dnat_map"`
+	NatSnatMap             *ebpf.Map `ebpf:"nat_snat_map"`
+	NodeUnderlays          *ebpf.Map `ebpf:"node_underlays"`
+	PolicyCtMap            *ebpf.Map `ebpf:"policy_ct_map"`
+	PolicyEpochMap         *ebpf.Map `ebpf:"policy_epoch_map"`
+	ServiceAclMap          *ebpf.Map `ebpf:"service_acl_map"`
+	ServiceAffinityMap     *ebpf.Map `ebpf:"service_affinity_map"`
+	ServiceMap             *ebpf.Map `ebpf:"service_map"`
+	ServiceNatIp           *ebpf.Map `ebpf:"service_nat_ip"`
+	SgMembershipMap        *ebpf.Map `ebpf:"sg_membership_map"`
+	SgMetaMap              *ebpf.Map `ebpf:"sg_meta_map"`
+	SgRuleTable            *ebpf.Map `ebpf:"sg_rule_table"`
+	SgRulesInnerProto      *ebpf.Map `ebpf:"sg_rules_inner_proto"`
+	SubnetMap              *ebpf.Map `ebpf:"subnet_map"`
+	TgwFibInner            *ebpf.Map `ebpf:"tgw_fib_inner"`
+	TgwFibMap              *ebpf.Map `ebpf:"tgw_fib_map"`
+	TraceActive            *ebpf.Map `ebpf:"trace_active"`
+	TraceConfigMap         *ebpf.Map `ebpf:"trace_config_map"`
+	TraceEvents            *ebpf.Map `ebpf:"trace_events"`
+	TraceTupleMap          *ebpf.Map `ebpf:"trace_tuple_map"`
+	VirtualServiceFlowMap  *ebpf.Map `ebpf:"virtual_service_flow_map"`
+	VirtualServiceMap      *ebpf.Map `ebpf:"virtual_service_map"`
+	VpcEndpointMap         *ebpf.Map `ebpf:"vpc_endpoint_map"`
+	VxlanIfindex           *ebpf.Map `ebpf:"vxlan_ifindex"`
 }
 
 func (m *PodIngressMaps) Close() error {
@@ -717,6 +730,7 @@ func (m *PodIngressMaps) Close() error {
 		m.FibInner,
 		m.FibMap,
 		m.HostUnderlay,
+		m.IfindexExternalNetwork,
 		m.IfindexHostMac,
 		m.IfindexSubnet,
 		m.Ipv4FragMap,

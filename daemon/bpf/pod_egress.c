@@ -296,7 +296,7 @@ static __always_inline int handle_snat(struct __sk_buff *skb,
 static __always_inline int handle_arp(struct __sk_buff *skb, void *data_end,
                                       struct ethhdr *eth, __u32 subnet_id,
                                       const struct subnet_val *subnet) {
-  struct arp_request req;
+  struct arp_frame req;
   if (arp_parse_request(data_end, eth, &req) != 0)
     return TC_ACT_SHOT;
 
@@ -322,6 +322,62 @@ static __always_inline int handle_arp(struct __sk_buff *skb, void *data_end,
 
   arp_rewrite_to_reply(eth, &req, responder_mac);
   return bpf_redirect(skb->ifindex, 0);
+}
+
+// handle_external_nic_arp answers the one neighbour a NIC on an
+// ElasticIP has, and hands the node the answers the NIC gives it.
+//
+// The NIC holds a /32 and an onlink default route to
+// EXTERNAL_NIC_GATEWAY_ADDR, so a request for that address is the only
+// question it asks. Nothing on the host owns the address and the host
+// runs no proxy ARP, so this is the only place an answer can come from.
+// It names the host side of the veth: a frame the Pod then sends to the
+// node arrives addressed to the veth itself, which the kernel takes as
+// PACKET_HOST.
+//
+// The node reaches the Pod over its host route to the ElasticIP, so the
+// kernel asks the Pod for its MAC. The answer goes to the kernel only if
+// it speaks for the ElasticIP the NIC carries. Everything else is
+// dropped: the veth has no other neighbour to learn about.
+static __always_inline int
+handle_external_nic_arp(struct __sk_buff *skb, void *data_end,
+                        struct ethhdr *eth,
+                        const struct ifindex_external_network_val *nic) {
+  struct arp_frame frame;
+  if (arp_parse(data_end, eth, ARP_OP_REPLY, &frame) == 0) {
+    if (frame.payload->spa != nic->ipv4)
+      return TC_ACT_SHOT;
+    return TC_ACT_OK;
+  }
+
+  if (arp_parse_request(data_end, eth, &frame) != 0)
+    return TC_ACT_SHOT;
+  if (frame.target_addr != EXTERNAL_NIC_GATEWAY_ADDR)
+    return TC_ACT_SHOT;
+
+  struct ifindex_host_mac_key key = {.ifindex = skb->ifindex};
+  const struct ifindex_host_mac_val *host =
+      bpf_map_lookup_elem(&ifindex_host_mac, &key);
+  if (!host)
+    return TC_ACT_SHOT;
+
+  arp_rewrite_to_reply(eth, &frame, host->mac);
+  return bpf_redirect(skb->ifindex, 0);
+}
+
+// handle_external_nic carries what a NIC on an ElasticIP sends. Such a
+// NIC joins no Vpc, so none of what handle_l2 does for a Subnet applies:
+// no Service, no SNAT, no NetworkACL or SecurityGroup, no Vpc FIB.
+//
+// It is reached before any of that on purpose. tc_pod_egress is close to
+// the verifier's instruction budget, and a branch taken this early costs
+// the Subnet path nothing.
+static __always_inline int
+handle_external_nic(struct __sk_buff *skb, struct ethhdr *eth, void *data_end,
+                    const struct ifindex_external_network_val *nic) {
+  if (eth->h_proto == bpf_htons(ETH_P_ARP))
+    return handle_external_nic_arp(skb, data_end, eth, nic);
+  return TC_ACT_SHOT;
 }
 
 static __always_inline int forward_l2(struct __sk_buff *skb, struct ethhdr *eth,
@@ -2451,6 +2507,12 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
   const struct ifindex_subnet_val *val =
       bpf_map_lookup_elem(&ifindex_subnet, &key);
   if (!val) {
+    struct ifindex_external_network_key nic_key = {.ifindex = skb->ifindex};
+    const struct ifindex_external_network_val *nic =
+        bpf_map_lookup_elem(&ifindex_external_network, &nic_key);
+    if (nic)
+      return handle_external_nic(skb, eth, data_end, nic);
+
     __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, 0);
     trace_emit_map_miss_l3(skb, __tid, TRACE_REASON_MISS_IFINDEX_SUBNET,
                            TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, 0, 0,

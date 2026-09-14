@@ -39,6 +39,15 @@ func TestSchemaLayoutMatchesGenerated(t *testing.T) {
 			valueSize: unsafe.Sizeof(bpf.PodEgressIfindexSubnetVal{}),
 		},
 		{
+			name: "ifindex_external_network",
+			key:  Schema{Fields: []Field{FieldU32Named("ifindex")}},
+			val: Schema{Fields: []Field{
+				FieldU32Named("network_id"), FieldIPv4BENamed("ipv4"),
+			}},
+			keySize:   unsafe.Sizeof(bpf.PodEgressIfindexExternalNetworkKey{}),
+			valueSize: unsafe.Sizeof(bpf.PodEgressIfindexExternalNetworkVal{}),
+		},
+		{
 			name:      "arp_table",
 			key:       schemaArpKey(),
 			val:       schemaArpVal(),

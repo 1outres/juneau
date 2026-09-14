@@ -35,31 +35,42 @@ func newPodIfaceSubnet() *juneauv1alpha1.Subnet {
 	}
 }
 
-func newPodIfaceFixture(t *testing.T, objs ...runtime.Object) (*PodIface, *fakeBpfMap, *fakeBpfMap) {
+// podIfaceMaps holds one fake for each map PodIface writes.
+type podIfaceMaps struct {
+	subnet          *fakeBpfMap
+	externalNetwork *fakeBpfMap
+	hostMAC         *fakeBpfMap
+}
+
+func newPodIfaceFixture(t *testing.T, objs ...runtime.Object) (*PodIface, podIfaceMaps) {
 	t.Helper()
 	cl := fake.NewClientBuilder().WithScheme(newNatTestScheme(t)).WithRuntimeObjects(objs...).Build()
-	subnetMap := newFakeBpfMap()
-	hostMACMap := newFakeBpfMap()
-	r := &PodIface{
-		client:         cl,
-		ifindexSubnet:  subnetMap,
-		ifindexHostMac: hostMACMap,
-		nodeName:       "node-a",
-		snapshots:      make(map[string]uint32),
+	maps := podIfaceMaps{
+		subnet:          newFakeBpfMap(),
+		externalNetwork: newFakeBpfMap(),
+		hostMAC:         newFakeBpfMap(),
 	}
-	return r, subnetMap, hostMACMap
+	r := &PodIface{
+		client:                 cl,
+		ifindexSubnet:          maps.subnet,
+		ifindexExternalNetwork: maps.externalNetwork,
+		ifindexHostMac:         maps.hostMAC,
+		nodeName:               "node-a",
+		snapshots:              make(map[string]uint32),
+	}
+	return r, maps
 }
 
 func TestPodIfaceWritesPodAddressInNetworkByteOrder(t *testing.T) {
-	r, subnetMap, _ := newPodIfaceFixture(t, newPodIfaceEndpoint("10.16.0.5/24"), newPodIfaceSubnet())
+	r, maps := newPodIfaceFixture(t, newPodIfaceEndpoint("10.16.0.5/24"), newPodIfaceSubnet())
 
 	if err := r.Reconcile(context.Background(), "default/pod-a"); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	got, ok := subnetMap.entries[bpf.PodEgressIfindexSubnetKey{Ifindex: 7}]
+	got, ok := maps.subnet.entries[bpf.PodEgressIfindexSubnetKey{Ifindex: 7}]
 	if !ok {
-		t.Fatalf("ifindex_subnet has no entry for ifindex 7: %v", subnetMap.entries)
+		t.Fatalf("ifindex_subnet has no entry for ifindex 7: %v", maps.subnet.entries)
 	}
 	want := bpf.PodEgressIfindexSubnetVal{SubnetId: 42, Ipv4: 0x0500100a}
 	if got != want {
@@ -68,15 +79,15 @@ func TestPodIfaceWritesPodAddressInNetworkByteOrder(t *testing.T) {
 }
 
 func TestPodIfaceAcceptsBareAddress(t *testing.T) {
-	r, subnetMap, _ := newPodIfaceFixture(t, newPodIfaceEndpoint("10.16.0.5"), newPodIfaceSubnet())
+	r, maps := newPodIfaceFixture(t, newPodIfaceEndpoint("10.16.0.5"), newPodIfaceSubnet())
 
 	if err := r.Reconcile(context.Background(), "default/pod-a"); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	got, ok := subnetMap.entries[bpf.PodEgressIfindexSubnetKey{Ifindex: 7}]
+	got, ok := maps.subnet.entries[bpf.PodEgressIfindexSubnetKey{Ifindex: 7}]
 	if !ok {
-		t.Fatalf("ifindex_subnet has no entry for ifindex 7: %v", subnetMap.entries)
+		t.Fatalf("ifindex_subnet has no entry for ifindex 7: %v", maps.subnet.entries)
 	}
 	want := bpf.PodEgressIfindexSubnetVal{SubnetId: 42, Ipv4: 0x0500100a}
 	if got != want {
@@ -98,16 +109,16 @@ func TestPodIfaceRejectsEndpointWithoutUsableAddress(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r, subnetMap, hostMACMap := newPodIfaceFixture(t, newPodIfaceEndpoint(tc.address), newPodIfaceSubnet())
+			r, maps := newPodIfaceFixture(t, newPodIfaceEndpoint(tc.address), newPodIfaceSubnet())
 
 			if err := r.Reconcile(context.Background(), "default/pod-a"); err == nil {
 				t.Fatal("Reconcile succeeded, want an error")
 			}
-			if len(subnetMap.entries) != 0 {
-				t.Errorf("ifindex_subnet was written: %v", subnetMap.entries)
+			if len(maps.subnet.entries) != 0 {
+				t.Errorf("ifindex_subnet was written: %v", maps.subnet.entries)
 			}
-			if len(hostMACMap.entries) != 0 {
-				t.Errorf("ifindex_host_mac was written: %v", hostMACMap.entries)
+			if len(maps.hostMAC.entries) != 0 {
+				t.Errorf("ifindex_host_mac was written: %v", maps.hostMAC.entries)
 			}
 		})
 	}
@@ -151,12 +162,12 @@ func TestPodIfaceSkipsAnEndpointOnAnL2Network(t *testing.T) {
 	endpoint.Spec.Subnet = ""
 	endpoint.Spec.L2Network = "lab-net"
 
-	r, subnetMap, hostMACMap := newPodIfaceFixture(t, endpoint)
+	r, maps := newPodIfaceFixture(t, endpoint)
 
 	if err := r.Reconcile(context.Background(), "default/pod-a"); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if len(subnetMap.entries) != 0 || len(hostMACMap.entries) != 0 {
-		t.Fatalf("wrote %v and %v for an endpoint the L2 data plane owns", subnetMap.entries, hostMACMap.entries)
+	if len(maps.subnet.entries) != 0 || len(maps.hostMAC.entries) != 0 {
+		t.Fatalf("wrote %v and %v for an endpoint the L2 data plane owns", maps.subnet.entries, maps.hostMAC.entries)
 	}
 }

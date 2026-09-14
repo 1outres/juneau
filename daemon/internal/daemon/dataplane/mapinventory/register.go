@@ -19,6 +19,7 @@ func RegisterPodEgress(inv *Inventory, p *program.PodEgress) error {
 	for _, fn := range []func(*Inventory, *program.PodEgress) error{
 		registerSubnet,
 		registerIfindexSubnet,
+		registerIfindexExternalNetwork,
 		registerIfindexHostMac,
 		registerArpTable,
 		registerFdb,
@@ -103,6 +104,20 @@ func registerIfindexSubnet(inv *Inventory, p *program.PodEgress) error {
 		Value: Schema{Fields: []Field{
 			FieldU32Named("subnet_id"),
 			FieldIPv4BENamed("ipv4", "the Pod's address on this NIC"),
+		}},
+	})
+}
+
+func registerIfindexExternalNetwork(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name: "ifindex_external_network",
+		Map:  p.Objs.IfindexExternalNetwork,
+		Key: Schema{Fields: []Field{
+			FieldU32Named("ifindex"),
+		}},
+		Value: Schema{Fields: []Field{
+			FieldU32Named("network_id", "ExternalNetwork status.networkID"),
+			FieldIPv4BENamed("ipv4", "the ElasticIP the NIC carries"),
 		}},
 	})
 }

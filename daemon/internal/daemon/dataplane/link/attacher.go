@@ -90,10 +90,10 @@ func NewPodAttacher(
 //
 // An endpoint on an ExternalNetwork runs the pod pair as well: its frames
 // are IP, and pod_egress is where the Pod's traffic is meant to leave the
-// node. The pair keys a veth by ifindex_subnet, which such an endpoint
-// does not get (see PodIface), so until the programs know that kind of
-// veth, pod_egress drops what the Pod sends instead of letting it reach
-// the host stack unchecked.
+// node. The pair tells such a veth apart by ifindex_external_network (see
+// PodIface) and takes a path of its own for it, with no SNAT and no
+// policy. While that entry is missing, pod_egress drops what the Pod
+// sends instead of letting it reach the host stack unchecked.
 func (p *PodAttacher) programsFor(nwep *juneauv1alpha1.NetworkEndpoint) (attacherPrograms, error) {
 	switch {
 	case nwep.Spec.L2Network != "":

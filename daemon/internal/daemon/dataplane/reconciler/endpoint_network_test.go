@@ -196,18 +196,22 @@ func TestFdbWritesNothingForAnExternalNetworkWithoutANetworkID(t *testing.T) {
 	}
 }
 
-func TestPodIfaceGivesAnExternalEndpointItsHostMACButNoSubnetEntry(t *testing.T) {
-	r, subnetMap, hostMACMap := newPodIfaceFixture(t, newExternalEndpoint("node-a"), newTestExternalNetwork(testExternalNetworkID))
+func TestPodIfaceNamesTheVethOfAnExternalEndpointByItsNetworkAndAddress(t *testing.T) {
+	r, maps := newPodIfaceFixture(t, newExternalEndpoint("node-a"), newTestExternalNetwork(testExternalNetworkID))
 
 	if err := r.Reconcile(context.Background(), "default/web.eth0"); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if len(subnetMap.entries) != 0 {
-		t.Errorf("ifindex_subnet = %v, want empty: the veth is on no Subnet", subnetMap.entries)
+	if len(maps.subnet.entries) != 0 {
+		t.Errorf("ifindex_subnet = %v, want empty: the veth is on no Subnet", maps.subnet.entries)
 	}
-	want := bpf.PodEgressIfindexHostMacVal{Mac: [6]uint8{0x02, 0, 0, 0, 0, 0x01}}
-	if got := hostMACMap.entries[bpf.PodEgressIfindexHostMacKey{Ifindex: 9}]; got != want {
-		t.Errorf("ifindex_host_mac[9] = %+v, want %+v", got, want)
+	wantNIC := bpf.PodEgressIfindexExternalNetworkVal{NetworkId: testExternalNetworkID, Ipv4: 0x0a7100cb}
+	if got := maps.externalNetwork.entries[bpf.PodEgressIfindexExternalNetworkKey{Ifindex: 9}]; got != wantNIC {
+		t.Errorf("ifindex_external_network[9] = %+v, want %+v", got, wantNIC)
+	}
+	wantMAC := bpf.PodEgressIfindexHostMacVal{Mac: [6]uint8{0x02, 0, 0, 0, 0, 0x01}}
+	if got := maps.hostMAC.entries[bpf.PodEgressIfindexHostMacKey{Ifindex: 9}]; got != wantMAC {
+		t.Errorf("ifindex_host_mac[9] = %+v, want %+v", got, wantMAC)
 	}
 
 	if err := r.client.Delete(context.Background(), newExternalEndpoint("node-a")); err != nil {
@@ -216,8 +220,103 @@ func TestPodIfaceGivesAnExternalEndpointItsHostMACButNoSubnetEntry(t *testing.T)
 	if err := r.Reconcile(context.Background(), "default/web.eth0"); err != nil {
 		t.Fatalf("Reconcile after delete: %v", err)
 	}
-	if len(hostMACMap.entries) != 0 {
-		t.Errorf("ifindex_host_mac after the endpoint is gone = %v, want empty", hostMACMap.entries)
+	if len(maps.externalNetwork.entries) != 0 || len(maps.hostMAC.entries) != 0 {
+		t.Errorf("after the endpoint is gone: ifindex_external_network = %v, ifindex_host_mac = %v, want both empty",
+			maps.externalNetwork.entries, maps.hostMAC.entries)
+	}
+}
+
+// A network ID of 0 names no segment, so the veth is not named at all
+// until the ExternalNetwork has one. With no entry, pod_egress drops what
+// the Pod sends.
+func TestPodIfaceNamesNoVethForAnExternalNetworkWithoutANetworkID(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		objs []runtime.Object
+	}{
+		{name: "no network ID", objs: []runtime.Object{newExternalEndpoint("node-a"), newTestExternalNetwork(0)}},
+		{name: "network gone", objs: []runtime.Object{newExternalEndpoint("node-a")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, maps := newPodIfaceFixture(t, tc.objs...)
+			if err := r.Reconcile(context.Background(), "default/web.eth0"); err != nil {
+				t.Fatalf("Reconcile: %v", err)
+			}
+			for name, m := range map[string]*fakeBpfMap{
+				"ifindex_subnet":           maps.subnet,
+				"ifindex_external_network": maps.externalNetwork,
+				"ifindex_host_mac":         maps.hostMAC,
+			} {
+				if len(m.entries) != 0 {
+					t.Errorf("%s = %v, want empty", name, m.entries)
+				}
+			}
+		})
+	}
+}
+
+func TestPodIfaceForgetsAnExternalEndpointWhenItsNetworkGoesAway(t *testing.T) {
+	network := newTestExternalNetwork(testExternalNetworkID)
+	r, maps := newPodIfaceFixture(t, newExternalEndpoint("node-a"), network)
+
+	if err := r.Reconcile(context.Background(), "default/web.eth0"); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if err := r.client.Delete(context.Background(), network); err != nil {
+		t.Fatalf("delete ExternalNetwork: %v", err)
+	}
+	if err := r.Reconcile(context.Background(), "default/web.eth0"); err != nil {
+		t.Fatalf("Reconcile after the network is gone: %v", err)
+	}
+	if len(maps.externalNetwork.entries) != 0 || len(maps.hostMAC.entries) != 0 {
+		t.Errorf("ifindex_external_network = %v, ifindex_host_mac = %v, want both empty",
+			maps.externalNetwork.entries, maps.hostMAC.entries)
+	}
+}
+
+// A veth is on one kind of network. An entry of the other kind left at the
+// same ifindex, by an endpoint whose delete has not been reconciled yet,
+// would make pod_egress read the veth as that kind, so writing one kind
+// removes the other.
+func TestPodIfaceKeepsOneKindOfEntryPerVeth(t *testing.T) {
+	t.Run("external endpoint removes a subnet entry", func(t *testing.T) {
+		r, maps := newPodIfaceFixture(t, newExternalEndpoint("node-a"), newTestExternalNetwork(testExternalNetworkID))
+		maps.subnet.entries[bpf.PodEgressIfindexSubnetKey{Ifindex: 9}] = bpf.PodEgressIfindexSubnetVal{SubnetId: 42}
+
+		if err := r.Reconcile(context.Background(), "default/web.eth0"); err != nil {
+			t.Fatalf("Reconcile: %v", err)
+		}
+		if len(maps.subnet.entries) != 0 {
+			t.Errorf("ifindex_subnet = %v, want the stale entry gone", maps.subnet.entries)
+		}
+		if len(maps.externalNetwork.entries) != 1 {
+			t.Errorf("ifindex_external_network = %v, want the one entry", maps.externalNetwork.entries)
+		}
+	})
+
+	t.Run("subnet endpoint removes an external entry", func(t *testing.T) {
+		r, maps := newPodIfaceFixture(t, newPodIfaceEndpoint("10.16.0.5/24"), newPodIfaceSubnet())
+		maps.externalNetwork.entries[bpf.PodEgressIfindexExternalNetworkKey{Ifindex: 7}] =
+			bpf.PodEgressIfindexExternalNetworkVal{NetworkId: testExternalNetworkID}
+
+		if err := r.Reconcile(context.Background(), "default/pod-a"); err != nil {
+			t.Fatalf("Reconcile: %v", err)
+		}
+		if len(maps.externalNetwork.entries) != 0 {
+			t.Errorf("ifindex_external_network = %v, want the stale entry gone", maps.externalNetwork.entries)
+		}
+		if len(maps.subnet.entries) != 1 {
+			t.Errorf("ifindex_subnet = %v, want the one entry", maps.subnet.entries)
+		}
+	})
+}
+
+func TestPodIfaceFanOutExternalNetworkToEndpoints(t *testing.T) {
+	r, _ := newPodIfaceFixture(t, newExternalEndpoint("node-a"), newPodIfaceEndpoint("10.16.0.5/24"))
+
+	got := r.FanOutExternalNetworkToEndpoints(newTestExternalNetwork(testExternalNetworkID))
+	if len(got) != 1 || got[0] != "default/web.eth0" {
+		t.Errorf("fan-out = %v, want the one endpoint on the network", got)
 	}
 }
 

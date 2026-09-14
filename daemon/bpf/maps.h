@@ -413,6 +413,36 @@ struct {
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } ifindex_subnet SEC(".maps");
 
+// EXTERNAL_NIC_GATEWAY_ADDR is the next hop of every NIC that carries an
+// ElasticIP directly, in host byte order: 169.254.0.1. It must match
+// PodElasticIPGateway in controller/api/v1alpha1/podelasticip.go, which
+// is what the NIC's onlink default route points at.
+#define EXTERNAL_NIC_GATEWAY_ADDR 0xA9FE0001
+
+struct ifindex_external_network_key {
+  __u32 ifindex;
+};
+
+// ifindex_external_network_val names the veth of a NIC that carries an
+// ElasticIP directly. Such a NIC joins no Vpc, so it has no entry in
+// ifindex_subnet: every reader of that map takes the value as a Subnet
+// and would run SNAT, policy and the Vpc FIB on the NIC's frames.
+struct ifindex_external_network_val {
+  // network_id is ExternalNetwork.status.networkID, the number fdb and
+  // arp_table key the NIC by.
+  __u32 network_id;
+  // ipv4 is the ElasticIP, in network byte order.
+  __be32 ipv4;
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_IF_SUBNET);
+  __type(key, struct ifindex_external_network_key);
+  __type(value, struct ifindex_external_network_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} ifindex_external_network SEC(".maps");
+
 struct ifindex_host_mac_key {
   __u32 ifindex;
 };

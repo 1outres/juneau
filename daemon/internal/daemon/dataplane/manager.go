@@ -292,9 +292,15 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	}
 	m.fdbRunner.Start(ctx, 1)
 
-	m.podIfaceRunner = runner.New(reconciler.NewPodIface(m.client, m.podEgress, m.nodeName))
+	podIface := reconciler.NewPodIface(m.client, m.podEgress, m.nodeName)
+	m.podIfaceRunner = runner.New(podIface)
 	if err := m.podIfaceRunner.Watch(m.nwepInformer, runner.MetaNamespaceKey); err != nil {
 		return fmt.Errorf("watch NWEP (pod-iface): %w", err)
+	}
+	if m.externalNetworkInformer != nil {
+		if err := m.podIfaceRunner.WatchFanOut(m.externalNetworkInformer, podIface.FanOutExternalNetworkToEndpoints); err != nil {
+			return fmt.Errorf("watch ExternalNetwork (pod-iface fan-out): %w", err)
+		}
 	}
 	m.podIfaceRunner.Start(ctx, 1)
 

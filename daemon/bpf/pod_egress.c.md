@@ -13,6 +13,8 @@
 
 1. L2ヘッダーのパースを行う
 2. ifindex_subnet mapを引く(key: skb->ifindex)
+   - 見つからなかったらifindex_external_network mapを同じkeyで引く。見つかったら、ElasticIPを直接持つNICのvethなので、handle_external_nic関数を呼び出し、その関数の返り値を返す
+   - どちらにもなかったらドロップ
 3. subnet_mapを引く
 4. ARPリクエストの場合、handle_arp関数を呼び出し、その関数の返り値を返す（handle_arp関数にはsubnet_idとsubnet_mapのvalも渡す）
 5. IPv4の場合、reverse系のconntrack (SVC_NAPT_IN、SVC_SHARED_IN、LB_REV_NAT) を先に処理する。ヒットしたらそこで終了
@@ -23,6 +25,29 @@
    - DNAT非該当(CT miss、もしくはCT actionがDNAT以外) → fall through
 8. もし対象がgw_macだったらhandle_l3関数を呼び出し、その関数の返り値を返す(subnet_idとsubnet_mapのvalも渡す)
 9. そうじゃなかったらforward_l2関数を呼び出し、その返り値を返す(subnet_idとsubnet_mapのvalも渡す)
+
+## handle_external_nic
+
+ElasticIPを直接持つNIC(ExternalNetworkのNIC)から出るパケットを扱う。このNICはVpcに属さないので、Service、SNAT、NetworkACL、SecurityGroup、VpcのFIBはどれも通さない。
+
+分岐はifindex_subnetのmissの中に置いた。subnet_mapやapply_policyより前なので、Subnetの経路の命令数は増えない。tc_pod_egressはverifierの上限に近く、policyの途中で分岐させる余裕はない。
+
+1. ARPならhandle_external_nic_arp関数を呼び出し、その返り値を返す
+2. それ以外はドロップ
+
+## handle_external_nic_arp
+
+NICが持つのは/32のアドレスと、169.254.0.1(EXTERNAL_NIC_GATEWAY_ADDR)へのonlinkのdefault routeだけ。hostは169.254.0.1を持たず、proxy_arpも0なので、kernelはこのARPに答えない。答えを返すのはこの関数だけになる。
+
+1. ARP Replyとしてパースできたら
+   - 送信元IPアドレス(spa)がifindex_external_networkのipv4(NICのElasticIP)と同じならTC_ACT_OK。nodeはElasticIPへのhost routeでPodに送るので、kernelがPodのMACを尋ねる。その答えをkernelに渡す
+   - 違ったらドロップ
+2. ARP Requestでなければドロップ
+3. 要求されたIPアドレスが169.254.0.1でなければドロップ
+4. ifindex_host_mac mapをskb->ifindexで引く。無ければドロップ
+5. host側vethのMACでARP Replyに書き換え、skb->ifindexにbpf_redirectする
+
+答えるMACをhost側vethのMACにしたので、Podからnode宛のフレームはvethのMAC宛に届き、kernelはPACKET_HOSTとして受け取る。bpf_skb_change_typeは要らない。
 
 ## apply_policy (policy.h、pod_ingressと共通)
 
