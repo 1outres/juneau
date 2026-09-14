@@ -317,6 +317,25 @@ var _ = Describe("Pod DNS injection webhook", func() {
 		Expect(fetched.Spec.DNSConfig).To(BeNil())
 	})
 
+	It("switches ClusterFirstWithHostNet to Default on a Pod whose eth0 carries an ElasticIP", func() {
+		fetched := createDNSTestPod(map[string]string{
+			juneauv1alpha1.PodAnnotationElasticIP: webhookUniqueTestName("dns-eip"),
+		}, corev1.DNSClusterFirstWithHostNet)
+
+		Expect(fetched.Spec.DNSPolicy).To(Equal(corev1.DNSDefault))
+		Expect(fetched.Spec.DNSConfig).To(BeNil())
+	})
+
+	It("changes nothing on a Pod whose eth0 carries an ElasticIP when it opts out of DNS injection", func() {
+		fetched := createDNSTestPod(map[string]string{
+			juneauv1alpha1.PodAnnotationElasticIP:     webhookUniqueTestName("dns-eip"),
+			juneauv1alpha1.PodAnnotationDNSInjectSkip: "true",
+		}, corev1.DNSClusterFirst)
+
+		Expect(fetched.Spec.DNSPolicy).To(Equal(corev1.DNSClusterFirst))
+		Expect(fetched.Spec.DNSConfig).To(BeNil())
+	})
+
 	It("leaves dnsPolicy None alone on a Pod whose eth0 carries an ElasticIP", func() {
 		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
 			juneauv1alpha1.PodAnnotationElasticIP: webhookUniqueTestName("dns-eip"),

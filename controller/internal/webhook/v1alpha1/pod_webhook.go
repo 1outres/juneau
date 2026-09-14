@@ -171,11 +171,12 @@ func (d *PodDNSDefaulter) Default(ctx context.Context, obj runtime.Object) error
 // defaultDNSPolicyOutsideVpcDNS sends a Pod whose eth0 is not on a Subnet
 // to the resolver of its node. Such an eth0 carries an ElasticIP or sits on
 // an L2Network, and reaches neither the cluster DNS Service ClusterFirst
-// points at nor a per-Subnet DNS VIP. Any other dnsPolicy was chosen on
-// purpose and is left alone.
+// points at nor a per-Subnet DNS VIP. ClusterFirstWithHostNet points at the
+// same Service on a Pod without hostNetwork, so it is switched too. Only a
+// dnsPolicy that names no cluster DNS, such as None, is left alone.
 func defaultDNSPolicyOutsideVpcDNS(pod *corev1.Pod) {
 	switch pod.Spec.DNSPolicy {
-	case "", corev1.DNSClusterFirst:
+	case "", corev1.DNSClusterFirst, corev1.DNSClusterFirstWithHostNet:
 		pod.Spec.DNSPolicy = corev1.DNSDefault
 	}
 }
