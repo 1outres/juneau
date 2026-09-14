@@ -51,6 +51,9 @@ const (
 	elasticIPReasonAttached           = "Attached"
 	elasticIPReasonConflict           = "Conflict"
 	elasticIPReasonAllocating         = "Allocating"
+	elasticIPReasonWaitingForHandover = "WaitingForHandover"
+
+	elasticIPReasonWaitingForNetworkInterfaces = "WaitingForNetworkInterfaces"
 
 	elasticIPRequeueAfter = 10 * time.Second
 
@@ -74,6 +77,11 @@ func (e *elasticIPReconcileError) Error() string {
 // mirrors its outcome into ElasticIP.status. For an arp ExternalNetwork it
 // also owns an ARPAdvertisement that points the address at the node holding
 // the attachment.
+//
+// The address is used either through one ElasticIPAttachment (NAT) or by
+// one NetworkInterface that names the ElasticIP (direct). The reconciler
+// decides which one and publishes it in status.attachment; see
+// decideElasticIPUse.
 type ElasticIPReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -85,6 +93,7 @@ type ElasticIPReconciler struct {
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=externalnetworks,verbs=get;list;watch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=addresspools,verbs=get;list;watch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=elasticipattachments,verbs=get;list;watch
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=networkinterfaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=allocationclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=arpadvertisements,verbs=get;list;watch;create;update;patch;delete
 
@@ -119,9 +128,34 @@ func (r *ElasticIPReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return r.reconcileNormal(ctx, &resource)
 }
 
+// handleDeletion releases the address. While NetworkInterfaces still name
+// the ElasticIP it releases nothing: one of them may still carry the
+// address, and giving it back would let another ElasticIP take an address
+// a live NIC holds. The advertisement stays for the same reason.
 func (r *ElasticIPReconciler) handleDeletion(ctx context.Context, resource *juneauv1alpha1.ElasticIP) error {
 	if !controllerutil.ContainsFinalizer(resource, elasticIPFinalizer) {
 		return nil
+	}
+
+	interfaces, err := r.listNamingInterfaces(ctx, resource)
+	if err != nil {
+		return err
+	}
+	if len(interfaces) > 0 {
+		allocated := metav1.ConditionFalse
+		if resource.Status.Address != "" {
+			allocated = metav1.ConditionTrue
+		}
+		return r.updateStatus(ctx, resource, resource.Status.Phase, resource.Status.Address,
+			retainedElasticIPAttachment(resource.Status.Attachment, interfaces),
+			metav1.Condition{
+				Type:   elasticIPConditionAllocated,
+				Status: allocated,
+				Reason: elasticIPReasonWaitingForNetworkInterfaces,
+				Message: fmt.Sprintf("ElasticIP is being deleted; it keeps its AllocationClaim until NetworkInterface %s that names it is gone",
+					networkInterfaceNames(interfaces)),
+			},
+		)
 	}
 
 	if err := deleteARPAdvertisement(ctx, r.Client, elasticIPAdvertisementName(resource.Namespace, resource.Name)); err != nil {
@@ -164,8 +198,13 @@ func (r *ElasticIPReconciler) reconcileNormal(ctx context.Context, resource *jun
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	interfaces, err := r.listNamingInterfaces(ctx, resource)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	use := decideElasticIPUse(resource.Status.Attachment, attachments, interfaces)
 
-	if err := r.reconcileAdvertisement(ctx, resource, pools, address, attachments); err != nil {
+	if err := r.reconcileAdvertisement(ctx, resource, pools, address, use.nodeName); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -210,51 +249,52 @@ func (r *ElasticIPReconciler) reconcileNormal(ctx context.Context, resource *jun
 		return ctrl.Result{}, nil
 	}
 
-	switch len(attachments) {
-	case 0:
-		if err := r.updateStatus(ctx, resource, juneauv1alpha1.ElasticIPPhaseAvailable, address, nil,
+	return ctrl.Result{}, r.updateUseStatus(ctx, resource, address, use)
+}
+
+// updateUseStatus publishes what uses an allocated address.
+func (r *ElasticIPReconciler) updateUseStatus(ctx context.Context, resource *juneauv1alpha1.ElasticIP, address string, use elasticIPUse) error {
+	allocated := metav1.Condition{
+		Type:    elasticIPConditionAllocated,
+		Status:  metav1.ConditionTrue,
+		Reason:  elasticIPReasonReconcileSucceeded,
+		Message: "ElasticIP address allocated",
+	}
+
+	switch {
+	case use.conflict != "":
+		return r.updateErrorStatus(ctx, resource, elasticIPReasonConflict, use.conflict)
+	case use.attachment != nil:
+		return r.updateStatus(ctx, resource, juneauv1alpha1.ElasticIPPhaseAttached, address, use.attachment,
+			allocated,
 			metav1.Condition{
-				Type:    elasticIPConditionAllocated,
+				Type:    elasticIPConditionAttached,
 				Status:  metav1.ConditionTrue,
-				Reason:  elasticIPReasonReconcileSucceeded,
-				Message: "ElasticIP address allocated",
+				Reason:  elasticIPReasonAttached,
+				Message: fmt.Sprintf("ElasticIP is attached by %s %q", use.attachment.Kind, use.attachment.Name),
 			},
+		)
+	case use.waitingFor != "":
+		return r.updateStatus(ctx, resource, juneauv1alpha1.ElasticIPPhaseAvailable, address, nil,
+			allocated,
+			metav1.Condition{
+				Type:    elasticIPConditionAttached,
+				Status:  metav1.ConditionFalse,
+				Reason:  elasticIPReasonWaitingForHandover,
+				Message: use.waitingFor,
+			},
+		)
+	default:
+		return r.updateStatus(ctx, resource, juneauv1alpha1.ElasticIPPhaseAvailable, address, nil,
+			allocated,
 			metav1.Condition{
 				Type:    elasticIPConditionAttached,
 				Status:  metav1.ConditionFalse,
 				Reason:  elasticIPReasonAwaitingAttachment,
 				Message: "ElasticIP is not attached",
 			},
-		); err != nil {
-			return ctrl.Result{}, err
-		}
-	case 1:
-		if err := r.updateStatus(ctx, resource, juneauv1alpha1.ElasticIPPhaseAttached, address, &juneauv1alpha1.ElasticIPStatusAttachment{
-			Kind: juneauv1alpha1.ElasticIPStatusAttachmentKindElasticIPAttachment,
-			Name: attachments[0].Name,
-		},
-			metav1.Condition{
-				Type:    elasticIPConditionAllocated,
-				Status:  metav1.ConditionTrue,
-				Reason:  elasticIPReasonReconcileSucceeded,
-				Message: "ElasticIP address allocated",
-			},
-			metav1.Condition{
-				Type:    elasticIPConditionAttached,
-				Status:  metav1.ConditionTrue,
-				Reason:  elasticIPReasonAttached,
-				Message: fmt.Sprintf("ElasticIP is attached by %s", attachments[0].Name),
-			},
-		); err != nil {
-			return ctrl.Result{}, err
-		}
-	default:
-		if err := r.updateErrorStatus(ctx, resource, elasticIPReasonConflict, "multiple ElasticIPAttachments reference this ElasticIP"); err != nil {
-			return ctrl.Result{}, err
-		}
+		)
 	}
-
-	return ctrl.Result{}, nil
 }
 
 // elasticIPPools is the address space behind the referenced ExternalNetwork,
@@ -348,16 +388,17 @@ func (r *ElasticIPReconciler) resolvePoolRefs(ctx context.Context, resource *jun
 }
 
 // reconcileAdvertisement keeps the ARPAdvertisement in step with the one node
-// that answers for this address. It is removed whenever no such node exists:
-// an unallocated ElasticIP, one nothing is attached to, or one whose
-// attachments do not agree on a node. Leaving it behind would keep a node
-// answering for an address it no longer holds.
+// that answers for this address: the node of the ElasticIPAttachment or of
+// the NetworkInterface that uses it. It is removed whenever no such node
+// exists: an unallocated ElasticIP, one nothing uses, or one whose uses
+// conflict. Leaving it behind would keep a node answering for an address it
+// no longer holds.
 func (r *ElasticIPReconciler) reconcileAdvertisement(
 	ctx context.Context,
 	resource *juneauv1alpha1.ElasticIP,
 	pools *elasticIPPools,
 	address string,
-	attachments []juneauv1alpha1.ElasticIPAttachment,
+	nodeName string,
 ) error {
 	name := elasticIPAdvertisementName(resource.Namespace, resource.Name)
 
@@ -365,7 +406,6 @@ func (r *ElasticIPReconciler) reconcileAdvertisement(
 	case juneauv1alpha1.ExternalNetworkTypeBGP:
 		return deleteARPAdvertisement(ctx, r.Client, name)
 	case juneauv1alpha1.ExternalNetworkTypeARP:
-		nodeName := elasticIPAnsweringNode(attachments)
 		if address == "" || nodeName == "" {
 			return deleteARPAdvertisement(ctx, r.Client, name)
 		}
@@ -378,15 +418,6 @@ func (r *ElasticIPReconciler) reconcileAdvertisement(
 	default:
 		return fmt.Errorf("ExternalNetwork %q has unsupported type %q", pools.externalNetwork.Name, pools.externalNetwork.Spec.Type)
 	}
-}
-
-// elasticIPAnsweringNode returns the node that answers for the address, or an
-// empty string when the attachments name anything other than exactly one.
-func elasticIPAnsweringNode(attachments []juneauv1alpha1.ElasticIPAttachment) string {
-	if len(attachments) != 1 {
-		return ""
-	}
-	return attachments[0].Status.NodeName
 }
 
 func elasticIPAdvertisementName(namespace, name string) string {
@@ -481,6 +512,21 @@ func (r *ElasticIPReconciler) listActiveAttachments(ctx context.Context, resourc
 	return active, nil
 }
 
+// listNamingInterfaces returns every NetworkInterface that names the
+// ElasticIP in spec.elasticIP, including ones being deleted: until such an
+// interface is gone it may still carry the address. The field index it
+// reads is installed by the NetworkInterface controller.
+func (r *ElasticIPReconciler) listNamingInterfaces(ctx context.Context, resource *juneauv1alpha1.ElasticIP) ([]juneauv1alpha1.NetworkInterface, error) {
+	var interfaces juneauv1alpha1.NetworkInterfaceList
+	if err := r.List(ctx, &interfaces,
+		client.InNamespace(resource.Namespace),
+		client.MatchingFields{networkInterfaceElasticIPIndex: resource.Name},
+	); err != nil {
+		return nil, fmt.Errorf("list the NetworkInterfaces that name ElasticIP %s/%s: %w", resource.Namespace, resource.Name, err)
+	}
+	return interfaces.Items, nil
+}
+
 func (r *ElasticIPReconciler) updateErrorStatus(ctx context.Context, resource *juneauv1alpha1.ElasticIP, reason, message string) error {
 	return r.updateStatus(ctx, resource, juneauv1alpha1.ElasticIPPhaseError, resource.Status.Address, nil,
 		metav1.Condition{
@@ -544,6 +590,10 @@ func (r *ElasticIPReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&juneauv1alpha1.ElasticIP{}).
+		Watches(
+			&juneauv1alpha1.NetworkInterface{},
+			handler.EnqueueRequestsFromMapFunc(mapNetworkInterfaceToElasticIP),
+		).
 		Watches(
 			&juneauv1alpha1.ElasticIPAttachment{},
 			handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
