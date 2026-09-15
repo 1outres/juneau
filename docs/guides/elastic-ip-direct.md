@@ -306,6 +306,8 @@ WaitingForNetworkInterfaces
 - 持っているPodが終了中
 - 持っているNICと新しいNICの`spec.allocationIdentity`が同じ。KubeVirtのvirt-launcher Podは`vmi.<VirtualMachine名>`が入るので、VMを再起動しても同じElasticIPを持ち続けます
 
+webhookはPodを作るときにNetworkInterfaceを見て判断するので、同じElasticIPを参照するPodを2つ同時に作ると、両方とも受け付けられることがあります。この場合も両方のNICが作られ、ElasticIPを持てなかった方は`Pending`で待ちます。reasonは`WaitingForElasticIP`で、messageにアドレスを持っているNICの名前が出ます。持っているPodを消すと、待っていたNICがすぐにアドレスを引き継ぎます。
+
 Deploymentでは、ローリングアップデートが古いPodを残したまま新しいPodを作ろうとするので、webhookが新しいPodを拒否して更新が進みません。1つのElasticIPを使うDeploymentは`replicas: 1`にして、`strategy.type: Recreate`か`maxSurge: 0`を指定してください。古いPodが終了中になってから新しいPodが作られます。
 
 ## 制限
