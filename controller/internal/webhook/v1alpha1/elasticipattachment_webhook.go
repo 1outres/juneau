@@ -197,7 +197,9 @@ func (v *ElasticIPAttachmentCustomValidator) validate(ctx context.Context, obj *
 }
 
 // validateReferences checks that the ElasticIP and the NetworkInterface
-// this attachment names are both present and still free.
+// this attachment names are both present and still free. An ElasticIP a
+// NetworkInterface carries directly is not free, and a NetworkInterface
+// that carries an ElasticIP directly cannot be a NAT target.
 func (v *ElasticIPAttachmentCustomValidator) validateReferences(ctx context.Context, obj *juneauloutresmev1alpha1.ElasticIPAttachment) (field.ErrorList, error) {
 	var errs field.ErrorList
 
@@ -226,6 +228,19 @@ func (v *ElasticIPAttachmentCustomValidator) validateReferences(ctx context.Cont
 			}
 		} else if networkInterface.DeletionTimestamp != nil {
 			errs = append(errs, field.Invalid(field.NewPath("spec", "targetRef", "networkInterfaceName"), networkInterfaceName, "referenced NetworkInterface is being deleted"))
+		} else if networkInterface.Spec.ElasticIP != "" {
+			errs = append(errs, field.Invalid(field.NewPath("spec", "targetRef", "networkInterfaceName"), networkInterfaceName,
+				fmt.Sprintf("NetworkInterface carries ElasticIP %q directly and has no private address to NAT to", networkInterface.Spec.ElasticIP)))
+		}
+	}
+
+	if elasticIPName != "" {
+		holder, err := findNetworkInterfaceCarrying(ctx, v.Reader, obj.Namespace, elasticIPName)
+		if err != nil {
+			return nil, err
+		}
+		if holder != "" {
+			errs = append(errs, field.Invalid(field.NewPath("spec", "elasticIPRef", "name"), elasticIPName, fmt.Sprintf("ElasticIP is used directly by NetworkInterface %q", holder)))
 		}
 	}
 

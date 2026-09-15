@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -34,7 +35,15 @@ import (
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
+// externalNetworkIDAttribute is the status field the network ID claim
+// fills in.
+const externalNetworkIDAttribute = "status.networkID"
+
 // ExternalNetworkReconciler reconciles ExternalNetwork resources.
+//
+// It gives every ExternalNetwork a network ID from the pool Subnet and
+// L2Network VNIs come from, so the overlay can carry the NICs that hold an
+// ElasticIP of it like one more L2 segment.
 //
 // When at least one NATGateway references this ExternalNetwork, the
 // reconciler fans out an ExternalNetworkAttachment per Node × this
@@ -51,9 +60,10 @@ type ExternalNetworkReconciler struct {
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=externalnetworks/finalizers,verbs=update
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=natgateways,verbs=get;list;watch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=externalnetworkattachments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=allocationclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 
-// Reconcile reconciles ExternalNetwork by fanning out
+// Reconcile gives the ExternalNetwork its network ID and fans out
 // ExternalNetworkAttachments when needed.
 func (r *ExternalNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -77,6 +87,10 @@ func (r *ExternalNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, fmt.Errorf("ExternalNetwork %q has unsupported type %q", externalNetwork.Name, externalNetwork.Spec.Type)
 	}
 
+	if err := r.reconcileNetworkID(ctx, &externalNetwork); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	referenced, err := r.hasReferencingNATGateway(ctx, &externalNetwork)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -98,6 +112,59 @@ func (r *ExternalNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// reconcileNetworkID publishes the network ID once the AllocationClaim
+// behind it is allocated. An ID once given is kept for the life of the
+// ExternalNetwork: the data plane keys the forwarding state of every NIC
+// on it by that number. The claim is owned by the ExternalNetwork, so
+// deleting the ExternalNetwork gives the ID back.
+func (r *ExternalNetworkReconciler) reconcileNetworkID(ctx context.Context, externalNetwork *juneauv1alpha1.ExternalNetwork) error {
+	if externalNetwork.Status.NetworkID != 0 {
+		return nil
+	}
+
+	claim, err := r.ensureNetworkIDClaim(ctx, externalNetwork)
+	if err != nil {
+		return fmt.Errorf("ensure the network ID AllocationClaim of ExternalNetwork %q: %w", externalNetwork.Name, err)
+	}
+	if claim.Status.Phase != juneauv1alpha1.AllocationClaimPhaseAllocated || claim.Status.Value.Number == 0 {
+		return nil
+	}
+	if claim.Status.Value.Number > maxVNI {
+		return reconcile.TerminalError(fmt.Errorf("allocated network ID %d of ExternalNetwork %q exceeds the VNI range", claim.Status.Value.Number, externalNetwork.Name))
+	}
+
+	externalNetwork.Status.NetworkID = uint32(claim.Status.Value.Number)
+	return r.Status().Update(ctx, externalNetwork)
+}
+
+func (r *ExternalNetworkReconciler) ensureNetworkIDClaim(ctx context.Context, externalNetwork *juneauv1alpha1.ExternalNetwork) (*juneauv1alpha1.AllocationClaim, error) {
+	claim := newExternalNetworkIDClaim(externalNetwork.Name)
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, claim, func() error {
+		claim.Spec = newExternalNetworkIDClaim(externalNetwork.Name).Spec
+		return controllerutil.SetControllerReference(externalNetwork, claim, r.Scheme)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return claim, nil
+}
+
+func newExternalNetworkIDClaim(externalNetworkName string) *juneauv1alpha1.AllocationClaim {
+	return newAllocationClaim(allocationPoolSubnetVNI, externalNetworkGVK(), "", externalNetworkName, externalNetworkIDAttribute)
+}
+
+func externalNetworkIDClaimName(externalNetworkName string) string {
+	return newExternalNetworkIDClaim(externalNetworkName).Name
+}
+
+func externalNetworkGVK() schema.GroupVersionKind {
+	return schema.GroupVersionKind{
+		Group:   juneauv1alpha1.GroupVersion.Group,
+		Version: juneauv1alpha1.GroupVersion.Version,
+		Kind:    "ExternalNetwork",
+	}
 }
 
 func (r *ExternalNetworkReconciler) hasReferencingNATGateway(ctx context.Context, externalNetwork *juneauv1alpha1.ExternalNetwork) (bool, error) {
@@ -144,6 +211,7 @@ func (r *ExternalNetworkReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&juneauv1alpha1.ExternalNetwork{}).
 		Owns(&juneauv1alpha1.ExternalNetworkAttachment{}).
+		Owns(&juneauv1alpha1.AllocationClaim{}).
 		Watches(&juneauv1alpha1.NATGateway{}, handler.EnqueueRequestsFromMapFunc(r.mapNATGatewayToExternalNetworks)).
 		Watches(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(r.mapNodeToExternalNetworks)).
 		Named("externalnetwork").

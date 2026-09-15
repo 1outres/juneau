@@ -1,10 +1,11 @@
 // ARP wire format and reply synthesis shared by the TC eBPF programs.
 //
-// Two hooks answer ARP: pod_egress serves the overlay Subnet gateway
-// and Pod addresses on a veth, node_ingress serves juneau-owned
-// external addresses on the node NIC. Both parse the same frame and
-// build the same reply, so the wire handling lives here and each hook
-// only decides which MAC to answer with.
+// Two hooks answer ARP: pod_egress serves the overlay Subnet gateway,
+// Pod addresses and the gateway of a NIC on an ElasticIP on a veth,
+// node_ingress serves juneau-owned external addresses on the node NIC.
+// They parse the same frame and build the same reply, so the wire
+// handling lives here and each hook only decides which MAC to answer
+// with.
 #ifndef JUNEAU_BPF_ARP_H
 #define JUNEAU_BPF_ARP_H
 
@@ -43,18 +44,18 @@ struct arp_payload {
   __be32 tpa;
 } __attribute__((packed));
 
-struct arp_request {
+struct arp_frame {
   struct arphdr *hdr;
   struct arp_payload *payload;
   __u32 target_addr;
 };
 
-// arp_parse_request accepts only an Ethernet/IPv4 ARP request and
-// fills req. target_addr is the requested address in host order, the
-// form juneau's maps are keyed on. Returns 0 on success and -1 for
-// every other frame, which the caller handles as it sees fit.
-static __always_inline int arp_parse_request(void *data_end, struct ethhdr *eth,
-                                             struct arp_request *req) {
+// arp_parse accepts only an Ethernet/IPv4 ARP frame with the given
+// opcode and fills frame. target_addr is the target address in host
+// order, the form juneau's maps are keyed on. Returns 0 on success and
+// -1 for every other frame, which the caller handles as it sees fit.
+static __always_inline int arp_parse(void *data_end, struct ethhdr *eth,
+                                     __u16 op, struct arp_frame *frame) {
   struct arphdr *arp = (void *)(eth + 1);
   if ((void *)(arp + 1) > data_end)
     return -1;
@@ -65,24 +66,31 @@ static __always_inline int arp_parse_request(void *data_end, struct ethhdr *eth,
     return -1;
   if (arp->ar_hln != ARP_ETH_ALEN || arp->ar_pln != 4)
     return -1;
-  if (arp->ar_op != bpf_htons(ARP_OP_REQUEST))
+  if (arp->ar_op != bpf_htons(op))
     return -1;
 
   struct arp_payload *payload = (void *)(arp + 1);
   if ((void *)(payload + 1) > data_end)
     return -1;
 
-  req->hdr = arp;
-  req->payload = payload;
-  req->target_addr = bpf_ntohl(payload->tpa);
+  frame->hdr = arp;
+  frame->payload = payload;
+  frame->target_addr = bpf_ntohl(payload->tpa);
   return 0;
+}
+
+// arp_parse_request is arp_parse for a request, the only opcode a hook
+// that answers ARP has to read.
+static __always_inline int arp_parse_request(void *data_end, struct ethhdr *eth,
+                                             struct arp_frame *req) {
+  return arp_parse(data_end, eth, ARP_OP_REQUEST, req);
 }
 
 // arp_rewrite_to_reply turns the parsed request into a reply from
 // responder_mac in place. The caller then redirects the frame back
 // out of the interface it arrived on.
 static __always_inline void arp_rewrite_to_reply(struct ethhdr *eth,
-                                                 const struct arp_request *req,
+                                                 const struct arp_frame *req,
                                                  const __u8 *responder_mac) {
   __u8 requester_mac[ARP_ETH_ALEN];
   __builtin_memcpy(requester_mac, eth->h_source, ARP_ETH_ALEN);

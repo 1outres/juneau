@@ -51,14 +51,46 @@ type ElasticIPStatus struct {
 
 	Address string `json:"address,omitempty"`
 
-	AttachmentName string `json:"attachmentName,omitempty"`
+	// Attachment names what uses the address. Phase is Attached for
+	// either kind. Unset while nothing uses the address.
+	// +optional
+	Attachment *ElasticIPStatusAttachment `json:"attachment,omitempty"`
+}
+
+// ElasticIPStatusAttachmentKind names the kind of object that uses an
+// ElasticIP.
+// +kubebuilder:validation:Enum=ElasticIPAttachment;NetworkInterface
+type ElasticIPStatusAttachmentKind string
+
+const (
+	// ElasticIPStatusAttachmentKindElasticIPAttachment is the NAT use: an
+	// ElasticIPAttachment maps the address to the address of a
+	// NetworkInterface.
+	ElasticIPStatusAttachmentKindElasticIPAttachment ElasticIPStatusAttachmentKind = "ElasticIPAttachment"
+
+	// ElasticIPStatusAttachmentKindNetworkInterface is the direct use: a
+	// NetworkInterface names the ElasticIP in spec.elasticIP and carries
+	// the address itself.
+	ElasticIPStatusAttachmentKindNetworkInterface ElasticIPStatusAttachmentKind = "NetworkInterface"
+)
+
+// ElasticIPStatusAttachment points at the object that uses an ElasticIP.
+// The object lives in the namespace of the ElasticIP.
+type ElasticIPStatusAttachment struct {
+	// +required
+	Kind ElasticIPStatusAttachmentKind `json:"kind"`
+
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="ExternalNetwork",type="string",JSONPath=".spec.externalNetwork"
 // +kubebuilder:printcolumn:name="Address",type="string",JSONPath=".status.address"
-// +kubebuilder:printcolumn:name="Attachment",type="string",JSONPath=".status.attachmentName"
+// +kubebuilder:printcolumn:name="AttachmentKind",type="string",JSONPath=".status.attachment.kind"
+// +kubebuilder:printcolumn:name="Attachment",type="string",JSONPath=".status.attachment.name"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Allocated",type="string",JSONPath=".status.conditions[?(@.type==\"Allocated\")].status"
 // +kubebuilder:printcolumn:name="Attached",type="string",JSONPath=".status.conditions[?(@.type==\"Attached\")].status"

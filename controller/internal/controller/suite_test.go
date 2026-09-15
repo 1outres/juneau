@@ -174,6 +174,9 @@ var _ = BeforeSuite(func() {
 	// The Pod reconciler runs from its own _test.go so the specs can drive
 	// it step by step; only its field index is installed here.
 	Expect(indexNetworkInterfaceByPodUID(ctx, mgr.GetFieldIndexer())).To(Succeed())
+	// The NetworkInterface reconciler is not set up here either, so its
+	// index on spec.elasticIP is installed by hand as well.
+	Expect(indexNetworkInterfaceByElasticIP(ctx, mgr.GetFieldIndexer())).To(Succeed())
 	Expect((&ServiceNATAttachmentReconciler{
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),

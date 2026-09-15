@@ -68,6 +68,9 @@ const (
 // per-subnet AllocationPool maintained by the Subnet controller. The
 // reconciler owns the lifecycle of that claim and mirrors its outcome
 // into NetworkInterface.status.
+//
+// An interface on an ElasticIP has no claim. It carries the address of
+// the ElasticIP once the ElasticIP controller names it as the holder.
 type NetworkInterfaceReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -77,6 +80,7 @@ type NetworkInterfaceReconciler struct {
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=networkinterfaces/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=networkinterfaces/finalizers,verbs=update
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=allocationclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=subnets;l2networks;elasticips;elasticipattachments;externalnetworks,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -113,40 +117,66 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if network == nil {
 		return ctrl.Result{Requeue: true}, nil
 	}
+	if waitingFor := network.WaitingFor(); waitingFor != "" {
+		if err := r.updateUnaddressedStatus(ctx, &resource, conditionReasonNetworkNotReady, waitingFor); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: requeueDelay}, nil
+	}
 
-	address := ""
+	if network.ElasticIP != nil {
+		return ctrl.Result{}, r.reconcileElasticIPAddressing(ctx, &resource, network)
+	}
+	return ctrl.Result{}, r.reconcilePoolAddressing(ctx, &resource, network)
+}
+
+// interfaceAddressing is what an interface ends up with once its network
+// has given it everything: the address and the routing the CNI server
+// programs, and the claim that holds the address when there is one.
+type interfaceAddressing struct {
+	allocationClaim string
+	address         string
+	routes          []juneauv1alpha1.NetworkRoute
+	rules           []juneauv1alpha1.NetworkRoutingRule
+	securityGroups  []juneauv1alpha1.NetworkInterfaceEffectiveSG
+
+	// message tells the user where the address came from.
+	message string
+}
+
+// reconcilePoolAddressing gives an interface on a Subnet or an L2Network
+// its address out of the AllocationPool of the network.
+func (r *NetworkInterfaceReconciler) reconcilePoolAddressing(ctx context.Context, resource *juneauv1alpha1.NetworkInterface, network *podnetwork.Network) error {
+	addressing := interfaceAddressing{
+		routes:  buildPodRoutes(resource.Spec.PodRef.Interface, network.Gateway),
+		message: network.Reference.String() + " hands out no address",
+	}
 	if network.AllocatesAddresses() {
 		_, cidr, err := net.ParseCIDR(network.CIDR)
 		if err != nil {
-			if updateErr := r.updateAllocationFailureStatus(ctx, &resource, conditionReasonInvalidNetworkCIDR, err.Error()); updateErr != nil {
-				return ctrl.Result{}, updateErr
-			}
-			return ctrl.Result{}, nil
+			return r.updateAllocationFailureStatus(ctx, resource, conditionReasonInvalidNetworkCIDR, err.Error())
 		}
 
-		allocated, allocReason, allocMessage, err := r.ensureClaim(ctx, &resource, network)
+		allocated, allocReason, allocMessage, err := r.ensureClaim(ctx, resource, network)
 		if err != nil {
-			return ctrl.Result{}, err
+			return err
 		}
 		if allocated == "" {
 			// Claim is not yet Allocated. Surface the underlying reason so
 			// users can distinguish "still allocating" from "exhausted".
-			if updateErr := r.updateAllocationFailureStatus(ctx, &resource, allocReason, allocMessage); updateErr != nil {
-				return ctrl.Result{}, updateErr
-			}
-			return ctrl.Result{}, nil
+			return r.updateAllocationFailureStatus(ctx, resource, allocReason, allocMessage)
 		}
-		address = (&net.IPNet{IP: net.ParseIP(allocated), Mask: cidr.Mask}).String()
+		addressing.allocationClaim = claimNameForNetworkInterface(resource)
+		addressing.address = (&net.IPNet{IP: net.ParseIP(allocated), Mask: cidr.Mask}).String()
+		addressing.message = "IP allocated successfully: " + addressing.address
 	}
 
-	effectiveSGs, err := r.resolveEffectiveSecurityGroups(ctx, &resource, network)
+	effectiveSGs, err := r.resolveEffectiveSecurityGroups(ctx, resource, network)
 	if err != nil {
-		return ctrl.Result{}, err
+		return err
 	}
-	if err := r.updateAllocatedStatus(ctx, &resource, claimNameForNetworkInterface(&resource), address, network.Gateway, effectiveSGs); err != nil {
-		return ctrl.Result{}, err
-	}
-	return ctrl.Result{}, nil
+	addressing.securityGroups = effectiveSGs
+	return r.updateAllocatedStatus(ctx, resource, addressing)
 }
 
 // resolveEffectiveSecurityGroups maps spec.securityGroups names to
@@ -202,26 +232,33 @@ func (r *NetworkInterfaceReconciler) handleDeletion(ctx context.Context, resourc
 		return nil
 	}
 
-	claimName := claimNameForNetworkInterface(resource)
-	var claim juneauv1alpha1.AllocationClaim
-	if err := r.Get(ctx, client.ObjectKey{Name: claimName}, &claim); err == nil {
-		if err := r.Delete(ctx, &claim); err != nil && !errors.IsNotFound(err) {
+	if podnetwork.InterfaceReference(resource).HasAllocationPool() {
+		if err := r.deleteClaim(ctx, resource); err != nil {
 			return err
 		}
-	} else if !errors.IsNotFound(err) {
-		return err
 	}
 
 	controllerutil.RemoveFinalizer(resource, networkInterfaceFinalizer)
 	return r.Update(ctx, resource)
 }
 
-// fetchNetwork resolves the network this interface joins, whether a
-// Subnet or an L2Network names it. A network that is not there yet is
-// reported as (nil, nil) with the reason on the interface, so the caller
-// requeues instead of failing the workload.
+func (r *NetworkInterfaceReconciler) deleteClaim(ctx context.Context, resource *juneauv1alpha1.NetworkInterface) error {
+	var claim juneauv1alpha1.AllocationClaim
+	if err := r.Get(ctx, client.ObjectKey{Name: claimNameForNetworkInterface(resource)}, &claim); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if err := r.Delete(ctx, &claim); err != nil && !errors.IsNotFound(err) {
+		return err
+	}
+	return nil
+}
+
+// fetchNetwork resolves the network this interface joins, whichever kind
+// names it. A network that is not there yet is reported as (nil, nil) with
+// the reason on the interface, so the caller requeues instead of failing
+// the workload.
 func (r *NetworkInterfaceReconciler) fetchNetwork(ctx context.Context, resource *juneauv1alpha1.NetworkInterface) (*podnetwork.Network, error) {
-	network, err := podnetwork.Resolve(ctx, r.Client, podnetwork.InterfaceReference(resource.Spec))
+	network, err := podnetwork.Resolve(ctx, r.Client, podnetwork.InterfaceReference(resource))
 	if err != nil {
 		if errors.IsNotFound(err) {
 			if err := r.updateStatus(ctx, resource, juneauv1alpha1.NetworkInterfacePhasePending,
@@ -331,7 +368,7 @@ func leaseNameForNetworkInterface(resource *juneauv1alpha1.NetworkInterface) str
 
 func allocationNameForNetworkInterface(resource *juneauv1alpha1.NetworkInterface, identity string) string {
 	return allocationClaimName(
-		podnetwork.InterfaceReference(resource.Spec).AllocationPoolName(),
+		podnetwork.InterfaceReference(resource).AllocationPoolName(),
 		schema.GroupVersionKind{Group: juneauv1alpha1.GroupVersion.Group, Version: juneauv1alpha1.GroupVersion.Version, Kind: "NetworkInterface"},
 		resource.Namespace,
 		identity,
@@ -343,19 +380,16 @@ func allocationNameForNetworkInterface(resource *juneauv1alpha1.NetworkInterface
 // with. An empty address is a valid outcome: an L2Network without a CIDR
 // hands out none, and the interface is Allocated all the same because
 // there is nothing left to wait for.
-func (r *NetworkInterfaceReconciler) updateAllocatedStatus(ctx context.Context, resource *juneauv1alpha1.NetworkInterface, claimName string, address string, gateway string, effectiveSGs []juneauv1alpha1.NetworkInterfaceEffectiveSG) error {
-	allocatedMessage := "IP allocated successfully: " + address
-	if address == "" {
-		claimName = ""
-		allocatedMessage = podnetwork.InterfaceReference(resource.Spec).String() + " hands out no address"
-	}
+func (r *NetworkInterfaceReconciler) updateAllocatedStatus(ctx context.Context, resource *juneauv1alpha1.NetworkInterface, addressing interfaceAddressing) error {
+	allocatedMessage := addressing.message
 
 	updated := resource.DeepCopy()
 	updated.Status.ObservedGeneration = updated.Generation
-	updated.Status.AllocationClaim = claimName
-	updated.Status.Address = address
-	updated.Status.Routes = buildPodRoutes(resource.Spec.PodRef.Interface, gateway)
-	updated.Status.EffectiveSecurityGroups = effectiveSGs
+	updated.Status.AllocationClaim = addressing.allocationClaim
+	updated.Status.Address = addressing.address
+	updated.Status.Routes = addressing.routes
+	updated.Status.Rules = addressing.rules
+	updated.Status.EffectiveSecurityGroups = addressing.securityGroups
 	meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
 		Type:               juneauv1alpha1.NetworkInterfaceStatusAllocated,
 		Status:             metav1.ConditionTrue,
@@ -475,6 +509,7 @@ func (r *NetworkInterfaceReconciler) commitStatus(ctx context.Context, resource 
 		resource.Status.AllocationClaim == status.AllocationClaim &&
 		resource.Status.Address == status.Address &&
 		reflect.DeepEqual(resource.Status.Routes, status.Routes) &&
+		reflect.DeepEqual(resource.Status.Rules, status.Rules) &&
 		reflect.DeepEqual(resource.Status.EffectiveSecurityGroups, status.EffectiveSecurityGroups) &&
 		reflect.DeepEqual(resource.Status.Conditions, status.Conditions) {
 		return nil
@@ -486,6 +521,9 @@ func (r *NetworkInterfaceReconciler) commitStatus(ctx context.Context, resource 
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *NetworkInterfaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := indexNetworkInterfaceByElasticIP(context.Background(), mgr.GetFieldIndexer()); err != nil {
+		return err
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&juneauv1alpha1.NetworkInterface{}).
 		Owns(&juneauv1alpha1.NetworkEndpoint{}).
@@ -508,6 +546,14 @@ func (r *NetworkInterfaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&juneauv1alpha1.SecurityGroup{},
 			handler.EnqueueRequestsFromMapFunc(r.mapSecurityGroupToNetworkInterfaces),
+		).
+		Watches(
+			&juneauv1alpha1.ElasticIP{},
+			handler.EnqueueRequestsFromMapFunc(r.mapElasticIPToNetworkInterfaces),
+		).
+		Watches(
+			&juneauv1alpha1.ElasticIPAttachment{},
+			handler.EnqueueRequestsFromMapFunc(r.mapElasticIPAttachmentToNetworkInterfaces),
 		).
 		Named("networkinterface").
 		Complete(r)

@@ -321,7 +321,9 @@ func matchEndpointsForPort(endpoints []localEndpoint, port LBServicePort) []loca
 
 // resolvePrimarySubnetID looks up the primary NetworkInterface of the
 // endpoint's target Pod (TargetRef Kind=Pod) and consults the Subnet to
-// read the allocated VNI. Returns 0 when the Pod is not Juneau-managed.
+// read the allocated VNI. Returns 0 when the Pod is not Juneau-managed,
+// and when its eth0 is not on a Subnet: a NIC on an ElasticIP or an
+// L2Network is no LoadBalancer backend.
 func (r *Reconciler) resolvePrimarySubnetID(ctx context.Context, ep localEndpoint) (uint32, error) {
 	if ep.targetRef == nil || ep.targetRef.Kind != "Pod" {
 		return 0, nil
@@ -337,8 +339,11 @@ func (r *Reconciler) resolvePrimarySubnetID(ctx context.Context, ep localEndpoin
 		return 0, nil
 	}
 	iface := ifaces.Items[0]
-	if iface.Spec.Subnet == "" {
+	switch {
+	case iface.Spec.ElasticIP != "", iface.Spec.L2Network != "":
 		return 0, nil
+	case iface.Spec.Subnet == "":
+		return 0, fmt.Errorf("NetworkInterface %s/%s names no network", iface.Namespace, iface.Name)
 	}
 	var subnet juneauv1alpha1.Subnet
 	if err := r.client.Get(ctx, client.ObjectKey{Name: iface.Spec.Subnet}, &subnet); err != nil {

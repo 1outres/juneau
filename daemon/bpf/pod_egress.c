@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include "arp.h"
 #include "ct.h"
+#include "external.h"
 #include "lb.h"
 #include "maps.h"
 #include "nat.h"
@@ -88,43 +89,78 @@ struct {
 // MAC, so skb->pkt_type is PACKET_OTHERHOST and ip_rcv_core drops the
 // packet before routing. No ARP would ever be sent and the flow would
 // never recover.
-static __juneau_bpf_subprog int forward_via_host_fib(struct __sk_buff *skb,
-                                                     __u32 *out_ifindex) {
+static __always_inline long host_fib_lookup(struct __sk_buff *skb,
+                                            struct bpf_fib_lookup *fib_params) {
   struct iphdr *iph = load_iph(skb);
   if (!iph)
-    return TC_ACT_SHOT;
+    return -1;
 
-  struct bpf_fib_lookup fib_params = {};
-  fib_params.family = AF_INET;
-  fib_params.l4_protocol = iph->protocol;
-  fib_params.ipv4_dst = iph->daddr;
-  fib_params.ifindex = skb->ifindex;
+  fib_params->family = AF_INET;
+  fib_params->l4_protocol = iph->protocol;
+  fib_params->ipv4_dst = iph->daddr;
+  fib_params->ifindex = skb->ifindex;
 
-  long rc = bpf_fib_lookup(skb, &fib_params, sizeof(fib_params), 0);
-  if (rc != BPF_FIB_LKUP_RET_SUCCESS && rc != BPF_FIB_LKUP_RET_NO_NEIGH)
-    return TC_ACT_SHOT;
+  return bpf_fib_lookup(skb, fib_params, sizeof(*fib_params), 0);
+}
 
-  *out_ifindex = fib_params.ifindex;
-
+// host_fib_redirect sends the packet on to the next hop a successful
+// host_fib_lookup found. rc must be BPF_FIB_LKUP_RET_SUCCESS or
+// BPF_FIB_LKUP_RET_NO_NEIGH.
+static __always_inline int
+host_fib_redirect(struct __sk_buff *skb, long rc,
+                  const struct bpf_fib_lookup *fib_params) {
   if (rc == BPF_FIB_LKUP_RET_NO_NEIGH) {
     // bpf_fib_lookup overwrites ipv4_dst with the next hop before it
     // looks the neighbor up, so passing it on saves a second route
     // lookup in the kernel.
     struct bpf_redir_neigh nh = {
         .nh_family = AF_INET,
-        .ipv4_nh = fib_params.ipv4_dst,
+        .ipv4_nh = fib_params->ipv4_dst,
     };
-    return bpf_redirect_neigh(fib_params.ifindex, &nh, sizeof(nh), 0);
+    return bpf_redirect_neigh(fib_params->ifindex, &nh, sizeof(nh), 0);
   }
 
   if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_dest),
-                          fib_params.dmac, ETH_ALEN, 0) < 0)
+                          fib_params->dmac, ETH_ALEN, 0) < 0)
     return TC_ACT_SHOT;
   if (bpf_skb_store_bytes(skb, __builtin_offsetof(struct ethhdr, h_source),
-                          fib_params.smac, ETH_ALEN, 0) < 0)
+                          fib_params->smac, ETH_ALEN, 0) < 0)
     return TC_ACT_SHOT;
 
-  return bpf_redirect(fib_params.ifindex, 0);
+  return bpf_redirect(fib_params->ifindex, 0);
+}
+
+static __juneau_bpf_subprog int forward_via_host_fib(struct __sk_buff *skb,
+                                                     __u32 *out_ifindex) {
+  struct bpf_fib_lookup fib_params = {};
+  long rc = host_fib_lookup(skb, &fib_params);
+  if (rc != BPF_FIB_LKUP_RET_SUCCESS && rc != BPF_FIB_LKUP_RET_NO_NEIGH)
+    return TC_ACT_SHOT;
+
+  *out_ifindex = fib_params.ifindex;
+  return host_fib_redirect(skb, rc, &fib_params);
+}
+
+// route_external_nic_via_host lets the host route what a NIC on an
+// ElasticIP sends, the way it routes for any host on a port of it.
+//
+// A packet the FIB forwards leaves like forward_via_host_fib sends it.
+// Every other answer goes to the kernel with TC_ACT_OK instead of being
+// dropped. NOT_FWDED is how the lookup reports an address of the node
+// itself, which is where the reply to a kubelet probe is going; it is
+// also what a broadcast, a multicast or a missing route reads as, and the
+// kernel's input path delivers or refuses those by its own rules. The
+// frame is addressed to the host side of the veth (see
+// handle_external_nic_arp), so the kernel takes it as PACKET_HOST.
+static __juneau_bpf_subprog int
+route_external_nic_via_host(struct __sk_buff *skb) {
+  struct bpf_fib_lookup fib_params = {};
+  long rc = host_fib_lookup(skb, &fib_params);
+  if (rc == BPF_FIB_LKUP_RET_SUCCESS || rc == BPF_FIB_LKUP_RET_NO_NEIGH)
+    return host_fib_redirect(skb, rc, &fib_params);
+  if (rc < 0)
+    return TC_ACT_SHOT;
+  return TC_ACT_OK;
 }
 
 static __always_inline int update_l4_csum(struct __sk_buff *skb,
@@ -296,7 +332,7 @@ static __always_inline int handle_snat(struct __sk_buff *skb,
 static __always_inline int handle_arp(struct __sk_buff *skb, void *data_end,
                                       struct ethhdr *eth, __u32 subnet_id,
                                       const struct subnet_val *subnet) {
-  struct arp_request req;
+  struct arp_frame req;
   if (arp_parse_request(data_end, eth, &req) != 0)
     return TC_ACT_SHOT;
 
@@ -322,6 +358,97 @@ static __always_inline int handle_arp(struct __sk_buff *skb, void *data_end,
 
   arp_rewrite_to_reply(eth, &req, responder_mac);
   return bpf_redirect(skb->ifindex, 0);
+}
+
+// handle_external_nic_arp answers the one neighbour a NIC on an
+// ElasticIP has, and hands the node the answers the NIC gives it.
+//
+// The NIC holds a /32 and an onlink default route to
+// EXTERNAL_NIC_GATEWAY_ADDR, so a request for that address is the only
+// question it asks. Nothing on the host owns the address and the host
+// runs no proxy ARP, so this is the only place an answer can come from.
+// It names the host side of the veth: a frame the Pod then sends to the
+// node arrives addressed to the veth itself, which the kernel takes as
+// PACKET_HOST.
+//
+// The node reaches the Pod over its host route to the ElasticIP, so the
+// kernel asks the Pod for its MAC. The answer goes to the kernel only if
+// it speaks for the ElasticIP the NIC carries. Everything else is
+// dropped: the veth has no other neighbour to learn about.
+static __always_inline int
+handle_external_nic_arp(struct __sk_buff *skb, void *data_end,
+                        struct ethhdr *eth,
+                        const struct ifindex_external_network_val *nic) {
+  struct arp_frame frame;
+  if (arp_parse(data_end, eth, ARP_OP_REPLY, &frame) == 0) {
+    if (frame.payload->spa != nic->ipv4)
+      return TC_ACT_SHOT;
+    return TC_ACT_OK;
+  }
+
+  if (arp_parse_request(data_end, eth, &frame) != 0)
+    return TC_ACT_SHOT;
+  if (frame.target_addr != EXTERNAL_NIC_GATEWAY_ADDR)
+    return TC_ACT_SHOT;
+
+  struct ifindex_host_mac_key key = {.ifindex = skb->ifindex};
+  const struct ifindex_host_mac_val *host =
+      bpf_map_lookup_elem(&ifindex_host_mac, &key);
+  if (!host)
+    return TC_ACT_SHOT;
+
+  arp_rewrite_to_reply(eth, &frame, host->mac);
+  return bpf_redirect(skb->ifindex, 0);
+}
+
+// hairpin_to_node_ingress hands a packet a NIC on an ElasticIP sends to an
+// address juneau owns to the ingress of the interface node_ingress runs
+// on, as if it had arrived from the underlay.
+//
+// node_ingress is what decides a packet for such an address: a direct
+// ElasticIP here or on another node, the reply to a NATGateway flow, a
+// LoadBalancer VIP. Redirecting into it gives the packet exactly that
+// handling. Running the same code inside this program instead would add
+// all of node_ingress to tc_pod_egress, which is already close to the
+// verifier's budget, and a tail call would have to share the 512-byte
+// stack with the subprograms this program calls. Sending the packet out of
+// the uplink would leave it to a router that may not send it back.
+static __always_inline int hairpin_to_node_ingress(void) {
+  __u32 key = 0;
+  const __u32 *ifindex = bpf_map_lookup_elem(&node_ingress_ifindex, &key);
+  if (!ifindex || *ifindex == 0)
+    return TC_ACT_SHOT;
+  return bpf_redirect(*ifindex, BPF_F_INGRESS);
+}
+
+// handle_external_nic carries what a NIC on an ElasticIP sends. Such a
+// NIC joins no Vpc, so none of what handle_l2 does for a Subnet applies:
+// no Service, no SNAT, no NetworkACL or SecurityGroup, no Vpc FIB.
+//
+// It is reached before any of that on purpose. tc_pod_egress is close to
+// the verifier's instruction budget, and a branch taken this early costs
+// the Subnet path nothing.
+static __always_inline int
+handle_external_nic(struct __sk_buff *skb, struct ethhdr *eth, void *data_end,
+                    const struct ifindex_external_network_val *nic) {
+  if (eth->h_proto == bpf_htons(ETH_P_ARP))
+    return handle_external_nic_arp(skb, data_end, eth, nic);
+  if (eth->h_proto != bpf_htons(ETH_P_IP))
+    return TC_ACT_SHOT;
+
+  struct iphdr *iph = (void *)(eth + 1);
+  if ((void *)(iph + 1) > data_end)
+    return TC_ACT_SHOT;
+
+  // No SNAT follows, so a source other than the ElasticIP would reach the
+  // underlay as it stands.
+  if (iph->saddr != nic->ipv4)
+    return TC_ACT_SHOT;
+
+  if (external_address_claim(iph->daddr) == EXTERNAL_ADDRESS_DELIVERED_HERE)
+    return hairpin_to_node_ingress();
+
+  return route_external_nic_via_host(skb);
 }
 
 static __always_inline int forward_l2(struct __sk_buff *skb, struct ethhdr *eth,
@@ -2451,6 +2578,12 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
   const struct ifindex_subnet_val *val =
       bpf_map_lookup_elem(&ifindex_subnet, &key);
   if (!val) {
+    struct ifindex_external_network_key nic_key = {.ifindex = skb->ifindex};
+    const struct ifindex_external_network_val *nic =
+        bpf_map_lookup_elem(&ifindex_external_network, &nic_key);
+    if (nic)
+      return handle_external_nic(skb, eth, data_end, nic);
+
     __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, 0);
     trace_emit_map_miss_l3(skb, __tid, TRACE_REASON_MISS_IFINDEX_SUBNET,
                            TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, 0, 0,

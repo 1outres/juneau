@@ -104,6 +104,13 @@ func (r *ElasticIPAttachmentReconciler) reconcileNormal(ctx context.Context, res
 		return ctrl.Result{}, nil
 	}
 
+	if waitingFor := elasticIPAttachmentWait(resource.Name, &elasticIP); waitingFor != "" {
+		if err := r.updatePendingStatus(ctx, resource, "", "", "", elasticIPAttachmentReasonWaitingForElasticIP, waitingFor); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
 	var networkInterface juneauloutresmev1alpha1.NetworkInterface
 	if err := r.Get(ctx, client.ObjectKey{Namespace: resource.Namespace, Name: resource.Spec.TargetRef.NetworkInterfaceName}, &networkInterface); err != nil {
 		if errors.IsNotFound(err) {
@@ -196,6 +203,29 @@ func (r *ElasticIPAttachmentReconciler) reconcileNormal(ctx context.Context, res
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// elasticIPAttachmentWait says why an ElasticIPAttachment may not translate
+// the address of its ElasticIP yet, or returns the empty string when the
+// ElasticIP names this attachment in status.attachment. The ElasticIP
+// controller alone decides what uses an address: an attachment that went
+// ahead on its own would translate an address a NetworkInterface may carry.
+func elasticIPAttachmentWait(attachment string, elasticIP *juneauloutresmev1alpha1.ElasticIP) string {
+	used := elasticIP.Status.Attachment
+	switch {
+	case used != nil && used.Kind == juneauloutresmev1alpha1.ElasticIPStatusAttachmentKindElasticIPAttachment && used.Name == attachment:
+		return ""
+	case used != nil:
+		return fmt.Sprintf("ElasticIP %q is used by %s %q", elasticIP.Name, used.Kind, used.Name)
+	case elasticIP.Status.Phase == juneauloutresmev1alpha1.ElasticIPPhaseError:
+		attached := meta.FindStatusCondition(elasticIP.Status.Conditions, elasticIPConditionAttached)
+		if attached == nil {
+			return fmt.Sprintf("ElasticIP %q is in Error", elasticIP.Name)
+		}
+		return fmt.Sprintf("ElasticIP %q is in Error: %s", elasticIP.Name, attached.Message)
+	default:
+		return fmt.Sprintf("waiting for ElasticIP %q to pick this ElasticIPAttachment", elasticIP.Name)
+	}
 }
 
 func (r *ElasticIPAttachmentReconciler) updatePendingStatus(

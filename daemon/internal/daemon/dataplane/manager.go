@@ -62,29 +62,30 @@ type Manager struct {
 	vpcEndpointInformer               cache.Informer
 	l2NetworkInformer                 cache.Informer
 
-	subnetRunner       *runner.Runner
-	arpRunner          *runner.Runner
-	fdbRunner          *runner.Runner
-	podIfaceRunner     *runner.Runner
-	podAttacherRunner  *runner.Runner
-	fibRunner          *runner.Runner
-	tgwFibRunner       *runner.Runner
-	natRunner          *runner.Runner
-	bgpPoolRunner      *runner.Runner
-	serviceRunner      *runner.Runner
-	vpcEndpointRunner  *runner.Runner
-	naptRunner         *runner.Runner
-	externalArpRunner  *runner.Runner
-	serviceNATRunner   *runner.Runner
-	sgRunner           *runner.Runner
-	sgMembershipRunner *runner.Runner
-	aclRunner          *runner.Runner
-	traceRunner        *runner.Runner
-	nodeUnderlayRunner *runner.Runner
-	l2NetworkRunner    *runner.Runner
-	l2PortRunner       *runner.Runner
-	l2GatewayRunner    *runner.Runner
-	l2ArpRunner        *runner.Runner
+	subnetRunner          *runner.Runner
+	arpRunner             *runner.Runner
+	fdbRunner             *runner.Runner
+	podIfaceRunner        *runner.Runner
+	podAttacherRunner     *runner.Runner
+	fibRunner             *runner.Runner
+	tgwFibRunner          *runner.Runner
+	natRunner             *runner.Runner
+	bgpPoolRunner         *runner.Runner
+	serviceRunner         *runner.Runner
+	vpcEndpointRunner     *runner.Runner
+	naptRunner            *runner.Runner
+	externalArpRunner     *runner.Runner
+	elasticIPDirectRunner *runner.Runner
+	serviceNATRunner      *runner.Runner
+	sgRunner              *runner.Runner
+	sgMembershipRunner    *runner.Runner
+	aclRunner             *runner.Runner
+	traceRunner           *runner.Runner
+	nodeUnderlayRunner    *runner.Runner
+	l2NetworkRunner       *runner.Runner
+	l2PortRunner          *runner.Runner
+	l2GatewayRunner       *runner.Runner
+	l2ArpRunner           *runner.Runner
 
 	serviceLoadBalancerInformer cache.Informer
 	serviceLBProgrammer         servicelbreconciler.Programmer
@@ -101,9 +102,10 @@ type Manager struct {
 	aclStore        *policy.ACLStore
 	membershipStore *policy.MembershipStore
 
-	napt           *reconciler.Napt
-	externalArp    *reconciler.ExternalArp
-	ownedAddresses *ownedaddr.Store
+	napt            *reconciler.Napt
+	externalArp     *reconciler.ExternalArp
+	elasticIPDirect *reconciler.ElasticIPDirect
+	ownedAddresses  *ownedaddr.Store
 
 	juNodeUnderlayIP net.IP
 
@@ -268,21 +270,39 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	}
 	m.subnetRunner.Start(ctx, 1)
 
-	m.arpRunner = runner.New(reconciler.NewArp(m.client, m.podEgress))
+	arp := reconciler.NewArp(m.client, m.podEgress)
+	m.arpRunner = runner.New(arp)
 	if err := m.arpRunner.Watch(m.nwepInformer, runner.MetaNamespaceKey); err != nil {
 		return fmt.Errorf("watch NWEP (arp): %w", err)
 	}
+	if m.externalNetworkInformer != nil {
+		if err := m.arpRunner.WatchFanOut(m.externalNetworkInformer, arp.FanOutExternalNetworkToEndpoints); err != nil {
+			return fmt.Errorf("watch ExternalNetwork (arp fan-out): %w", err)
+		}
+	}
 	m.arpRunner.Start(ctx, 1)
 
-	m.fdbRunner = runner.New(reconciler.NewFdb(m.client, m.podEgress, m.vxlanIngress, m.nodeName))
+	fdb := reconciler.NewFdb(m.client, m.podEgress, m.vxlanIngress, m.nodeName)
+	m.fdbRunner = runner.New(fdb)
 	if err := m.fdbRunner.Watch(m.nwepInformer, runner.MetaNamespaceKey); err != nil {
 		return fmt.Errorf("watch NWEP (fdb): %w", err)
 	}
+	if m.externalNetworkInformer != nil {
+		if err := m.fdbRunner.WatchFanOut(m.externalNetworkInformer, fdb.FanOutExternalNetworkToEndpoints); err != nil {
+			return fmt.Errorf("watch ExternalNetwork (fdb fan-out): %w", err)
+		}
+	}
 	m.fdbRunner.Start(ctx, 1)
 
-	m.podIfaceRunner = runner.New(reconciler.NewPodIface(m.client, m.podEgress, m.nodeName))
+	podIface := reconciler.NewPodIface(m.client, m.podEgress, m.nodeName)
+	m.podIfaceRunner = runner.New(podIface)
 	if err := m.podIfaceRunner.Watch(m.nwepInformer, runner.MetaNamespaceKey); err != nil {
 		return fmt.Errorf("watch NWEP (pod-iface): %w", err)
+	}
+	if m.externalNetworkInformer != nil {
+		if err := m.podIfaceRunner.WatchFanOut(m.externalNetworkInformer, podIface.FanOutExternalNetworkToEndpoints); err != nil {
+			return fmt.Errorf("watch ExternalNetwork (pod-iface fan-out): %w", err)
+		}
 	}
 	m.podIfaceRunner.Start(ctx, 1)
 
@@ -343,7 +363,7 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 	}
 	m.natRunner.Start(ctx, 1)
 
-	m.bgpPoolRunner = runner.New(reconciler.NewBgpPool(m.client, m.ownedAddresses))
+	m.bgpPoolRunner = runner.New(reconciler.NewBgpPool(m.client, m.ownedAddresses, m.nodeName))
 	bgpPoolKey := runner.ConstantKey(runner.SingletonKey)
 	if err := m.bgpPoolRunner.Watch(m.addressPoolInformer, bgpPoolKey); err != nil {
 		return fmt.Errorf("watch AddressPool: %w", err)
@@ -408,6 +428,18 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 		}
 		m.externalArpRunner.Start(ctx, 1)
 	}
+
+	m.elasticIPDirect = reconciler.NewElasticIPDirect(m.client, m.podEgress, m.ownedAddresses)
+	m.elasticIPDirectRunner = runner.New(m.elasticIPDirect)
+	if err := m.elasticIPDirectRunner.Watch(m.nwepInformer, runner.MetaNamespaceKey); err != nil {
+		return fmt.Errorf("watch NWEP (elastic-ip-direct): %w", err)
+	}
+	if m.externalNetworkInformer != nil {
+		if err := m.elasticIPDirectRunner.WatchFanOut(m.externalNetworkInformer, m.elasticIPDirect.FanOutExternalNetworkToEndpoints); err != nil {
+			return fmt.Errorf("watch ExternalNetwork (elastic-ip-direct fan-out): %w", err)
+		}
+	}
+	m.elasticIPDirectRunner.Start(ctx, 1)
 
 	if m.serviceNATAttachmentInformer != nil {
 		serviceNAT := reconciler.NewServiceNAT(m.client, m.podEgress, m.nodeName)
@@ -893,6 +925,11 @@ func (m *Manager) Stop() error {
 			return err
 		}
 	}
+	if m.elasticIPDirect != nil {
+		if err := m.elasticIPDirect.CloseAll(); err != nil {
+			return err
+		}
+	}
 	if m.sgStore != nil {
 		if err := m.sgStore.CloseAll(); err != nil {
 			return err
@@ -939,6 +976,7 @@ func (m *Manager) Stop() error {
 		m.serviceLBRunner,
 		m.naptRunner,
 		m.externalArpRunner,
+		m.elasticIPDirectRunner,
 		m.serviceNATRunner,
 		m.sgRunner,
 		m.sgMembershipRunner,

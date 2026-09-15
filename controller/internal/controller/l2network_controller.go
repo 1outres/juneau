@@ -124,7 +124,7 @@ func (r *L2NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			}
 			return ctrl.Result{RequeueAfter: 100 * time.Millisecond}, nil
 		}
-		if claim.Status.Value.Number > 0xFFFFFF {
+		if claim.Status.Value.Number > maxVNI {
 			if err := r.updateStatus(ctx, &resource, *desired, metav1.ConditionFalse, l2NetworkReasonNotImplemented, fmt.Sprintf("allocated VNI %d exceeds supported range", claim.Status.Value.Number)); err != nil {
 				return ctrl.Result{}, err
 			}

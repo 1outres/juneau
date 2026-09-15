@@ -21,7 +21,10 @@ spec:
     - jsonPath: .status.address
       name: Address
       type: string
-    - jsonPath: .status.attachmentName
+    - jsonPath: .status.attachment.kind
+      name: AttachmentKind
+      type: string
+    - jsonPath: .status.attachment.name
       name: Attachment
       type: string
     - jsonPath: .status.phase
@@ -76,8 +79,26 @@ spec:
             properties:
               address:
                 type: string
-              attachmentName:
-                type: string
+              attachment:
+                description: |-
+                  Attachment names what uses the address. Phase is Attached for
+                  either kind. Unset while nothing uses the address.
+                properties:
+                  kind:
+                    description: |-
+                      ElasticIPStatusAttachmentKind names the kind of object that uses an
+                      ElasticIP.
+                    enum:
+                    - ElasticIPAttachment
+                    - NetworkInterface
+                    type: string
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current

@@ -1,6 +1,6 @@
 # PodにNICを追加する
 
-Podは既定でeth0を1枚だけ持ちます。`juneau.loutres.me/networks`アノテーションを書くと、別のSubnetに繋がるNICを追加することができます。
+Podは既定でeth0を1枚だけ持ちます。`juneau.loutres.me/networks`アノテーションを書くと、別のSubnetやL2Networkに繋がるNICや、ElasticIPを持つNICを追加することができます。eth0自体もこのアノテーションで書けます。
 このガイドでは、アプリ用のSubnetに置いたPodへ管理用のSubnetのNICをもう1枚生やし、管理用Subnetの側からだけ届く経路を作ります。
 
 ## このガイドで構築するもの
@@ -64,14 +64,16 @@ spec:
       image: nginx:1.27
 ```
 
-配列の要素は次の4つのフィールドを取ります。
+配列の要素は次のフィールドを取ります。`subnet`、`l2Network`、`elasticIP`はNICの接続先で、どれか1つだけを書きます。
 
 | フィールド | 必須 | 意味 |
 |---|---|---|
 | `interface` | ○ | Podの中でのNICの名前。DNS-1123ラベルで8文字以内 |
-| `subnet` | ○ | 接続先のSubnet。eth0と別のVpcでも構いません |
-| `address` | | 要求するIPv4アドレス。未指定ならSubnetのプールから割り当てます |
-| `securityGroups` | | このNICに適用するSecurityGroup。2つまで |
+| `subnet` | 接続先のどれか1つ | 接続先のSubnet。eth0と別のVpcでも構いません |
+| `l2Network` | 接続先のどれか1つ | 接続先の[L2Network](../resources/l2network.md) |
+| `elasticIP` | 接続先のどれか1つ | NICに直接持たせる、Podと同じnamespaceの[ElasticIP](../resources/elasticip.md) |
+| `address` | | 要求するIPv4アドレス。未指定ならSubnetやL2Networkのプールから割り当てます。`elasticIP`のエントリには書けません |
+| `securityGroups` | | このNICに適用するSecurityGroup。2つまで。`elasticIP`のエントリには書けません |
 
 `interface`が8文字までなのは、ホスト側のvethに`<interface>+<コンテナID>`という名前を付けるからです。Linuxのインターフェース名は15文字までなので、コンテナIDを識別できるだけ残すと8文字が上限になります。
 
@@ -79,9 +81,9 @@ Podが起動したら、NICごとにNetworkInterfaceとNetworkEndpointができ�
 
 ```console
 $ kubectl get networkinterface
-NAME       NODE       SUBNET        ADDRESS         PHASE
-app.eth0   worker-1   app-subnet    10.90.0.5/24    Ready
-app.eth1   worker-1   mgmt-subnet   10.90.1.4/24    Ready
+NAME       NODE       SUBNET        L2NETWORK   ELASTICIP   ADDRESS         PHASE
+app.eth0   worker-1   app-subnet                            10.90.0.5/24    Ready
+app.eth1   worker-1   mgmt-subnet                           10.90.1.4/24    Ready
 ```
 
 ### 3. 追加NICへの到達を確認
@@ -109,15 +111,74 @@ $ kubectl exec ops -- curl -sS http://10.90.1.4 | head -1
 
 ## 注意点
 
-### eth0は特別扱いです
+### eth0の書き方は3通りです
 
-コンテナランタイムはCNIの結果にeth0という名前のNICとそのアドレスがあることを要求します。ないとRunPodSandboxが失敗するので、eth0を`networks`に書くとwebhookが拒否します。eth0の設定は今まで通り`juneau.loutres.me/subnet`と`juneau.loutres.me/address`と`juneau.loutres.me/security-groups`で行います。
+コンテナランタイムはCNIの結果にeth0という名前のNICとそのアドレスがあることを要求します。ないとRunPodSandboxが失敗するので、どのPodにもeth0は必ずあります。eth0は次のどれか1つで書きます。
 
-eth0はPodのアドレスそのものでもあります。次の3つはすべてeth0だけを見ます。
+| 書き方 | eth0の接続先 |
+|---|---|
+| `networks`に`interface: eth0`のエントリを書く | エントリの`subnet`、`l2Network`、`elasticIP` |
+| `juneau.loutres.me/elastic-ip`にElasticIPの名前を書く | そのElasticIP |
+| どちらも書かない | `juneau.loutres.me/subnet`のSubnet。未指定なら`default`。`juneau.loutres.me/address`と`juneau.loutres.me/security-groups`もeth0に効きます |
+
+書き方を混ぜるとwebhookが拒否します。`networks`にeth0のエントリがあるときは、`juneau.loutres.me/subnet`、`juneau.loutres.me/address`、`juneau.loutres.me/security-groups`、`juneau.loutres.me/elastic-ip`のどれも書けません。値が空でも、キーがあるだけで拒否します。`juneau.loutres.me/elastic-ip`を書いたときは、`juneau.loutres.me/subnet`、`juneau.loutres.me/address`、`juneau.loutres.me/security-groups`を書けません。
+
+eth0をSubnetに置くPodは、`networks`でも従来のアノテーションでも同じように動きます。
+
+```yaml
+annotations:
+  juneau.loutres.me/networks: |
+    [
+      {"interface": "eth0", "subnet": "app-subnet"},
+      {"interface": "eth1", "subnet": "mgmt-subnet"}
+    ]
+```
+
+### eth0で決まるもの
+
+eth0はPodのアドレスそのものでもあります。次のものはすべてeth0だけを見ます。
 
 - `pod.status.podIP`とServiceのバックエンド
 - kubeletのプローブ
-- DNSの注入先Subnet
+- DNSの設定
+
+eth0をSubnet以外に置くと、これらの扱いが変わります。
+
+| | eth0がSubnet | eth0がL2Network | eth0がElasticIP |
+|---|---|---|---|
+| dnsPolicy | Subnetの仮想DNSを注入 | `Default`に書き換え | `Default`に書き換え |
+| NodeからPodへの経路 | これまで通り | 作りません | `<ElasticIP>/32`をPodのvethへ |
+| kubeletのプローブ | これまで通り | `--enable-probe-rewrite`で書き換え | Nodeの経路で届きます |
+| Serviceのバックエンド | なれる | なれない | なれない |
+| ClusterIP Serviceへ | これまで通り | gatewayを跨いで届く | 届かない |
+
+SubnetのPodには、Subnetごとの仮想DNSを注入しています。L2NetworkとElasticIPのNICにはその仮想DNSが無いので、Nodeの`resolv.conf`のDNSサーバを使う`Default`にします。そのNICからDNSサーバに届く経路が要ります。
+
+書き換えるのは、作成時のdnsPolicyが未指定、`ClusterFirst`、`ClusterFirstWithHostNet`のときだけです。`None`と`Default`はそのまま残します。`juneau.loutres.me/dns-inject-skip: "true"`を付けたPodは書き換えません。
+
+### eth0をL2Networkに置く
+
+eth0に使えるのは、`spec.cidr`と`spec.gateway`の両方を持つL2Networkだけです。どちらかが無いとwebhookが拒否します。eth0にはアドレスが要り、Podのデフォルトルートの行き先としてgatewayが要るからです。
+
+```yaml
+annotations:
+  juneau.loutres.me/networks: |
+    [
+      {"interface": "eth0", "l2Network": "lab-net"}
+    ]
+```
+
+デフォルトルートはL2Networkの`status.gateway`に向きます。
+
+dnsPolicyは`Default`になり、kubeletがNodeに渡している`resolv.conf`のDNSサーバを使います。そのDNSサーバには、eth0のアドレスからgateway経由で届く必要があります。kindのNodeが使うdockerの内蔵DNSのように、Nodeの中でしか使えないDNSサーバだと名前解決ができません。
+
+NodeからPodへの経路は作りません。L2Networkは必ずcustom Vpcに属していて、Vpc同士でアドレスが重なってよいので、Nodeに経路を入れると別のVpcのPodとぶつかります。kubeletのhttpGetやtcpSocketのプローブを使うなら、custom VpcのSubnetのPodと同じく、controllerの`--enable-probe-rewrite`を有効にしてください。プローブがPodのnetwork namespaceの中から実行されるように書き換わります。
+
+### ElasticIPを持つNIC
+
+`elasticIP`のエントリや`juneau.loutres.me/elastic-ip`で、NICにElasticIPのアドレスをそのまま持たせることができます。NICはどのVpcにも属さず、SecurityGroupもNetworkACLも効きません。1つのElasticIPを持てるのは1つのNICだけで、1つのPodの2枚のNICに同じElasticIPを書くとwebhookが拒否します。
+
+詳しい手順と制限は[PodのNICにElasticIPを直接持たせる](elastic-ip-direct.md)を参照してください。
 
 ### NIC同士のCIDRは重ならないこと
 
@@ -125,7 +186,9 @@ eth0はPodのアドレスそのものでもあります。次の3つはすべて
 
 ### デフォルトルートは1本だけです
 
-追加NICにはデフォルトルートを入れません。Podが持つデフォルトルートはeth0のSubnetのゲートウェイに向かう1本だけで、追加NICから出ていくのは、そのNICのSubnetの中に閉じた通信になります。追加NICのVpcの他のSubnetへ届かせたい場合は、Podの中で経路を足してください。
+SubnetとL2Networkの追加NICにはデフォルトルートを入れません。mainテーブルのデフォルトルートはeth0の1本だけで、追加NICから出ていくのは、そのNICのSubnetやL2Networkの中に閉じた通信になります。追加NICのVpcの他のSubnetへ届かせたい場合は、Podの中で経路を足してください。
+
+ElasticIPの追加NICだけは、専用のルートテーブルにデフォルトルートを入れ、送信元がそのElasticIPのパケットをそのテーブルへ向けるルールを足します。mainテーブルには何も足さないので、eth0のデフォルトルートはそのままです。仕組みは[NetworkInterface](../resources/networkinterface.md)を参照してください。
 
 ### NICを減らすとNetworkInterfaceも消えます
 

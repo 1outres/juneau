@@ -50,6 +50,7 @@ type PodReconciler struct {
 
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=networkinterfaces,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=subnets;l2networks;elasticips;externalnetworks,verbs=get;list;watch
 
 // Reconcile creates one NetworkInterface per NIC a Pod asks for.
 func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -91,12 +92,12 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{RequeueAfter: requeueDelay}, nil
 	}
 
-	missing, err := r.findMissingNetwork(ctx, attachments)
+	waitingFor, err := r.findUnusableNetwork(ctx, pod.Namespace, attachments)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if missing != "" {
-		logger.Info("waiting for the network of a Pod NIC", "name", req.NamespacedName, "network", missing)
+	if waitingFor != "" {
+		logger.Info("waiting for the network of a Pod NIC", "name", req.NamespacedName, "reason", waitingFor)
 		return ctrl.Result{RequeueAfter: requeueDelay}, nil
 	}
 
@@ -115,18 +116,23 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	return ctrl.Result{}, r.deleteNetworkInterfaces(ctx, &pod, wanted)
 }
 
-// findMissingNetwork returns the first network a NIC needs and the
-// cluster does not have. Nothing is provisioned until every NIC can be
-// built, so a pod never comes up holding only some of the NICs it asked
-// for.
-func (r *PodReconciler) findMissingNetwork(ctx context.Context, attachments []juneauv1alpha1.PodNetworkAttachment) (string, error) {
+// findUnusableNetwork says why the first NIC that cannot be built yet has
+// to wait: its network is missing, or it exists but still lacks what a
+// NIC needs, such as the address of an ElasticIP. The empty string means
+// every NIC can be built. Nothing is provisioned until then, so a pod
+// never comes up holding only some of the NICs it asked for.
+func (r *PodReconciler) findUnusableNetwork(ctx context.Context, namespace string, attachments []juneauv1alpha1.PodNetworkAttachment) (string, error) {
 	for _, attachment := range attachments {
-		ref := podnetwork.AttachmentReference(attachment)
-		if _, err := podnetwork.Resolve(ctx, r.Client, ref); err != nil {
-			if errors.IsNotFound(err) {
-				return ref.String(), nil
-			}
+		ref := podnetwork.AttachmentReference(namespace, attachment)
+		network, err := podnetwork.Resolve(ctx, r.Client, ref)
+		if errors.IsNotFound(err) {
+			return fmt.Sprintf("the network of interface %q is missing: %v", attachment.Interface, err), nil
+		}
+		if err != nil {
 			return "", err
+		}
+		if waitingFor := network.WaitingFor(); waitingFor != "" {
+			return fmt.Sprintf("the network of interface %q is not usable yet: %s", attachment.Interface, waitingFor), nil
 		}
 	}
 	return "", nil
@@ -145,6 +151,7 @@ func (r *PodReconciler) applyNetworkInterface(ctx context.Context, pod *corev1.P
 		nwiface.Spec.NodeName = pod.Spec.NodeName
 		nwiface.Spec.Subnet = attachment.Subnet
 		nwiface.Spec.L2Network = attachment.L2Network
+		nwiface.Spec.ElasticIP = attachment.ElasticIP
 		nwiface.Spec.Address = attachment.Address
 		nwiface.Spec.SecurityGroups = attachment.SecurityGroups
 		nwiface.Spec.AllocationIdentity = workload.AllocationIdentity(pod)

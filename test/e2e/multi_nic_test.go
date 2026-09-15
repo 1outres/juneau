@@ -166,6 +166,9 @@ spec:
 		multiNICExtraIf, multiNICExtraSubnet, nodeName, netshootImage)
 }
 
+// multiNICServerManifest builds the server with a netshoot container next
+// to nginx, because the server also pings the client and the nginx image
+// has no ping. kubectl exec picks the netshoot container by default.
 func multiNICServerManifest(nodeName string) string {
 	return fmt.Sprintf(`apiVersion: v1
 kind: Pod
@@ -174,6 +177,7 @@ metadata:
   name: %s
   annotations:
     juneau.loutres.me/subnet: %s
+    kubectl.kubernetes.io/default-container: shell
 spec:
   nodeName: %s
   terminationGracePeriodSeconds: 0
@@ -182,7 +186,10 @@ spec:
       image: nginx:1.27
       ports:
         - containerPort: 80
-`, multiNICNamespace, multiNICServerPod, multiNICExtraSubnet, nodeName)
+    - name: shell
+      image: %s
+      command: ["sleep", "3600"]
+`, multiNICNamespace, multiNICServerPod, multiNICExtraSubnet, nodeName, netshootImage)
 }
 
 func cleanupMultiNICResources() {

@@ -144,6 +144,7 @@ func NewApp() *cli.Command {
 				ByObject: map[client.Object]cache.ByObject{
 					&juneauv1alpha1.NetworkInterface{}:          {},
 					&juneauv1alpha1.NetworkEndpoint{}:           {},
+					&juneauv1alpha1.ElasticIP{}:                 {},
 					&juneauv1alpha1.ElasticIPAttachment{}:       {},
 					&juneauv1alpha1.AddressPool{}:               {},
 					&juneauv1alpha1.BGPAdvertisement{}:          {},

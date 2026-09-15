@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	"github.com/1outres/juneau/controller/internal/podnetwork"
 	probeconfig "github.com/1outres/juneau/controller/pkg/probe"
 )
 
@@ -41,9 +42,10 @@ const (
 )
 
 // When probe rewriting is enabled at controller startup, the generated
-// configuration is further scoped to Juneau Subnet Pods with a CEL
-// matchCondition in webhookapply.prepareMutating. controller-gen does not
-// currently expose matchConditions in its webhook marker.
+// configuration is further scoped to Pods that may have eth0 on a custom
+// Vpc network with a CEL matchCondition in webhookapply.prepareMutating.
+// controller-gen does not currently expose matchConditions in its webhook
+// marker.
 // +kubebuilder:webhook:path=/mutate--v1-pod-probes,mutating=true,failurePolicy=fail,sideEffects=None,groups="",resources=pods,verbs=create,versions=v1,name=mprobe-pod-juneau-loutres-me.kb.io,admissionReviewVersions=v1,reinvocationPolicy=IfNeeded,timeoutSeconds=5
 
 func setupPodProbeWebhookWithManager(mgr ctrl.Manager, proxyPort int32) error {
@@ -71,8 +73,15 @@ func (d *PodProbeDefaulter) Default(ctx context.Context, obj runtime.Object) err
 	if !ok {
 		return fmt.Errorf("expected a Pod object but got %T", obj)
 	}
-	subnetName := juneauv1alpha1.PodPrimaryNetworkAttachment(pod.Annotations).Subnet
-	if subnetName == juneauv1alpha1.PodDefaultSubnetName || pod.Spec.HostNetwork {
+	if pod.Spec.HostNetwork {
+		return nil
+	}
+	primary, err := juneauv1alpha1.PodPrimaryNetworkAttachment(pod.Annotations)
+	if err != nil {
+		return err
+	}
+	ref := podnetwork.AttachmentReference(pod.Namespace, primary)
+	if !primaryNetworkMayNeedProbeRewrite(ref) {
 		return nil
 	}
 	if _, isMirror := pod.Annotations["kubernetes.io/config.mirror"]; isMirror {
@@ -82,11 +91,15 @@ func (d *PodProbeDefaulter) Default(ctx context.Context, obj runtime.Object) err
 		return nil
 	}
 
-	var subnet juneauv1alpha1.Subnet
-	if err := d.Get(ctx, client.ObjectKey{Name: subnetName}, &subnet); err != nil {
-		return fmt.Errorf("resolve probe rewrite Subnet %q: %w", subnetName, err)
+	network, err := podnetwork.ResolveOptional(ctx, d.Reader, ref)
+	if err != nil {
+		return fmt.Errorf("resolve probe rewrite %s: %w", ref, err)
 	}
-	if subnet.Spec.Vpc == defaultVpcName {
+	// The Pod validator admits eth0 on a network that does not exist yet, so
+	// its Vpc is unknown here. A rewritten probe works in every Vpc, while a
+	// probe left alone never passes if the network turns out to be in a
+	// custom Vpc, so the unknown case gets the rewrite.
+	if network != nil && network.Vpc == defaultVpcName {
 		return nil
 	}
 	port := d.ProxyPort
@@ -94,6 +107,27 @@ func (d *PodProbeDefaulter) Default(ctx context.Context, obj runtime.Object) err
 		port = probeconfig.DefaultProxyPort
 	}
 	return rewriteNetworkProbes(pod, port)
+}
+
+// primaryNetworkMayNeedProbeRewrite tells, without reading the cluster,
+// whether eth0 may be on a network kubelet cannot reach. The rewrite exists
+// because custom Vpcs may reuse addresses, so the node cannot route to a
+// Pod on one. That holds for eth0 on a custom Subnet and on an L2Network,
+// which is never in the default Vpc; which Vpc the network is in is read
+// afterwards.
+//
+// An eth0 that carries an ElasticIP is left to kubelet. Its /32 belongs to
+// no Vpc and no two AddressPools overlap, and the daemon gives the node a
+// host route to it through the Pod veth.
+func primaryNetworkMayNeedProbeRewrite(ref podnetwork.Reference) bool {
+	switch ref.Kind() {
+	case podnetwork.KindElasticIP:
+		return false
+	case podnetwork.KindSubnet:
+		return ref.Subnet != juneauv1alpha1.PodDefaultSubnetName
+	default:
+		return true
+	}
 }
 
 func rewriteNetworkProbes(pod *corev1.Pod, agentPort int32) error {

@@ -287,6 +287,72 @@ var _ = Describe("Pod DNS injection webhook", func() {
 		Expect(fetched.Spec.DNSConfig.Nameservers).To(ContainElement(subnet.Status.DNS))
 	})
 
+	It("sends a Pod whose eth0 carries an ElasticIP to the resolver of its node", func() {
+		fetched := createDNSTestPod(map[string]string{
+			juneauv1alpha1.PodAnnotationElasticIP: webhookUniqueTestName("dns-eip"),
+		}, "")
+
+		Expect(fetched.Spec.DNSPolicy).To(Equal(corev1.DNSDefault))
+		Expect(fetched.Spec.DNSConfig).To(BeNil())
+	})
+
+	It("sends a Pod whose eth0 is on an L2Network to the resolver of its node", func() {
+		l2Name := createPodWebhookGatewayL2Network(customSubnetFixture().Spec.Vpc)
+		fetched := createDNSTestPod(map[string]string{
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(`[{"interface":"eth0","l2Network":%q}]`, l2Name),
+		}, corev1.DNSClusterFirst)
+
+		Expect(fetched.Spec.DNSPolicy).To(Equal(corev1.DNSDefault))
+		Expect(fetched.Spec.DNSConfig).To(BeNil())
+	})
+
+	It("keeps the Vpc resolver out of a Pod whose extra NIC is on a custom Subnet but eth0 carries an ElasticIP", func() {
+		extra := customSubnetFixture()
+		fetched := createDNSTestPod(map[string]string{
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(
+				`[{"interface":"eth0","elasticIP":%q},{"interface":"eth1","subnet":%q}]`, webhookUniqueTestName("dns-eip"), extra.Name),
+		}, "")
+
+		Expect(fetched.Spec.DNSPolicy).To(Equal(corev1.DNSDefault))
+		Expect(fetched.Spec.DNSConfig).To(BeNil())
+	})
+
+	It("switches ClusterFirstWithHostNet to Default on a Pod whose eth0 carries an ElasticIP", func() {
+		fetched := createDNSTestPod(map[string]string{
+			juneauv1alpha1.PodAnnotationElasticIP: webhookUniqueTestName("dns-eip"),
+		}, corev1.DNSClusterFirstWithHostNet)
+
+		Expect(fetched.Spec.DNSPolicy).To(Equal(corev1.DNSDefault))
+		Expect(fetched.Spec.DNSConfig).To(BeNil())
+	})
+
+	It("changes nothing on a Pod whose eth0 carries an ElasticIP when it opts out of DNS injection", func() {
+		fetched := createDNSTestPod(map[string]string{
+			juneauv1alpha1.PodAnnotationElasticIP:     webhookUniqueTestName("dns-eip"),
+			juneauv1alpha1.PodAnnotationDNSInjectSkip: "true",
+		}, corev1.DNSClusterFirst)
+
+		Expect(fetched.Spec.DNSPolicy).To(Equal(corev1.DNSClusterFirst))
+		Expect(fetched.Spec.DNSConfig).To(BeNil())
+	})
+
+	It("leaves dnsPolicy None alone on a Pod whose eth0 carries an ElasticIP", func() {
+		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
+			juneauv1alpha1.PodAnnotationElasticIP: webhookUniqueTestName("dns-eip"),
+		})
+		pod.Spec.DNSPolicy = corev1.DNSNone
+		pod.Spec.DNSConfig = &corev1.PodDNSConfig{Nameservers: []string{"9.9.9.9"}}
+		Expect(webhookK8sClient.Create(context.Background(), pod)).To(Succeed())
+		DeferCleanup(func() {
+			_ = webhookK8sClient.Delete(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: "default"}})
+		})
+
+		var fetched corev1.Pod
+		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKeyFromObject(pod), &fetched)).To(Succeed())
+		Expect(fetched.Spec.DNSPolicy).To(Equal(corev1.DNSNone))
+		Expect(fetched.Spec.DNSConfig.Nameservers).To(Equal([]string{"9.9.9.9"}))
+	})
+
 	It("preserves user-supplied search list when injecting", func() {
 		subnet := customSubnetFixture()
 		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
@@ -304,6 +370,90 @@ var _ = Describe("Pod DNS injection webhook", func() {
 		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Name: pod.Name, Namespace: "default"}, &fetched)).To(Succeed())
 		Expect(fetched.Spec.DNSPolicy).To(Equal(corev1.DNSNone))
 		Expect(fetched.Spec.DNSConfig.Searches).To(Equal([]string{"custom.example.com"}))
+	})
+})
+
+// createDNSTestPod creates a Pod with the given annotations and dnsPolicy
+// and returns it as admission left it.
+func createDNSTestPod(annotations map[string]string, dnsPolicy corev1.DNSPolicy) *corev1.Pod {
+	GinkgoHelper()
+	pod := makePodWithImage(uniquePodName(), "default", annotations)
+	pod.Spec.DNSPolicy = dnsPolicy
+	Expect(webhookK8sClient.Create(context.Background(), pod)).To(Succeed())
+	DeferCleanup(func() {
+		_ = webhookK8sClient.Delete(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: "default"}})
+	})
+
+	var fetched corev1.Pod
+	Expect(webhookK8sClient.Get(context.Background(), client.ObjectKeyFromObject(pod), &fetched)).To(Succeed())
+	return &fetched
+}
+
+// createProbeTestPod creates a Pod with an HTTP readiness probe and returns
+// it as admission left it.
+func createProbeTestPod(annotations map[string]string) *corev1.Pod {
+	GinkgoHelper()
+	pod := makePodWithImage(uniquePodName(), "default", annotations)
+	pod.Spec.Containers[0].ReadinessProbe = &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+		HTTPGet: &corev1.HTTPGetAction{Path: "/ready", Port: intstr.FromInt32(8080)},
+	}}
+	Expect(webhookK8sClient.Create(context.Background(), pod)).To(Succeed())
+	DeferCleanup(func() {
+		_ = webhookK8sClient.Delete(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: "default"}})
+	})
+
+	var fetched corev1.Pod
+	Expect(webhookK8sClient.Get(context.Background(), client.ObjectKeyFromObject(pod), &fetched)).To(Succeed())
+	return &fetched
+}
+
+var _ = Describe("Pod network probe rewrite by the network of eth0", func() {
+	It("rewrites probes of a Pod whose eth0 Subnet comes from a networks entry", func() {
+		subnet := customSubnetFixture()
+		fetched := createProbeTestPod(map[string]string{
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(`[{"interface":"eth0","subnet":%q}]`, subnet.Name),
+		})
+
+		Expect(fetched.Spec.Containers[0].ReadinessProbe.HTTPGet.Host).To(Equal("127.0.0.1"))
+		Expect(fetched.Annotations).To(HaveKeyWithValue(probeconfig.AnnotationRewriteVersion, probeconfig.RewriteVersion))
+	})
+
+	It("rewrites probes of a Pod whose eth0 is on an L2Network of a custom Vpc", func() {
+		l2Name := createPodWebhookGatewayL2Network(customSubnetFixture().Spec.Vpc)
+		fetched := createProbeTestPod(map[string]string{
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(`[{"interface":"eth0","l2Network":%q}]`, l2Name),
+		})
+
+		Expect(fetched.Spec.Containers[0].ReadinessProbe.HTTPGet.Host).To(Equal("127.0.0.1"))
+		Expect(fetched.Annotations).To(HaveKeyWithValue(probeconfig.AnnotationRewriteVersion, probeconfig.RewriteVersion))
+	})
+
+	It("rewrites probes of a Pod whose eth0 network does not exist yet", func() {
+		fetched := createProbeTestPod(map[string]string{
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(`[{"interface":"eth0","l2Network":%q}]`, webhookUniqueTestName("missing-l2net")),
+		})
+
+		Expect(fetched.Spec.Containers[0].ReadinessProbe.HTTPGet.Host).To(Equal("127.0.0.1"))
+		Expect(fetched.Annotations).To(HaveKeyWithValue(probeconfig.AnnotationRewriteVersion, probeconfig.RewriteVersion))
+	})
+
+	It("leaves probes of a Pod whose eth0 carries an ElasticIP to kubelet", func() {
+		fetched := createProbeTestPod(map[string]string{
+			juneauv1alpha1.PodAnnotationElasticIP: webhookUniqueTestName("probe-eip"),
+		})
+
+		Expect(fetched.Spec.Containers[0].ReadinessProbe.HTTPGet.Host).To(BeEmpty())
+		Expect(fetched.Annotations).NotTo(HaveKey(probeconfig.AnnotationRewriteVersion))
+	})
+
+	It("leaves probes of a Pod with a custom extra NIC but eth0 on the default Subnet to kubelet", func() {
+		extra := customSubnetFixture()
+		fetched := createProbeTestPod(map[string]string{
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(`[{"interface":"eth1","subnet":%q}]`, extra.Name),
+		})
+
+		Expect(fetched.Spec.Containers[0].ReadinessProbe.HTTPGet.Host).To(BeEmpty())
+		Expect(fetched.Annotations).NotTo(HaveKey(probeconfig.AnnotationRewriteVersion))
 	})
 })
 
@@ -697,7 +847,7 @@ var _ = Describe("Pod extra NIC validating webhook", func() {
 		Expect(err.Error()).To(ContainSubstring(juneauv1alpha1.PodAnnotationNetworks))
 	})
 
-	It("rejects an extra NIC that claims the primary interface name", func() {
+	It("rejects a networks entry for the primary NIC next to the subnet annotation", func() {
 		primary := customSubnetFixture()
 		err := createPod(map[string]string{
 			juneauv1alpha1.PodAnnotationSubnet:   primary.Name,
@@ -705,6 +855,33 @@ var _ = Describe("Pod extra NIC validating webhook", func() {
 		})
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("eth0"))
+		Expect(err.Error()).To(ContainSubstring(juneauv1alpha1.PodAnnotationSubnet))
+	})
+
+	It("reads the primary NIC from a networks entry", func() {
+		primary := customSubnetFixture()
+		name := uniquePodName()
+		pod := makePodWithImage(name, "default", map[string]string{
+			juneauv1alpha1.PodAnnotationNetworks: newAttachment("eth0", primary.Name),
+		})
+		Expect(webhookK8sClient.Create(context.Background(), pod)).To(Succeed())
+		DeferCleanup(func() {
+			_ = webhookK8sClient.Delete(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"}})
+		})
+
+		var created corev1.Pod
+		Expect(webhookK8sClient.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: name}, &created)).To(Succeed())
+		Expect(created.Spec.DNSPolicy).To(Equal(corev1.DNSNone))
+		Expect(created.Spec.DNSConfig.Nameservers).To(ContainElement(primary.Status.DNS))
+	})
+
+	It("checks the SecurityGroups of a primary NIC read from a networks entry", func() {
+		enforcing := enforcingSubnetFixture()
+		err := createPod(map[string]string{
+			juneauv1alpha1.PodAnnotationNetworks: newAttachment("eth0", enforcing.Name),
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("enforceSecurityGroups"))
 	})
 
 	It("rejects two extra NICs sharing an interface name", func() {
@@ -940,3 +1117,157 @@ func createPodWebhookSecurityGroup(vpcName string) string {
 	})
 	return name
 }
+
+var _ = Describe("Pod NIC on an ElasticIP", func() {
+	createPod := func(annotations map[string]string, labels map[string]string) error {
+		pod := makePodWithImage(uniquePodName(), "default", annotations)
+		pod.Labels = labels
+		err := webhookK8sClient.Create(context.Background(), pod)
+		if err == nil {
+			DeferCleanup(func() {
+				_ = webhookK8sClient.Delete(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: "default"}})
+			})
+		}
+		return err
+	}
+
+	It("accepts a primary NIC on an ElasticIP that does not exist yet", func() {
+		Expect(createPod(map[string]string{
+			juneauv1alpha1.PodAnnotationElasticIP: webhookUniqueTestName("missing-elasticip"),
+		}, nil)).To(Succeed())
+	})
+
+	It("accepts a primary NIC on a Pending ElasticIP", func() {
+		Expect(createPod(map[string]string{
+			juneauv1alpha1.PodAnnotationElasticIP: createWebhookElasticIP(),
+		}, nil)).To(Succeed())
+	})
+
+	It("accepts an extra NIC on an ElasticIP next to a custom Subnet", func() {
+		primary := customSubnetFixture()
+		Expect(createPod(map[string]string{
+			juneauv1alpha1.PodAnnotationSubnet: primary.Name,
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(
+				`[{"interface":"ext0","elasticIP":%q}]`, createWebhookElasticIP()),
+		}, nil)).To(Succeed())
+	})
+
+	It("rejects the elastic-ip annotation next to the subnet annotation", func() {
+		err := createPod(map[string]string{
+			juneauv1alpha1.PodAnnotationElasticIP: createWebhookElasticIP(),
+			juneauv1alpha1.PodAnnotationSubnet:    "default",
+		}, nil)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(juneauv1alpha1.PodAnnotationSubnet))
+	})
+
+	It("rejects SecurityGroups on a networks entry on an ElasticIP", func() {
+		err := createPod(map[string]string{
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(
+				`[{"interface":"eth0","elasticIP":%q,"securityGroups":["sg-a"]}]`, createWebhookElasticIP()),
+		}, nil)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("securityGroups"))
+	})
+
+	It("rejects an ElasticIP an ElasticIPAttachment uses", func() {
+		elasticIP := createWebhookElasticIP()
+		target := newValidNetworkInterface(webhookUniqueTestName("networkinterface"), "default", "")
+		Expect(webhookK8sClient.Create(context.Background(), target)).To(Succeed())
+		attachment := newValidElasticIPAttachment(webhookUniqueTestName("elasticipattachment"), elasticIP, target.Name)
+		Expect(webhookK8sClient.Create(context.Background(), attachment)).To(Succeed())
+
+		err := createPod(map[string]string{juneauv1alpha1.PodAnnotationElasticIP: elasticIP}, nil)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(juneauv1alpha1.PodAnnotationElasticIP))
+		Expect(err.Error()).To(ContainSubstring("used by ElasticIPAttachment " + `"` + attachment.Name + `"`))
+	})
+
+	It("rejects an ElasticIP a NIC of another Pod already carries", func() {
+		elasticIP := createWebhookElasticIP()
+		holder := createWebhookElasticIPHolder(createWebhookPod(nil), elasticIP)
+
+		err := createPod(map[string]string{
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(`[{"interface":"ext0","elasticIP":%q}]`, elasticIP),
+		}, nil)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(juneauv1alpha1.PodAnnotationNetworks))
+		Expect(err.Error()).To(ContainSubstring("already used by NetworkInterface " + `"` + holder.Name + `"`))
+	})
+
+	It("accepts an ElasticIP whose holder Pod is terminating", func() {
+		elasticIP := createWebhookElasticIP()
+		holderPod := createWebhookPod(nil, webhookTestFinalizer)
+		createWebhookElasticIPHolder(holderPod, elasticIP)
+		deleteWebhookObjectAndWait(holderPod)
+
+		Expect(createPod(map[string]string{juneauv1alpha1.PodAnnotationElasticIP: elasticIP}, nil)).To(Succeed())
+	})
+
+	It("accepts an ElasticIP whose holder interface is being deleted", func() {
+		elasticIP := createWebhookElasticIP()
+		holder := createWebhookElasticIPHolder(createWebhookPod(nil), elasticIP, func(ni *juneauv1alpha1.NetworkInterface) {
+			ni.Finalizers = []string{webhookTestFinalizer}
+		})
+		deleteWebhookObjectAndWait(holder)
+
+		Expect(createPod(map[string]string{juneauv1alpha1.PodAnnotationElasticIP: elasticIP}, nil)).To(Succeed())
+	})
+
+	It("accepts an ElasticIP whose holder is an earlier Pod of the same virtual machine", func() {
+		elasticIP := createWebhookElasticIP()
+		virtLauncher := map[string]string{"kubevirt.io": "virt-launcher", "vm.kubevirt.io/name": "web-0"}
+		createWebhookElasticIPHolder(createWebhookPod(virtLauncher), elasticIP, func(ni *juneauv1alpha1.NetworkInterface) {
+			ni.Spec.AllocationIdentity = "vmi.web-0"
+		})
+
+		Expect(createPod(map[string]string{juneauv1alpha1.PodAnnotationElasticIP: elasticIP}, virtLauncher)).To(Succeed())
+	})
+
+	It("rejects an ElasticIP whose holder is a Pod of another virtual machine", func() {
+		elasticIP := createWebhookElasticIP()
+		createWebhookElasticIPHolder(createWebhookPod(map[string]string{"kubevirt.io": "virt-launcher", "vm.kubevirt.io/name": "web-0"}), elasticIP, func(ni *juneauv1alpha1.NetworkInterface) {
+			ni.Spec.AllocationIdentity = "vmi.web-0"
+		})
+
+		err := createPod(map[string]string{juneauv1alpha1.PodAnnotationElasticIP: elasticIP},
+			map[string]string{"kubevirt.io": "virt-launcher", "vm.kubevirt.io/name": "web-1"})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("already used by NetworkInterface"))
+	})
+})
+
+var _ = Describe("Pod primary NIC on an L2Network", func() {
+	createPodOn := func(l2Name string) error {
+		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(`[{"interface":"eth0","l2Network":%q}]`, l2Name),
+		})
+		err := webhookK8sClient.Create(context.Background(), pod)
+		if err == nil {
+			DeferCleanup(func() {
+				_ = webhookK8sClient.Delete(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: "default"}})
+			})
+		}
+		return err
+	}
+
+	It("accepts an L2Network with a CIDR and a gateway", func() {
+		Expect(createPodOn(createPodWebhookGatewayL2Network(customSubnetFixture().Spec.Vpc))).To(Succeed())
+	})
+
+	It("rejects an L2Network with no CIDR", func() {
+		err := createPodOn(createPodWebhookL2Network(customSubnetFixture().Spec.Vpc, ""))
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.cidr and spec.gateway"))
+	})
+
+	It("rejects an L2Network with a CIDR but no gateway", func() {
+		err := createPodOn(createPodWebhookL2Network(customSubnetFixture().Spec.Vpc, fmt.Sprintf("10.%d.0.0/24", fixtureSubnetOctet())))
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.cidr and spec.gateway"))
+	})
+
+	It("accepts an L2Network that does not exist yet", func() {
+		Expect(createPodOn(webhookUniqueTestName("missing-l2net"))).To(Succeed())
+	})
+})

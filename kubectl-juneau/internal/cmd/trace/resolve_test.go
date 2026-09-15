@@ -763,3 +763,38 @@ func TestNicAddressRejectsSomethingItCannotRead(t *testing.T) {
 		t.Fatal("expected an error for an unreadable address")
 	}
 }
+
+// A NIC on an ElasticIP joins no Vpc, and the hooks have no scope for
+// its traffic yet. Saying so beats keying the session on a Vpc id the
+// data plane never stamps on those frames.
+func TestResolveSessionRejectsANicOnAnElasticIP(t *testing.T) {
+	objects := l2TraceObjects()
+	objects = append(objects, &juneauv1alpha1.NetworkInterface{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "lab-a.eth2"},
+		Spec: juneauv1alpha1.NetworkInterfaceSpec{
+			ElasticIP: "public",
+			PodRef: juneauv1alpha1.NetworkInterfacePodReference{
+				Name: "lab-a", Interface: "eth2", UID: "uid-lab-a",
+			},
+		},
+		Status: juneauv1alpha1.NetworkInterfaceStatus{Address: "203.0.113.10/32"},
+	})
+	cl := fake.NewClientBuilder().WithScheme(newSchemeForTest(t)).WithObjects(objects...).Build()
+	o := &Options{
+		SourcePod:       "default/lab-a",
+		SourceInterface: "eth2",
+		DestIP:          "198.51.100.7",
+		Protocol:        "icmp",
+		sourceNamespace: "default",
+		destNamespace:   "default",
+		traceID:         1,
+	}
+
+	_, err := o.resolveSession(context.Background(), cl)
+	if err == nil {
+		t.Fatal("expected an error for a NIC on an ElasticIP")
+	}
+	if !strings.Contains(err.Error(), "ElasticIP") || !strings.Contains(err.Error(), "public") {
+		t.Errorf("error should say the NIC carries ElasticIP public, got %v", err)
+	}
+}

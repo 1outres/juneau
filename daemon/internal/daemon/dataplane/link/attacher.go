@@ -87,18 +87,29 @@ func NewPodAttacher(
 // programsFor picks the pair an endpoint runs. The choice is read off
 // the endpoint itself rather than looked up, so an L2Network that is
 // already gone still takes its own programs down.
-func (p *PodAttacher) programsFor(nwep *juneauv1alpha1.NetworkEndpoint) attacherPrograms {
-	if nwep.Spec.L2Network != "" {
+//
+// An endpoint on an ExternalNetwork runs the pod pair as well: its frames
+// are IP, and pod_egress is where the Pod's traffic is meant to leave the
+// node. The pair tells such a veth apart by ifindex_external_network (see
+// PodIface) and takes a path of its own for it, with no SNAT and no
+// policy. While that entry is missing, pod_egress drops what the Pod
+// sends instead of letting it reach the host stack unchecked.
+func (p *PodAttacher) programsFor(nwep *juneauv1alpha1.NetworkEndpoint) (attacherPrograms, error) {
+	switch {
+	case nwep.Spec.L2Network != "":
 		return attacherPrograms{
 			label:   "l2",
 			egress:  p.l2Egress.Objs.TcL2Egress,
 			ingress: p.l2Ingress.Objs.TcL2Ingress,
-		}
-	}
-	return attacherPrograms{
-		label:   "pod",
-		egress:  p.podEgress.Objs.TcPodEgress,
-		ingress: p.podIngress.Objs.TcPodIngress,
+		}, nil
+	case nwep.Spec.Subnet != "", nwep.Spec.ExternalNetwork != "":
+		return attacherPrograms{
+			label:   "pod",
+			egress:  p.podEgress.Objs.TcPodEgress,
+			ingress: p.podIngress.Objs.TcPodIngress,
+		}, nil
+	default:
+		return attacherPrograms{}, fmt.Errorf("NetworkEndpoint %s/%s names no network", nwep.Namespace, nwep.Name)
 	}
 }
 
@@ -122,7 +133,11 @@ func (p *PodAttacher) Reconcile(ctx context.Context, key string) error {
 	if nwep.Spec.NodeName != p.nodeName || nwep.Spec.Attachment == nil {
 		return p.detach(key)
 	}
-	return p.attach(key, nwep.Spec.Attachment.Ifindex, p.programsFor(&nwep))
+	programs, err := p.programsFor(&nwep)
+	if err != nil {
+		return err
+	}
+	return p.attach(key, nwep.Spec.Attachment.Ifindex, programs)
 }
 
 // CloseAll detaches every tracked link. Used by Manager on shutdown.

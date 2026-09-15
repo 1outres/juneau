@@ -256,6 +256,38 @@ static __always_inline int apply_shared_service_reverse(
   return 1;
 }
 
+// handle_external_overlay delivers a frame another node sent over the
+// overlay for an ElasticIP a NIC on this node carries directly. The VNI is
+// the network ID of the ExternalNetwork, which names neither an L2Network
+// nor a Subnet.
+//
+// The frame goes to a local veth or nowhere, and only to the veth of a NIC
+// on that same network. The sending node already resolved the NIC, so
+// there is no relay to a third node, and a network ID that fdb happens to
+// know on another kind of veth reaches nothing.
+//
+// Untraced: trace tuples are looked up in the scope of a Vpc, and the NIC
+// joins none.
+static __always_inline int handle_external_overlay(struct __sk_buff *skb,
+                                                   const struct ethhdr *eth,
+                                                   __u32 network_id) {
+  struct fdb_key fk = {};
+  fk.subnet_id = network_id;
+  __builtin_memcpy(fk.mac, eth->h_dest, ETH_ALEN);
+  const struct fdb_val *fv = bpf_map_lookup_elem(&fdb, &fk);
+  if (!fv || fv->ifindex == 0)
+    return TC_ACT_SHOT;
+
+  __u32 ifindex = fv->ifindex;
+  struct ifindex_external_network_key nic_key = {.ifindex = ifindex};
+  const struct ifindex_external_network_val *nic =
+      bpf_map_lookup_elem(&ifindex_external_network, &nic_key);
+  if (!nic || nic->network_id != network_id)
+    return TC_ACT_SHOT;
+
+  return bpf_redirect(ifindex, 0);
+}
+
 static __always_inline int tc_vxlan_ingress(struct __sk_buff *skb) {
   void *data = (void *)(long)skb->data;
   void *data_end = (void *)(long)skb->data_end;
@@ -282,9 +314,8 @@ static __always_inline int tc_vxlan_ingress(struct __sk_buff *skb) {
 
   struct subnet_key skey = {.subnet_id = subnet_id};
   const struct subnet_val *subnet = bpf_map_lookup_elem(&subnet_map, &skey);
-  if (!subnet) {
-    return TC_ACT_SHOT;
-  }
+  if (!subnet)
+    return handle_external_overlay(skb, eth, subnet_id);
 
   // Hook-entry trace event. Tunnel-decapsulated packets carry the
   // VPC-scoped tuple of the *destination* node, which is what the

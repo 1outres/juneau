@@ -24,14 +24,15 @@ BGPにおけるBGPAdvertisementに相当しますが、こちらはユーザー�
 | 生成元 | 名前 | 応答するNode |
 |---|---|---|
 | ExternalNetworkAttachment | `ena-<ExternalNetworkAttachment名>` | そのExternalNetworkAttachmentの`spec.nodeName` |
-| ElasticIP | `eip-<namespace>-<ElasticIP名>` | ElasticIPAttachmentの`status.nodeName` |
+| ElasticIP | `eip-<namespace>-<ElasticIP名>` | NATで使うならElasticIPAttachmentの`status.nodeName`、PodのNICが直接持つならそのNetworkInterfaceの`spec.nodeName` |
 | ServiceLoadBalancer | `slb-<namespace>-<ServiceLoadBalancer名>` | `status.advertisingNodes`から選ばれた1つ |
 
 ExternalNetworkAttachmentが作るものはOwnerReferenceでひもづいており、ExternalNetworkAttachmentを削除するとGarbage Collectorが回収します。
 ElasticIPとServiceLoadBalancerはnamespaceを持つリソースなので、cluster-scopedなARPAdvertisementにOwnerReferenceを張れません。かわりに、それぞれのfinalizerが削除時にARPAdvertisementを消します。
 
 応答できるNodeが無くなった場合は、ARPAdvertisement自体が削除されます。
-ElasticIPAttachmentが外れたとき、ServiceLoadBalancerのLocal backendが全滅したときがこれにあたります。
+ElasticIPが何にも使われなくなったとき、ServiceLoadBalancerのLocal backendが全滅したときがこれにあたります。
+ElasticIPが`WaitingForHandover`で、どのNICにもアドレスを渡していない間もこれにあたります。
 古いNodeが応答し続けるより、誰も応答しない状態のほうが原因を追いやすいためです。
 
 ## 応答するNodeが変わったとき

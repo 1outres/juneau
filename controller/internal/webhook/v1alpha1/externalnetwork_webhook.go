@@ -177,6 +177,12 @@ func (v *ExternalNetworkCustomValidator) validate(ctx context.Context, obj *june
 				}
 			}
 		}
+
+		sharedErrs, err := v.validateAddressPoolsNotShared(ctx, obj)
+		if err != nil {
+			return nil, err
+		}
+		errs = append(errs, sharedErrs...)
 	}
 
 	if len(errs) > 0 {
@@ -186,4 +192,41 @@ func (v *ExternalNetworkCustomValidator) validate(ctx context.Context, obj *june
 	}
 
 	return nil, nil
+}
+
+// validateAddressPoolsNotShared keeps each AddressPool inside one
+// ExternalNetwork. The addresses of a pool are handed out and advertised in
+// the name of the ExternalNetwork in front of it, so a pool behind two of
+// them would have no single owner. An ExternalNetwork that is being deleted
+// still holds its pools until it is gone.
+func (v *ExternalNetworkCustomValidator) validateAddressPoolsNotShared(ctx context.Context, obj *juneauloutresmev1alpha1.ExternalNetwork) (field.ErrorList, error) {
+	var externalNetworks juneauloutresmev1alpha1.ExternalNetworkList
+	if err := v.List(ctx, &externalNetworks); err != nil {
+		return nil, err
+	}
+
+	holders := make(map[string]string)
+	for i := range externalNetworks.Items {
+		other := &externalNetworks.Items[i]
+		if other.Name == obj.Name {
+			continue
+		}
+		for _, pool := range other.Spec.AddressPools {
+			if _, seen := holders[pool]; !seen {
+				holders[pool] = other.Name
+			}
+		}
+	}
+
+	addressPoolsPath := field.NewPath("spec", "addressPools")
+	var errs field.ErrorList
+	for i, pool := range obj.Spec.AddressPools {
+		holder, ok := holders[pool]
+		if !ok {
+			continue
+		}
+		errs = append(errs, field.Invalid(addressPoolsPath.Index(i), pool,
+			fmt.Sprintf("AddressPool %q is already referenced by ExternalNetwork %q", pool, holder)))
+	}
+	return errs, nil
 }

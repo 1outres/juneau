@@ -33,11 +33,28 @@ traceイベントを出さない理由: trace_emit_*_l3はL3タプル(protocol/s
 ## handle_l3
 
 1. L3ヘッダーのパースを行う
-2. 宛先IPアドレスでexternal_address_pools mapを引く
-3. 見つからないもしくはvalueが0だったらTC_ACT_OK
+2. 宛先IPアドレスでexternal_address_pools mapを引く(external_address_claim、external.h)
+3. 見つからないもしくはvalueが0(EXTERNAL_ADDRESS_UNCLAIMED)だったらTC_ACT_OK。値がDELIVERED_HEREでもDELIVERED_ELSEWHEREでも、この先の処理は同じ。pod_egressはElasticIPを直接持つNICから送られたパケットをこのmapを見てhairpinするので、読み方はexternal.hで共有する
 4. nat_dnat_mapを引く
-5. 見つからなかったらTC_ACT_SHOT
-6. nat_dnat_mapを引いた結果も含めてhandle_dnatに渡す
+5. 見つかったら、nat_dnat_mapを引いた結果も含めてhandle_dnatに渡す
+6. elastic_ip_direct mapを宛先IPアドレスで引く
+7. 見つかったら、結果のnetwork_idも含めてhandle_elastic_ip_directに渡す
+8. どちらにもなかったらTC_ACT_SHOT
+
+elastic_ip_directは、Pod NICが直接持つElasticIPのための表。NATの判定をすべて済ませた後に引くので、変わるのは「poolの中にあるが誰も引き受けていないアドレス」のうち、NICが持つものだけ。それ以外は今までどおりドロップする。
+
+## handle_elastic_ip_direct
+
+アドレスはNIC自身のものなので、IPアドレスもportも書き換えない。
+
+1. arp_table mapを(network_id, 宛先IPアドレス)で引く
+2. 見つからなかったらTC_ACT_SHOT
+3. 宛先MACアドレスを結果のmacに書き換える
+4. network_idをsubnet_idとしてforward_l2に渡す
+
+forward_l2は、NICがこのNodeにあればそのvethへredirectし、別のNodeにあればVNIをnetwork_idにしてVXLANで送る。BGP ECMPはどのNodeにも着くので、どのNodeでもこの経路を通れるように、elastic_ip_directとexternal_address_poolsの/32は全Nodeに書く(daemonのElasticIPDirect reconciler)。
+
+送信元MACはここでは書かない。NICのvethのegressにつくpod_ingressが、host側vethのMACに書き換える。
 
 ## handle_dnat
 1. subnet_mapを引く

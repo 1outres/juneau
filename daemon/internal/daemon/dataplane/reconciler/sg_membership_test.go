@@ -111,3 +111,15 @@ func TestSGMembershipLeavesANicThatNamesNoNetwork(t *testing.T) {
 		t.Errorf("networkVpc = ok %v, err %v; want the NIC left out", ok, err)
 	}
 }
+
+func TestSGMembershipLeavesANicOnAnElasticIP(t *testing.T) {
+	r := newMembershipFixture(t, newMembershipVpc("vpc-a", 11))
+	iface := newMembershipInterface("", "")
+	iface.Spec.ElasticIP = "public"
+	iface.Status.Address = "203.0.113.10/32"
+	iface.Status.EffectiveSecurityGroups = []juneauv1alpha1.NetworkInterfaceEffectiveSG{{Name: "web", GroupID: 3}}
+
+	if _, ok, err := r.networkVpc(context.Background(), iface); err != nil || ok {
+		t.Errorf("networkVpc = ok %v, err %v; want the NIC left out", ok, err)
+	}
+}

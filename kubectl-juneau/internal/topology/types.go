@@ -40,7 +40,16 @@ type InterfaceContext struct {
 
 	NetworkACL     *NetworkACLSummary     `json:"networkACL,omitempty"`
 	SecurityGroups []SecurityGroupSummary `json:"securityGroups,omitempty"`
-	ElasticIP      *ElasticIPSummary      `json:"elasticIP,omitempty"`
+
+	// ElasticIP is the ElasticIP an ElasticIPAttachment maps to this NIC
+	// for NAT.
+	ElasticIP *ElasticIPSummary `json:"elasticIP,omitempty"`
+
+	// DirectElasticIP is the ElasticIP the NIC names in spec.elasticIP and
+	// carries itself. Its status.attachment says whether this NIC is the
+	// one that holds the address. Nil when the NIC names none, or names one
+	// that does not exist.
+	DirectElasticIP *juneauv1alpha1.ElasticIP `json:"directElasticIP,omitempty"`
 }
 
 // VpcContext is the result returned for `describe vpc`.

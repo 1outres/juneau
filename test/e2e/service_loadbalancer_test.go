@@ -19,16 +19,18 @@ import (
 // existing bgp_router_test machinery and exercise the controller
 // surface here.
 var _ = Describe("Juneau Service LoadBalancer", func() {
-	const lbAddressPoolCIDR = "203.0.113.0/29"
-
 	It("allocates a VIP, advertises it from nodes with local backends, and clears it on backend loss", func() {
+		const lbAddressPoolCIDR = "203.0.113.128/29"
+
 		base := sanitizeName("svc-lb")
 		namespace := "e2e-" + base
 		svcName := "web"
 		// Pool/ExternalNetwork are cluster-scoped, so derive per-spec
 		// names from the unique base — otherwise the parallel --procs=4
 		// runner has the two specs' DeferCleanup blocks delete each
-		// other's fixtures mid-test.
+		// other's fixtures mid-test. The pool CIDR differs per spec for the
+		// same reason: the AddressPool webhook rejects two pools that share
+		// an address.
 		lbAddressPoolName := "e2e-lb-pool-" + base
 		lbExternalNetworkName := "e2e-lb-extnet-" + base
 
@@ -132,6 +134,8 @@ spec:
 	})
 
 	It("rejects LoadBalancer Services that do not set externalTrafficPolicy=Local", func() {
+		const lbAddressPoolCIDR = "203.0.113.136/29"
+
 		base := sanitizeName("svc-lb-bad-itp")
 		namespace := "e2e-" + base
 		lbAddressPoolName := "e2e-lb-pool-" + base

@@ -276,6 +276,68 @@ var _ = Describe("Pod controller", func() {
 		expectNoInterface(pod, "eth0")
 	})
 
+	It("points the NetworkInterface of eth0 at the ElasticIP it names", func() {
+		elasticIP := createPodTestElasticIP("203.0.113.40", 4101)
+		pod := newPod("eip-primary", nil)
+		pod.Annotations = map[string]string{juneauv1alpha1.PodAnnotationElasticIP: elasticIP}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		DeferCleanup(func() { cleanupPodTestArtifacts(ctx, pod) })
+
+		reconcilePod(pod)
+
+		primary := interfaceOf(pod)
+		Expect(primary.Spec.ElasticIP).To(Equal(elasticIP))
+		Expect(primary.Spec.Subnet).To(BeEmpty())
+		Expect(primary.Spec.L2Network).To(BeEmpty())
+	})
+
+	It("points the NetworkInterface of an extra NIC at the ElasticIP it names", func() {
+		elasticIP := createPodTestElasticIP("203.0.113.41", 4102)
+		pod := newPod("eip-extra", nil)
+		pod.Annotations = map[string]string{
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(`[{"interface":"ext0","elasticIP":%q}]`, elasticIP),
+		}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		DeferCleanup(func() { cleanupPodTestArtifacts(ctx, pod) })
+
+		reconcilePod(pod, "eth0", "ext0")
+
+		Expect(interfaceNamed(pod, "ext0").Spec.ElasticIP).To(Equal(elasticIP))
+		Expect(interfaceOf(pod).Spec.Subnet).To(Equal("default"))
+	})
+
+	It("builds no NIC at all while the ElasticIP of one is missing", func() {
+		pod := newPod("eip-missing", nil)
+		pod.Annotations = map[string]string{juneauv1alpha1.PodAnnotationElasticIP: "no-such-eip"}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		DeferCleanup(func() { cleanupPodTestArtifacts(ctx, pod) })
+
+		expectNoInterface(pod, "eth0")
+	})
+
+	It("builds no NIC at all while the ElasticIP of one has no address", func() {
+		elasticIP := createPodTestElasticIP("", 4103)
+		pod := newPod("eip-pending", nil)
+		pod.Annotations = map[string]string{
+			juneauv1alpha1.PodAnnotationNetworks: fmt.Sprintf(`[{"interface":"ext0","elasticIP":%q}]`, elasticIP),
+		}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		DeferCleanup(func() { cleanupPodTestArtifacts(ctx, pod) })
+
+		expectNoInterface(pod, "eth0")
+		expectNoInterface(pod, "ext0")
+	})
+
+	It("builds no NIC at all while the ExternalNetwork of an ElasticIP has no network ID", func() {
+		elasticIP := createPodTestElasticIP("203.0.113.42", 0)
+		pod := newPod("eip-no-network-id", nil)
+		pod.Annotations = map[string]string{juneauv1alpha1.PodAnnotationElasticIP: elasticIP}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		DeferCleanup(func() { cleanupPodTestArtifacts(ctx, pod) })
+
+		expectNoInterface(pod, "eth0")
+	})
+
 	It("refuses to build a pod whose networks annotation cannot be read", func() {
 		pod := newPod("multinic-broken", nil)
 		pod.Annotations = map[string]string{
@@ -363,6 +425,44 @@ func releasePodInterface(ctx context.Context, pod *corev1.Pod, nwiface *juneauv1
 		g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
 	}).Should(Succeed())
 	Expect(k8sClient.Delete(ctx, pod, client.GracePeriodSeconds(0))).To(Succeed())
+}
+
+// createPodTestElasticIP adds an ElasticIP in the default namespace whose
+// status says it holds address, on an ExternalNetwork that was given
+// networkID. An empty address or a zero networkID leaves that part
+// unallocated. No ElasticIP or ExternalNetwork controller runs in the
+// suite, so the status stays as written.
+func createPodTestElasticIP(address string, networkID uint32) string {
+	GinkgoHelper()
+	ctx := context.Background()
+
+	externalNetwork := &juneauv1alpha1.ExternalNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: uniqueTestName("pod-extnet")},
+		Spec: juneauv1alpha1.ExternalNetworkSpec{
+			Type:         juneauv1alpha1.ExternalNetworkTypeBGP,
+			AddressPools: []string{uniqueTestName("pod-pool")},
+		},
+	}
+	Expect(k8sClient.Create(ctx, externalNetwork)).To(Succeed())
+	DeferCleanup(func() { _ = k8sClient.Delete(ctx, externalNetwork) })
+	if networkID != 0 {
+		externalNetwork.Status.NetworkID = networkID
+		Expect(k8sClient.Status().Update(ctx, externalNetwork)).To(Succeed())
+	}
+
+	elasticIP := &juneauv1alpha1.ElasticIP{
+		ObjectMeta: metav1.ObjectMeta{Name: uniqueTestName("pod-eip"), Namespace: "default"},
+		Spec:       juneauv1alpha1.ElasticIPSpec{ExternalNetwork: externalNetwork.Name},
+	}
+	Expect(k8sClient.Create(ctx, elasticIP)).To(Succeed())
+	DeferCleanup(func() { _ = k8sClient.Delete(ctx, elasticIP) })
+	elasticIP.Status.Phase = juneauv1alpha1.ElasticIPPhasePending
+	if address != "" {
+		elasticIP.Status.Phase = juneauv1alpha1.ElasticIPPhaseAvailable
+		elasticIP.Status.Address = address
+	}
+	Expect(k8sClient.Status().Update(ctx, elasticIP)).To(Succeed())
+	return elasticIP.Name
 }
 
 func createPodTestL2Network() string {

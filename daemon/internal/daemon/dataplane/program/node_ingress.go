@@ -25,6 +25,13 @@ func NewNodeIngress(pinPath string, nodeIngressIfindex int) (*NodeIngress, error
 		return nil, err
 	}
 
+	// node_ingress_ifindex is a pinned, shared map pod_egress reads to
+	// hand a packet to this program. Owned by the program that is
+	// attached to the interface.
+	if err := p.Objs.NodeIngressIfindex.Update(uint32(0), uint32(nodeIngressIfindex), ebpf.UpdateAny); err != nil {
+		return nil, err
+	}
+
 	l, err := link.AttachTCX(link.TCXOptions{
 		Program:   p.Objs.TcNodeIngress,
 		Interface: nodeIngressIfindex,

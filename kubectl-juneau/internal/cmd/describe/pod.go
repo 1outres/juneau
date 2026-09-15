@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	"github.com/1outres/juneau/kubectl-juneau/internal/factory"
 	"github.com/1outres/juneau/kubectl-juneau/internal/output"
 	"github.com/1outres/juneau/kubectl-juneau/internal/topology"
@@ -150,7 +151,7 @@ func appendInterfaceNode(parent *output.Node, ic *topology.InterfaceContext) {
 	appendL2NetworkNode(nicNode, ic)
 
 	appendSecurityGroupsNode(nicNode, ic.SecurityGroups)
-	appendElasticIPNode(nicNode, ic.ElasticIP)
+	appendElasticIPNode(nicNode, ic)
 }
 
 // appendL2NetworkNode names the plain Ethernet segment a NIC joined.
@@ -220,11 +221,45 @@ func appendSecurityGroupsNode(parent *output.Node, sgs []topology.SecurityGroupS
 	}
 }
 
-func appendElasticIPNode(parent *output.Node, eip *topology.ElasticIPSummary) {
+// appendElasticIPNode names the ElasticIP a NIC uses, either the one it
+// carries itself or the one an ElasticIPAttachment maps to it for NAT.
+func appendElasticIPNode(parent *output.Node, ic *topology.InterfaceContext) {
+	if name := ic.NetworkInterface.Spec.ElasticIP; name != "" {
+		appendDirectElasticIPNode(parent, ic.NetworkInterface.Name, name, ic.DirectElasticIP)
+		return
+	}
+
+	eip := ic.ElasticIP
 	if eip == nil {
 		parent.Child("ElasticIP  (none)")
 		return
 	}
-	parent.Childf("ElasticIP  %s  (address: %s, phase: %s)",
-		eip.AttachmentName, displayOrDash(eip.Address), displayOrDash(string(eip.Phase)))
+	parent.Childf("ElasticIP  %s  (nat, attachment: %s, address: %s, phase: %s)",
+		displayOrDash(eip.ElasticIPName), eip.AttachmentName, displayOrDash(eip.Address), displayOrDash(string(eip.Phase)))
+}
+
+// appendDirectElasticIPNode shows an ElasticIP a NIC carries and, from
+// status.attachment, whether this NIC is the one that holds the address
+// right now. Another NIC can hold it while this one waits to take over.
+func appendDirectElasticIPNode(parent *output.Node, nicName, name string, eip *juneauv1alpha1.ElasticIP) {
+	if eip == nil {
+		parent.Childf("ElasticIP  %s  (direct, not found)", name)
+		return
+	}
+	parent.Childf("ElasticIP  %s  (direct, address: %s, phase: %s, externalNetwork: %s, %s)",
+		eip.Name, displayOrDash(eip.Status.Address), displayOrDash(string(eip.Status.Phase)),
+		displayOrDash(eip.Spec.ExternalNetwork), describeElasticIPHolder(nicName, eip.Status.Attachment))
+}
+
+func describeElasticIPHolder(nicName string, attachment *juneauv1alpha1.ElasticIPStatusAttachment) string {
+	switch {
+	case attachment == nil:
+		return "carried by nothing yet"
+	case attachment.Kind == juneauv1alpha1.ElasticIPStatusAttachmentKindNetworkInterface && attachment.Name == nicName:
+		return "carried by this NIC"
+	case attachment.Kind == juneauv1alpha1.ElasticIPStatusAttachmentKindNetworkInterface:
+		return fmt.Sprintf("carried by NetworkInterface %s", attachment.Name)
+	default:
+		return fmt.Sprintf("used by %s %s", attachment.Kind, attachment.Name)
+	}
 }

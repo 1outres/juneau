@@ -20,6 +20,10 @@ const (
 	allocationPoolSecurityGroupID          = "security-group-id"
 	allocationPoolNetworkACLID             = "network-acl-id"
 	allocationPoolTransitGatewayRouteTable = "transit-gateway-route-table-id"
+
+	// maxVNI is the largest number a VXLAN header can carry. Every number
+	// drawn from allocationPoolSubnetVNI ends up in one.
+	maxVNI = 0xFFFFFF
 )
 
 // allocationClaimName composes a deterministic claim name from the

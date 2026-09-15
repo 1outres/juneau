@@ -13,6 +13,8 @@
 
 1. L2ヘッダーのパースを行う
 2. ifindex_subnet mapを引く(key: skb->ifindex)
+   - 見つからなかったらifindex_external_network mapを同じkeyで引く。見つかったら、ElasticIPを直接持つNICのvethなので、handle_external_nic関数を呼び出し、その関数の返り値を返す
+   - どちらにもなかったらドロップ
 3. subnet_mapを引く
 4. ARPリクエストの場合、handle_arp関数を呼び出し、その関数の返り値を返す（handle_arp関数にはsubnet_idとsubnet_mapのvalも渡す）
 5. IPv4の場合、reverse系のconntrack (SVC_NAPT_IN、SVC_SHARED_IN、LB_REV_NAT) を先に処理する。ヒットしたらそこで終了
@@ -23,6 +25,71 @@
    - DNAT非該当(CT miss、もしくはCT actionがDNAT以外) → fall through
 8. もし対象がgw_macだったらhandle_l3関数を呼び出し、その関数の返り値を返す(subnet_idとsubnet_mapのvalも渡す)
 9. そうじゃなかったらforward_l2関数を呼び出し、その返り値を返す(subnet_idとsubnet_mapのvalも渡す)
+
+## handle_external_nic
+
+ElasticIPを直接持つNIC(ExternalNetworkのNIC)から出るパケットを扱う。このNICはVpcに属さないので、Service、SNAT、NetworkACL、SecurityGroup、VpcのFIBはどれも通さない。
+
+分岐はifindex_subnetのmissの中に置いた。subnet_mapやapply_policyより前なので、Subnetの経路の命令数は増えない。tc_pod_egressはverifierの上限に近く、policyの途中で分岐させる余裕はない。
+
+1. ARPならhandle_external_nic_arp関数を呼び出し、その返り値を返す
+2. IPv4でなければドロップ
+3. 送信元IPアドレスがifindex_external_networkのipv4(NICのElasticIP)でなければドロップ。SNATしないので、別のアドレスを名乗ったパケットがそのままunderlayに出てしまう
+4. 宛先IPアドレスをexternal_address_poolsで引き(external_address_claim、external.h)、値がEXTERNAL_ADDRESS_DELIVERED_HEREなら、hairpin_to_node_ingress関数を呼び出し、その返り値を返す
+5. route_external_nic_via_host関数を呼び出し、その返り値を返す
+
+traceイベントは出さない。traceはVpcのスコープでtupleを引くが、このNICにはVpcが無い。
+
+## hairpin_to_node_ingress
+
+juneauが引き受けるアドレス宛のパケットを、node_ingressがついているインターフェースのingressに渡す。underlayから届いたのと同じ扱いになる。
+
+1. node_ingress_ifindex mapを引く。無いか0ならドロップ
+2. そのifindexにbpf_redirect(BPF_F_INGRESS)する
+
+external_address_poolsにあるアドレスの行き先を決めるのはnode_ingressで、中身は次のとおり。
+
+- ElasticIPを直接持つNIC(このNodeでも別のNodeでも)
+- NATGatewayのflowの戻り(NAPT_IN)
+- ElasticIPAttachmentのElasticIP
+- LoadBalancerのVIP
+
+この仕組みを選んだ理由は3つある。
+
+- node_ingressの処理をpod_egressに取り込むと、tc_pod_egressの命令数にnode_ingressの分(約11万命令)が足される。58%を使っている今、それは入らない
+- tail callにすると、pod_egressが呼ぶsubprogramと512バイトのstackを分け合うことになる。tc_pod_egressは408バイトを使っていて、余裕が無い
+- uplinkから外に出すと、routerが同じNodeに戻してくれるとは限らない
+
+BPF_F_INGRESSでredirectすると、kernelはパケットをuplinkの受信キューに入れ直し、そのTCX ingressでnode_ingressが走る。宛先MACはhost側vethのMACのままなのでPACKET_OTHERHOSTになるが、external_address_poolsにあるアドレスについてnode_ingressはredirectかドロップしか返さないので、kernelに渡ることは無い。
+
+pod_egressとnode_ingressは、external_address_poolsの読み方をexternal.hのexternal_address_claimで共有している。読み方がずれると、hairpinしたパケットをnode_ingressがhost stackに渡し、OTHERHOSTとして捨てられる。
+
+hairpinするのは、値がEXTERNAL_ADDRESS_DELIVERED_HERE(このNodeに届くprefix)のときだけ。EXTERNAL_ADDRESS_DELIVERED_ELSEWHEREは、juneauのアドレスだが別のNodeが単独で広報しているprefixを表す。BGPのNATGatewayでは、ExternalNetworkAttachmentのcontrollerが各NodeのNAPTアドレスをそのNodeだけの/32として広報し、routerはpool全体の広報よりそちらを選ぶ。別のNodeのNAPTアドレス宛の応答をこのNodeのnode_ingressに渡すと、flowのconntrackが無いのでドロップになる。routerに渡せば、そのNodeに届く。値を書くのはdaemonのbgp-pool reconcilerで、別のNodeに固定されたBGPAdvertisementのprefixをELSEWHEREにする。node_ingressはどちらの値も同じように扱う。
+
+## route_external_nic_via_host
+
+hostのFIBに、ポートにつながったhostと同じようにルーティングさせる。
+
+1. bpf_fib_lookupでnext hopを引く(forward_via_host_fibと同じくBPF_FIB_LOOKUP_OUTPUTは付けない)
+2. SUCCESSとNO_NEIGHならforward_via_host_fibと同じようにredirectする
+3. 負の値(引数の誤り)ならドロップ
+4. それ以外はTC_ACT_OK
+
+forward_via_host_fibはNOT_FWDEDをドロップするが、ここではkernelに渡す。node自身のアドレス宛(kubeletのprobeへの応答)はNOT_FWDEDになり、ドロップするとprobeが通らない。broadcast、multicast、routeが無い場合もNOT_FWDEDになるが、どれもkernelの入力経路が自分のルールで配送するか捨てるかを決める。フレームはhost側vethのMAC宛なので、kernelはPACKET_HOSTとして受け取る。
+
+## handle_external_nic_arp
+
+NICが持つのは/32のアドレスと、169.254.0.1(EXTERNAL_NIC_GATEWAY_ADDR)へのonlinkのdefault routeだけ。hostは169.254.0.1を持たず、proxy_arpも0なので、kernelはこのARPに答えない。答えを返すのはこの関数だけになる。
+
+1. ARP Replyとしてパースできたら
+   - 送信元IPアドレス(spa)がifindex_external_networkのipv4(NICのElasticIP)と同じならTC_ACT_OK。nodeはElasticIPへのhost routeでPodに送るので、kernelがPodのMACを尋ねる。その答えをkernelに渡す
+   - 違ったらドロップ
+2. ARP Requestでなければドロップ
+3. 要求されたIPアドレスが169.254.0.1でなければドロップ
+4. ifindex_host_mac mapをskb->ifindexで引く。無ければドロップ
+5. host側vethのMACでARP Replyに書き換え、skb->ifindexにbpf_redirectする
+
+答えるMACをhost側vethのMACにしたので、Podからnode宛のフレームはvethのMAC宛に届き、kernelはPACKET_HOSTとして受け取る。bpf_skb_change_typeは要らない。
 
 ## apply_policy (policy.h、pod_ingressと共通)
 

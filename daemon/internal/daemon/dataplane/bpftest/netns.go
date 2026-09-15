@@ -3,6 +3,7 @@ package bpftest
 import (
 	"errors"
 	"io/fs"
+	"net"
 	"os"
 	"runtime"
 	"testing"
@@ -106,6 +107,39 @@ func Dummy(t *testing.T, name string) Device {
 		t.Fatalf("bpftest: look up device %s: %v", name, err)
 	}
 	return Device{Name: name, Index: built.Attrs().Index}
+}
+
+// Veth adds a veth pair, both ends up, and returns the end named name
+// and its peer. mac is the address of the end named name.
+//
+// A test reaches for it when a program has to run on a real hook for a
+// frame that really arrived. What Send writes to the peer is received by
+// the other end, and the ingress hook of that end runs as it does for a
+// Pod; a redirect the program returns is then really carried out, which
+// BPF_PROG_TEST_RUN never does.
+func Veth(t *testing.T, name, peer string, mac net.HardwareAddr) (Device, Device) {
+	t.Helper()
+
+	link := &netlink.Veth{
+		LinkAttrs: netlink.LinkAttrs{Name: name, HardwareAddr: mac},
+		PeerName:  peer,
+	}
+	if err := netlink.LinkAdd(link); err != nil {
+		t.Fatalf("bpftest: add veth %s/%s: %v", name, peer, err)
+	}
+
+	devices := make([]Device, 0, 2)
+	for _, end := range []string{name, peer} {
+		built, err := netlink.LinkByName(end)
+		if err != nil {
+			t.Fatalf("bpftest: look up device %s: %v", end, err)
+		}
+		if err := netlink.LinkSetUp(built); err != nil {
+			t.Fatalf("bpftest: bring device %s up: %v", end, err)
+		}
+		devices = append(devices, Device{Name: end, Index: built.Attrs().Index})
+	}
+	return devices[0], devices[1]
 }
 
 // txCounters is how many frames the device has been handed so far and

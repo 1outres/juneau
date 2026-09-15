@@ -150,6 +150,13 @@ var FIBRouteTypeEnum = NewEnumDict("fib_route_type", map[uint64]string{
 	9: "FIB_ROUTE_TYPE_BLACKHOLE",
 })
 
+// ExternalAddressDeliveryEnum maps the external_address_pools value →
+// label: which node the network delivers the prefix to.
+var ExternalAddressDeliveryEnum = NewEnumDict("external_address_delivery", map[uint64]string{
+	1: "EXTERNAL_ADDRESS_DELIVERED_HERE",
+	2: "EXTERNAL_ADDRESS_DELIVERED_ELSEWHERE",
+})
+
 // BackendKindEnum maps backend_val.kind → label.
 var BackendKindEnum = NewEnumDict("backend_kind", map[uint64]string{
 	0: "BACKEND_KIND_POD",

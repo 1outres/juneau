@@ -25,6 +25,30 @@
 #define TC_ACT_OK 0
 #define TC_ACT_SHOT 2
 
+// handle_external_nic delivers a frame to a NIC on an ElasticIP. Such a
+// NIC joins no Vpc, so there is no reverse SNAT to undo and no policy to
+// read: the frame goes to the Pod, including what the node itself sends
+// it over the host route to the ElasticIP.
+//
+// An IPv4 frame is sent from the host side of the veth, the MAC the Pod
+// resolved its gateway to. node_ingress, vxlan_ingress and the hairpin
+// hand the frame here with the source of the hop before still in place,
+// and this is the one hook every one of them passes.
+static __always_inline int handle_external_nic(struct __sk_buff *skb,
+                                               struct ethhdr *eth) {
+  if (eth->h_proto != bpf_htons(ETH_P_IP))
+    return TC_ACT_OK;
+
+  struct ifindex_host_mac_key key = {.ifindex = skb->ifindex};
+  const struct ifindex_host_mac_val *host =
+      bpf_map_lookup_elem(&ifindex_host_mac, &key);
+  if (!host)
+    return TC_ACT_SHOT;
+
+  __builtin_memcpy(eth->h_source, host->mac, sizeof(host->mac));
+  return TC_ACT_OK;
+}
+
 static __always_inline int handle(struct __sk_buff *skb) {
   void *data = nat_skb_data(skb);
   void *data_end = nat_skb_data_end(skb);
@@ -45,8 +69,12 @@ static __always_inline int handle(struct __sk_buff *skb) {
   struct ifindex_subnet_key isk = {.ifindex = skb->ifindex};
   const struct ifindex_subnet_val *isv =
       bpf_map_lookup_elem(&ifindex_subnet, &isk);
-  if (!isv)
+  if (!isv) {
+    struct ifindex_external_network_key nic_key = {.ifindex = skb->ifindex};
+    if (bpf_map_lookup_elem(&ifindex_external_network, &nic_key))
+      return handle_external_nic(skb, eth);
     return TC_ACT_OK;
+  }
 
   struct subnet_key sk = {.subnet_id = isv->subnet_id};
   const struct subnet_val *subnet = bpf_map_lookup_elem(&subnet_map, &sk);

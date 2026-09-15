@@ -2,6 +2,7 @@ package v1alpha1
 
 import (
 	"context"
+	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -90,28 +91,18 @@ func newValidElasticIP(name, externalNetwork string) *juneauv1alpha1.ElasticIP {
 }
 
 func createWebhookExternalNetwork(networkType juneauv1alpha1.ExternalNetworkType) string {
-	poolName := webhookUniqueTestName("addresspool")
-	advertiseMode := juneauv1alpha1.AddressPoolAdvertiseModeBGP
-	addresses := []string{"10.200.0.0/30"}
-	if networkType == juneauv1alpha1.ExternalNetworkTypeARP {
-		advertiseMode = juneauv1alpha1.AddressPoolAdvertiseModeARP
-		addresses = []string{"10.200.0.10-10.200.0.20"}
+	var pool *juneauv1alpha1.AddressPool
+	switch networkType {
+	case juneauv1alpha1.ExternalNetworkTypeBGP:
+		pool = newWebhookBGPAddressPool()
+	case juneauv1alpha1.ExternalNetworkTypeARP:
+		pool = newWebhookARPAddressPool()
+	default:
+		Fail(fmt.Sprintf("unsupported ExternalNetwork type %q", networkType))
 	}
-	Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.AddressPool{
-		ObjectMeta: metav1.ObjectMeta{Name: poolName},
-		Spec: juneauv1alpha1.AddressPoolSpec{
-			AdvertiseMode: advertiseMode,
-			Addresses:     addresses,
-		},
-	})).To(Succeed())
+	Expect(webhookK8sClient.Create(context.Background(), pool)).To(Succeed())
 
-	name := webhookUniqueTestName("externalnetwork")
-	Expect(webhookK8sClient.Create(context.Background(), &juneauv1alpha1.ExternalNetwork{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec: juneauv1alpha1.ExternalNetworkSpec{
-			Type:         networkType,
-			AddressPools: []string{poolName},
-		},
-	})).To(Succeed())
-	return name
+	externalNetwork := newWebhookExternalNetwork(networkType, pool.Name)
+	Expect(webhookK8sClient.Create(context.Background(), externalNetwork)).To(Succeed())
+	return externalNetwork.Name
 }

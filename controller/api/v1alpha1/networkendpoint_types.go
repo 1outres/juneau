@@ -78,7 +78,8 @@ type NetworkEndpointAttachment struct {
 }
 
 // NetworkEndpointSpec defines the desired state of NetworkEndpoint.
-// +kubebuilder:validation:XValidation:rule="has(self.subnet) != has(self.l2Network)",message="set exactly one of spec.subnet and spec.l2Network"
+// +kubebuilder:validation:XValidation:rule="[has(self.subnet), has(self.l2Network), has(self.externalNetwork)].filter(x, x).size() == 1",message="set exactly one of spec.subnet, spec.l2Network and spec.externalNetwork"
+// +kubebuilder:validation:XValidation:rule="!has(self.externalNetwork) || self.kind == 'Pod'",message="spec.externalNetwork is only allowed when spec.kind is Pod"
 type NetworkEndpointSpec struct {
 	// Kind identifies what produced this endpoint.
 	// +required
@@ -91,17 +92,26 @@ type NetworkEndpointSpec struct {
 	NodeName string `json:"nodeName"`
 
 	// Subnet is the L2 segment this endpoint participates in. Exactly
-	// one of Subnet and L2Network is set.
+	// one of Subnet, L2Network and ExternalNetwork is set.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	Subnet string `json:"subnet,omitempty"`
 
 	// L2Network is the L2 segment this endpoint participates in when it
 	// is a plain Ethernet one rather than a Subnet. Exactly one of
-	// Subnet and L2Network is set.
+	// Subnet, L2Network and ExternalNetwork is set.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	L2Network string `json:"l2Network,omitempty"`
+
+	// ExternalNetwork is set on a Pod endpoint whose NIC carries an
+	// ElasticIP of this ExternalNetwork directly. The data plane forwards
+	// to it on the segment that ExternalNetwork.status.networkID names.
+	// Exactly one of Subnet, L2Network and ExternalNetwork is set, and
+	// only Kind=Pod may set this one.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	ExternalNetwork string `json:"externalNetwork,omitempty"`
 
 	// Address is the L3 identity in CIDR form (e.g. "10.0.0.5/24").
 	// +optional
@@ -149,6 +159,7 @@ type NetworkEndpointPodReference struct {
 // +kubebuilder:printcolumn:name="Node",type="string",JSONPath=".spec.nodeName"
 // +kubebuilder:printcolumn:name="Subnet",type="string",JSONPath=".spec.subnet"
 // +kubebuilder:printcolumn:name="L2Network",type="string",JSONPath=".spec.l2Network"
+// +kubebuilder:printcolumn:name="ExternalNetwork",type="string",JSONPath=".spec.externalNetwork"
 // +kubebuilder:printcolumn:name="Address",type="string",JSONPath=".spec.address"
 
 // NetworkEndpoint is the Schema for the networkendpoints API.

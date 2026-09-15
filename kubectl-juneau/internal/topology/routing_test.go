@@ -15,9 +15,11 @@ import (
 // field is the canonical "X-by-name" lookup; missing entries return
 // (nil, nil) per the View contract.
 type stubView struct {
-	vpcs        map[string]*juneauv1alpha1.Vpc
-	subnets     map[string]*juneauv1alpha1.Subnet
-	routeTables map[string]*juneauv1alpha1.RouteTable
+	vpcs                 map[string]*juneauv1alpha1.Vpc
+	subnets              map[string]*juneauv1alpha1.Subnet
+	routeTables          map[string]*juneauv1alpha1.RouteTable
+	elasticIPs           map[string]*juneauv1alpha1.ElasticIP
+	elasticIPAttachments []juneauv1alpha1.ElasticIPAttachment
 }
 
 func (s *stubView) Pod(_ context.Context, _, _ string) (*corev1.Pod, error)         { return nil, nil }
@@ -70,8 +72,14 @@ func (s *stubView) NetworkInterfacesByPod(_ context.Context, _, _ string) ([]jun
 func (s *stubView) NetworkInterfacesBySubnet(_ context.Context, _ string) ([]juneauv1alpha1.NetworkInterface, error) {
 	return nil, nil
 }
-func (s *stubView) ElasticIPAttachmentsForNIC(_ context.Context, _ string) ([]juneauv1alpha1.ElasticIPAttachment, error) {
-	return nil, nil
+func (s *stubView) ElasticIPAttachmentsForNIC(_ context.Context, nicName string) ([]juneauv1alpha1.ElasticIPAttachment, error) {
+	var out []juneauv1alpha1.ElasticIPAttachment
+	for _, attachment := range s.elasticIPAttachments {
+		if attachment.Spec.TargetRef.NetworkInterfaceName == nicName {
+			out = append(out, attachment)
+		}
+	}
+	return out, nil
 }
 func (s *stubView) ServiceLoadBalancer(_ context.Context, _, _ string) (*juneauv1alpha1.ServiceLoadBalancer, error) {
 	return nil, nil
@@ -79,8 +87,8 @@ func (s *stubView) ServiceLoadBalancer(_ context.Context, _, _ string) (*juneauv
 func (s *stubView) ExternalNetwork(_ context.Context, _ string) (*juneauv1alpha1.ExternalNetwork, error) {
 	return nil, nil
 }
-func (s *stubView) ElasticIP(_ context.Context, _ string) (*juneauv1alpha1.ElasticIP, error) {
-	return nil, nil
+func (s *stubView) ElasticIP(_ context.Context, ns, name string) (*juneauv1alpha1.ElasticIP, error) {
+	return s.elasticIPs[ns+"/"+name], nil
 }
 
 func TestResolveRouteTableForSubnet(t *testing.T) {

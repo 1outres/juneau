@@ -106,7 +106,7 @@ func presentNICTree(w io.Writer, ic *topology.InterfaceContext) error {
 		root.Childf("NetworkACL  %s  (aclID: %d)", ic.NetworkACL.Name, ic.NetworkACL.ACLID)
 	}
 	appendSecurityGroupsNode(root, ic.SecurityGroups)
-	appendElasticIPNode(root, ic.ElasticIP)
+	appendElasticIPNode(root, ic)
 
 	return output.WriteTree(w, root)
 }

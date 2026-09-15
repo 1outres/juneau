@@ -15,10 +15,21 @@
 
 1. L2 ヘッダーをパース。IPv4 でなければ TC_ACT_OK
 2. ifindex_subnet → subnet_id → subnet_map で vpc_id を解決(失敗なら TC_ACT_OK)
+   - ifindex_subnetに無く、ifindex_external_networkにあれば、ElasticIPを直接持つNICのvethなので、handle_external_nicに渡してその返り値を返す
 3. apply_reverse_snat に渡す
 4. apply_reverse_snat の戻り値が -1 なら TC_ACT_SHOT
 5. apply_policy に hook = POLICY_HOOK_POD_INGRESS で渡す。reverse SNAT の後に呼ぶので、policy は Pod から見える peer (Service 応答なら書き戻された ClusterIP) を評価する
 6. apply_policy の戻り値が負なら TC_ACT_SHOT、それ以外は TC_ACT_OK
+
+## handle_external_nic
+
+ElasticIPを直接持つNIC(ExternalNetworkのNIC)に届くフレームを扱う。Vpcに属さないので、reverse SNATもpolicyも無い。node自身がhost routeで送るもの(kubeletのprobeなど)も含めて、そのままPodに渡す。
+
+1. IPv4でなければTC_ACT_OK
+2. ifindex_host_macをskb->ifindexで引く。無ければTC_ACT_SHOT
+3. 送信元MACをhost側vethのMACに書き換えてTC_ACT_OK
+
+送信元MACを書き換えるのは、Podから見てフレームがgateway(169.254.0.1を解決したMAC)から届くようにするため。node_ingress、vxlan_ingress、hairpinは手前のhopの送信元MACを残したままredirectしてくる。この3つが必ず通るのはこのhookなので、ここで書く。
 
 ## apply_reverse_snat
 

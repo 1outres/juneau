@@ -413,6 +413,36 @@ struct {
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } ifindex_subnet SEC(".maps");
 
+// EXTERNAL_NIC_GATEWAY_ADDR is the next hop of every NIC that carries an
+// ElasticIP directly, in host byte order: 169.254.0.1. It must match
+// PodElasticIPGateway in controller/api/v1alpha1/podelasticip.go, which
+// is what the NIC's onlink default route points at.
+#define EXTERNAL_NIC_GATEWAY_ADDR 0xA9FE0001
+
+struct ifindex_external_network_key {
+  __u32 ifindex;
+};
+
+// ifindex_external_network_val names the veth of a NIC that carries an
+// ElasticIP directly. Such a NIC joins no Vpc, so it has no entry in
+// ifindex_subnet: every reader of that map takes the value as a Subnet
+// and would run SNAT, policy and the Vpc FIB on the NIC's frames.
+struct ifindex_external_network_val {
+  // network_id is ExternalNetwork.status.networkID, the number fdb and
+  // arp_table key the NIC by.
+  __u32 network_id;
+  // ipv4 is the ElasticIP, in network byte order.
+  __be32 ipv4;
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_IF_SUBNET);
+  __type(key, struct ifindex_external_network_key);
+  __type(value, struct ifindex_external_network_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} ifindex_external_network SEC(".maps");
+
 struct ifindex_host_mac_key {
   __u32 ifindex;
 };
@@ -497,6 +527,17 @@ struct {
   __type(value, __u32); // vxlan ifindex
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } vxlan_ifindex SEC(".maps");
+
+// node_ingress_ifindex holds the interface node_ingress is attached to.
+// pod_egress hands a packet a NIC on an ElasticIP sends to an owned
+// address to that interface's ingress, so node_ingress decides it.
+struct {
+  __uint(type, BPF_MAP_TYPE_ARRAY);
+  __uint(max_entries, 1);
+  __type(key, __u32);
+  __type(value, __u32); // node ingress ifindex
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} node_ingress_ifindex SEC(".maps");
 
 // host_underlay holds this node's underlay IPv4 (the Node's
 // InternalIP, in network byte order). Single-entry array map shared
@@ -617,8 +658,18 @@ struct external_address_pools_key {
 // the destination address and handles the packet itself, a miss means
 // the packet belongs to the host stack and is passed through. It is
 // not tied to BGP. Every way juneau claims an external address (BGP
-// advertisement, per-node NAPT address, ARP advertisement) writes this
-// same map.
+// advertisement, per-node NAPT address, ARP advertisement, an ElasticIP
+// a Pod NIC carries directly) writes this same map.
+//
+// The value says which node the network delivers the prefix to, and
+// must match ownedaddr.Delivery. node_ingress handles either kind the
+// same. pod_egress only hands a packet for a prefix delivered here to
+// node_ingress: one another node advertises by itself, such as the NAPT
+// address of that node, is routed out of this one.
+#define EXTERNAL_ADDRESS_UNCLAIMED 0
+#define EXTERNAL_ADDRESS_DELIVERED_HERE 1
+#define EXTERNAL_ADDRESS_DELIVERED_ELSEWHERE 2
+
 struct {
   __uint(type, BPF_MAP_TYPE_LPM_TRIE);
   __uint(max_entries, MAX_ADDRESS_POOLS_MAP);
@@ -676,6 +727,29 @@ struct {
   __type(value, struct nat_inside);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } nat_dnat_map SEC(".maps");
+
+struct elastic_ip_direct_key {
+  // addr is the ElasticIP in host byte order, the form nat_dnat_map and
+  // arp_table are keyed on.
+  __u32 addr;
+};
+
+struct elastic_ip_direct_val {
+  // network_id is ExternalNetwork.status.networkID. The NIC that carries
+  // the address is found in arp_table and fdb under this number.
+  __u32 network_id;
+};
+
+// elastic_ip_direct holds every ElasticIP a Pod NIC carries directly,
+// cluster-wide. node_ingress delivers a packet for such an address to the
+// NIC without any NAT, from whichever node it lands on.
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_NAT_MAP);
+  __type(key, struct elastic_ip_direct_key);
+  __type(value, struct elastic_ip_direct_val);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} elastic_ip_direct SEC(".maps");
 
 // service_map maps a Kubernetes Service tuple (cluster IP + L4 port +
 // proto) to the metadata that describes which backends it dispatches to

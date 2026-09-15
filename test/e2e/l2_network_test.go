@@ -30,6 +30,16 @@ const (
 	l2ServerV6      = "fd00:0:0:60::2"
 
 	l2ServerNewMAC = "02:00:00:aa:bb:cc"
+
+	l2Eth0Namespace   = "e2e-l2-eth0"
+	l2Eth0Vpc         = "vpc-l2-eth0"
+	l2Eth0Subnet      = "subnet-l2-eth0"
+	l2Eth0SubnetCIDR  = "10.243.0.0/24"
+	l2Eth0NetworkName = "l2net-eth0"
+	l2Eth0NetworkCIDR = "10.244.0.0/24"
+	l2Eth0Gateway     = "10.244.0.1"
+	l2Eth0ClientPod   = "l2-eth0-client"
+	l2Eth0ServerPod   = "l2-eth0-server"
 )
 
 var _ = Describe("Juneau L2Network", func() {
@@ -95,6 +105,46 @@ var _ = Describe("Juneau L2Network", func() {
 		// the ARP reply to the client.
 		By("reaching the server again under its new MAC")
 		assertPodPing(l2Namespace, l2ClientPod, l2ServerAddress)
+	})
+
+	// A Pod whose eth0 sits on a segment with an address and a gateway
+	// lives in the Vpc without a Subnet. The gateway is its only way to the
+	// rest of the Vpc, and the cluster DNS Service cannot be reached from a
+	// Vpc, so the Pod resolves names through the node.
+	It("gives eth0 an address and a default route through the gateway of the segment", func() {
+		By("creating a VPC with a Subnet and an L2Network that has a CIDR and a gateway")
+		Expect(applyManifest(l2Eth0NetworkManifest())).To(Succeed())
+		DeferCleanup(cleanupL2Eth0Resources)
+		waitSubnetReady(l2Eth0Subnet)
+		waitResourceReady("l2network", l2Eth0NetworkName)
+
+		createNamespace(l2Eth0Namespace)
+
+		By("creating a Pod with eth0 on the segment and a server on the Subnet of another node")
+		Expect(applyManifest(l2Eth0ClientManifest(workerNodes[0]))).To(Succeed())
+		Expect(applyManifest(podManifest(l2Eth0Namespace, l2Eth0ServerPod, workerNodes[1], l2Eth0Subnet, true))).To(Succeed())
+		waitPodsReady(l2Eth0Namespace, l2Eth0ClientPod, l2Eth0ServerPod)
+
+		By("checking eth0 joined the L2Network and took an address of its CIDR")
+		assertPodNICL2Network(l2Eth0Namespace, l2Eth0ClientPod, podIfaceName, l2Eth0NetworkName)
+		address := mustPodIP(l2Eth0Namespace, l2Eth0ClientPod)
+		Expect(addressInCIDR(l2Eth0NetworkCIDR, address)).To(BeTrue(), "Pod IP %s should come from %s", address, l2Eth0NetworkCIDR)
+		assertPodInterfaceAddress(l2Eth0Namespace, l2Eth0ClientPod, podIfaceName, address)
+
+		By("checking the default route goes through the gateway")
+		Eventually(func(g Gomega) {
+			out, err := kubectlOutput(repoRoot, "exec", "-n", l2Eth0Namespace, l2Eth0ClientPod, "--", "ip", "-4", "route", "show", "default")
+			g.Expect(err).NotTo(HaveOccurred(), "ip route output: %s", out)
+			g.Expect(strings.TrimSpace(out)).To(HavePrefix(fmt.Sprintf("default via %s dev %s", l2Eth0Gateway, podIfaceName)), "ip route output: %s", out)
+		}).Should(Succeed())
+
+		By("checking the Pod resolves names through the node")
+		dnsPolicy, err := kubectlJSONPath(repoRoot, `{.spec.dnsPolicy}`, "-n", l2Eth0Namespace, "get", "pod", l2Eth0ClientPod)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.TrimSpace(dnsPolicy)).To(Equal("Default"))
+
+		By("reaching the server on the Subnet through the gateway")
+		assertPodConnectivity(l2Eth0Namespace, l2Eth0ClientPod, l2Eth0ServerPod)
 	})
 })
 
@@ -234,6 +284,58 @@ spec:
         capabilities:
           add: ["NET_ADMIN"]
 `, l2Namespace, podName, l2PrimarySubnet, l2ExtraIf, l2NetworkName, nodeName, netshootImage)
+}
+
+func l2Eth0NetworkManifest() string {
+	return fmt.Sprintf(`apiVersion: juneau.loutres.me/v1alpha1
+kind: Vpc
+metadata:
+  name: %s
+---
+apiVersion: juneau.loutres.me/v1alpha1
+kind: Subnet
+metadata:
+  name: %s
+spec:
+  vpc: %s
+  cidr: %s
+---
+apiVersion: juneau.loutres.me/v1alpha1
+kind: L2Network
+metadata:
+  name: %s
+spec:
+  vpc: %s
+  cidr: %s
+  gateway:
+    address: %s
+`, l2Eth0Vpc, l2Eth0Subnet, l2Eth0Vpc, l2Eth0SubnetCIDR, l2Eth0NetworkName, l2Eth0Vpc, l2Eth0NetworkCIDR, l2Eth0Gateway)
+}
+
+func l2Eth0ClientManifest(nodeName string) string {
+	return fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  namespace: %s
+  name: %s
+  annotations:
+    juneau.loutres.me/networks: |
+      [{"interface": "%s", "l2Network": "%s"}]
+spec:
+  nodeName: %s
+  terminationGracePeriodSeconds: 0
+  containers:
+    - name: client
+      image: %s
+      command: ["sleep", "3600"]
+`, l2Eth0Namespace, l2Eth0ClientPod, podIfaceName, l2Eth0NetworkName, nodeName, netshootImage)
+}
+
+func cleanupL2Eth0Resources() {
+	runBestEffort(repoRoot, "kubectl", "delete", "namespace", l2Eth0Namespace, "--ignore-not-found=true", "--timeout=60s")
+	runBestEffort(repoRoot, "kubectl", "delete", "l2network", l2Eth0NetworkName, "--ignore-not-found=true")
+	runBestEffort(repoRoot, "kubectl", "delete", "subnet", l2Eth0Subnet, "--ignore-not-found=true")
+	runBestEffort(repoRoot, "kubectl", "delete", "vpc", l2Eth0Vpc, "--ignore-not-found=true")
 }
 
 func cleanupL2NetworkResources() {

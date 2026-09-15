@@ -26,6 +26,8 @@ Pod間の通信では、1つのパケットが送信元Podのegressと宛先Pod�
 
 相手がPodでない場合 (外部アドレス、host networkのbackendなど) は、Pod側の1か所しか通りません。NATGateway経由で外に出る通信は送信元の`pod_egress`だけで判定されます。
 
+ElasticIPを直接持つNICのvethにも同じ2本が付きますが、policyは評価しません。そのvethは`ifindex_subnet`に無く、`ifindex_external_network`にあります。`pod_egress`も`pod_ingress`も`ifindex_subnet`のmissの中でこれを見て分岐し、`subnet_map`もtraceも`apply_policy`も通らずに抜けます。NICがVpcに属さないので、引くACLもSecurityGroupのmembershipも無いからです。`pod_egress`では、この分岐をpolicyの評価より前に置いて、検証器の命令数をほとんど増やさないようにしています。
+
 評価の本体は`daemon/bpf/policy.h`の`apply_policy`1つで、2つのhookで共有しています。hookが決めるのは次の4点だけです。
 
 | | `POLICY_HOOK_POD_EGRESS` | `POLICY_HOOK_POD_INGRESS` |

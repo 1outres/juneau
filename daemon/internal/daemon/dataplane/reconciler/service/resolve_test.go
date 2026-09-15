@@ -137,3 +137,56 @@ func TestFindPrimaryInterfaceForPod_PodWithoutPrimaryNIC(t *testing.T) {
 		t.Fatalf("expected no NetworkInterface, got %+v", got)
 	}
 }
+
+// A Pod whose eth0 is not on a Subnet (it carries an ElasticIP directly, or
+// sits on an L2Network) is no Service backend: the backend map keys a Pod
+// by the VNI of its Subnet, and such a NIC has none.
+func TestResolveBackends_SkipsAPodWhosePrimaryNICIsNotOnASubnet(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := juneauv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme(juneau): %v", err)
+	}
+	for _, spec := range []juneauv1alpha1.NetworkInterfaceSpec{
+		{ElasticIP: "public"},
+		{L2Network: "lab"},
+	} {
+		spec.PodRef = juneauv1alpha1.NetworkInterfacePodReference{UID: "uid-1", Name: "web", Interface: "eth0"}
+		spec.NodeName = "node-a"
+		primary := &juneauv1alpha1.NetworkInterface{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "web.eth0"},
+			Spec:       spec,
+		}
+		cl := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(primary).
+			WithIndex(&juneauv1alpha1.NetworkInterface{}, "spec.podRef.name", func(obj client.Object) []string {
+				return []string{obj.(*juneauv1alpha1.NetworkInterface).Spec.PodRef.Name}
+			}).
+			WithIndex(&juneauv1alpha1.NetworkInterface{}, "spec.podRef.interface", func(obj client.Object) []string {
+				return []string{obj.(*juneauv1alpha1.NetworkInterface).Spec.PodRef.Interface}
+			}).
+			Build()
+
+		svc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "web"},
+			Spec:       corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 80}}},
+		}
+		endpoints := []endpointInfo{{
+			address:   "203.0.113.10",
+			port:      8080,
+			targetRef: &corev1.ObjectReference{Kind: "Pod", Namespace: "default", Name: "web"},
+			nodeName:  "node-a",
+			ready:     true,
+			serving:   true,
+		}}
+
+		r := &Reconciler{client: cl}
+		got, err := r.resolveBackends(context.Background(), svc, "vpc-a", endpoints)
+		if err != nil {
+			t.Fatalf("%+v: resolveBackends: %v", spec, err)
+		}
+		if backends := got[svc.Spec.Ports[0]]; len(backends) != 0 {
+			t.Errorf("%+v: backends = %+v, want none", spec, backends)
+		}
+	}
+}

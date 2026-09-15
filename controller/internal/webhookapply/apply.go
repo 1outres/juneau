@@ -20,10 +20,17 @@ import (
 
 const (
 	probeWebhookName = "mprobe-pod-juneau-loutres-me.kb.io"
-	probeSubnetMatch = "has(object.metadata.annotations) && " +
-		"'juneau.loutres.me/subnet' in object.metadata.annotations && " +
+
+	// probeRewriteMatch lets through every Pod whose eth0 may be on a custom
+	// Vpc network: one on a custom Subnet annotation, and any Pod with a
+	// networks annotation. CEL cannot read the JSON of that annotation, so
+	// the probe defaulter decides for those Pods whether eth0 needs the
+	// rewrite.
+	probeRewriteMatch = "has(object.metadata.annotations) && (" +
+		"('juneau.loutres.me/subnet' in object.metadata.annotations && " +
 		"object.metadata.annotations['juneau.loutres.me/subnet'] != '' && " +
-		"object.metadata.annotations['juneau.loutres.me/subnet'] != 'default'"
+		"object.metadata.annotations['juneau.loutres.me/subnet'] != 'default') || " +
+		"'juneau.loutres.me/networks' in object.metadata.annotations)"
 )
 
 // Apply reads embedded webhook manifests, rewrites names and clientConfig (URL + CA),
@@ -133,8 +140,8 @@ func prepareMutating(obj *admv1.MutatingWebhookConfiguration, nodeIP string, caB
 				continue
 			}
 			obj.Webhooks[i].MatchConditions = []admv1.MatchCondition{{
-				Name:       "custom-subnet",
-				Expression: probeSubnetMatch,
+				Name:       "custom-network",
+				Expression: probeRewriteMatch,
 			}}
 		}
 		path := ""

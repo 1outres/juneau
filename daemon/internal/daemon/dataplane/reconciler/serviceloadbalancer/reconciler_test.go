@@ -311,3 +311,32 @@ func TestResolvePrimarySubnetID_PicksTheNICLoadBalancerTrafficLandsOn(t *testing
 		t.Fatalf("got VNI %d, want the VNI %d of the primary NIC subnet", got, 11)
 	}
 }
+
+// A Pod whose eth0 carries an ElasticIP directly, or sits on an L2Network,
+// is no LoadBalancer backend: lb_backend_map places a backend by the VNI of
+// its Subnet, and such a NIC has none.
+func TestResolvePrimarySubnetID_GivesNoVNIForAPrimaryNICOffASubnet(t *testing.T) {
+	for _, spec := range []juneauv1alpha1.NetworkInterfaceSpec{
+		{ElasticIP: "public"},
+		{L2Network: "lab"},
+	} {
+		spec.PodRef = juneauv1alpha1.NetworkInterfacePodReference{UID: "uid-1", Name: "web", Interface: "eth0"}
+		spec.NodeName = "node-a"
+		primary := &juneauv1alpha1.NetworkInterface{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "web.eth0"},
+			Spec:       spec,
+		}
+
+		r := &Reconciler{client: newFakeClient(t, primary)}
+		got, err := r.resolvePrimarySubnetID(context.Background(), localEndpoint{
+			address:   "203.0.113.10",
+			targetRef: &corev1.ObjectReference{Kind: "Pod", Namespace: "default", Name: "web"},
+		})
+		if err != nil {
+			t.Fatalf("%+v: resolvePrimarySubnetID: %v", spec, err)
+		}
+		if got != 0 {
+			t.Errorf("%+v: got VNI %d, want 0", spec, got)
+		}
+	}
+}

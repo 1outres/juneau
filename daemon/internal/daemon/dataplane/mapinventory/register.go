@@ -19,6 +19,7 @@ func RegisterPodEgress(inv *Inventory, p *program.PodEgress) error {
 	for _, fn := range []func(*Inventory, *program.PodEgress) error{
 		registerSubnet,
 		registerIfindexSubnet,
+		registerIfindexExternalNetwork,
 		registerIfindexHostMac,
 		registerArpTable,
 		registerFdb,
@@ -32,6 +33,7 @@ func RegisterPodEgress(inv *Inventory, p *program.PodEgress) error {
 		registerExternalArp,
 		registerNATSnat,
 		registerNATDnat,
+		registerElasticIPDirect,
 		registerService,
 		registerVpcEndpoint,
 		registerServiceACL,
@@ -103,6 +105,20 @@ func registerIfindexSubnet(inv *Inventory, p *program.PodEgress) error {
 		Value: Schema{Fields: []Field{
 			FieldU32Named("subnet_id"),
 			FieldIPv4BENamed("ipv4", "the Pod's address on this NIC"),
+		}},
+	})
+}
+
+func registerIfindexExternalNetwork(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name: "ifindex_external_network",
+		Map:  p.Objs.IfindexExternalNetwork,
+		Key: Schema{Fields: []Field{
+			FieldU32Named("ifindex"),
+		}},
+		Value: Schema{Fields: []Field{
+			FieldU32Named("network_id", "ExternalNetwork status.networkID"),
+			FieldIPv4BENamed("ipv4", "the ElasticIP the NIC carries"),
 		}},
 	})
 }
@@ -268,7 +284,7 @@ func registerExternalAddressPools(inv *Inventory, p *program.PodEgress) error {
 			FieldIPv4BENamed("addr"),
 		}},
 		Value: Schema{Fields: []Field{
-			FieldU8Named("present"),
+			FieldEnumNamed("delivery", 1, ExternalAddressDeliveryEnum, "which node the network delivers the prefix to"),
 		}},
 	})
 }
@@ -315,6 +331,20 @@ func registerNATDnat(inv *Inventory, p *program.PodEgress) error {
 		Value: Schema{Fields: []Field{
 			FieldU32Named("subnet_id"),
 			FieldIPv4Named("addr"),
+		}},
+	})
+}
+
+func registerElasticIPDirect(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name: "elastic_ip_direct",
+		Map:  p.Objs.ElasticIpDirect,
+		Key: Schema{Fields: []Field{
+			// addr writer: convert.IPv4ToUint32 (host-order layout).
+			FieldIPv4Named("addr", "ElasticIP a Pod NIC carries directly"),
+		}},
+		Value: Schema{Fields: []Field{
+			FieldU32Named("network_id", "ExternalNetwork status.networkID"),
 		}},
 	})
 }

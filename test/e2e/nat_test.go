@@ -178,7 +178,7 @@ spec:
 			defaultExtNet   = "e2e-nat-default-extnet"
 			defaultPool     = "e2e-nat-default-pool"
 			defaultGW       = "default" // the literal name 'default' is what the controller looks for
-			defaultPoolCIDR = "203.0.113.0/24"
+			defaultPoolCIDR = "203.0.113.0/25"
 		)
 
 		DeferCleanup(func() {
