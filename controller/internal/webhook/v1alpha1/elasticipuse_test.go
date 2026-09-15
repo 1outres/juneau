@@ -178,18 +178,15 @@ var _ = Describe("NetworkInterface on an ElasticIP", func() {
 		Expect(webhookK8sClient.Update(context.Background(), &current)).To(Succeed())
 	})
 
-	It("rejects an ElasticIP an ElasticIPAttachment uses", func() {
+	It("accepts an interface on an ElasticIP an ElasticIPAttachment uses, so the interface can wait Pending", func() {
 		elasticIP := createWebhookElasticIP()
 		target := newValidNetworkInterface(webhookUniqueTestName("networkinterface"), "default", "")
 		Expect(webhookK8sClient.Create(context.Background(), target)).To(Succeed())
 		attachment := newValidElasticIPAttachment(webhookUniqueTestName("elasticipattachment"), elasticIP, target.Name)
 		Expect(webhookK8sClient.Create(context.Background(), attachment)).To(Succeed())
 
-		pod := createWebhookPod(nil)
-		err := webhookK8sClient.Create(context.Background(), newElasticIPNetworkInterface(pod, "ext0", elasticIP))
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("spec.elasticIP"))
-		Expect(err.Error()).To(ContainSubstring("used by ElasticIPAttachment " + `"` + attachment.Name + `"`))
+		Expect(webhookK8sClient.Create(context.Background(),
+			newElasticIPNetworkInterface(createWebhookPod(nil), "ext0", elasticIP))).To(Succeed())
 	})
 
 	It("accepts an interface on an ElasticIP another interface already carries, so the loser of a race can wait Pending", func() {

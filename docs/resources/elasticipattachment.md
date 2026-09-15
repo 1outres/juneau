@@ -23,9 +23,11 @@ webhookは次のElasticIPAttachmentを拒否します。
 
 削除中のNetworkInterfaceは、直接持っているものとして数えません。
 
-逆向きの確認はPodとNetworkInterfaceのwebhookが行います。ElasticIPAttachmentが使っているElasticIPをNICから参照すると、Podの作成が拒否されます。削除中のElasticIPAttachmentは数えないので、ElasticIPAttachmentを消してから直接使うPodを作れば、NATから直接へ移せます。
+逆向きの確認はPodのwebhookが行います。ElasticIPAttachmentが使っているElasticIPをNICから参照すると、Podの作成が拒否されます。削除中のElasticIPAttachmentは数えないので、ElasticIPAttachmentを消してから直接使うPodを作れば、NATから直接へ移せます。
 
-2つを同時に作るとwebhookをすり抜けることがあります。そのときはElasticIPが`PHASE: Error`、reason `Conflict`になります。どちらかを消してください。
+2つを同時に作るとwebhookをすり抜けることがあります。そのときはElasticIPが`PHASE: Error`、reason `Conflict`になります。ElasticIPAttachmentは`Pending`になり、reason `WaitingForElasticIP`のmessageに、ElasticIPの`Conflict`と同じ内容が出ます。NATは設定されません。どちらかを消すと、残った方が動き出します。
+
+ElasticIPAttachmentが`Attached`になるのは、ElasticIPの`status.attachment`がそのElasticIPAttachmentを指してからです。どちらの使い方にするかはElasticIP controllerが決めます。
 
 `status.elasticIP`は関連付け対象として解決されたElasticIPのアドレスです。
 `status.podIP`は関連付け先NetworkInterfaceのPod側IPアドレスです。
@@ -37,7 +39,7 @@ webhookは次のElasticIPAttachmentを拒否します。
 
 ## Phase
 
-- Pending:依存リソースの割り当てや対応するNetworkEndpointの作成待ち
+- Pending:依存リソースの割り当てや対応するNetworkEndpointの作成待ち。ElasticIPがこのElasticIPAttachmentを使い手に選ぶのを待っている間もここに入ります
 - Attached:ElasticIPが1つのNetworkInterfaceへ正常に関連付けられている状態
 - Error:参照先不整合や複数NetworkEndpoint一致などで正常に扱えない状態
 

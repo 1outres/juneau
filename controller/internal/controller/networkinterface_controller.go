@@ -80,7 +80,7 @@ type NetworkInterfaceReconciler struct {
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=networkinterfaces/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=networkinterfaces/finalizers,verbs=update
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=allocationclaims,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=juneau.loutres.me,resources=subnets;l2networks;elasticips;externalnetworks,verbs=get;list;watch
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=subnets;l2networks;elasticips;elasticipattachments;externalnetworks,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -550,6 +550,10 @@ func (r *NetworkInterfaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&juneauv1alpha1.ElasticIP{},
 			handler.EnqueueRequestsFromMapFunc(r.mapElasticIPToNetworkInterfaces),
+		).
+		Watches(
+			&juneauv1alpha1.ElasticIPAttachment{},
+			handler.EnqueueRequestsFromMapFunc(r.mapElasticIPAttachmentToNetworkInterfaces),
 		).
 		Named("networkinterface").
 		Complete(r)

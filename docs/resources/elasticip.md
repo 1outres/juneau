@@ -47,7 +47,9 @@ web-eip     ext-net           10.225.51.8   NetworkInterface      web.eth0      
 - Attached:アドレスが選ばれ、1つのElasticIPAttachmentか、1つのNetworkInterfaceに使われている状態
 - Error:依存リソースの不整合や、複数のElasticIPAttachmentからの参照などで正常に扱えない状態
 
-ElasticIPAttachmentとNetworkInterfaceの両方から参照されたときも`Error`になります。reasonは`Conflict`で、messageに両方の名前が出ます。webhookが拒否するので普通は起きませんが、2つを同時に作るとすり抜けることがあります。どちらかを消してください。
+ElasticIPAttachmentとNetworkInterfaceの両方から参照されたときも`Error`になります。reasonは`Conflict`で、messageに両方の名前が出ます。webhookが拒否するので普通は起きませんが、Podを作ってからそのNetworkInterfaceができるまでの間にElasticIPAttachmentを作ると、すり抜けることがあります。
+
+この間はどちらもアドレスを使いません。NetworkInterfaceは`Pending`で止まり、reason `WaitingForElasticIP`のmessageにElasticIPAttachmentの名前が出ます。ElasticIPAttachmentも`Pending`で止まり、NATは設定されません。どちらかを消すと、ElasticIPは残った方に使われ、残った方もそのまま動き出します。
 
 ## 直接使うNetworkInterfaceの選び方
 

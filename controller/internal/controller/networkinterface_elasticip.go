@@ -47,8 +47,18 @@ const (
 // controller has picked this interface to carry it. Until then the
 // interface holds no address at all, so two interfaces never program the
 // same address at the same time.
+//
+// An ElasticIPAttachment that uses the ElasticIP keeps the interface
+// without an address even while status.attachment still names the
+// interface, so the address is never carried and translated for NAT at the
+// same time, not even before the ElasticIP controller has seen the
+// attachment.
 func (r *NetworkInterfaceReconciler) reconcileElasticIPAddressing(ctx context.Context, resource *juneauv1alpha1.NetworkInterface, network *podnetwork.Network) error {
-	if waitingFor := elasticIPHolderWait(resource.Name, network.Reference, *network.ElasticIP); waitingFor != "" {
+	natUses, err := listActiveElasticIPAttachments(ctx, r.Client, resource.Namespace, resource.Spec.ElasticIP)
+	if err != nil {
+		return err
+	}
+	if waitingFor := elasticIPHolderWait(resource.Name, network.Reference, *network.ElasticIP, natUses); waitingFor != "" {
 		return r.updateUnaddressedStatus(ctx, resource, conditionReasonWaitingForElasticIP, waitingFor)
 	}
 
@@ -73,9 +83,13 @@ func (r *NetworkInterfaceReconciler) reconcileElasticIPAddressing(ctx context.Co
 
 // elasticIPHolderWait says why an interface may not carry the address of
 // an ElasticIP yet, or returns the empty string when the ElasticIP names
-// this interface as the one that carries it.
-func elasticIPHolderWait(networkInterface string, ref podnetwork.Reference, binding podnetwork.ElasticIPBinding) string {
+// this interface as the one that carries it and no ElasticIPAttachment in
+// natUses uses it.
+func elasticIPHolderWait(networkInterface string, ref podnetwork.Reference, binding podnetwork.ElasticIPBinding, natUses []juneauv1alpha1.ElasticIPAttachment) string {
 	switch {
+	case len(natUses) > 0:
+		return fmt.Sprintf("%s is used by ElasticIPAttachment %s; an ElasticIP is used either for NAT or directly, so this interface takes it once the ElasticIPAttachment is gone",
+			ref, elasticIPAttachmentNames(natUses))
 	case binding.HeldBy(networkInterface):
 		return ""
 	case binding.Attachment == nil:
@@ -146,12 +160,28 @@ func (r *NetworkInterfaceReconciler) updateUnaddressedStatus(ctx context.Context
 // the ElasticIP, so the one it picks takes the address and the others say
 // who they wait for.
 func (r *NetworkInterfaceReconciler) mapElasticIPToNetworkInterfaces(ctx context.Context, obj client.Object) []reconcile.Request {
+	return r.networkInterfacesNaming(ctx, obj.GetNamespace(), obj.GetName())
+}
+
+// mapElasticIPAttachmentToNetworkInterfaces wakes every NetworkInterface
+// that names the ElasticIP an ElasticIPAttachment uses, so an interface
+// gives the address up as soon as NAT uses it and takes it back once the
+// ElasticIPAttachment is gone.
+func (r *NetworkInterfaceReconciler) mapElasticIPAttachmentToNetworkInterfaces(ctx context.Context, obj client.Object) []reconcile.Request {
+	attachment, ok := obj.(*juneauv1alpha1.ElasticIPAttachment)
+	if !ok || attachment.Spec.ElasticIPRef.Name == "" {
+		return nil
+	}
+	return r.networkInterfacesNaming(ctx, attachment.Namespace, attachment.Spec.ElasticIPRef.Name)
+}
+
+func (r *NetworkInterfaceReconciler) networkInterfacesNaming(ctx context.Context, namespace, elasticIP string) []reconcile.Request {
 	var interfaces juneauv1alpha1.NetworkInterfaceList
 	if err := r.List(ctx, &interfaces,
-		client.InNamespace(obj.GetNamespace()),
-		client.MatchingFields{networkInterfaceElasticIPIndex: obj.GetName()},
+		client.InNamespace(namespace),
+		client.MatchingFields{networkInterfaceElasticIPIndex: elasticIP},
 	); err != nil {
-		log.FromContext(ctx).Error(err, "unable to list NetworkInterfaces for ElasticIP", "namespace", obj.GetNamespace(), "name", obj.GetName())
+		log.FromContext(ctx).Error(err, "unable to list NetworkInterfaces for ElasticIP", "namespace", namespace, "name", elasticIP)
 		return nil
 	}
 	requests := make([]reconcile.Request, 0, len(interfaces.Items))

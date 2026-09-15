@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
@@ -103,6 +104,51 @@ var _ = Describe("NetworkInterface on an ElasticIP", func() {
 		expectWaitingForElasticIP(iface, `ElasticIPAttachment "nat-use"`)
 	})
 
+	It("names the ElasticIPAttachment that uses the ElasticIP while the ElasticIP is in Error", func() {
+		elasticIP := createPodTestElasticIP("203.0.113.58", 4208)
+		iface := createElasticIPNetworkInterface(elasticIP, juneauv1alpha1.PodPrimaryInterfaceName)
+		attachment := createElasticIPAttachmentOnNode(ctx, elasticIP, "node-nat")
+		setElasticIPInConflict(elasticIP)
+
+		reconcileNetworkInterface(iface)
+
+		expectWaitingForElasticIP(iface, `ElasticIPAttachment "`+attachment.Name+`"`)
+	})
+
+	It("gives the address up while an ElasticIPAttachment uses the ElasticIP and takes it back once that one is gone", func() {
+		elasticIP := createPodTestElasticIP("203.0.113.59", 4209)
+		iface := createElasticIPNetworkInterface(elasticIP, juneauv1alpha1.PodPrimaryInterfaceName)
+		setElasticIPHolder(elasticIP, juneauv1alpha1.ElasticIPStatusAttachmentKindNetworkInterface, iface.Name)
+		reconcileNetworkInterface(iface)
+		Expect(getNetworkInterface(iface).Status.Address).To(Equal("203.0.113.59/32"))
+
+		attachment := createElasticIPAttachmentOnNode(ctx, elasticIP, "node-nat")
+		reconcileNetworkInterface(iface)
+		expectWaitingForElasticIP(iface, `ElasticIPAttachment "`+attachment.Name+`"`)
+
+		Expect(k8sClient.Delete(ctx, attachment)).To(Succeed())
+		reconcileNetworkInterface(iface)
+		Expect(getNetworkInterface(iface).Status.Address).To(Equal("203.0.113.59/32"))
+	})
+
+	It("wakes the NetworkInterfaces that name the ElasticIP of an ElasticIPAttachment", func() {
+		elasticIP := createPodTestElasticIP("203.0.113.60", 4210)
+		iface := createElasticIPNetworkInterface(elasticIP, juneauv1alpha1.PodPrimaryInterfaceName)
+		attachment := &juneauv1alpha1.ElasticIPAttachment{
+			ObjectMeta: metav1.ObjectMeta{Name: uniqueTestName("nat-use"), Namespace: "default"},
+			Spec: juneauv1alpha1.ElasticIPAttachmentSpec{
+				ElasticIPRef: juneauv1alpha1.ElasticIPAttachmentElasticIPRef{Name: elasticIP},
+			},
+		}
+
+		r := &NetworkInterfaceReconciler{Client: cachedK8sClient}
+		Eventually(func(g Gomega) {
+			g.Expect(r.mapElasticIPAttachmentToNetworkInterfaces(ctx, attachment)).To(ConsistOf(
+				reconcile.Request{NamespacedName: client.ObjectKeyFromObject(iface)},
+			))
+		}).Should(Succeed())
+	})
+
 	It("waits while the ExternalNetwork of the ElasticIP has no network ID", func() {
 		elasticIP := createPodTestElasticIP("203.0.113.55", 0)
 		iface := createElasticIPNetworkInterface(elasticIP, juneauv1alpha1.PodPrimaryInterfaceName)
@@ -176,6 +222,20 @@ func setElasticIPHolder(elasticIP string, kind juneauv1alpha1.ElasticIPStatusAtt
 		g.Expect(k8sClient.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: elasticIP}, &current)).To(Succeed())
 		current.Status.Phase = juneauv1alpha1.ElasticIPPhaseAttached
 		current.Status.Attachment = &juneauv1alpha1.ElasticIPStatusAttachment{Kind: kind, Name: name}
+		g.Expect(k8sClient.Status().Update(context.Background(), &current)).To(Succeed())
+	}).Should(Succeed())
+}
+
+// setElasticIPInConflict writes the status the ElasticIP controller
+// writes when an ElasticIPAttachment and a NetworkInterface both use the
+// ElasticIP: Error, and nothing named in status.attachment.
+func setElasticIPInConflict(elasticIP string) {
+	GinkgoHelper()
+	Eventually(func(g Gomega) {
+		var current juneauv1alpha1.ElasticIP
+		g.Expect(k8sClient.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: elasticIP}, &current)).To(Succeed())
+		current.Status.Phase = juneauv1alpha1.ElasticIPPhaseError
+		current.Status.Attachment = nil
 		g.Expect(k8sClient.Status().Update(context.Background(), &current)).To(Succeed())
 	}).Should(Succeed())
 }

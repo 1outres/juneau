@@ -194,7 +194,7 @@ func (r *ElasticIPReconciler) reconcileNormal(ctx context.Context, resource *jun
 		return ctrl.Result{}, err
 	}
 
-	attachments, err := r.listActiveAttachments(ctx, resource)
+	attachments, err := listActiveElasticIPAttachments(ctx, r.Client, resource.Namespace, resource.Name)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -489,27 +489,6 @@ func elasticIPClaimName(resource *juneauv1alpha1.ElasticIP) string {
 		resource.Name,
 		"status.address",
 	)
-}
-
-func (r *ElasticIPReconciler) listActiveAttachments(ctx context.Context, resource *juneauv1alpha1.ElasticIP) ([]juneauv1alpha1.ElasticIPAttachment, error) {
-	var attachments juneauv1alpha1.ElasticIPAttachmentList
-	if err := r.List(ctx, &attachments, client.InNamespace(resource.Namespace)); err != nil {
-		return nil, err
-	}
-
-	active := make([]juneauv1alpha1.ElasticIPAttachment, 0, len(attachments.Items))
-	for i := range attachments.Items {
-		attachment := attachments.Items[i]
-		if attachment.Spec.ElasticIPRef.Name != resource.Name {
-			continue
-		}
-		if attachment.DeletionTimestamp != nil {
-			continue
-		}
-		active = append(active, attachment)
-	}
-
-	return active, nil
 }
 
 // listNamingInterfaces returns every NetworkInterface that names the

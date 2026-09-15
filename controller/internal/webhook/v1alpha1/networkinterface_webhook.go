@@ -108,11 +108,11 @@ func (v *NetworkInterfaceCustomValidator) ValidateCreate(ctx context.Context, ob
 	errs = append(errs, validateNetworkInterfaceAllocationIdentity(networkinterface.Spec.AllocationIdentity, specPath.Child("allocationIdentity"))...)
 	errs = append(errs, validateRetainReference(networkinterface.Spec.RetainWhile, specPath.Child("retainWhile"))...)
 
-	elasticIPErrs, err := validateNetworkInterfaceElasticIP(ctx, v.Reader, networkinterface, specPath.Child("elasticIP"))
-	if err != nil {
-		return nil, err
-	}
-	errs = append(errs, elasticIPErrs...)
+	// Who may use spec.elasticIP is checked when the Pod is admitted, not
+	// here. The Pod controller creates this interface for a Pod admission
+	// already accepted, so rejecting it would leave the Pod with no
+	// interface and no status that says why. The ElasticIP controller
+	// settles what is left, and the losing side waits in Pending.
 
 	if len(errs) > 0 {
 		err := errors.NewInvalid(schema.GroupKind{Group: juneauv1alpha1.GroupVersion.Group, Kind: "NetworkInterface"}, networkinterface.Name, errs)
@@ -278,23 +278,6 @@ func validateNetworkInterfaceAddress(address string, network *podnetwork.Network
 	}
 
 	return nil
-}
-
-// validateNetworkInterfaceElasticIP rejects an interface on an ElasticIP
-// that an ElasticIPAttachment uses. It runs on create only: the ElasticIP
-// is immutable, and a holder admitted earlier must still be able to take
-// its finalizer-removal updates.
-//
-// Another interface that carries the ElasticIP is not a reason to reject.
-// The Pod controller creates this interface for a Pod that admission has
-// already accepted, so a rejection would leave that Pod with no interface
-// and no status that says why. The ElasticIP controller picks one holder,
-// and the other interfaces wait in Pending.
-func validateNetworkInterfaceElasticIP(ctx context.Context, c client.Reader, networkinterface *juneauv1alpha1.NetworkInterface, path *field.Path) (field.ErrorList, error) {
-	if networkinterface.Spec.ElasticIP == "" {
-		return nil, nil
-	}
-	return validateElasticIPNotUsedForNAT(ctx, c, networkinterface.Namespace, networkinterface.Spec.ElasticIP, path, networkinterface.Spec.ElasticIP)
 }
 
 func validateNetworkInterfaceAllocationIdentity(identity string, path *field.Path) field.ErrorList {

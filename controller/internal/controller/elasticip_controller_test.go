@@ -379,7 +379,7 @@ var _ = Describe("ElasticIP carried by a NetworkInterface", func() {
 		externalNetworkName, _ := createControllerElasticIPNetwork(ctx, []string{"10.127.2.0/30"})
 		name := uniqueTestName("elasticip")
 		Expect(k8sClient.Create(ctx, newControllerElasticIP(name, externalNetworkName))).To(Succeed())
-		createElasticIPAttachmentOnNode(ctx, name, "node-direct-a")
+		attachment := createElasticIPAttachmentOnNode(ctx, name, "node-direct-a")
 		carrier := createElasticIPCarrier(name, "node-direct-b")
 
 		Eventually(func(g Gomega) {
@@ -391,7 +391,11 @@ var _ = Describe("ElasticIP carried by a NetworkInterface", func() {
 			g.Expect(attached).NotTo(BeNil())
 			g.Expect(attached.Reason).To(Equal(elasticIPReasonConflict))
 			g.Expect(attached.Message).To(ContainSubstring(carrier.Name))
+			g.Expect(attached.Message).To(ContainSubstring(attachment.Name))
 		}).Should(Succeed())
+
+		Expect(k8sClient.Delete(ctx, attachment)).To(Succeed())
+		expectElasticIPHolder(name, carrier.Name)
 	})
 
 	It("answers ARP from the node of the NetworkInterface that carries it", func() {

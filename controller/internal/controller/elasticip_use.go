@@ -185,6 +185,36 @@ func networkInterfaceNames(interfaces []juneauv1alpha1.NetworkInterface) string 
 	return strings.Join(names, ", ")
 }
 
+// elasticIPAttachmentNames lists the names of attachments for a message,
+// in a stable order.
+func elasticIPAttachmentNames(attachments []juneauv1alpha1.ElasticIPAttachment) string {
+	names := make([]string, 0, len(attachments))
+	for i := range attachments {
+		names = append(names, fmt.Sprintf("%q", attachments[i].Name))
+	}
+	slices.Sort(names)
+	return strings.Join(names, ", ")
+}
+
+// listActiveElasticIPAttachments returns the ElasticIPAttachments that use
+// the ElasticIP for NAT. One being deleted no longer counts.
+func listActiveElasticIPAttachments(ctx context.Context, reader client.Reader, namespace, elasticIP string) ([]juneauv1alpha1.ElasticIPAttachment, error) {
+	var attachments juneauv1alpha1.ElasticIPAttachmentList
+	if err := reader.List(ctx, &attachments, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("list the ElasticIPAttachments that use ElasticIP %s/%s: %w", namespace, elasticIP, err)
+	}
+
+	active := make([]juneauv1alpha1.ElasticIPAttachment, 0, len(attachments.Items))
+	for i := range attachments.Items {
+		attachment := attachments.Items[i]
+		if attachment.Spec.ElasticIPRef.Name != elasticIP || !attachment.DeletionTimestamp.IsZero() {
+			continue
+		}
+		active = append(active, attachment)
+	}
+	return active, nil
+}
+
 // mapNetworkInterfaceToElasticIP wakes the ElasticIP a NetworkInterface
 // names, so a new, changed or removed interface moves the holder.
 func mapNetworkInterfaceToElasticIP(_ context.Context, obj client.Object) []reconcile.Request {

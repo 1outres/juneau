@@ -50,6 +50,7 @@ var _ = Describe("ElasticIPAttachment controller", func() {
 
 		Expect(k8sClient.Create(ctx, newControllerNetworkInterface(networkInterfaceName, "", "node-a", "pod-uid-2", "pod-b", "net1"))).To(Succeed())
 		Expect(k8sClient.Create(ctx, newControllerElasticIPAttachment(name, elasticIPName, networkInterfaceName))).To(Succeed())
+		setControllerElasticIPUsedBy(elasticIPName, name)
 
 		Eventually(func(g Gomega) {
 			g.Expect(reconcileElasticIPAttachment(name)).To(Succeed())
@@ -78,6 +79,7 @@ var _ = Describe("ElasticIPAttachment controller", func() {
 		setControllerNetworkInterfaceStatus(networkInterfaceName, "10.16.0.11/24")
 
 		Expect(k8sClient.Create(ctx, newControllerElasticIPAttachment(name, elasticIPName, networkInterfaceName))).To(Succeed())
+		setControllerElasticIPUsedBy(elasticIPName, name)
 
 		Eventually(func(g Gomega) {
 			g.Expect(reconcileElasticIPAttachment(name)).To(Succeed())
@@ -122,6 +124,7 @@ var _ = Describe("ElasticIPAttachment controller", func() {
 		})).To(Succeed())
 
 		Expect(k8sClient.Create(ctx, newControllerElasticIPAttachment(name, elasticIPName, networkInterfaceName))).To(Succeed())
+		setControllerElasticIPUsedBy(elasticIPName, name)
 
 		Eventually(func(g Gomega) {
 			g.Expect(reconcileElasticIPAttachment(name)).To(Succeed())
@@ -134,6 +137,89 @@ var _ = Describe("ElasticIPAttachment controller", func() {
 			g.Expect(ready).NotTo(BeNil())
 			g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
 			g.Expect(ready.ObservedGeneration).To(Equal(attachment.Generation))
+		}).Should(Succeed())
+	})
+
+	It("programs no NAT while its ElasticIP is in conflict with a NetworkInterface, and attaches once the ElasticIP picks it", func() {
+		ctx := context.Background()
+		name := uniqueTestName("elasticipattachment")
+		elasticIPName := uniqueTestName("elasticip")
+		networkInterfaceName := uniqueTestName("networkinterface")
+
+		elasticIP := newControllerElasticIP(elasticIPName, createControllerExternalNetwork(ctx))
+		Expect(k8sClient.Create(ctx, elasticIP)).To(Succeed())
+		setControllerElasticIPStatus(elasticIPName, "10.200.0.14")
+
+		networkInterface := newControllerNetworkInterface(networkInterfaceName, "10.16.0.14/24", "node-a", "pod-uid-6", "pod-f", "net1")
+		Expect(k8sClient.Create(ctx, networkInterface)).To(Succeed())
+		setControllerNetworkInterfaceStatus(networkInterfaceName, "10.16.0.14/24")
+		Expect(k8sClient.Create(ctx, &juneauv1alpha1.NetworkEndpoint{
+			ObjectMeta: metav1.ObjectMeta{Name: uniqueTestName("networkendpoint"), Namespace: "default"},
+			Spec: juneauv1alpha1.NetworkEndpointSpec{
+				Kind:     juneauv1alpha1.EndpointKindPod,
+				NodeName: "node-a",
+				Subnet:   "default",
+				PodRef: &juneauv1alpha1.NetworkEndpointPodReference{
+					UID:       "pod-uid-6",
+					Name:      "pod-f",
+					Interface: "net1",
+				},
+			},
+		})).To(Succeed())
+
+		Expect(k8sClient.Create(ctx, newControllerElasticIPAttachment(name, elasticIPName, networkInterfaceName))).To(Succeed())
+		conflict := fmt.Sprintf(`ElasticIPAttachment %q and NetworkInterface "web.eth0" both use this ElasticIP`, name)
+		setControllerElasticIPConflict(elasticIPName, conflict)
+
+		Eventually(func(g Gomega) {
+			g.Expect(reconcileElasticIPAttachment(name)).To(Succeed())
+			attachment := getControllerElasticIPAttachment(name)
+			g.Expect(attachment.Status.Phase).To(Equal(juneauv1alpha1.ElasticIPAttachmentPhasePending))
+			g.Expect(attachment.Status.ElasticIP).To(BeEmpty())
+			g.Expect(attachment.Status.PodIP).To(BeEmpty())
+			g.Expect(attachment.Status.NodeName).To(BeEmpty())
+			ready := meta.FindStatusCondition(attachment.Status.Conditions, "Ready")
+			g.Expect(ready).NotTo(BeNil())
+			g.Expect(ready.Reason).To(Equal("WaitingForElasticIP"))
+			g.Expect(ready.Message).To(ContainSubstring(conflict))
+		}).Should(Succeed())
+
+		setControllerElasticIPUsedBy(elasticIPName, name)
+
+		Eventually(func(g Gomega) {
+			g.Expect(reconcileElasticIPAttachment(name)).To(Succeed())
+			attachment := getControllerElasticIPAttachment(name)
+			g.Expect(attachment.Status.Phase).To(Equal(juneauv1alpha1.ElasticIPAttachmentPhaseAttached))
+			g.Expect(attachment.Status.ElasticIP).To(Equal("10.200.0.14"))
+		}).Should(Succeed())
+	})
+
+	It("stays pending while its ElasticIP names a NetworkInterface as the user", func() {
+		ctx := context.Background()
+		name := uniqueTestName("elasticipattachment")
+		elasticIPName := uniqueTestName("elasticip")
+		networkInterfaceName := uniqueTestName("networkinterface")
+
+		elasticIP := newControllerElasticIP(elasticIPName, createControllerExternalNetwork(ctx))
+		Expect(k8sClient.Create(ctx, elasticIP)).To(Succeed())
+		setControllerElasticIPStatus(elasticIPName, "10.200.0.15")
+		setControllerElasticIPAttachment(elasticIPName, &juneauv1alpha1.ElasticIPStatusAttachment{
+			Kind: juneauv1alpha1.ElasticIPStatusAttachmentKindNetworkInterface,
+			Name: "web.eth0",
+		})
+
+		Expect(k8sClient.Create(ctx, newControllerNetworkInterface(networkInterfaceName, "10.16.0.15/24", "node-a", "pod-uid-7", "pod-g", "net1"))).To(Succeed())
+		setControllerNetworkInterfaceStatus(networkInterfaceName, "10.16.0.15/24")
+		Expect(k8sClient.Create(ctx, newControllerElasticIPAttachment(name, elasticIPName, networkInterfaceName))).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			g.Expect(reconcileElasticIPAttachment(name)).To(Succeed())
+			attachment := getControllerElasticIPAttachment(name)
+			g.Expect(attachment.Status.Phase).To(Equal(juneauv1alpha1.ElasticIPAttachmentPhasePending))
+			ready := meta.FindStatusCondition(attachment.Status.Conditions, "Ready")
+			g.Expect(ready).NotTo(BeNil())
+			g.Expect(ready.Reason).To(Equal("WaitingForElasticIP"))
+			g.Expect(ready.Message).To(ContainSubstring(`NetworkInterface "web.eth0"`))
 		}).Should(Succeed())
 	})
 
@@ -168,6 +254,7 @@ var _ = Describe("ElasticIPAttachment controller", func() {
 		}
 
 		Expect(k8sClient.Create(ctx, newControllerElasticIPAttachment(name, elasticIPName, networkInterfaceName))).To(Succeed())
+		setControllerElasticIPUsedBy(elasticIPName, name)
 
 		Eventually(func(g Gomega) {
 			g.Expect(reconcileElasticIPAttachment(name)).To(Succeed())
@@ -227,6 +314,47 @@ func setControllerElasticIPStatus(name, address string) {
 		}
 		elasticIP.Status.Address = address
 		return k8sClient.Status().Update(context.Background(), &elasticIP)
+	}).Should(Succeed())
+}
+
+// setControllerElasticIPUsedBy writes status.attachment the way the
+// ElasticIP controller does when it picks the named ElasticIPAttachment.
+// That controller does not run in the suite.
+func setControllerElasticIPUsedBy(name, attachment string) {
+	GinkgoHelper()
+	setControllerElasticIPAttachment(name, &juneauv1alpha1.ElasticIPStatusAttachment{
+		Kind: juneauv1alpha1.ElasticIPStatusAttachmentKindElasticIPAttachment,
+		Name: attachment,
+	})
+}
+
+func setControllerElasticIPAttachment(name string, attachment *juneauv1alpha1.ElasticIPStatusAttachment) {
+	GinkgoHelper()
+	Eventually(func(g Gomega) {
+		var elasticIP juneauv1alpha1.ElasticIP
+		g.Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: name, Namespace: "default"}, &elasticIP)).To(Succeed())
+		elasticIP.Status.Phase = juneauv1alpha1.ElasticIPPhaseAttached
+		elasticIP.Status.Attachment = attachment
+		g.Expect(k8sClient.Status().Update(context.Background(), &elasticIP)).To(Succeed())
+	}).Should(Succeed())
+}
+
+// setControllerElasticIPConflict writes the Error status the ElasticIP
+// controller writes when two uses of the ElasticIP cannot stand together.
+func setControllerElasticIPConflict(name, message string) {
+	GinkgoHelper()
+	Eventually(func(g Gomega) {
+		var elasticIP juneauv1alpha1.ElasticIP
+		g.Expect(k8sClient.Get(context.Background(), client.ObjectKey{Name: name, Namespace: "default"}, &elasticIP)).To(Succeed())
+		elasticIP.Status.Phase = juneauv1alpha1.ElasticIPPhaseError
+		elasticIP.Status.Attachment = nil
+		meta.SetStatusCondition(&elasticIP.Status.Conditions, metav1.Condition{
+			Type:    elasticIPConditionAttached,
+			Status:  metav1.ConditionFalse,
+			Reason:  elasticIPReasonConflict,
+			Message: message,
+		})
+		g.Expect(k8sClient.Status().Update(context.Background(), &elasticIP)).To(Succeed())
 	}).Should(Succeed())
 }
 
