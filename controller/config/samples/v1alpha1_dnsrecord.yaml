@@ -1,0 +1,14 @@
+apiVersion: juneau.loutres.me/v1alpha1
+kind: DNSRecord
+metadata:
+  labels:
+    app.kubernetes.io/name: controller
+    app.kubernetes.io/managed-by: kustomize
+  name: dnsrecord-sample
+spec:
+  zone: dnszone-sample
+  name: api
+  type: A
+  ttl: 30
+  sources:
+  - ip: 192.0.2.10

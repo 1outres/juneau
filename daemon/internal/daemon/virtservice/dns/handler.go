@@ -26,12 +26,18 @@ type VPCResolver interface {
 	LookupByID(ctx context.Context, vpcID uint32) (name string, serviceEnabled, consume bool, ok bool)
 }
 
-// Handler glues the packet plane PacketHandler interface to a Resolver.
-// One instance is shared across every (Subnet × UDP/53) binding
-// the DNS service registers.
+type responseTransport uint8
+
+const (
+	responseTransportUDP responseTransport = iota
+	responseTransportTCP
+)
+
+// Handler glues parsed DNS packets to a Resolver for UDP bindings and TCP connections.
 type Handler struct {
-	resolver Resolver
-	vpcs     VPCResolver
+	resolver  Resolver
+	vpcs      VPCResolver
+	transport responseTransport
 	// MaxResponseBytes caps the wire size of UDP responses. When the
 	// resolver returns more than this, the handler truncates and
 	// sets the TC bit, prompting the client to retry over TCP.
@@ -201,17 +207,9 @@ func (h *Handler) makeErrorResponse(query []byte, rcode dnsmessage.RCode) ([]byt
 	return msg.Pack()
 }
 
-// encodeResponse produces the wire bytes for a Response. Truncates
-// (and sets TC) when the encoded message exceeds the EDNS0 buffer or
-// the default 512-byte UDP limit.
+// encodeResponse produces wire bytes using the active transport's size limit.
 func (h *Handler) encodeResponse(parsed parsedQuery, res Response) ([]byte, error) {
-	maxBytes := int(parsed.udpBufSize)
-	if maxBytes == 0 {
-		maxBytes = 512
-	}
-	if h.MaxResponseBytes > 0 && (maxBytes == 0 || h.MaxResponseBytes < maxBytes) {
-		maxBytes = h.MaxResponseBytes
-	}
+	maxBytes := h.responseByteLimit(parsed)
 
 	msg := dnsmessage.Message{
 		Header: dnsmessage.Header{
@@ -239,10 +237,7 @@ func (h *Handler) encodeResponse(parsed parsedQuery, res Response) ([]byte, erro
 		return nil, err
 	}
 	if len(wire) > maxBytes {
-		// RFC 1035 §4.1.1: truncate to fit; clients will retry over
-		// TCP. We keep the question section so the client can
-		// correlate, and drop all answers; clients implementing
-		// EDNS0 know to retry.
+		// Keep the question so the client can correlate the truncated response.
 		msg.Truncated = true
 		msg.Answers = nil
 		wire, err = msg.Pack()
@@ -251,6 +246,23 @@ func (h *Handler) encodeResponse(parsed parsedQuery, res Response) ([]byte, erro
 		}
 	}
 	return wire, nil
+}
+
+func (h *Handler) responseByteLimit(parsed parsedQuery) int {
+	if h.transport == responseTransportTCP {
+		return 65535
+	}
+	if h.transport != responseTransportUDP {
+		panic("dns: unknown response transport")
+	}
+	maxBytes := int(parsed.udpBufSize)
+	if maxBytes == 0 {
+		maxBytes = 512
+	}
+	if h.MaxResponseBytes > 0 && h.MaxResponseBytes < maxBytes {
+		return h.MaxResponseBytes
+	}
+	return maxBytes
 }
 
 func buildResource(ans Answer) (dnsmessage.Resource, error) {

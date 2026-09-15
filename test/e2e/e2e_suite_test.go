@@ -226,6 +226,8 @@ var _ = AfterEach(func() {
 	dumpResource("allocationleases.juneau.loutres.me")
 	dumpResource("subnets.juneau.loutres.me")
 	dumpResource("vpcs.juneau.loutres.me")
+	dumpResource("dnszones.juneau.loutres.me")
+	dumpResource("dnsrecords.juneau.loutres.me")
 	dumpResource("routetables.juneau.loutres.me")
 	dumpResource("services", "-A", "-o", "wide")
 	dumpResource("endpoints", "-A")

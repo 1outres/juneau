@@ -115,6 +115,8 @@ var _ = BeforeSuite(func() {
 	Expect(SetupTransitGatewayRouteTableWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupTransitGatewayAttachmentWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupVpcEndpointWebhookWithManager(mgr)).To(Succeed())
+	Expect(SetupDNSZoneWebhookWithManager(mgr)).To(Succeed())
+	Expect(SetupDNSRecordWebhookWithManager(mgr)).To(Succeed())
 
 	webhookMgrDone = make(chan error, 1)
 	go func() {

@@ -6,8 +6,7 @@ import (
 )
 
 // Chain is a Resolver that tries each child resolver in order and
-// returns the first non-ErrNotInZone result. Used to layer the
-// authoritative cluster zone in front of the upstream forwarder.
+// returns the first non-ErrNotInZone result.
 type Chain struct {
 	resolvers []Resolver
 }

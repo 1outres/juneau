@@ -122,6 +122,8 @@ rules:
   - arpadvertisements/status
   - bgpadvertisements/status
   - bgppeers/status
+  - dnsrecords/status
+  - dnszones/status
   - elasticipattachments/status
   - elasticips/status
   - externalnetworkattachments/status
@@ -156,6 +158,15 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - juneau.loutres.me
+  resources:
+  - dnsrecords
+  - dnszones
+  verbs:
+  - get
+  - list
   - watch
 - apiGroups:
   - kubevirt.io

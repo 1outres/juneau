@@ -33,9 +33,9 @@ type ClusterZone struct {
 	defaultTTL uint32
 }
 
-// ErrNotInZone signals that the queried name is outside the zone's
-// authoritative scope so the caller can try a different resolver.
-var ErrNotInZone = errors.New("dns: not in cluster zone")
+// ErrNotInZone signals that the queried name is outside a resolver's
+// authoritative scope so the caller can try the next resolver.
+var ErrNotInZone = errors.New("dns: not in authoritative zone")
 
 // NewClusterZone constructs a zone bound to the given client (must be
 // backed by a cache that watches corev1.Service). suffix should be
@@ -58,7 +58,7 @@ func NewClusterZone(cl client.Client, suffix string, defaultTTL uint32) *Cluster
 // existence of Services they aren't allowed to reach.
 func (z *ClusterZone) Resolve(ctx context.Context, q Query) (Response, error) {
 	name := strings.ToLower(q.Name)
-	if !strings.HasSuffix(name, z.suffix) {
+	if name != z.suffix && !strings.HasSuffix(name, "."+z.suffix) {
 		return Response{}, ErrNotInZone
 	}
 

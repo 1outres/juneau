@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"os"
 	"os/signal"
@@ -82,7 +83,7 @@ func NewApp() *cli.Command {
 			&cli.StringFlag{
 				Name:  "dns-upstream",
 				Value: "8.8.8.8:53,1.1.1.1:53",
-				Usage: "Comma-separated list of upstream DNS resolvers (host[:port]) the virtual DNS service forwards non-cluster names to.",
+				Usage: "Comma-separated list of upstream DNS resolvers (host[:port]) the virtual DNS service forwards names outside authoritative local zones to.",
 				Sources: cli.ValueSourceChain{Chain: []cli.ValueSource{
 					cli.EnvVar("JUNEAU_DNS_UPSTREAM"),
 				}},
@@ -162,6 +163,8 @@ func NewApp() *cli.Command {
 					&juneauv1alpha1.TraceSession{}:              {},
 					&juneauv1alpha1.ServiceLoadBalancer{}:       {},
 					&juneauv1alpha1.VpcEndpoint{}:               {},
+					&juneauv1alpha1.DNSZone{}:                   {},
+					&juneauv1alpha1.DNSRecord{}:                 {},
 					&corev1.Service{}:                           {},
 					&corev1.Pod{}: {
 						Field: fields.OneTermEqualSelector("spec.nodeName", nodeName),
@@ -171,6 +174,12 @@ func NewApp() *cli.Command {
 			})
 			if err != nil {
 				return fmt.Errorf("create cache: %w", err)
+			}
+			if err := dns.RegisterCustomZoneIndexes(ctx, cache); err != nil {
+				return fmt.Errorf("register custom DNS indexes: %w", err)
+			}
+			if err := dns.RegisterVPCResolverIndex(ctx, cache); err != nil {
+				return fmt.Errorf("register DNS Vpc resolver index: %w", err)
 			}
 
 			nwepInfromer, err := cache.GetInformer(ctx, &juneauv1alpha1.NetworkEndpoint{})
@@ -216,6 +225,14 @@ func NewApp() *cli.Command {
 			vpcInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.Vpc{})
 			if err != nil {
 				return fmt.Errorf("get Vpc informer: %w", err)
+			}
+
+			if _, err := cache.GetInformer(ctx, &juneauv1alpha1.DNSZone{}); err != nil {
+				return fmt.Errorf("get DNSZone informer: %w", err)
+			}
+
+			if _, err := cache.GetInformer(ctx, &juneauv1alpha1.DNSRecord{}); err != nil {
+				return fmt.Errorf("get DNSRecord informer: %w", err)
 			}
 
 			serviceInformer, err := cache.GetInformer(ctx, &corev1.Service{})
@@ -630,8 +647,8 @@ func NewApp() *cli.Command {
 	}
 }
 
-// startDNSService assembles the resolver chain (cluster zone +
-// upstream forwarder), constructs the dns.Service, and wires it into
+// startDNSService assembles the resolver chain (cluster zone, private
+// custom zones, then upstream), constructs the dns.Service, and wires it into
 // a Runner driven by the dataplane's Subnet informer. Vpc events
 // fan out so a late VpcID allocation propagates into DNS bindings
 // without waiting for an unrelated Subnet event.
@@ -640,7 +657,10 @@ func NewApp() *cli.Command {
 // in the right order (Service first to drop registry bindings before
 // the runner exits and stops feeding Reconcile calls).
 func startDNSService(ctx context.Context, cl client.Client, registry virtservice.Registry, bpfManager *dataplane.Manager, dnsUpstream string) (*dns.Service, *runner.Runner, error) {
-	resolvers := []dns.Resolver{dns.NewClusterZone(cl, dns.DefaultClusterDomain, 30)}
+	resolvers := []dns.Resolver{
+		dns.NewClusterZone(cl, dns.DefaultClusterDomain, 30),
+		dns.NewCustomZone(cl, rand.Shuffle),
+	}
 	upstream := strings.Split(dnsUpstream, ",")
 	cleaned := upstream[:0]
 	for _, s := range upstream {
