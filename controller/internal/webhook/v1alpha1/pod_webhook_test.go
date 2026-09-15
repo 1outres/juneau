@@ -1204,6 +1204,16 @@ var _ = Describe("Pod NIC on an ElasticIP", func() {
 		Expect(createPod(map[string]string{juneauv1alpha1.PodAnnotationElasticIP: elasticIP}, nil)).To(Succeed())
 	})
 
+	It("accepts an ElasticIP whose holder interface is being deleted", func() {
+		elasticIP := createWebhookElasticIP()
+		holder := createWebhookElasticIPHolder(createWebhookPod(nil), elasticIP, func(ni *juneauv1alpha1.NetworkInterface) {
+			ni.Finalizers = []string{webhookTestFinalizer}
+		})
+		deleteWebhookObjectAndWait(holder)
+
+		Expect(createPod(map[string]string{juneauv1alpha1.PodAnnotationElasticIP: elasticIP}, nil)).To(Succeed())
+	})
+
 	It("accepts an ElasticIP whose holder is an earlier Pod of the same virtual machine", func() {
 		elasticIP := createWebhookElasticIP()
 		virtLauncher := map[string]string{"kubevirt.io": "virt-launcher", "vm.kubevirt.io/name": "web-0"}

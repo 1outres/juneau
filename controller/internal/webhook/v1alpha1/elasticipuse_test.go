@@ -192,45 +192,12 @@ var _ = Describe("NetworkInterface on an ElasticIP", func() {
 		Expect(err.Error()).To(ContainSubstring("used by ElasticIPAttachment " + `"` + attachment.Name + `"`))
 	})
 
-	It("rejects an ElasticIP another interface already carries", func() {
+	It("accepts an interface on an ElasticIP another interface already carries, so the loser of a race can wait Pending", func() {
 		elasticIP := createWebhookElasticIP()
-		holder := createWebhookElasticIPHolder(createWebhookPod(nil), elasticIP)
-
-		err := webhookK8sClient.Create(context.Background(), newElasticIPNetworkInterface(createWebhookPod(nil), "ext0", elasticIP))
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("already used by NetworkInterface " + `"` + holder.Name + `"`))
-	})
-
-	It("accepts an ElasticIP whose holder Pod is terminating", func() {
-		elasticIP := createWebhookElasticIP()
-		holderPod := createWebhookPod(nil, webhookTestFinalizer)
-		createWebhookElasticIPHolder(holderPod, elasticIP)
-		deleteWebhookObjectAndWait(holderPod)
+		createWebhookElasticIPHolder(createWebhookPod(nil), elasticIP)
 
 		Expect(webhookK8sClient.Create(context.Background(),
 			newElasticIPNetworkInterface(createWebhookPod(nil), "ext0", elasticIP))).To(Succeed())
-	})
-
-	It("accepts an ElasticIP whose holder interface is being deleted", func() {
-		elasticIP := createWebhookElasticIP()
-		holder := createWebhookElasticIPHolder(createWebhookPod(nil), elasticIP, func(ni *juneauv1alpha1.NetworkInterface) {
-			ni.Finalizers = []string{webhookTestFinalizer}
-		})
-		deleteWebhookObjectAndWait(holder)
-
-		Expect(webhookK8sClient.Create(context.Background(),
-			newElasticIPNetworkInterface(createWebhookPod(nil), "ext0", elasticIP))).To(Succeed())
-	})
-
-	It("accepts an ElasticIP whose holder shares the allocation identity", func() {
-		elasticIP := createWebhookElasticIP()
-		createWebhookElasticIPHolder(createWebhookPod(nil), elasticIP, func(ni *juneauv1alpha1.NetworkInterface) {
-			ni.Spec.AllocationIdentity = "vmi.web-0"
-		})
-
-		networkInterface := newElasticIPNetworkInterface(createWebhookPod(nil), "ext0", elasticIP)
-		networkInterface.Spec.AllocationIdentity = "vmi.web-0"
-		Expect(webhookK8sClient.Create(context.Background(), networkInterface)).To(Succeed())
 	})
 
 	It("stores onLink routes, route tables and policy rules in status", func() {

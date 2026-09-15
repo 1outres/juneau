@@ -280,20 +280,21 @@ func validateNetworkInterfaceAddress(address string, network *podnetwork.Network
 	return nil
 }
 
-// validateNetworkInterfaceElasticIP applies the direct-use rules to an
-// interface that carries an ElasticIP. It runs on create only: the
-// ElasticIP is immutable, and a holder admitted earlier must still be
-// able to take its finalizer-removal updates.
+// validateNetworkInterfaceElasticIP rejects an interface on an ElasticIP
+// that an ElasticIPAttachment uses. It runs on create only: the ElasticIP
+// is immutable, and a holder admitted earlier must still be able to take
+// its finalizer-removal updates.
+//
+// Another interface that carries the ElasticIP is not a reason to reject.
+// The Pod controller creates this interface for a Pod that admission has
+// already accepted, so a rejection would leave that Pod with no interface
+// and no status that says why. The ElasticIP controller picks one holder,
+// and the other interfaces wait in Pending.
 func validateNetworkInterfaceElasticIP(ctx context.Context, c client.Reader, networkinterface *juneauv1alpha1.NetworkInterface, path *field.Path) (field.ErrorList, error) {
 	if networkinterface.Spec.ElasticIP == "" {
 		return nil, nil
 	}
-	return validateElasticIPDirectUse(ctx, c, elasticIPDirectUse{
-		namespace:          networkinterface.Namespace,
-		elasticIP:          networkinterface.Spec.ElasticIP,
-		allocationIdentity: networkinterface.Spec.AllocationIdentity,
-		networkInterface:   networkinterface.Name,
-	}, path, networkinterface.Spec.ElasticIP)
+	return validateElasticIPNotUsedForNAT(ctx, c, networkinterface.Namespace, networkinterface.Spec.ElasticIP, path, networkinterface.Spec.ElasticIP)
 }
 
 func validateNetworkInterfaceAllocationIdentity(identity string, path *field.Path) field.ErrorList {

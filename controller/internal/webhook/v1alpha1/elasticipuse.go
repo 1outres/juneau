@@ -29,8 +29,8 @@ import (
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
-// elasticIPDirectUse is a NIC that asks to carry an ElasticIP directly,
-// as admission sees it before the NIC exists or while it is created.
+// elasticIPDirectUse is a Pod NIC that asks to carry an ElasticIP
+// directly, as Pod admission sees it before its NetworkInterface exists.
 type elasticIPDirectUse struct {
 	namespace string
 	elasticIP string
@@ -39,35 +39,45 @@ type elasticIPDirectUse struct {
 	// with the same identity is an earlier instance of the same workload.
 	allocationIdentity string
 
-	// networkInterface is the name of the NetworkInterface under
-	// admission. Empty when a Pod is admitted and none exists yet.
-	networkInterface string
-
 	// podUID is the Pod instance under admission. Its own
-	// NetworkInterfaces are not other holders. Empty when a
-	// NetworkInterface is admitted, so two interfaces of one Pod on one
-	// ElasticIP still collide.
+	// NetworkInterfaces are not other holders.
 	podUID types.UID
 }
 
-// validateElasticIPDirectUse applies the admission rules for carrying an
-// ElasticIP directly. A missing or Pending ElasticIP is accepted, so the
+// validateElasticIPDirectUse applies the Pod admission rules for carrying
+// an ElasticIP directly. A missing or Pending ElasticIP is accepted, so the
 // NIC can wait for it. Rejected are an ElasticIP an ElasticIPAttachment
 // uses for NAT, and one another NetworkInterface already carries, unless
 // that holder is on its way out or belongs to the same workload.
 //
 // The controller stays the authority for races that admission cannot see,
-// such as two NICs admitted at the same moment.
+// such as two Pods admitted at the same moment.
 func validateElasticIPDirectUse(ctx context.Context, reader client.Reader, use elasticIPDirectUse, path *field.Path, value any) (field.ErrorList, error) {
-	attachment, err := findElasticIPAttachmentUsing(ctx, reader, use.namespace, use.elasticIP)
+	errs, err := validateElasticIPNotUsedForNAT(ctx, reader, use.namespace, use.elasticIP, path, value)
+	if err != nil || len(errs) > 0 {
+		return errs, err
+	}
+	return validateElasticIPNotCarried(ctx, reader, use, path, value)
+}
+
+// validateElasticIPNotUsedForNAT rejects an ElasticIP that an
+// ElasticIPAttachment uses for NAT.
+func validateElasticIPNotUsedForNAT(ctx context.Context, reader client.Reader, namespace, elasticIP string, path *field.Path, value any) (field.ErrorList, error) {
+	attachment, err := findElasticIPAttachmentUsing(ctx, reader, namespace, elasticIP)
 	if err != nil {
 		return nil, err
 	}
 	if attachment != "" {
 		return field.ErrorList{field.Invalid(path, value,
-			fmt.Sprintf("ElasticIP %q is used by ElasticIPAttachment %q", use.elasticIP, attachment))}, nil
+			fmt.Sprintf("ElasticIP %q is used by ElasticIPAttachment %q", elasticIP, attachment))}, nil
 	}
+	return nil, nil
+}
 
+// validateElasticIPNotCarried rejects an ElasticIP that a NetworkInterface
+// of another Pod already carries, unless that holder is on its way out or
+// belongs to the same workload.
+func validateElasticIPNotCarried(ctx context.Context, reader client.Reader, use elasticIPDirectUse, path *field.Path, value any) (field.ErrorList, error) {
 	var interfaces juneauv1alpha1.NetworkInterfaceList
 	if err := reader.List(ctx, &interfaces, client.InNamespace(use.namespace)); err != nil {
 		return nil, err
@@ -91,9 +101,6 @@ func validateElasticIPDirectUse(ctx context.Context, reader client.Reader, use e
 }
 
 func (u elasticIPDirectUse) isItself(networkInterface *juneauv1alpha1.NetworkInterface) bool {
-	if u.networkInterface != "" && networkInterface.Name == u.networkInterface {
-		return true
-	}
 	return u.podUID != "" && networkInterface.Spec.PodRef.UID == string(u.podUID)
 }
 
