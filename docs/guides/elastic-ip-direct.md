@@ -265,6 +265,8 @@ eth0がElasticIPを持つPodは、dnsPolicyが`Default`に書き換わります�
 
 `Default`のPodは、Nodeの`resolv.conf`(kubeletの`--resolv-conf`)にあるDNSサーバを使います。問い合わせの送信元はElasticIPなので、そのDNSサーバがElasticIPからの問い合わせに答え、応答を返せる必要があります。`*.svc.cluster.local`のようなクラスター内の名前は引けません。
 
+このDNSサーバには、PodのアドレスからNodeの外を通って届く必要があります。kindのNodeの`resolv.conf`が指すdockerの内蔵DNSは、Nodeのnetwork namespaceの中でだけ使える転送なので、Podからは届かず、名前解決ができません。
+
 `juneau.loutres.me/dns-inject-skip: "true"`を付けたPodは、dnsPolicyを書き換えません。dnsPolicyを書いていなければClusterFirstのままになり、名前解決ができません。
 
 eth0がSubnetで、追加NICだけがElasticIPを持つPodは、これまで通りSubnetのDNSが注入されます。

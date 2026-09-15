@@ -170,6 +170,8 @@ annotations:
 
 デフォルトルートはL2Networkの`status.gateway`に向きます。
 
+dnsPolicyは`Default`になり、kubeletがNodeに渡している`resolv.conf`のDNSサーバを使います。そのDNSサーバには、eth0のアドレスからgateway経由で届く必要があります。kindのNodeが使うdockerの内蔵DNSのように、Nodeの中でしか使えないDNSサーバだと名前解決ができません。
+
 NodeからPodへの経路は作りません。L2Networkは必ずcustom Vpcに属していて、Vpc同士でアドレスが重なってよいので、Nodeに経路を入れると別のVpcのPodとぶつかります。kubeletのhttpGetやtcpSocketのプローブを使うなら、custom VpcのSubnetのPodと同じく、controllerの`--enable-probe-rewrite`を有効にしてください。プローブがPodのnetwork namespaceの中から実行されるように書き換わります。
 
 ### ElasticIPを持つNIC
