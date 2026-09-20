@@ -7,14 +7,13 @@
 //     constructs the resolver chain.
 //   - handler.go   – PacketHandler implementation: parse → resolve →
 //     write response. Owns the wire format.
-//   - zone.go      – cluster.local zone view: VPC-aware Service lookup
+//   - zone.go        – cluster.local zone view: VPC-aware Service lookup
 //     backed by the daemon's Kubernetes cache.
-//   - forwarder.go – upstream UDP forwarder for non-cluster names.
+//   - custom_zone.go – Vpc-private authoritative DNSZone and DNSRecord lookup.
+//   - forwarder.go   – upstream UDP forwarder for non-authoritative names.
 //
 // The split keeps wire-level logic (handler) independent of resolution
-// logic (zone + forwarder), so a future control-plane feature (e.g.
-// stub zones, custom records) can plug in as another Resolver without
-// touching the packet path.
+// logic, so resolvers can be added without touching the packet path.
 package dns
 
 import (
@@ -115,8 +114,8 @@ const (
 )
 
 // Resolver is the abstraction the handler dispatches a parsed query
-// against. The default implementation chains a cluster.local zone in
-// front of an upstream forwarder; tests can supply a fake.
+// against. The default chain tries cluster.local, private custom zones,
+// and then an upstream forwarder; tests can supply a fake.
 type Resolver interface {
 	// Resolve returns the response for q. ctx is bound to the
 	// per-query handler timeout.
@@ -131,5 +130,5 @@ const DefaultUpstreamTimeout = 2 * time.Second
 // DefaultClusterDomain is the conventional cluster suffix
 // kube-dns / CoreDNS use; matches what kubelet writes into Pods'
 // /etc/resolv.conf search list. We answer cluster.local from the
-// internal zone view; everything else is forwarded.
+// internal zone view before private custom zones or upstream forwarding.
 const DefaultClusterDomain = "cluster.local."

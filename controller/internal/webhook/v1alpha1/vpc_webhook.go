@@ -589,5 +589,23 @@ func (v *VpcCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Obj
 		)
 	}
 
+	var zoneList juneauv1alpha1.DNSZoneList
+	if err := v.List(ctx, &zoneList); err != nil {
+		return nil, fmt.Errorf("list DNSZones: %w", err)
+	}
+	var zoneRefs []string
+	for i := range zoneList.Items {
+		if zoneList.Items[i].Spec.Vpc == vpc.Name {
+			zoneRefs = append(zoneRefs, zoneList.Items[i].Name)
+		}
+	}
+	if len(zoneRefs) > 0 {
+		return nil, errors.NewForbidden(
+			schema.GroupResource{Group: juneauv1alpha1.GroupVersion.Group, Resource: "vpcs"},
+			vpc.Name,
+			fmt.Errorf("DNSZone(s) %v still belong to this Vpc; delete them first", zoneRefs),
+		)
+	}
+
 	return nil, nil
 }

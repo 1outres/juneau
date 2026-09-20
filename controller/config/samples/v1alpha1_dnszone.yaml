@@ -1,0 +1,10 @@
+apiVersion: juneau.loutres.me/v1alpha1
+kind: DNSZone
+metadata:
+  labels:
+    app.kubernetes.io/name: controller
+    app.kubernetes.io/managed-by: kustomize
+  name: dnszone-sample
+spec:
+  vpc: default
+  domain: example.internal

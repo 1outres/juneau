@@ -2,46 +2,57 @@ package dns
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 )
 
-// CachedVPCResolver implements VPCResolver by listing Vpcs from a
-// controller-runtime cached client and matching on Status.VpcID. The
-// cache makes this O(N_vpcs) per lookup; in practice N is tiny.
-//
-// Returning a cached client (not a custom indexed snapshot) lets the
-// daemon's existing informer wiring be the single source of truth for
-// Vpc state — no extra goroutine, no separate sync barrier.
+const cachedVPCIDIndexField = "status.vpcID"
+
+// CachedVPCResolver implements VPCResolver with exact cached Vpc ID lookups.
 type CachedVPCResolver struct {
 	client client.Client
 }
 
-// NewCachedVPCResolver constructs a resolver bound to the supplied
-// client (must be backed by an informer cache that watches Vpc).
+// RegisterVPCResolverIndex registers the exact Vpc ID lookup used by CachedVPCResolver.
+func RegisterVPCResolverIndex(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &juneauv1alpha1.Vpc{}, cachedVPCIDIndexField, vpcIDIndexValues); err != nil {
+		return fmt.Errorf("index Vpc by status.vpcID: %w", err)
+	}
+	return nil
+}
+
+// NewCachedVPCResolver constructs a resolver bound to an indexed cached client.
 func NewCachedVPCResolver(cl client.Client) *CachedVPCResolver {
 	return &CachedVPCResolver{client: cl}
 }
 
-// LookupByID scans the cached Vpc list for a match on Status.VpcID and
-// returns its name plus the two service-related opt-ins. Reports
-// ok=false when no Vpc in cache matches; the handler then answers
-// ServerFailure rather than risk applying policy with a bogus identity.
+// LookupByID returns one unambiguous cached Vpc match and its Service policy.
 func (r *CachedVPCResolver) LookupByID(ctx context.Context, vpcID uint32) (string, bool, bool, bool) {
 	if vpcID == 0 {
 		return "", false, false, false
 	}
 	var list juneauv1alpha1.VpcList
-	if err := r.client.List(ctx, &list); err != nil {
+	if err := r.client.List(ctx, &list, client.MatchingFields{
+		cachedVPCIDIndexField: vpcIDIndexKey(vpcID),
+	}); err != nil || len(list.Items) != 1 {
 		return "", false, false, false
 	}
-	for i := range list.Items {
-		if list.Items[i].Status.VpcID == vpcID {
-			vpc := &list.Items[i]
-			return vpc.Name, vpc.Spec.ServiceEnabled(), vpc.Spec.Service.Consumes(), true
-		}
+	vpc := &list.Items[0]
+	return vpc.Name, vpc.Spec.ServiceEnabled(), vpc.Spec.Service.Consumes(), true
+}
+
+func vpcIDIndexValues(object client.Object) []string {
+	vpcID := object.(*juneauv1alpha1.Vpc).Status.VpcID
+	if vpcID == 0 {
+		return nil
 	}
-	return "", false, false, false
+	return []string{vpcIDIndexKey(vpcID)}
+}
+
+func vpcIDIndexKey(vpcID uint32) string {
+	return strconv.FormatUint(uint64(vpcID), 10)
 }

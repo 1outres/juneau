@@ -378,3 +378,30 @@ roleRef:
   kind: ClusterRole
   name: juneau-l2network-viewer-role
   apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cni-daemon-dns-viewer-role
+rules:
+  - apiGroups: ["juneau.loutres.me"]
+    resources:
+      - dnszones
+      - dnsrecords
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cni-daemon-dns-viewer-binding
+subjects:
+  - kind: ServiceAccount
+    name: cni-daemon
+    namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: cni-daemon-dns-viewer-role
+  apiGroup: rbac.authorization.k8s.io

@@ -105,14 +105,13 @@ func (h *TCPHandler) handleConn(ctx context.Context, conn net.Conn, tenant virts
 	}
 }
 
-// resolveOnce runs the same parse → policy → resolve → encode flow
-// the UDP handler uses, but never truncates: TCP responses are size-
-// limited only by the 16-bit length prefix.
+// resolveOnce runs the shared parse → policy → resolve → encode flow
+// with the full 16-bit TCP message limit instead of a UDP payload limit.
 func (h *TCPHandler) resolveOnce(ctx context.Context, tenant virtservice.TenantID, clientIP netip.Addr, clientPort uint16, query []byte) ([]byte, bool) {
-	udp := &Handler{
-		resolver:         h.resolver,
-		vpcs:             h.vpcs,
-		MaxResponseBytes: 65535, // TCP cap
+	packetHandler := &Handler{
+		resolver:  h.resolver,
+		vpcs:      h.vpcs,
+		transport: responseTransportTCP,
 	}
 	cap := &captureResponderTCP{}
 	req := virtservice.PacketRequest{
@@ -122,7 +121,7 @@ func (h *TCPHandler) resolveOnce(ctx context.Context, tenant virtservice.TenantI
 		ClientPort: clientPort,
 		Payload:    query,
 	}
-	if err := udp.HandlePacket(ctx, req, cap); err != nil {
+	if err := packetHandler.HandlePacket(ctx, req, cap); err != nil {
 		return nil, false
 	}
 	if cap.body == nil {

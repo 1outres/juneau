@@ -80,8 +80,63 @@ func TestTCPHandlerRoundTrip(t *testing.T) {
 	}
 }
 
-// TestTCPHandlerIdleTimeoutClosesConnection ensures the connection is
-// closed when the client doesn't send anything within IdleTimeout.
+func TestTCPHandlerReturnsCompleteLargeCustomRRSetWithoutEDNS(t *testing.T) {
+	zone := readyDNSZone("zone", "tenant-a", "example.com")
+	addresses := make([]string, 100)
+	want := make(map[netip.Addr]struct{}, len(addresses))
+	for i := range addresses {
+		address := netip.AddrFrom4([4]byte{10, 0, 0, byte(i + 1)})
+		addresses[i] = address.String()
+		want[address] = struct{}{}
+	}
+	record := readyDNSRecord("api", zone.Name, "api", 30, addresses...)
+	resolver := NewCustomZone(newCustomDNSClient(t, zone, record), noShuffle)
+	h := NewTCPHandler(resolver, stubVPCResolver{name: "tenant-a", ok: true})
+	h.IdleTimeout = time.Second
+
+	server, client := net.Pipe()
+	defer func() { _ = server.Close() }()
+	defer func() { _ = client.Close() }()
+	go h.handleConn(context.Background(), server, virtservice.TenantID{VPCID: 7, SubnetID: 11})
+
+	query := packQuery(t, "api.example.com.", dnsmessage.TypeA, 0xbeef, 0)
+	if err := writeDNSMessage(client, query); err != nil {
+		t.Fatalf("write query: %v", err)
+	}
+	response, err := readDNSMessage(client, 65535)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if len(response) <= 512 {
+		t.Fatalf("response length = %d, want more than the UDP default limit", len(response))
+	}
+
+	var message dnsmessage.Message
+	if err := message.Unpack(response); err != nil {
+		t.Fatalf("unpack response: %v", err)
+	}
+	if message.Truncated {
+		t.Fatal("TCP response has TC set")
+	}
+	if len(message.Answers) != len(addresses) {
+		t.Fatalf("answers = %d, want %d", len(message.Answers), len(addresses))
+	}
+	for _, answer := range message.Answers {
+		body, ok := answer.Body.(*dnsmessage.AResource)
+		if !ok {
+			t.Fatalf("answer body = %T, want A", answer.Body)
+		}
+		address := netip.AddrFrom4(body.A)
+		if _, exists := want[address]; !exists {
+			t.Fatalf("unexpected address %s", address)
+		}
+		delete(want, address)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing addresses: %v", want)
+	}
+}
+
 func TestTCPHandlerIdleTimeoutClosesConnection(t *testing.T) {
 	h := NewTCPHandler(stubResolver{}, stubVPCResolver{ok: true, name: "x", serviceEnabled: true})
 	h.IdleTimeout = 50 * time.Millisecond

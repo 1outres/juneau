@@ -20,4 +20,6 @@ resources:
 - v1alpha1_transitgatewayattachment.yaml
 - v1alpha1_arpadvertisement.yaml
 - v1alpha1_l2network.yaml
+- v1alpha1_dnszone.yaml
+- v1alpha1_dnsrecord.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples
