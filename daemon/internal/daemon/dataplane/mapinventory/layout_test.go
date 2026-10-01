@@ -286,6 +286,8 @@ func schemaIfindexSubnetVal() Schema {
 	return Schema{Fields: []Field{
 		FieldU32Named("subnet_id"),
 		FieldIPv4BENamed("ipv4"),
+		FieldU8Named("kind"),
+		FieldPadOf(3),
 	}}
 }
 
@@ -522,6 +524,7 @@ func schemaFibInnerVal() Schema {
 		FieldPadOf(3),
 		FieldU32Named("subnet_id"),
 		FieldU32Named("oif"),
+		FieldRawNamed("vpn_id", 16),
 	}}
 }
 

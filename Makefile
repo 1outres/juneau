@@ -18,11 +18,13 @@ CONTROLLER_IMAGE ?= controller:latest
 WEBHOOKCERTJOB_IMAGE ?= webhookcertjob:latest
 DAEMON_IMAGE ?= daemon:latest
 BGP_SPEAKER_IMAGE ?= bgp-speaker:latest
+VPN_GATEWAY_IMAGE ?= vpn-gateway:latest
 
 PUBLISH_CONTROLLER_IMAGE ?= $(GHCR_NAMESPACE)/controller:$(PUBLISH_TAG)
 PUBLISH_WEBHOOKCERTJOB_IMAGE ?= $(GHCR_NAMESPACE)/webhookcertjob:$(PUBLISH_TAG)
 PUBLISH_DAEMON_IMAGE ?= $(GHCR_NAMESPACE)/daemon:$(PUBLISH_TAG)
 PUBLISH_BGP_SPEAKER_IMAGE ?= $(GHCR_NAMESPACE)/bgp-speaker:$(PUBLISH_TAG)
+PUBLISH_VPN_GATEWAY_IMAGE ?= $(GHCR_NAMESPACE)/vpn-gateway:$(PUBLISH_TAG)
 
 SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
@@ -91,6 +93,10 @@ build-daemon-bin: build-cni-bin ## Build the daemon binary for Tilt.
 build-bgp-speaker-bin: ## Build the BGP speaker binary for Tilt.
 	CGO_ENABLED=0 GOOS=linux GOARCH=$(TILT_GOARCH) go build -C bgp-speaker -o bin/bgpspeaker ./cmd/bgpspeaker/main.go
 
+.PHONY: build-vpn-gateway-bin
+build-vpn-gateway-bin: ## Build the VPN gateway binary for Tilt.
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(TILT_GOARCH) go build -C vpn-gateway -o bin/vpn-gateway .
+
 .PHONY: build-kubectl-juneau-bin
 build-kubectl-juneau-bin: ## Build the kubectl-juneau plugin binary.
 	$(MAKE) -C kubectl-juneau LOCALBIN=$(CURDIR)/kubectl-juneau/bin build
@@ -98,7 +104,7 @@ build-kubectl-juneau-bin: ## Build the kubectl-juneau plugin binary.
 ##@ Quality
 
 .PHONY: lint
-lint: lint-controller lint-daemon lint-bgp-speaker lint-kubectl-juneau lint-e2e ## Run repository linters.
+lint: lint-controller lint-daemon lint-bgp-speaker lint-vpn-gateway lint-kubectl-juneau lint-e2e ## Run repository linters.
 
 .PHONY: lint-controller
 lint-controller:
@@ -112,6 +118,10 @@ lint-daemon: golangci-lint build-cni-bin
 lint-bgp-speaker: golangci-lint
 	cd bgp-speaker && $(GOLANGCI_LINT) run --config ../.golangci.yml ./...
 
+.PHONY: lint-vpn-gateway
+lint-vpn-gateway: golangci-lint
+	cd vpn-gateway && $(GOLANGCI_LINT) run --config ../.golangci.yml ./...
+
 .PHONY: lint-kubectl-juneau
 lint-kubectl-juneau: golangci-lint
 	cd kubectl-juneau && $(GOLANGCI_LINT) run --config ../.golangci.yml ./...
@@ -121,7 +131,7 @@ lint-e2e: golangci-lint
 	cd test/e2e && $(GOLANGCI_LINT) run --config ../../.golangci.yml ./...
 
 .PHONY: test
-test: test-controller test-daemon test-bgp-speaker test-kubectl-juneau ## Run non-E2E tests.
+test: test-controller test-daemon test-bgp-speaker test-vpn-gateway test-kubectl-juneau ## Run non-E2E tests.
 
 .PHONY: test-controller
 test-controller:
@@ -134,6 +144,10 @@ test-daemon: build-cni-bin
 .PHONY: test-bgp-speaker
 test-bgp-speaker:
 	cd bgp-speaker && go test ./...
+
+.PHONY: test-vpn-gateway
+test-vpn-gateway:
+	cd vpn-gateway && go test ./...
 
 .PHONY: test-kubectl-juneau
 test-kubectl-juneau:
@@ -149,7 +163,7 @@ verify: lint test images ## Run CI verification targets.
 ##@ Images
 
 .PHONY: images
-images: image-controller image-webhookcertjob image-daemon image-bgp-speaker ## Build all runtime images.
+images: image-controller image-webhookcertjob image-daemon image-bgp-speaker image-vpn-gateway ## Build all runtime images.
 
 # `buildx build --load` engages BuildKit so the Dockerfiles' cache mounts
 # (/go/pkg/mod, /root/.cache/go-build) actually persist across runs, which
@@ -170,8 +184,12 @@ image-daemon: ## Build the daemon image.
 image-bgp-speaker: ## Build the BGP speaker image.
 	$(DOCKER) buildx build --load -f bgp-speaker/Dockerfile -t $(BGP_SPEAKER_IMAGE) .
 
+.PHONY: image-vpn-gateway
+image-vpn-gateway: ## Build the VPN gateway image.
+	$(DOCKER) buildx build --load -f vpn-gateway/Dockerfile -t $(VPN_GATEWAY_IMAGE) vpn-gateway
+
 .PHONY: publish
-publish: publish-controller publish-webhookcertjob publish-daemon publish-bgp-speaker ## Build and publish all runtime images.
+publish: publish-controller publish-webhookcertjob publish-daemon publish-bgp-speaker publish-vpn-gateway ## Build and publish all runtime images.
 
 .PHONY: publish-controller
 publish-controller:
@@ -188,6 +206,10 @@ publish-daemon:
 .PHONY: publish-bgp-speaker
 publish-bgp-speaker:
 	$(DOCKER) buildx build --platform $(PUBLISH_PLATFORMS) --push -f bgp-speaker/Dockerfile -t $(PUBLISH_BGP_SPEAKER_IMAGE) .
+
+.PHONY: publish-vpn-gateway
+publish-vpn-gateway:
+	$(DOCKER) buildx build --platform $(PUBLISH_PLATFORMS) --push -f vpn-gateway/Dockerfile -t $(PUBLISH_VPN_GATEWAY_IMAGE) vpn-gateway
 
 ##@ Integration
 

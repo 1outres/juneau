@@ -8,9 +8,19 @@ rules:
   - ""
   resources:
   - nodes
-  - pods
+  - secrets
   - services
   verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - create
+  - delete
   - get
   - list
   - watch
@@ -110,6 +120,7 @@ rules:
   - vpcendpoints/finalizers
   - vpcpeerings/finalizers
   - vpcs/finalizers
+  - vpns/finalizers
   verbs:
   - update
 - apiGroups:
@@ -144,6 +155,7 @@ rules:
   - vpcendpoints/status
   - vpcpeerings/status
   - vpcs/status
+  - vpns/status
   verbs:
   - get
   - patch
@@ -167,6 +179,16 @@ rules:
   verbs:
   - get
   - list
+  - watch
+- apiGroups:
+  - juneau.loutres.me
+  resources:
+  - vpns
+  verbs:
+  - get
+  - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - kubevirt.io

@@ -18,11 +18,13 @@ package controller
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"net"
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -52,6 +54,7 @@ const (
 	routeTableReasonReconcileFailed    = "ReconcileFailed"
 	routeTableReasonReconcileSucceeded = "ReconcileSucceeded"
 	routeTableReasonNotReady           = "NotReady"
+	routeTableReasonVPNEndpointPending = "VPNEndpointPending"
 )
 
 // RouteTableReconciler reconciles a RouteTable object
@@ -189,7 +192,7 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// need internet egress in the default VPC must either bootstrap
 	// the default ExternalNetwork + NATGateway pair or add their own
 	// 0/0 route.
-	if resource.Name == defaultVpcName && resource.Spec.Vpc == defaultVpcName {
+	if resource.Name == defaultVpcName && resource.Spec.Vpc == defaultVpcName && getRoute(resource.Spec.Routes, "0.0.0.0/0") == nil {
 		var defaultNATGW juneauloutresmev1alpha1.NATGateway
 		err := r.Get(ctx, client.ObjectKey{Name: defaultVpcName}, &defaultNATGW)
 		if err == nil && defaultNATGW.Status.GatewayID != 0 {
@@ -208,7 +211,14 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
+	pendingVPNs := make(map[string]struct{})
 	for _, route := range resource.Spec.Routes {
+		if route.Via.Type == juneauloutresmev1alpha1.ViaVPN && vpnOverlapsReachable(route.Dst, statusRoutes) {
+			if err := r.updateStatus(ctx, &resource, nil, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("VPN route %s overlaps reachable route", route.Dst)); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
 		if rt := getRoute(statusRoutes, route.Dst); rt == nil {
 			var subnet string
 			var transitGatewayRouteTable string
@@ -237,6 +247,27 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 					return ctrl.Result{}, nil
 				}
 				subnet = nwep.Spec.Subnet
+			} else if route.Via.Type == juneauloutresmev1alpha1.ViaVPN {
+				resolvedSubnet, err := r.resolveVPNRoute(ctx, resource.Spec.Vpc, route.Via.VPN)
+				if err != nil {
+					if stderrors.Is(err, errVPNRoutePending) && route.Via.VPN != nil && route.Via.VPN.Namespace != "" && route.Via.VPN.Name != "" {
+						key := route.Via.VPN.Namespace + "/" + route.Via.VPN.Name
+						pendingVPNs[key] = struct{}{}
+						continue
+					}
+					reason := routeTableReasonNotReady
+					if !errors.IsNotFound(err) && !stderrors.Is(err, errVPNRoutePending) {
+						reason = routeTableReasonReconcileFailed
+					}
+					if updateErr := r.updateStatus(ctx, &resource, nil, resource.Status.TableID, metav1.ConditionFalse, reason, fmt.Sprintf("VPN route %s: %v", route.Dst, err)); updateErr != nil {
+						return ctrl.Result{}, updateErr
+					}
+					if reason == routeTableReasonReconcileFailed {
+						return ctrl.Result{}, err
+					}
+					return ctrl.Result{}, nil
+				}
+				subnet = resolvedSubnet
 			} else if route.Via.Type == juneauloutresmev1alpha1.ViaNATGateway {
 				var natGateway juneauloutresmev1alpha1.NATGateway
 				if err := r.Get(ctx, client.ObjectKey{Name: route.Via.NATGateway}, &natGateway); err != nil {
@@ -298,10 +329,19 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 					return ctrl.Result{}, err
 				}
 				if peerSubnet == "" {
-					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("no Subnet in Vpc %q has CIDR %q", peerVpc, route.Dst)); err != nil {
-						return ctrl.Result{}, err
+					resolved, err := r.resolvePeeringVPNRoute(ctx, resource.Spec.Vpc, peerVpc, route)
+					if err != nil {
+						if stderrors.Is(err, errVPNRoutePending) && resolved.Via.VPN != nil {
+							pendingVPNs[resolved.Via.VPN.Namespace+"/"+resolved.Via.VPN.Name] = struct{}{}
+							continue
+						}
+						if updateErr := r.updateStatus(ctx, &resource, nil, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("VpcPeering return route %s: %v", route.Dst, err)); updateErr != nil {
+							return ctrl.Result{}, updateErr
+						}
+						return ctrl.Result{}, nil
 					}
-					return ctrl.Result{}, nil
+					route = resolved
+					peerSubnet = resolved.Subnet
 				}
 				subnet = peerSubnet
 			} else if route.Via.Type == juneauloutresmev1alpha1.ViaTransitGateway {
@@ -387,6 +427,14 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 		tableID = uint32(claim.Status.Value.Number)
 	}
+	if len(pendingVPNs) != 0 {
+		keys := make([]string, 0, len(pendingVPNs))
+		for key := range pendingVPNs {
+			keys = append(keys, key)
+		}
+		slices.Sort(keys)
+		return ctrl.Result{}, r.updateStatusPendingVPN(ctx, &resource, statusRoutes, tableID, keys)
+	}
 
 	if err := r.updateStatus(ctx, &resource, statusRoutes, tableID, metav1.ConditionTrue, routeTableReasonReconcileSucceeded, ""); err != nil {
 		return ctrl.Result{}, err
@@ -395,8 +443,131 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	return ctrl.Result{}, nil
 }
 
+func vpnOverlapsReachable(dst string, routes []juneauloutresmev1alpha1.Route) bool {
+	if dst == "0.0.0.0/0" {
+		return false
+	}
+	_, prefix, err := net.ParseCIDR(dst)
+	if err != nil || prefix.IP.To4() == nil {
+		return true
+	}
+	for _, route := range routes {
+		if route.Via.Type != juneauloutresmev1alpha1.ViaConnected && route.Via.Type != juneauloutresmev1alpha1.ViaService && route.Via.Type != juneauloutresmev1alpha1.ViaVpcEndpoint {
+			continue
+		}
+		_, other, err := net.ParseCIDR(route.Dst)
+		if err != nil || other.IP.To4() == nil {
+			return true
+		}
+		if prefix.Contains(other.IP) || other.Contains(prefix.IP) {
+			return true
+		}
+	}
+	return false
+}
+
+var errVPNRoutePending = fmt.Errorf("VPN route is not Ready")
+
+func vpnRoutePending(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", errVPNRoutePending, fmt.Sprintf(format, args...))
+}
+
+func (r *RouteTableReconciler) resolveVPNRoute(ctx context.Context, vpc string, ref *juneauloutresmev1alpha1.VPNReference) (string, error) {
+	if ref == nil || ref.Namespace == "" || ref.Name == "" {
+		return "", vpnRoutePending("invalid VPN reference")
+	}
+	var vpn juneauloutresmev1alpha1.VPN
+	if err := r.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, &vpn); err != nil {
+		return "", fmt.Errorf("VPN %s/%s not found or unavailable: %w", ref.Namespace, ref.Name, err)
+	}
+	if vpn.UID == "" || vpn.Spec.Vpc != vpc || vpn.DeletionTimestamp != nil || !conditionReady(vpn.Status.Conditions, "Ready", vpn.Generation) || vpn.Status.ObservedGeneration != vpn.Generation {
+		return "", vpnRoutePending("VPN %s/%s is not Ready in Vpc %s", ref.Namespace, ref.Name, vpc)
+	}
+	var subnet juneauloutresmev1alpha1.Subnet
+	if err := r.Get(ctx, client.ObjectKey{Name: vpn.Spec.Subnet}, &subnet); err != nil {
+		return "", fmt.Errorf("VPN gateway Subnet: %w", err)
+	}
+	_, gatewayMACError := net.ParseMAC(subnet.Status.GatewayMAC)
+	if subnet.Spec.Vpc != vpc || subnet.Status.VNI == 0 || gatewayMACError != nil || subnet.DeletionTimestamp != nil || !conditionReady(subnet.Status.Conditions, juneauloutresmev1alpha1.SubnetStatusReady, subnet.Generation) {
+		return "", vpnRoutePending("VPN gateway Subnet is not Ready in Vpc %s", vpc)
+	}
+	var pod corev1.Pod
+	if err := r.Get(ctx, client.ObjectKey{Namespace: vpn.Namespace, Name: vpnPodName(&vpn)}, &pod); err != nil {
+		if errors.IsNotFound(err) {
+			return "", vpnRoutePending("VPN gateway Pod is missing")
+		}
+		return "", fmt.Errorf("VPN gateway Pod: %w", err)
+	}
+	if pod.UID == "" || pod.Spec.NodeName == "" || !ownedByVPN(&pod, &vpn) || pod.DeletionTimestamp != nil || pod.Status.Phase != corev1.PodRunning || !podReady(&pod) {
+		return "", vpnRoutePending("VPN gateway Pod is not Ready")
+	}
+	var nic juneauloutresmev1alpha1.NetworkInterface
+	if err := r.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: networkInterfaceNameForPod(pod.Name, "eth0")}, &nic); err != nil {
+		if errors.IsNotFound(err) {
+			return "", vpnRoutePending("VPN gateway eth0 is missing")
+		}
+		return "", fmt.Errorf("VPN gateway eth0: %w", err)
+	}
+	if nic.DeletionTimestamp != nil || nic.Spec.PodRef.UID != string(pod.UID) || nic.Spec.PodRef.Name != pod.Name || nic.Spec.PodRef.Interface != "eth0" || nic.Spec.NodeName != pod.Spec.NodeName || nic.Spec.Subnet != subnet.Name || nic.Status.Phase != juneauloutresmev1alpha1.NetworkInterfacePhaseReady || nic.Status.ObservedGeneration != nic.Generation {
+		return "", vpnRoutePending("VPN gateway eth0 is not Ready in the gateway Subnet")
+	}
+	ip, _, err := net.ParseCIDR(nic.Status.Address)
+	if err != nil || ip.To4() == nil {
+		return "", vpnRoutePending("VPN gateway eth0 has no IPv4 address")
+	}
+	var endpoints juneauloutresmev1alpha1.NetworkEndpointList
+	if err := r.List(ctx, &endpoints, client.InNamespace(pod.Namespace)); err != nil {
+		return "", fmt.Errorf("list VPN gateway endpoints: %w", err)
+	}
+	count := 0
+	for i := range endpoints.Items {
+		ep := &endpoints.Items[i]
+		if ep.Name != pod.Name+".eth0" {
+			continue
+		}
+		if ep.Spec.PodRef == nil || ep.Spec.PodRef.UID != string(pod.UID) || ep.Spec.PodRef.Name != pod.Name || ep.Spec.PodRef.Interface != "eth0" {
+			continue
+		}
+		if ep.DeletionTimestamp != nil || ep.Spec.Kind != juneauloutresmev1alpha1.EndpointKindPod || ep.Spec.Subnet != subnet.Name || ep.Spec.NodeName != pod.Spec.NodeName || ep.Spec.Address != nic.Status.Address {
+			return "", vpnRoutePending("VPN gateway endpoint does not match eth0")
+		}
+		if _, err := net.ParseMAC(ep.Spec.MACAddress); err != nil {
+			return "", vpnRoutePending("VPN gateway endpoint has no valid MAC")
+		}
+		count++
+	}
+	if count != 1 {
+		return "", vpnRoutePending("VPN has no provisioned gateway endpoint or has more than one")
+	}
+	return subnet.Name, nil
+}
+
 func (r *RouteTableReconciler) updateStatus(ctx context.Context, resource *juneauloutresmev1alpha1.RouteTable, routes []juneauloutresmev1alpha1.Route, tableID uint32, ready metav1.ConditionStatus, reason, message string) error {
+	return r.writeStatus(ctx, resource, routes, tableID, ready, reason, message, "", nil)
+}
+
+func (r *RouteTableReconciler) updateStatusPendingVPN(ctx context.Context, resource *juneauloutresmev1alpha1.RouteTable, routes []juneauloutresmev1alpha1.Route, tableID uint32, keys []string) error {
+	resolved := make([]juneauloutresmev1alpha1.Route, 0, len(routes))
+	for _, route := range routes {
+		switch route.Via.Type {
+		case juneauloutresmev1alpha1.ViaConnected, juneauloutresmev1alpha1.ViaService, juneauloutresmev1alpha1.ViaVpcEndpoint, juneauloutresmev1alpha1.ViaVpcPeering, juneauloutresmev1alpha1.ViaTransitGateway:
+			resolved = append(resolved, route)
+		case juneauloutresmev1alpha1.ViaVPN:
+			if route.Via.VPN != nil && !slices.Contains(keys, route.Via.VPN.Namespace+"/"+route.Via.VPN.Name) {
+				resolved = append(resolved, route)
+			}
+		}
+	}
+	if len(keys) == 1 {
+		return r.writeStatus(ctx, resource, resolved, tableID, metav1.ConditionFalse, routeTableReasonVPNEndpointPending, "VPN "+keys[0]+" is not Ready: waiting for its gateway endpoint", keys[0], nil)
+	}
+	return r.writeStatus(ctx, resource, resolved, tableID, metav1.ConditionFalse, routeTableReasonVPNEndpointPending, "VPNs "+strings.Join(keys, ", ")+" are not Ready: waiting for their gateway endpoints", "", keys)
+}
+
+func (r *RouteTableReconciler) writeStatus(ctx context.Context, resource *juneauloutresmev1alpha1.RouteTable, routes []juneauloutresmev1alpha1.Route, tableID uint32, ready metav1.ConditionStatus, reason, message, pendingVPN string, pendingVPNs []string) error {
 	updated := resource.DeepCopy()
+	updated.Status.PendingVPN = pendingVPN
+	updated.Status.PendingVPNs = pendingVPNs
 	updated.Status.ObservedGeneration = updated.Generation
 	updated.Status.Routes = routes
 	updated.Status.TableID = tableID
@@ -410,6 +581,8 @@ func (r *RouteTableReconciler) updateStatus(ctx context.Context, resource *junea
 
 	if updated.Status.ObservedGeneration == resource.Status.ObservedGeneration &&
 		updated.Status.TableID == resource.Status.TableID &&
+		updated.Status.PendingVPN == resource.Status.PendingVPN &&
+		reflect.DeepEqual(updated.Status.PendingVPNs, resource.Status.PendingVPNs) &&
 		reflect.DeepEqual(updated.Status.Routes, resource.Status.Routes) &&
 		reflect.DeepEqual(updated.Status.Conditions, resource.Status.Conditions) {
 		return nil
@@ -494,12 +667,16 @@ func (r *RouteTableReconciler) getNetworkEndpoint(ctx context.Context, name stri
 func (r *RouteTableReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&juneauloutresmev1alpha1.RouteTable{}).
+		Watches(&juneauloutresmev1alpha1.RouteTable{}, r.vpnSourceTableWatchHandler()).
 		Watches(&juneauloutresmev1alpha1.Subnet{}, handler.EnqueueRequestsFromMapFunc(r.mapSubnetToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.L2Network{}, handler.EnqueueRequestsFromMapFunc(r.mapL2NetworkToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.NetworkEndpoint{}, handler.EnqueueRequestsFromMapFunc(r.mapNetworkEndpointToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.Vpc{}, handler.EnqueueRequestsFromMapFunc(r.mapVpcToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.AllocationClaim{}, handler.EnqueueRequestsFromMapFunc(r.mapClaimToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.NATGateway{}, handler.EnqueueRequestsFromMapFunc(r.mapNATGatewayToRouteTables)).
+		Watches(&juneauloutresmev1alpha1.VPN{}, handler.EnqueueRequestsFromMapFunc(r.mapVPNToRouteTables)).
+		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(r.mapVPNGatewayPodToRouteTables)).
+		Watches(&juneauloutresmev1alpha1.NetworkInterface{}, handler.EnqueueRequestsFromMapFunc(r.mapVPNGatewayNICToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.VpcPeering{}, handler.EnqueueRequestsFromMapFunc(r.mapVpcPeeringToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.TransitGateway{}, handler.EnqueueRequestsFromMapFunc(r.mapTransitGatewayToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.TransitGatewayAttachment{}, handler.EnqueueRequestsFromMapFunc(r.mapTransitGatewayAttachmentToRouteTables)).
@@ -704,6 +881,63 @@ func (r *RouteTableReconciler) mapClaimToRouteTables(ctx context.Context, obj cl
 	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: claim.Spec.ResourceRef.Name}}}
 }
 
+func (r *RouteTableReconciler) mapVPNToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
+	vpn, ok := obj.(*juneauloutresmev1alpha1.VPN)
+	if !ok {
+		return nil
+	}
+	var tables juneauloutresmev1alpha1.RouteTableList
+	if err := r.List(ctx, &tables); err != nil {
+		log.FromContext(ctx).Error(err, "list RouteTables for VPN fan-out")
+		return nil
+	}
+	var requests []reconcile.Request
+	prefixes := make(map[string]bool)
+	for _, table := range tables.Items {
+		usesVPN := false
+		for _, route := range table.Spec.Routes {
+			if route.Via.Type != juneauloutresmev1alpha1.ViaVPN || route.Via.VPN == nil || route.Via.VPN.Namespace != vpn.Namespace || route.Via.VPN.Name != vpn.Name {
+				continue
+			}
+			usesVPN = true
+			if table.Spec.Vpc == vpn.Spec.Vpc {
+				prefixes[route.Dst] = true
+			}
+		}
+		if usesVPN {
+			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: table.Name}})
+		}
+	}
+	return append(requests, r.peeringVPNDependents(ctx, vpn.Spec.Vpc, prefixes, tables.Items)...)
+}
+
+func (r *RouteTableReconciler) mapVPNGatewayPodToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
+	return r.mapVPNGatewayToRouteTables(ctx, obj.GetNamespace(), obj.GetName())
+}
+
+func (r *RouteTableReconciler) mapVPNGatewayNICToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
+	nic, ok := obj.(*juneauloutresmev1alpha1.NetworkInterface)
+	if !ok || nic.Spec.PodRef.Interface != "eth0" {
+		return nil
+	}
+	return r.mapVPNGatewayToRouteTables(ctx, nic.Namespace, nic.Spec.PodRef.Name)
+}
+
+func (r *RouteTableReconciler) mapVPNGatewayToRouteTables(ctx context.Context, namespace, podName string) []reconcile.Request {
+	var vpns juneauloutresmev1alpha1.VPNList
+	if err := r.List(ctx, &vpns, client.InNamespace(namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "list VPNs for gateway fan-out")
+		return nil
+	}
+	var requests []reconcile.Request
+	for i := range vpns.Items {
+		if vpnPodName(&vpns.Items[i]) == podName {
+			requests = append(requests, r.mapVPNToRouteTables(ctx, &vpns.Items[i])...)
+		}
+	}
+	return requests
+}
+
 func (r *RouteTableReconciler) mapNATGatewayToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
 	natGateway, ok := obj.(*juneauloutresmev1alpha1.NATGateway)
 	if !ok {
@@ -746,25 +980,36 @@ func (r *RouteTableReconciler) mapNATGatewayToRouteTables(ctx context.Context, o
 
 func (r *RouteTableReconciler) mapNetworkEndpointToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
 	nwep, ok := obj.(*juneauloutresmev1alpha1.NetworkEndpoint)
-	if !ok || nwep.Spec.Subnet == "" {
+	if !ok {
 		return nil
+	}
+	vpnRequests := []reconcile.Request(nil)
+	if podName, ok := strings.CutSuffix(nwep.Name, ".eth0"); ok && strings.HasPrefix(podName, "vpn-") {
+		vpnRequests = r.mapVPNGatewayToRouteTables(ctx, nwep.Namespace, podName)
+	}
+	if nwep.Spec.Subnet == "" {
+		return vpnRequests
 	}
 
 	var subnet juneauloutresmev1alpha1.Subnet
 	if err := r.Get(ctx, client.ObjectKey{Name: nwep.Spec.Subnet}, &subnet); err != nil {
-		return nil
+		if !errors.IsNotFound(err) {
+			log.FromContext(ctx).Error(err, "get Subnet for endpoint fan-out")
+		}
+		return vpnRequests
 	}
 
 	if subnet.Spec.Vpc == "" {
-		return nil
+		return vpnRequests
 	}
 
 	var vpc juneauloutresmev1alpha1.Vpc
 	if err := r.Get(ctx, client.ObjectKey{Name: subnet.Spec.Vpc}, &vpc); err != nil {
 		if errors.IsNotFound(err) {
-			return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: subnet.Spec.Vpc}}}
+			return append(vpnRequests, reconcile.Request{NamespacedName: client.ObjectKey{Name: subnet.Spec.Vpc}})
 		}
-		return nil
+		log.FromContext(ctx).Error(err, "get Vpc for endpoint fan-out")
+		return vpnRequests
 	}
 
 	routeTableName := vpc.Status.MainRouteTable
@@ -772,7 +1017,7 @@ func (r *RouteTableReconciler) mapNetworkEndpointToRouteTables(ctx context.Conte
 		routeTableName = vpc.Name
 	}
 
-	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: routeTableName}}}
+	return append(vpnRequests, reconcile.Request{NamespacedName: client.ObjectKey{Name: routeTableName}})
 }
 
 // owningVpcOfService returns the Vpc that the Service is anchored to.

@@ -68,13 +68,15 @@ static __always_inline __u32 policy_trace_hook(__u8 hook) {
 static __juneau_bpf_subprog int policy_enforced(__u32 vpc_id, __u32 acl_id,
                                                 __u8 acl_dir, __be32 self_ip) {
   if (acl_id != 0) {
+    if (acl_id == ACL_PENDING_ID)
+      return 1;
     struct acl_meta_val *meta = bpf_map_lookup_elem(&acl_meta_map, &acl_id);
-    if (meta) {
-      __u8 has_rules = (acl_dir == ACL_DIR_INGRESS) ? meta->has_ingress_rules
-                                                    : meta->has_egress_rules;
-      if (has_rules)
-        return 1;
-    }
+    if (!meta)
+      return 1;
+    __u8 has_rules = (acl_dir == ACL_DIR_INGRESS) ? meta->has_ingress_rules
+                                                  : meta->has_egress_rules;
+    if (has_rules)
+      return 1;
   }
 
   struct sg_membership_val *self = sg_membership_lookup(vpc_id, self_ip);
@@ -116,6 +118,8 @@ static __juneau_bpf_subprog int policy_enforced(__u32 vpc_id, __u32 acl_id,
 static __always_inline int apply_policy(struct __sk_buff *skb, __u8 hook,
                                         __u32 vpc_id, __u32 acl_id,
                                         __u32 trace_id, __u32 subnet_id) {
+  if (acl_id == ACL_PENDING_ID)
+    return -1;
   struct iphdr *iph = nat_load_iph(skb);
   if (!iph)
     return -2;

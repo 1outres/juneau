@@ -353,7 +353,7 @@ var _ = Describe("RouteTable controller", func() {
 			}).Should(Succeed())
 		})
 
-		It("marks a RouteTable not ready when no peer Subnet matches dst exactly", func() {
+		It("marks a RouteTable not ready when no peer Subnet or explicit VPN route matches dst", func() {
 			vpcA := createControllerVpc()
 			vpcB := createControllerVpc()
 			createControllerSubnet(vpcB, uniqueTestName("subnet"), "172.29.10.0/24")
@@ -376,7 +376,7 @@ var _ = Describe("RouteTable controller", func() {
 				ready := meta.FindStatusCondition(routeTable.Status.Conditions, juneauv1alpha1.RouteTableStatusReady)
 				g.Expect(ready).NotTo(BeNil())
 				g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
-				g.Expect(ready.Message).To(ContainSubstring(fmt.Sprintf("no Subnet in Vpc %q has CIDR", vpcB)))
+				g.Expect(ready.Message).To(ContainSubstring(fmt.Sprintf("Vpc %s has no explicit VPN route", vpcB)))
 			}).Should(Succeed())
 		})
 

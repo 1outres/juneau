@@ -49,6 +49,7 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
+          - --vpn-gateway-image=vpn-gateway:latest
         image: controller:latest
         name: manager
         env:

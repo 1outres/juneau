@@ -61,15 +61,19 @@ const struct acl_rule _acl_rule_btf_anchor;
 // per-iteration bpf_map_lookup_elem call, tripping the
 // "infinite loop detected" check. Promoting acl_evaluate to its
 // own subprogram restores per-iteration tracking.
+#define ACL_PENDING_ID 0xffffffffU
+
 static __juneau_bpf_subprog int acl_evaluate(__u32 acl_id, __u8 direction,
                                              __u8 proto, __u16 dport,
                                              __be32 peer_ip) {
   if (acl_id == 0)
     return ACL_VERDICT_PASS;
+  if (acl_id == ACL_PENDING_ID)
+    return ACL_VERDICT_DENY;
 
   struct acl_meta_val *meta = bpf_map_lookup_elem(&acl_meta_map, &acl_id);
   if (!meta)
-    return ACL_VERDICT_PASS;
+    return ACL_VERDICT_DENY;
 
   __u8 has_rules = (direction == ACL_DIR_INGRESS) ? meta->has_ingress_rules
                                                   : meta->has_egress_rules;

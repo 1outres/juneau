@@ -33,6 +33,7 @@ resources:
 - bases/juneau.loutres.me_l2networks.yaml
 - bases/juneau.loutres.me_dnszones.yaml
 - bases/juneau.loutres.me_dnsrecords.yaml
+- bases/juneau.loutres.me_vpns.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

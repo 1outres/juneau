@@ -21,6 +21,7 @@ func RegisterPodEgress(inv *Inventory, p *program.PodEgress) error {
 		registerIfindexSubnet,
 		registerIfindexExternalNetwork,
 		registerIfindexHostMac,
+		registerVPNGateway,
 		registerArpTable,
 		registerFdb,
 		registerVxlanIfindex,
@@ -105,6 +106,8 @@ func registerIfindexSubnet(inv *Inventory, p *program.PodEgress) error {
 		Value: Schema{Fields: []Field{
 			FieldU32Named("subnet_id"),
 			FieldIPv4BENamed("ipv4", "the Pod's address on this NIC"),
+			FieldU8Named("kind"),
+			FieldPadOf(3),
 		}},
 	})
 }
@@ -221,6 +224,15 @@ func registerServiceNATIP(inv *Inventory, p *program.PodEgress) error {
 	})
 }
 
+func registerVPNGateway(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name:  "vpn_gateway",
+		Map:   p.Objs.VpnGateway,
+		Key:   Schema{Fields: []Field{FieldU32Named("ifindex")}},
+		Value: Schema{Fields: []Field{FieldRawNamed("vpn_id", 16)}},
+	})
+}
+
 func registerFib(inv *Inventory, p *program.PodEgress) error {
 	return inv.Register(&Descriptor{
 		Name:       "fib_map",
@@ -246,6 +258,7 @@ func registerFib(inv *Inventory, p *program.PodEgress) error {
 			FieldPadOf(3),
 			FieldU32Named("subnet_id"),
 			FieldU32Named("oif"),
+			FieldRawNamed("vpn_id", 16),
 		}},
 	})
 }
@@ -271,6 +284,7 @@ func registerTgwFib(inv *Inventory, p *program.PodEgress) error {
 			FieldPadOf(3),
 			FieldU32Named("subnet_id"),
 			FieldU32Named("oif"),
+			FieldRawNamed("vpn_id", 16),
 		}},
 	})
 }

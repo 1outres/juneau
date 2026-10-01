@@ -6,11 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
+	"strings"
 	"sync"
 
 	"github.com/cilium/ebpf"
 	"go.uber.org/zap"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
@@ -30,6 +35,8 @@ const (
 	fibRouteTypeBlackhole       = 9
 	fibRouteTypeVpcEndpoint     = 10
 	fibRouteTypeL2Gateway       = 11
+	fibRouteTypeVPN             = 12
+	fibRouteTypePeeringVPN      = 13
 )
 
 // Fib keeps podEgress.FibMap in sync with RouteTable objects. Each
@@ -71,10 +78,25 @@ func (r *Fib) Reconcile(ctx context.Context, key string) error {
 	if err != nil {
 		return err
 	}
-	return r.upsert(ctx, key, &rt)
+	if rt.Status.TableID == 0 {
+		return r.delete(key)
+	}
+	var pending []juneauv1alpha1.Route
+	if !routeTableReady(&rt) {
+		var ok bool
+		pending, ok = pendingVPNRoutes(&rt)
+		if !ok {
+			return r.delete(key)
+		}
+	}
+	if err := r.upsert(ctx, key, &rt, pending); err != nil {
+		_ = r.delete(key)
+		return err
+	}
+	return nil
 }
 
-func (r *Fib) upsert(ctx context.Context, key string, rt *juneauv1alpha1.RouteTable) error {
+func (r *Fib) upsert(ctx context.Context, key string, rt *juneauv1alpha1.RouteTable, pending []juneauv1alpha1.Route) error {
 	fib, err := ebpf.NewMap(r.podEgress.MapSpecs.FibInner.Copy())
 	if err != nil {
 		return fmt.Errorf("create new FIB inner map: %w", err)
@@ -88,6 +110,16 @@ func (r *Fib) upsert(ctx context.Context, key string, rt *juneauv1alpha1.RouteTa
 	for _, route := range rt.Status.Routes {
 		if err := r.populateRoute(ctx, fib, &route); err != nil {
 			return err
+		}
+	}
+	for _, route := range pending {
+		ip, prefix, err := net.ParseCIDR(route.Dst)
+		if err != nil || ip.To4() == nil {
+			return fmt.Errorf("invalid pending VPN prefix %q", route.Dst)
+		}
+		bits, _ := prefix.Mask.Size()
+		if err := fib.Update(&bpf.PodEgressFibKey{Dst: binary.LittleEndian.Uint32(ip.To4()), Prefixlen: uint32(bits)}, &bpf.PodEgressFibVal{Type: fibRouteTypeBlackhole}, ebpf.UpdateAny); err != nil {
+			return fmt.Errorf("blackhole pending VPN route %s: %w", route.Dst, err)
 		}
 	}
 
@@ -144,8 +176,10 @@ func (r *Fib) delete(key string) error {
 func (r *Fib) populateRoute(ctx context.Context, fib *ebpf.Map, route *juneauv1alpha1.Route) error {
 	netaddr, ipnet, err := net.ParseCIDR(route.Dst)
 	if err != nil {
-		zap.S().Warnf("fib: parse CIDR %s: %v", route.Dst, err)
-		return nil
+		return fmt.Errorf("parse FIB CIDR %s: %w", route.Dst, err)
+	}
+	if netaddr.To4() == nil {
+		return fmt.Errorf("FIB route %s is not IPv4", route.Dst)
 	}
 
 	prefixlen, _ := ipnet.Mask.Size()
@@ -156,11 +190,10 @@ func (r *Fib) populateRoute(ctx context.Context, fib *ebpf.Map, route *juneauv1a
 
 	val, skip, err := r.buildFibVal(ctx, route)
 	if err != nil {
-		zap.S().Warnf("fib: build FIB route for %s via %s: %v", route.Dst, route.Via.Type, err)
-		return nil
+		return fmt.Errorf("build FIB route for %s via %s: %w", route.Dst, route.Via.Type, err)
 	}
 	if skip {
-		return nil
+		return fmt.Errorf("FIB route for %s via %s is not ready", route.Dst, route.Via.Type)
 	}
 
 	if err := fib.Update(&key, &val, ebpf.UpdateAny); err != nil {
@@ -195,6 +228,29 @@ func (r *Fib) buildFibVal(ctx context.Context, route *juneauv1alpha1.Route) (bpf
 		return val, false, err
 
 	case juneauv1alpha1.ViaVpcPeering:
+		if route.Via.VPN != nil {
+			var vpn juneauv1alpha1.VPN
+			if err := r.client.Get(ctx, client.ObjectKey{Namespace: route.Via.VPN.Namespace, Name: route.Via.VPN.Name}, &vpn); err != nil {
+				return bpf.PodEgressFibVal{}, false, err
+			}
+			if vpn.Spec.Subnet != route.Subnet {
+				return bpf.PodEgressFibVal{}, false, fmt.Errorf("peered VPN gateway Subnet changed")
+			}
+			var peering juneauv1alpha1.VpcPeering
+			if err := r.client.Get(ctx, client.ObjectKey{Name: route.Via.VpcPeering}, &peering); err != nil {
+				return bpf.PodEgressFibVal{}, false, err
+			}
+			if _, ok := peering.Spec.PeerOf(vpn.Spec.Vpc); !ok || peering.DeletionTimestamp != nil || !meta.IsStatusConditionTrue(peering.Status.Conditions, juneauv1alpha1.VpcPeeringStatusReady) {
+				return bpf.PodEgressFibVal{}, false, fmt.Errorf("peering %s is not ready for VPN Vpc %s", peering.Name, vpn.Spec.Vpc)
+			}
+			subnet, _, _, endpoint, err := resolveVPNGateway(ctx, r.client, &vpn)
+			if err != nil {
+				return bpf.PodEgressFibVal{}, false, err
+			}
+			val, skip, err := buildVPNFibVal(&vpn, subnet, endpoint)
+			val.Type = fibRouteTypePeeringVPN
+			return val, skip, err
+		}
 		var subnet juneauv1alpha1.Subnet
 		if err := r.client.Get(ctx, client.ObjectKey{Name: route.Subnet}, &subnet); err != nil {
 			return bpf.PodEgressFibVal{}, false, err
@@ -234,6 +290,23 @@ func (r *Fib) buildFibVal(ctx context.Context, route *juneauv1alpha1.Route) (bpf
 		}
 		return buildNATGatewayFibVal(&natGateway), false, nil
 
+	case juneauv1alpha1.ViaVPN:
+		if route.Via.VPN == nil || route.Via.VPN.Namespace == "" || route.Via.VPN.Name == "" || route.Subnet == "" {
+			return bpf.PodEgressFibVal{}, false, fmt.Errorf("VPN route has no resolved gateway")
+		}
+		var vpn juneauv1alpha1.VPN
+		if err := r.client.Get(ctx, client.ObjectKey{Namespace: route.Via.VPN.Namespace, Name: route.Via.VPN.Name}, &vpn); err != nil {
+			return bpf.PodEgressFibVal{}, false, err
+		}
+		if vpn.Spec.Subnet != route.Subnet {
+			return bpf.PodEgressFibVal{}, false, fmt.Errorf("VPN gateway Subnet changed")
+		}
+		subnet, _, _, endpoint, err := resolveVPNGateway(ctx, r.client, &vpn)
+		if err != nil {
+			return bpf.PodEgressFibVal{}, false, err
+		}
+		return buildVPNFibVal(&vpn, subnet, endpoint)
+
 	case juneauv1alpha1.ViaTransitGateway:
 		var routeTable juneauv1alpha1.TransitGatewayRouteTable
 		if err := r.client.Get(ctx, client.ObjectKey{Name: route.TransitGatewayRouteTable}, &routeTable); err != nil {
@@ -247,6 +320,103 @@ func (r *Fib) buildFibVal(ctx context.Context, route *juneauv1alpha1.Route) (bpf
 	default:
 		return bpf.PodEgressFibVal{}, true, fmt.Errorf("unsupported route type %q", route.Via.Type)
 	}
+}
+
+func buildVPNFibVal(vpn *juneauv1alpha1.VPN, subnet *juneauv1alpha1.Subnet, ep *juneauv1alpha1.NetworkEndpoint) (bpf.PodEgressFibVal, bool, error) {
+	mac, err := net.ParseMAC(ep.Spec.MACAddress)
+	if err != nil {
+		return bpf.PodEgressFibVal{}, false, err
+	}
+	dmac, err := convert.HardwareAddrToUint8Array(mac)
+	if err != nil {
+		return bpf.PodEgressFibVal{}, false, err
+	}
+	gw, err := net.ParseMAC(subnet.Status.GatewayMAC)
+	if err != nil {
+		return bpf.PodEgressFibVal{}, false, err
+	}
+	smac, err := convert.HardwareAddrToUint8Array(gw)
+	if err != nil {
+		return bpf.PodEgressFibVal{}, false, err
+	}
+	return bpf.PodEgressFibVal{Type: fibRouteTypeVPN, Dmac: dmac, Smac: smac, SubnetId: subnet.Status.VNI, VpnId: bpf.PodEgressVpnIdentity{Bytes: vpnIdentity(vpn.UID)}}, false, nil
+}
+
+func routeTableReady(rt *juneauv1alpha1.RouteTable) bool {
+	condition := meta.FindStatusCondition(rt.Status.Conditions, juneauv1alpha1.RouteTableStatusReady)
+	return condition != nil && condition.Status == metav1.ConditionTrue && condition.ObservedGeneration == rt.Generation && rt.Status.ObservedGeneration == rt.Generation
+}
+
+func pendingVPNRoutes(rt *juneauv1alpha1.RouteTable) ([]juneauv1alpha1.Route, bool) {
+	condition := meta.FindStatusCondition(rt.Status.Conditions, juneauv1alpha1.RouteTableStatusReady)
+	if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != "VPNEndpointPending" || condition.ObservedGeneration != rt.Generation || rt.Status.ObservedGeneration != rt.Generation || rt.Status.TableID == 0 {
+		return nil, false
+	}
+	keys := rt.Status.PendingVPNs
+	if rt.Status.PendingVPN != "" {
+		if len(keys) != 0 {
+			return nil, false
+		}
+		keys = []string{rt.Status.PendingVPN}
+	}
+	if len(keys) == 0 {
+		return nil, false
+	}
+	seen := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		if key == "" || seen[key] {
+			return nil, false
+		}
+		seen[key] = false
+	}
+	pending := make([]juneauv1alpha1.Route, 0, len(keys))
+	for _, route := range rt.Spec.Routes {
+		isPending := route.Via.Type == juneauv1alpha1.ViaVPN && route.Via.VPN != nil && slices.Contains(keys, route.Via.VPN.Namespace+"/"+route.Via.VPN.Name)
+		resolved := false
+		installedDestination := false
+		for _, installed := range rt.Status.Routes {
+			if installed.Dst != route.Dst {
+				continue
+			}
+			installedDestination = true
+			if installed.Via.Type != route.Via.Type {
+				continue
+			}
+			if route.Via.Type == juneauv1alpha1.ViaVPN && (installed.Via.VPN == nil || installed.Via.VPN.Namespace != route.Via.VPN.Namespace || installed.Via.VPN.Name != route.Via.VPN.Name || installed.Subnet == "") {
+				continue
+			}
+			resolved = true
+		}
+		if isPending {
+			if installedDestination {
+				return nil, false
+			}
+			seen[route.Via.VPN.Namespace+"/"+route.Via.VPN.Name] = true
+			pending = append(pending, route)
+		} else if !resolved {
+			return nil, false
+		}
+	}
+	for _, found := range seen {
+		if !found {
+			return nil, false
+		}
+	}
+	for _, installed := range rt.Status.Routes {
+		if installed.Via.Type != juneauv1alpha1.ViaVPN {
+			continue
+		}
+		valid := false
+		for _, route := range rt.Spec.Routes {
+			if installed.Dst == route.Dst && installed.Via.VPN != nil && route.Via.VPN != nil && installed.Via.VPN.Namespace == route.Via.VPN.Namespace && installed.Via.VPN.Name == route.Via.VPN.Name && !slices.Contains(keys, route.Via.VPN.Namespace+"/"+route.Via.VPN.Name) {
+				valid = true
+			}
+		}
+		if !valid {
+			return nil, false
+		}
+	}
+	return pending, true
 }
 
 func buildConnectedFibVal(subnet *juneauv1alpha1.Subnet) (bpf.PodEgressFibVal, error) {
@@ -387,6 +557,42 @@ func (r *Fib) CloseAll() error {
 // FanOutAllRouteTables is a keys-func for Runner.WatchFanOut: returns every
 // RouteTable's key regardless of which object triggered the event. Used to
 // re-enqueue all RTs when a referenced Subnet or NetworkEndpoint changes.
+func (r *Fib) FanOutVPNRouteTables(obj any) []string {
+	var namespace, name string
+	switch item := obj.(type) {
+	case *juneauv1alpha1.VPN:
+		namespace, name = item.Namespace, item.Name
+	case *corev1.Pod:
+		if !strings.HasPrefix(item.Name, "vpn-") {
+			return nil
+		}
+	case *juneauv1alpha1.NetworkInterface:
+		if !strings.HasPrefix(item.Name, "vpn-") || !strings.HasSuffix(item.Name, ".eth0") {
+			return nil
+		}
+	default:
+		return nil
+	}
+	var tables juneauv1alpha1.RouteTableList
+	if err := r.client.List(context.Background(), &tables); err != nil {
+		zap.S().Warnf("fib: list VPN RouteTables for fan-out: %v", err)
+		return nil
+	}
+	var keys []string
+	for i := range tables.Items {
+		for _, route := range tables.Items[i].Spec.Routes {
+			if route.Via.Type != juneauv1alpha1.ViaVPN || route.Via.VPN == nil {
+				continue
+			}
+			if namespace == "" || (route.Via.VPN.Namespace == namespace && route.Via.VPN.Name == name) {
+				keys = append(keys, tables.Items[i].Name)
+				break
+			}
+		}
+	}
+	return keys
+}
+
 func (r *Fib) FanOutAllRouteTables(any) []string {
 	var rts juneauv1alpha1.RouteTableList
 	if err := r.client.List(context.Background(), &rts); err != nil {

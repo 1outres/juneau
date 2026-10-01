@@ -23,6 +23,7 @@ import (
 	"net"
 	"net/netip"
 	"reflect"
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -106,7 +107,7 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 		return ctrl.Result{}, nil
 	}
-	if vpcReady.Status != metav1.ConditionTrue {
+	if vpcReady.Status != metav1.ConditionTrue && !vpcPendingOnGatewayVPN(ctx, r.Client, &vpc, &resource) {
 		message := vpcReady.Message
 		if message == "" {
 			message = fmt.Sprintf("reason=%s status=%s", vpcReady.Reason, vpcReady.Status)
@@ -202,6 +203,12 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 	desired.NetworkACL = aclRef
+	if aclRef != nil && aclRef.ACLID == 0 {
+		if err := r.updateStatus(ctx, &resource, *desired, metav1.ConditionFalse, subnetReasonNotReady, "waiting for NetworkACL ID"); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
 
 	if err := r.updateStatus(ctx, &resource, *desired, metav1.ConditionTrue, subnetReasonReconcileSucceeded, ""); err != nil {
 		return ctrl.Result{}, err
@@ -210,15 +217,60 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	return ctrl.Result{}, nil
 }
 
+func vpcPendingOnGatewayVPN(ctx context.Context, reader client.Reader, vpc *juneauv1alpha1.Vpc, subnet *juneauv1alpha1.Subnet) bool {
+	ready := meta.FindStatusCondition(vpc.Status.Conditions, juneauv1alpha1.VpcStatusReady)
+	if ready == nil || ready.Status != metav1.ConditionFalse || ready.ObservedGeneration != vpc.Generation || ready.Reason != vpcReasonRouteTableNotReady || vpc.Status.VpcID == 0 || vpc.Status.MainRouteTable == "" {
+		return false
+	}
+	var table juneauv1alpha1.RouteTable
+	if err := reader.Get(ctx, client.ObjectKey{Name: vpc.Status.MainRouteTable}, &table); err != nil || table.Spec.Vpc != vpc.Name || table.DeletionTimestamp != nil || table.Status.TableID == 0 {
+		return false
+	}
+	pending := meta.FindStatusCondition(table.Status.Conditions, juneauv1alpha1.RouteTableStatusReady)
+	if pending == nil || pending.Status != metav1.ConditionFalse || pending.Reason != routeTableReasonVPNEndpointPending || pending.ObservedGeneration != table.Generation {
+		return false
+	}
+	keys := table.Status.PendingVPNs
+	if table.Status.PendingVPN != "" {
+		if len(keys) != 0 {
+			return false
+		}
+		keys = []string{table.Status.PendingVPN}
+	}
+	matchingSubnet := false
+	for _, key := range keys {
+		namespace, name, ok := strings.Cut(key, "/")
+		if !ok || namespace == "" || name == "" || strings.Contains(name, "/") {
+			return false
+		}
+		var vpn juneauv1alpha1.VPN
+		if err := reader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &vpn); err != nil || vpn.Spec.Vpc != vpc.Name || vpn.DeletionTimestamp != nil {
+			return false
+		}
+		found := false
+		for i := range table.Spec.Routes {
+			if sameVPNRoute(&table.Spec.Routes[i], &vpn) {
+				found = true
+			}
+		}
+		if !found {
+			return false
+		}
+		if vpn.Spec.Subnet == subnet.Name {
+			matchingSubnet = true
+		}
+	}
+	return matchingSubnet
+}
+
 // resolveNetworkACL produces the NetworkACLRef the daemon
 // consumes from status.networkACL. The webhook already enforces same-
 // Vpc and existence at admission time, but the ACL may be allocated
 // asynchronously (status.aclID == 0 until the AllocationClaim resolves)
 // and may be deleted after admission while the Subnet still references
 // it. Both cases are surfaced as a non-nil ref with ACLID==0 so the
-// daemon can distinguish "no ACL configured" from "ACL configured but
-// not yet ready" — the daemon treats both as "do not enforce" but
-// users can see the dangling reference in status.
+// daemon can deny traffic until the ACL has an ID. Users can see the
+// dangling reference in status.
 func (r *SubnetReconciler) resolveNetworkACL(ctx context.Context, subnet *juneauv1alpha1.Subnet) (*juneauv1alpha1.NetworkACLRef, error) {
 	if subnet.Spec.NetworkACL == "" {
 		return nil, nil
@@ -475,7 +527,7 @@ func (r *SubnetReconciler) mapNetworkACLToSubnets(ctx context.Context, obj clien
 func (r *SubnetReconciler) updateStatus(ctx context.Context, subnet *juneauv1alpha1.Subnet, desired juneauv1alpha1.SubnetStatus, status metav1.ConditionStatus, reason, message string) error {
 	updated := subnet.DeepCopy()
 	updated.Status = desired
-	updated.Status.Conditions = subnet.Status.Conditions // start from existing conditions to preserve transition times
+	updated.Status.Conditions = append([]metav1.Condition(nil), subnet.Status.Conditions...)
 	updated.Status.ObservedGeneration = updated.Generation
 	meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
 		Type:               juneauv1alpha1.SubnetStatusReady,

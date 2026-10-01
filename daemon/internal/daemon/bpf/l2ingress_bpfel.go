@@ -146,6 +146,7 @@ type L2IngressFibVal struct {
 	_        [3]byte
 	SubnetId uint32
 	Oif      uint32
+	VpnId    L2IngressVpnIdentity
 }
 
 type L2IngressIfindexExternalNetworkKey struct {
@@ -178,6 +179,8 @@ type L2IngressIfindexSubnetVal struct {
 	_        structs.HostLayout
 	SubnetId uint32
 	Ipv4     uint32
+	Kind     uint8
+	_        [3]byte
 }
 
 type L2IngressIpv4FragKey struct {
@@ -446,6 +449,23 @@ type L2IngressSubnetVal struct {
 	AclId   uint32
 }
 
+type L2IngressTgwFibKey struct {
+	_         structs.HostLayout
+	Prefixlen uint32
+	Dst       uint32
+}
+
+type L2IngressTgwFibVal struct {
+	_        structs.HostLayout
+	Type     uint8
+	Dmac     [6]uint8
+	Smac     [6]uint8
+	_        [3]byte
+	SubnetId uint32
+	Oif      uint32
+	VpnId    L2IngressVpnIdentity
+}
+
 type L2IngressTraceConfigVal struct {
 	_            structs.HostLayout
 	ExpiresNs    uint64
@@ -527,6 +547,16 @@ type L2IngressVpcEndpointKey struct {
 type L2IngressVpcEndpointVal struct {
 	_         structs.HostLayout
 	ClusterIp uint32
+}
+
+type L2IngressVpnGatewayKey struct {
+	_       structs.HostLayout
+	Ifindex uint32
+}
+
+type L2IngressVpnIdentity struct {
+	_     structs.HostLayout
+	Bytes [16]uint8
 }
 
 // LoadL2Ingress returns the embedded CollectionSpec for L2Ingress.
@@ -637,6 +667,7 @@ type L2IngressMapSpecs struct {
 	VirtualServiceFlowMap  *ebpf.MapSpec `ebpf:"virtual_service_flow_map"`
 	VirtualServiceMap      *ebpf.MapSpec `ebpf:"virtual_service_map"`
 	VpcEndpointMap         *ebpf.MapSpec `ebpf:"vpc_endpoint_map"`
+	VpnGateway             *ebpf.MapSpec `ebpf:"vpn_gateway"`
 	VxlanIfindex           *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
 }
 
@@ -644,8 +675,12 @@ type L2IngressMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type L2IngressVariableSpecs struct {
-	AclRuleBtfAnchor *ebpf.VariableSpec `ebpf:"_acl_rule_btf_anchor"`
-	SgRuleBtfAnchor  *ebpf.VariableSpec `ebpf:"_sg_rule_btf_anchor"`
+	AclRuleBtfAnchor   *ebpf.VariableSpec `ebpf:"_acl_rule_btf_anchor"`
+	FibKeyBtfAnchor    *ebpf.VariableSpec `ebpf:"_fib_key_btf_anchor"`
+	FibValBtfAnchor    *ebpf.VariableSpec `ebpf:"_fib_val_btf_anchor"`
+	SgRuleBtfAnchor    *ebpf.VariableSpec `ebpf:"_sg_rule_btf_anchor"`
+	TgwFibKeyBtfAnchor *ebpf.VariableSpec `ebpf:"_tgw_fib_key_btf_anchor"`
+	TgwFibValBtfAnchor *ebpf.VariableSpec `ebpf:"_tgw_fib_val_btf_anchor"`
 }
 
 // L2IngressObjects contains all objects after they have been loaded into the kernel.
@@ -727,6 +762,7 @@ type L2IngressMaps struct {
 	VirtualServiceFlowMap  *ebpf.Map `ebpf:"virtual_service_flow_map"`
 	VirtualServiceMap      *ebpf.Map `ebpf:"virtual_service_map"`
 	VpcEndpointMap         *ebpf.Map `ebpf:"vpc_endpoint_map"`
+	VpnGateway             *ebpf.Map `ebpf:"vpn_gateway"`
 	VxlanIfindex           *ebpf.Map `ebpf:"vxlan_ifindex"`
 }
 
@@ -791,6 +827,7 @@ func (m *L2IngressMaps) Close() error {
 		m.VirtualServiceFlowMap,
 		m.VirtualServiceMap,
 		m.VpcEndpointMap,
+		m.VpnGateway,
 		m.VxlanIfindex,
 	)
 }
@@ -799,8 +836,12 @@ func (m *L2IngressMaps) Close() error {
 //
 // It can be passed to LoadL2IngressObjects or ebpf.CollectionSpec.LoadAndAssign.
 type L2IngressVariables struct {
-	AclRuleBtfAnchor *ebpf.Variable `ebpf:"_acl_rule_btf_anchor"`
-	SgRuleBtfAnchor  *ebpf.Variable `ebpf:"_sg_rule_btf_anchor"`
+	AclRuleBtfAnchor   *ebpf.Variable `ebpf:"_acl_rule_btf_anchor"`
+	FibKeyBtfAnchor    *ebpf.Variable `ebpf:"_fib_key_btf_anchor"`
+	FibValBtfAnchor    *ebpf.Variable `ebpf:"_fib_val_btf_anchor"`
+	SgRuleBtfAnchor    *ebpf.Variable `ebpf:"_sg_rule_btf_anchor"`
+	TgwFibKeyBtfAnchor *ebpf.Variable `ebpf:"_tgw_fib_key_btf_anchor"`
+	TgwFibValBtfAnchor *ebpf.Variable `ebpf:"_tgw_fib_val_btf_anchor"`
 }
 
 // L2IngressPrograms contains all programs after they have been loaded into the kernel.

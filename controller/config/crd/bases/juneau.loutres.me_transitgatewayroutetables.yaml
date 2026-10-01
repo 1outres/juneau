@@ -71,9 +71,8 @@ spec:
                       type: boolean
                     dst:
                       description: |-
-                        Dst is the destination prefix. It must match the CIDR of a Subnet
-                        in the target attachment's Vpc exactly, because the data plane
-                        resolves the route to a single destination Subnet VNI.
+                        Dst must match a Subnet CIDR or an explicit VPN route in the
+                        target attachment's Vpc.
                       minLength: 1
                       type: string
                   required:
@@ -153,6 +152,8 @@ spec:
               observedGeneration:
                 format: int64
                 type: integer
+              pendingVPN:
+                type: string
               routes:
                 description: |-
                   Routes is the resolved routing table: propagated routes from
@@ -177,9 +178,19 @@ spec:
                       type: string
                     subnet:
                       description: |-
-                        Subnet is the resolved target Subnet whose VNI and gateway MAC
-                        the data plane forwards to. Empty when Blackhole is true.
+                        Subnet is the target Subnet or VPN gateway Subnet.
+                        Empty when Blackhole is true.
                       type: string
+                    vpn:
+                      properties:
+                        name:
+                          type: string
+                        namespace:
+                          type: string
+                      required:
+                      - name
+                      - namespace
+                      type: object
                   required:
                   - dst
                   - origin

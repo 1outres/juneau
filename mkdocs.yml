@@ -48,6 +48,7 @@ nav:
     - Vpcで共有Serviceを利用する: guides/shared-service.md
     - Service LoadBalancerを公開する: guides/service-loadbalancer.md
     - NATGatewayでVPC外への通信を成立させる: guides/nat-gateway.md
+    - Cisco IOS XEからVPNに接続する: guides/vpn-ios-xe.md
     - SecurityGroupでPodの通信を制限する: guides/security-group.md
     - NetworkACLでSubnet境界を制御する: guides/network-acl.md
     - VpcPeeringで2つのVPCを接続する: guides/vpc-peering.md
@@ -59,6 +60,7 @@ nav:
     - Subnet: resources/subnet.md
     - L2Network: resources/l2network.md
     - RouteTable: resources/routetable.md
+    - VPN: resources/vpn.md
     - VpcPeering: resources/vpcpeering.md
     - TransitGateway: resources/transitgateway.md
     - TransitGatewayRouteTable: resources/transitgatewayroutetable.md

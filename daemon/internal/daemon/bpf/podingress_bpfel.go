@@ -146,6 +146,7 @@ type PodIngressFibVal struct {
 	_        [3]byte
 	SubnetId uint32
 	Oif      uint32
+	VpnId    PodIngressVpnIdentity
 }
 
 type PodIngressIfindexExternalNetworkKey struct {
@@ -178,6 +179,8 @@ type PodIngressIfindexSubnetVal struct {
 	_        structs.HostLayout
 	SubnetId uint32
 	Ipv4     uint32
+	Kind     uint8
+	_        [3]byte
 }
 
 type PodIngressIpv4FragKey struct {
@@ -446,6 +449,23 @@ type PodIngressSubnetVal struct {
 	AclId   uint32
 }
 
+type PodIngressTgwFibKey struct {
+	_         structs.HostLayout
+	Prefixlen uint32
+	Dst       uint32
+}
+
+type PodIngressTgwFibVal struct {
+	_        structs.HostLayout
+	Type     uint8
+	Dmac     [6]uint8
+	Smac     [6]uint8
+	_        [3]byte
+	SubnetId uint32
+	Oif      uint32
+	VpnId    PodIngressVpnIdentity
+}
+
 type PodIngressTraceConfigVal struct {
 	_            structs.HostLayout
 	ExpiresNs    uint64
@@ -527,6 +547,16 @@ type PodIngressVpcEndpointKey struct {
 type PodIngressVpcEndpointVal struct {
 	_         structs.HostLayout
 	ClusterIp uint32
+}
+
+type PodIngressVpnGatewayKey struct {
+	_       structs.HostLayout
+	Ifindex uint32
+}
+
+type PodIngressVpnIdentity struct {
+	_     structs.HostLayout
+	Bytes [16]uint8
 }
 
 // LoadPodIngress returns the embedded CollectionSpec for PodIngress.
@@ -637,6 +667,7 @@ type PodIngressMapSpecs struct {
 	VirtualServiceFlowMap  *ebpf.MapSpec `ebpf:"virtual_service_flow_map"`
 	VirtualServiceMap      *ebpf.MapSpec `ebpf:"virtual_service_map"`
 	VpcEndpointMap         *ebpf.MapSpec `ebpf:"vpc_endpoint_map"`
+	VpnGateway             *ebpf.MapSpec `ebpf:"vpn_gateway"`
 	VxlanIfindex           *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
 }
 
@@ -644,8 +675,12 @@ type PodIngressMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type PodIngressVariableSpecs struct {
-	AclRuleBtfAnchor *ebpf.VariableSpec `ebpf:"_acl_rule_btf_anchor"`
-	SgRuleBtfAnchor  *ebpf.VariableSpec `ebpf:"_sg_rule_btf_anchor"`
+	AclRuleBtfAnchor   *ebpf.VariableSpec `ebpf:"_acl_rule_btf_anchor"`
+	FibKeyBtfAnchor    *ebpf.VariableSpec `ebpf:"_fib_key_btf_anchor"`
+	FibValBtfAnchor    *ebpf.VariableSpec `ebpf:"_fib_val_btf_anchor"`
+	SgRuleBtfAnchor    *ebpf.VariableSpec `ebpf:"_sg_rule_btf_anchor"`
+	TgwFibKeyBtfAnchor *ebpf.VariableSpec `ebpf:"_tgw_fib_key_btf_anchor"`
+	TgwFibValBtfAnchor *ebpf.VariableSpec `ebpf:"_tgw_fib_val_btf_anchor"`
 }
 
 // PodIngressObjects contains all objects after they have been loaded into the kernel.
@@ -727,6 +762,7 @@ type PodIngressMaps struct {
 	VirtualServiceFlowMap  *ebpf.Map `ebpf:"virtual_service_flow_map"`
 	VirtualServiceMap      *ebpf.Map `ebpf:"virtual_service_map"`
 	VpcEndpointMap         *ebpf.Map `ebpf:"vpc_endpoint_map"`
+	VpnGateway             *ebpf.Map `ebpf:"vpn_gateway"`
 	VxlanIfindex           *ebpf.Map `ebpf:"vxlan_ifindex"`
 }
 
@@ -791,6 +827,7 @@ func (m *PodIngressMaps) Close() error {
 		m.VirtualServiceFlowMap,
 		m.VirtualServiceMap,
 		m.VpcEndpointMap,
+		m.VpnGateway,
 		m.VxlanIfindex,
 	)
 }
@@ -799,8 +836,12 @@ func (m *PodIngressMaps) Close() error {
 //
 // It can be passed to LoadPodIngressObjects or ebpf.CollectionSpec.LoadAndAssign.
 type PodIngressVariables struct {
-	AclRuleBtfAnchor *ebpf.Variable `ebpf:"_acl_rule_btf_anchor"`
-	SgRuleBtfAnchor  *ebpf.Variable `ebpf:"_sg_rule_btf_anchor"`
+	AclRuleBtfAnchor   *ebpf.Variable `ebpf:"_acl_rule_btf_anchor"`
+	FibKeyBtfAnchor    *ebpf.Variable `ebpf:"_fib_key_btf_anchor"`
+	FibValBtfAnchor    *ebpf.Variable `ebpf:"_fib_val_btf_anchor"`
+	SgRuleBtfAnchor    *ebpf.Variable `ebpf:"_sg_rule_btf_anchor"`
+	TgwFibKeyBtfAnchor *ebpf.Variable `ebpf:"_tgw_fib_key_btf_anchor"`
+	TgwFibValBtfAnchor *ebpf.Variable `ebpf:"_tgw_fib_val_btf_anchor"`
 }
 
 // PodIngressPrograms contains all programs after they have been loaded into the kernel.

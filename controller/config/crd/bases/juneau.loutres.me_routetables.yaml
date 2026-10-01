@@ -93,12 +93,25 @@ spec:
                           - vpcPeering
                           - transitGateway
                           - vpcEndpoint
+                          - vpn
                           type: string
                         vpcPeering:
                           description: |-
                             VpcPeering is required when type=vpcPeering. Refers to a
                             VpcPeering by name (cluster-scoped).
                           type: string
+                        vpn:
+                          description: VPN names a VPN in an explicit namespace when
+                            type=vpn.
+                          properties:
+                            name:
+                              type: string
+                            namespace:
+                              type: string
+                          required:
+                          - name
+                          - namespace
+                          type: object
                       required:
                       - type
                       type: object
@@ -175,6 +188,12 @@ spec:
               observedGeneration:
                 format: int64
                 type: integer
+              pendingVPN:
+                type: string
+              pendingVPNs:
+                items:
+                  type: string
+                type: array
               routes:
                 items:
                   properties:
@@ -225,12 +244,25 @@ spec:
                           - vpcPeering
                           - transitGateway
                           - vpcEndpoint
+                          - vpn
                           type: string
                         vpcPeering:
                           description: |-
                             VpcPeering is required when type=vpcPeering. Refers to a
                             VpcPeering by name (cluster-scoped).
                           type: string
+                        vpn:
+                          description: VPN names a VPN in an explicit namespace when
+                            type=vpn.
+                          properties:
+                            name:
+                              type: string
+                            namespace:
+                              type: string
+                          required:
+                          - name
+                          - namespace
+                          type: object
                       required:
                       - type
                       type: object

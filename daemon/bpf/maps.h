@@ -323,6 +323,8 @@
 // port is node-local, so it comes from l2_gateway rather than from the
 // route.
 #define FIB_ROUTE_TYPE_L2_GATEWAY 11
+#define FIB_ROUTE_TYPE_VPN 12
+#define FIB_ROUTE_TYPE_PEERING_VPN 13
 
 #define CT_ACTION_DNAT 1
 #define CT_ACTION_SNAT 2
@@ -393,6 +395,24 @@
 #define CT_STATE_FIN_WAIT 2
 #define CT_STATE_CLOSED 3
 
+struct vpn_identity {
+  __u8 bytes[16];
+};
+
+struct vpn_gateway_key {
+  __u32 ifindex;
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_IF_SUBNET);
+  __type(key, struct vpn_gateway_key);
+  __type(value, struct vpn_identity);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} vpn_gateway SEC(".maps");
+
+#define IFINDEX_SUBNET_KIND_TRUSTED_GATEWAY 1
+
 struct ifindex_subnet_key {
   __u32 ifindex;
 };
@@ -403,6 +423,7 @@ struct ifindex_subnet_val {
   // non-IPv4 frame carries no address the policy stage could look up,
   // so the address has to come from the NIC instead of the packet.
   __be32 ipv4;
+  __u8 kind;
 };
 
 struct {
@@ -596,6 +617,7 @@ struct fib_val {
   __u8 smac[6];
   __u32 subnet_id;
   __u32 oif;
+  struct vpn_identity vpn_id;
 };
 
 struct fib_inner_map {
@@ -630,12 +652,30 @@ struct {
 // __array(values, ...) members, clang emits its key and value types as
 // BTF forward declarations, and loading then fails with "can't get size
 // of BTF key: type is unsized".
-struct tgw_fib_inner_map {
-  __uint(type, BPF_MAP_TYPE_LPM_TRIE);
+struct tgw_fib_key {
+  __u32 prefixlen;
+  __u32 dst;
+};
+
+struct tgw_fib_val {
+  __u8 type;
+  __u8 dmac[6];
+  __u8 smac[6];
+  __u32 subnet_id;
+  __u32 oif;
+  struct vpn_identity vpn_id;
+};
+
+const volatile struct fib_key _fib_key_btf_anchor SEC(".rodata") = {};
+const volatile struct fib_val _fib_val_btf_anchor SEC(".rodata") = {};
+const volatile struct tgw_fib_key _tgw_fib_key_btf_anchor SEC(".rodata") = {};
+const volatile struct tgw_fib_val _tgw_fib_val_btf_anchor SEC(".rodata") = {};
+
+struct tgw_fib_inner_map {  __uint(type, BPF_MAP_TYPE_LPM_TRIE);
   __uint(max_entries, MAX_FIB);
   __uint(map_flags, BPF_F_NO_PREALLOC);
-  __type(key, struct fib_key);
-  __type(value, struct fib_val);
+  __type(key, struct tgw_fib_key);
+  __type(value, struct tgw_fib_val);
 };
 
 struct tgw_fib_inner_map tgw_fib_inner SEC(".maps");

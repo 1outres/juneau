@@ -95,6 +95,10 @@ func main() {
 
 func ensureCA(ctx context.Context, secrets typedcorev1.SecretInterface, caSecret string, validYears int) (*x509.Certificate, *rsa.PrivateKey, []byte, error) {
 	secret, err := secrets.Get(ctx, caSecret, metav1.GetOptions{})
+	if err != nil && !kerrors.IsNotFound(err) {
+		return nil, nil, nil, fmt.Errorf("get CA secret: %w", err)
+	}
+	create := kerrors.IsNotFound(err)
 	if err == nil {
 		cert, key, caPEM, parseErr := parseCertAndKey(secret)
 		if parseErr != nil {
@@ -150,9 +154,11 @@ func ensureCA(ctx context.Context, secrets typedcorev1.SecretInterface, caSecret
 		},
 	}
 
-	_, err = secrets.Update(ctx, newSecret, metav1.UpdateOptions{})
-	if kerrors.IsNotFound(err) {
+	if create {
 		_, err = secrets.Create(ctx, newSecret, metav1.CreateOptions{})
+	} else {
+		newSecret.ResourceVersion = secret.ResourceVersion
+		_, err = secrets.Update(ctx, newSecret, metav1.UpdateOptions{})
 	}
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("store CA secret: %w", err)
@@ -173,6 +179,10 @@ func ensureServerCert(
 	caPEM []byte,
 ) error {
 	existing, err := secrets.Get(ctx, secretName, metav1.GetOptions{})
+	if err != nil && !kerrors.IsNotFound(err) {
+		return fmt.Errorf("get server secret: %w", err)
+	}
+	create := kerrors.IsNotFound(err)
 	if err == nil {
 		cert, _, _, parseErr := parseCertAndKey(existing)
 		if parseErr == nil {
@@ -184,10 +194,20 @@ func ensureServerCert(
 					KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 				})
 				if verr == nil {
-					log.Printf("existing server cert still valid, skipping issuance")
-					return nil
+					coversAllIPs := true
+					for _, ip := range ips {
+						if err := cert.VerifyHostname(ip.String()); err != nil {
+							coversAllIPs = false
+							break
+						}
+					}
+					if coversAllIPs {
+						log.Printf("existing server cert still valid, skipping issuance")
+						return nil
+					}
+				} else {
+					log.Printf("existing server cert failed CA verification: %v", verr)
 				}
-				log.Printf("existing server cert failed CA verification: %v", verr)
 			}
 		} else {
 			log.Printf("failed to parse existing server cert, will re-issue: %v", parseErr)
@@ -237,9 +257,11 @@ func ensureServerCert(
 		},
 	}
 
-	_, err = secrets.Update(ctx, newSecret, metav1.UpdateOptions{})
-	if kerrors.IsNotFound(err) {
+	if create {
 		_, err = secrets.Create(ctx, newSecret, metav1.CreateOptions{})
+	} else {
+		newSecret.ResourceVersion = existing.ResourceVersion
+		_, err = secrets.Update(ctx, newSecret, metav1.UpdateOptions{})
 	}
 	if err != nil {
 		return fmt.Errorf("store server secret: %w", err)

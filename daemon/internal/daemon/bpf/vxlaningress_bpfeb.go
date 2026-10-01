@@ -146,6 +146,7 @@ type VxlanIngressFibVal struct {
 	_        [3]byte
 	SubnetId uint32
 	Oif      uint32
+	VpnId    VxlanIngressVpnIdentity
 }
 
 type VxlanIngressIfindexExternalNetworkKey struct {
@@ -178,6 +179,8 @@ type VxlanIngressIfindexSubnetVal struct {
 	_        structs.HostLayout
 	SubnetId uint32
 	Ipv4     uint32
+	Kind     uint8
+	_        [3]byte
 }
 
 type VxlanIngressIpv4FragKey struct {
@@ -446,6 +449,23 @@ type VxlanIngressSubnetVal struct {
 	AclId   uint32
 }
 
+type VxlanIngressTgwFibKey struct {
+	_         structs.HostLayout
+	Prefixlen uint32
+	Dst       uint32
+}
+
+type VxlanIngressTgwFibVal struct {
+	_        structs.HostLayout
+	Type     uint8
+	Dmac     [6]uint8
+	Smac     [6]uint8
+	_        [3]byte
+	SubnetId uint32
+	Oif      uint32
+	VpnId    VxlanIngressVpnIdentity
+}
+
 type VxlanIngressTraceConfigVal struct {
 	_            structs.HostLayout
 	ExpiresNs    uint64
@@ -527,6 +547,16 @@ type VxlanIngressVpcEndpointKey struct {
 type VxlanIngressVpcEndpointVal struct {
 	_         structs.HostLayout
 	ClusterIp uint32
+}
+
+type VxlanIngressVpnGatewayKey struct {
+	_       structs.HostLayout
+	Ifindex uint32
+}
+
+type VxlanIngressVpnIdentity struct {
+	_     structs.HostLayout
+	Bytes [16]uint8
 }
 
 // LoadVxlanIngress returns the embedded CollectionSpec for VxlanIngress.
@@ -637,6 +667,7 @@ type VxlanIngressMapSpecs struct {
 	VirtualServiceFlowMap  *ebpf.MapSpec `ebpf:"virtual_service_flow_map"`
 	VirtualServiceMap      *ebpf.MapSpec `ebpf:"virtual_service_map"`
 	VpcEndpointMap         *ebpf.MapSpec `ebpf:"vpc_endpoint_map"`
+	VpnGateway             *ebpf.MapSpec `ebpf:"vpn_gateway"`
 	VxlanIfindex           *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
 }
 
@@ -644,6 +675,10 @@ type VxlanIngressMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type VxlanIngressVariableSpecs struct {
+	FibKeyBtfAnchor    *ebpf.VariableSpec `ebpf:"_fib_key_btf_anchor"`
+	FibValBtfAnchor    *ebpf.VariableSpec `ebpf:"_fib_val_btf_anchor"`
+	TgwFibKeyBtfAnchor *ebpf.VariableSpec `ebpf:"_tgw_fib_key_btf_anchor"`
+	TgwFibValBtfAnchor *ebpf.VariableSpec `ebpf:"_tgw_fib_val_btf_anchor"`
 }
 
 // VxlanIngressObjects contains all objects after they have been loaded into the kernel.
@@ -725,6 +760,7 @@ type VxlanIngressMaps struct {
 	VirtualServiceFlowMap  *ebpf.Map `ebpf:"virtual_service_flow_map"`
 	VirtualServiceMap      *ebpf.Map `ebpf:"virtual_service_map"`
 	VpcEndpointMap         *ebpf.Map `ebpf:"vpc_endpoint_map"`
+	VpnGateway             *ebpf.Map `ebpf:"vpn_gateway"`
 	VxlanIfindex           *ebpf.Map `ebpf:"vxlan_ifindex"`
 }
 
@@ -789,6 +825,7 @@ func (m *VxlanIngressMaps) Close() error {
 		m.VirtualServiceFlowMap,
 		m.VirtualServiceMap,
 		m.VpcEndpointMap,
+		m.VpnGateway,
 		m.VxlanIfindex,
 	)
 }
@@ -797,6 +834,10 @@ func (m *VxlanIngressMaps) Close() error {
 //
 // It can be passed to LoadVxlanIngressObjects or ebpf.CollectionSpec.LoadAndAssign.
 type VxlanIngressVariables struct {
+	FibKeyBtfAnchor    *ebpf.Variable `ebpf:"_fib_key_btf_anchor"`
+	FibValBtfAnchor    *ebpf.Variable `ebpf:"_fib_val_btf_anchor"`
+	TgwFibKeyBtfAnchor *ebpf.Variable `ebpf:"_tgw_fib_key_btf_anchor"`
+	TgwFibValBtfAnchor *ebpf.Variable `ebpf:"_tgw_fib_val_btf_anchor"`
 }
 
 // VxlanIngressPrograms contains all programs after they have been loaded into the kernel.

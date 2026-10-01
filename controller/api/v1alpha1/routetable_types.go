@@ -33,8 +33,10 @@ type RouteTableStatus struct {
 	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
 	Conditions         []metav1.Condition `json:"conditions,omitempty"`
 
-	Routes  []Route `json:"routes,omitempty"`
-	TableID uint32  `json:"tableID,omitempty"`
+	Routes      []Route  `json:"routes,omitempty"`
+	TableID     uint32   `json:"tableID,omitempty"`
+	PendingVPN  string   `json:"pendingVPN,omitempty"`
+	PendingVPNs []string `json:"pendingVPNs,omitempty"`
 }
 
 type Route struct {
@@ -57,7 +59,7 @@ type Route struct {
 }
 
 type RouteVia struct {
-	// +kubebuilder:validation:Enum=connected;endpoint;internetGateway;service;natGateway;vpcPeering;transitGateway;vpcEndpoint
+	// +kubebuilder:validation:Enum=connected;endpoint;internetGateway;service;natGateway;vpcPeering;transitGateway;vpcEndpoint;vpn
 	Type RouteViaType `json:"type"`
 	// Endpoint is required when type=endpoint. Refers to a
 	// NetworkEndpoint by name.
@@ -71,6 +73,14 @@ type RouteVia struct {
 	// TransitGateway is required when type=transitGateway. Refers to a
 	// TransitGateway by name (cluster-scoped).
 	TransitGateway string `json:"transitGateway,omitempty"`
+	// VPN names a VPN in an explicit namespace when type=vpn.
+	// +optional
+	VPN *VPNReference `json:"vpn,omitempty"`
+}
+
+type VPNReference struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
 }
 
 type RouteViaType string
@@ -101,6 +111,7 @@ const (
 	// with no VpcEndpoint behind it is dropped instead of being looked up
 	// as a ClusterIP.
 	ViaVpcEndpoint RouteViaType = "vpcEndpoint"
+	ViaVPN         RouteViaType = "vpn"
 )
 
 // +kubebuilder:object:root=true

@@ -288,7 +288,7 @@ func (r *L2Gateway) stand(key string, network *juneauv1alpha1.L2Network, port *l
 
 	if err := r.maps.IfindexSubnet.Update(
 		&bpf.PodEgressIfindexSubnetKey{Ifindex: ifindex},
-		&bpf.PodEgressIfindexSubnetVal{SubnetId: port.vni, Ipv4: address},
+		&bpf.PodEgressIfindexSubnetVal{SubnetId: port.vni, Ipv4: address, Kind: ifindexSubnetKindTrustedGateway},
 		ebpf.UpdateAny,
 	); err != nil {
 		return fmt.Errorf("update IfindexSubnet: %w", err)

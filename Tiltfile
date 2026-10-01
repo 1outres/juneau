@@ -109,3 +109,12 @@ docker_build_with_restart(
 
 watch_file('./bgp-speaker/config/')
 k8s_yaml(kustomize('./bgp-speaker/config/default'))
+
+VPN_GATEWAY_CONTEXT = k8s_context()
+if not VPN_GATEWAY_CONTEXT.startswith('kind-'):
+    fail('VPN gateway image needs a kind cluster')
+
+local_resource(
+    'juneau-vpn-gateway-image',
+    'make image-vpn-gateway && ./scripts/load-kind-image.sh {} vpn-gateway:latest'.format(VPN_GATEWAY_CONTEXT[5:]),
+    deps=['vpn-gateway', 'scripts/load-kind-image.sh'], labels=[LABEL], env=NIX_ENV)

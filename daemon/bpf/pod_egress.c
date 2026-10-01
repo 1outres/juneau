@@ -1161,6 +1161,41 @@ handle_service_shared(struct __sk_buff *skb, struct iphdr *iph,
 // via_endpoint_pool is set when the FIB matched FIB_ROUTE_TYPE_VPC_ENDPOINT,
 // i.e. the destination is a VpcEndpoint VIP and not a ClusterIP yet. Only
 // then do we pay for the vpc_endpoint_map lookup that resolves it.
+static __juneau_bpf_subprog bool
+vpn_service_backend_allowed(const struct subnet_val *source,
+                            const struct backend_val *backend,
+                            const struct vpn_identity *identity,
+                            __be32 caller) {
+  __u32 source_table = source->table_id;
+  void *source_fib = bpf_map_lookup_elem(&fib_map, &source_table);
+  if (!source_fib)
+    return false;
+  struct fib_key backend_key = {.prefixlen = 32,
+                                .dst = bpf_htonl(backend->backend_ip)};
+  const struct fib_val *forward = bpf_map_lookup_elem(source_fib, &backend_key);
+  if (!forward || forward->type != FIB_ROUTE_TYPE_CONNECTED ||
+      forward->subnet_id != backend->backend_subnet_id)
+    return false;
+  struct subnet_key key = {.subnet_id = backend->backend_subnet_id};
+  const struct subnet_val *dest = bpf_map_lookup_elem(&subnet_map, &key);
+  if (!dest || dest->vpc_id != source->vpc_id)
+    return false;
+  __u32 table = dest->table_id;
+  void *fib = bpf_map_lookup_elem(&fib_map, &table);
+  if (!fib)
+    return false;
+  struct fib_key src_key = {.prefixlen = 32, .dst = caller};
+  const struct fib_val *return_route = bpf_map_lookup_elem(fib, &src_key);
+  if (!return_route || return_route->type != FIB_ROUTE_TYPE_VPN)
+    return false;
+#pragma unroll
+  for (int i = 0; i < 16; i++) {
+    if (return_route->vpn_id.bytes[i] != identity->bytes[i])
+      return false;
+  }
+  return true;
+}
+
 static __always_inline int
 handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
                const struct subnet_val *subnet, bool via_endpoint_pool) {
@@ -1219,6 +1254,14 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
   // installed in the Vpc that owns the pool. Without both halves of that
   // chain the skip would be an isolation hole.
   bool is_shared = (sv->flags & SVC_FLAG_SHARED) != 0;
+  struct vpn_gateway_key vpn_key = {.ifindex = skb->ifindex};
+  const struct vpn_identity *vpn = bpf_map_lookup_elem(&vpn_gateway, &vpn_key);
+  struct ifindex_subnet_key source_key = {.ifindex = skb->ifindex};
+  const struct ifindex_subnet_val *source_iface =
+      bpf_map_lookup_elem(&ifindex_subnet, &source_key);
+  bool vpn_ingress = vpn && source_iface && iph->saddr != source_iface->ipv4;
+  if (vpn_ingress && sv->owner_vpc_id != subnet->vpc_id)
+    return TC_ACT_SHOT;
   if (sv->owner_vpc_id != subnet->vpc_id && !is_shared && !via_endpoint_pool)
     return TC_ACT_SHOT;
   // Per-Service consumer ACL: when SVC_FLAG_HAS_ACL is set, only the
@@ -1307,6 +1350,11 @@ handle_service(struct __sk_buff *skb, struct ethhdr *eth, struct iphdr *iph,
   // honour the legacy backend_subnet_id == BACKEND_SUBNET_ID_UNDERLAY
   // sentinel for backwards compat — but a reconciler that knows about
   // kind always sets HOST_REMOTE / HOST_LOCAL explicitly.
+  if (vpn_ingress && (bv->kind != BACKEND_KIND_POD ||
+                      bv->backend_subnet_id == BACKEND_SUBNET_ID_UNDERLAY ||
+                      !vpn_service_backend_allowed(subnet, bv, vpn,
+                                                   iph->saddr)))
+    return TC_ACT_SHOT;
   if (bv->kind == BACKEND_KIND_HOST_LOCAL)
     return handle_service_host_local(skb, eth, iph, subnet, bv);
   if (bv->kind == BACKEND_KIND_HOST_REMOTE ||
@@ -2210,11 +2258,11 @@ static __juneau_bpf_subprog __u32 handle_transit(struct __sk_buff *skb,
     return 0;
   }
 
-  struct fib_key tkey = {
+  struct tgw_fib_key tkey = {
       .prefixlen = 32,
       .dst = dst_be,
   };
-  const struct fib_val *tfv = bpf_map_lookup_elem(tgw_inner, &tkey);
+  const struct tgw_fib_val *tfv = bpf_map_lookup_elem(tgw_inner, &tkey);
   if (!tfv) {
     __u32 __tid = trace_lookup_id_l3(skb, TRACE_SCOPE_VPC, vpc_id);
     trace_emit_map_miss_l3(skb, __tid, TRACE_REASON_MISS_TGW_ROUTE,
@@ -2230,6 +2278,17 @@ static __juneau_bpf_subprog __u32 handle_transit(struct __sk_buff *skb,
     trace_emit_drop_l3(skb, __tid, TRACE_REASON_DROP_BLACKHOLE,
                        TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, vpc_id, 0);
     return 0;
+  }
+
+  if (tfv->type == FIB_ROUTE_TYPE_VPN) {
+    void *data = nat_skb_data(skb);
+    void *data_end = skb_data_end(skb);
+    struct ethhdr *eth = data;
+    if ((void *)(eth + 1) > data_end)
+      return 0;
+    __builtin_memcpy(eth->h_dest, tfv->dmac, ETH_ALEN);
+    __builtin_memcpy(eth->h_source, tfv->smac, ETH_ALEN);
+    return tfv->subnet_id;
   }
 
   if (tfv->type != FIB_ROUTE_TYPE_CONNECTED) {
@@ -2386,7 +2445,9 @@ static __always_inline int handle_l3(struct __sk_buff *skb, struct ethhdr *eth,
     return forward_l2(skb, eth, subnet->vpc_id, fv->subnet_id);
   }
 
-  if (fv->type == FIB_ROUTE_TYPE_ENDPOINT) {
+  if (fv->type == FIB_ROUTE_TYPE_ENDPOINT ||
+      fv->type == FIB_ROUTE_TYPE_VPN ||
+      fv->type == FIB_ROUTE_TYPE_PEERING_VPN) {
     __builtin_memcpy(eth->h_dest, fv->dmac, ETH_ALEN);
     __builtin_memcpy(eth->h_source, fv->smac, ETH_ALEN);
 
@@ -2564,6 +2625,93 @@ handle_virtual_service(struct __sk_buff *skb, struct ethhdr *eth,
   return 1;
 }
 
+static __juneau_bpf_subprog bool
+vpn_source_allowed(struct __sk_buff *skb, const struct subnet_val *source,
+                   const struct vpn_identity *identity, __be32 saddr,
+                   __be32 daddr) {
+  struct ifindex_subnet_key source_key = {.ifindex = skb->ifindex};
+  const struct ifindex_subnet_val *source_iface =
+      bpf_map_lookup_elem(&ifindex_subnet, &source_key);
+  if (!source_iface)
+    return false;
+  __u32 source_table = source->table_id;
+  void *source_fib = bpf_map_lookup_elem(&fib_map, &source_table);
+  if (!source_fib)
+    return false;
+  struct fib_key dst_key = {.prefixlen = 32, .dst = daddr};
+  const struct fib_val *target = bpf_map_lookup_elem(source_fib, &dst_key);
+  if (!target)
+    return false;
+  if (target->type == FIB_ROUTE_TYPE_SERVICE ||
+      target->type == FIB_ROUTE_TYPE_VPC_ENDPOINT)
+    return true;
+  if (target->type != FIB_ROUTE_TYPE_CONNECTED &&
+      target->type != FIB_ROUTE_TYPE_PEERING &&
+      target->type != FIB_ROUTE_TYPE_TRANSIT)
+    return false;
+  __u32 target_subnet = target->subnet_id;
+  if (target->type == FIB_ROUTE_TYPE_TRANSIT) {
+    __u32 transit_table = target->subnet_id;
+    void *transit_fib = bpf_map_lookup_elem(&tgw_fib_map, &transit_table);
+    if (!transit_fib)
+      return false;
+    struct tgw_fib_key transit_key = {.prefixlen = 32, .dst = daddr};
+    const struct tgw_fib_val *transit_route =
+        bpf_map_lookup_elem(transit_fib, &transit_key);
+    if (!transit_route || transit_route->type != FIB_ROUTE_TYPE_CONNECTED)
+      return false;
+    target_subnet = transit_route->subnet_id;
+  }
+  struct subnet_key dest_key = {.subnet_id = target_subnet};
+  const struct subnet_val *dest = bpf_map_lookup_elem(&subnet_map, &dest_key);
+  if (!dest)
+    return false;
+  __u32 return_table = dest->table_id;
+  void *return_fib = bpf_map_lookup_elem(&fib_map, &return_table);
+  if (!return_fib)
+    return false;
+  struct fib_key src_key = {.prefixlen = 32, .dst = saddr};
+  const struct fib_val *return_route = bpf_map_lookup_elem(return_fib, &src_key);
+  if (!return_route)
+    return false;
+  if (target->type == FIB_ROUTE_TYPE_CONNECTED) {
+    if (dest->vpc_id != source->vpc_id ||
+        return_route->type != FIB_ROUTE_TYPE_VPN)
+      return false;
+  } else if (target->type == FIB_ROUTE_TYPE_PEERING) {
+    if (dest->vpc_id == source->vpc_id ||
+        return_route->type != FIB_ROUTE_TYPE_PEERING_VPN ||
+        return_route->subnet_id != source_iface->subnet_id)
+      return false;
+  } else {
+    if (dest->vpc_id == source->vpc_id ||
+        return_route->type != FIB_ROUTE_TYPE_TRANSIT)
+      return false;
+    __u32 return_tgw_table = return_route->subnet_id;
+    void *return_tgw = bpf_map_lookup_elem(&tgw_fib_map, &return_tgw_table);
+    if (!return_tgw)
+      return false;
+    struct tgw_fib_key return_key = {.prefixlen = 32, .dst = saddr};
+    const struct tgw_fib_val *vpn_route =
+        bpf_map_lookup_elem(return_tgw, &return_key);
+    if (!vpn_route || vpn_route->type != FIB_ROUTE_TYPE_VPN ||
+        vpn_route->subnet_id != source_iface->subnet_id)
+      return false;
+#pragma unroll
+    for (int i = 0; i < 16; i++) {
+      if (vpn_route->vpn_id.bytes[i] != identity->bytes[i])
+        return false;
+    }
+    return true;
+  }
+#pragma unroll
+  for (int i = 0; i < 16; i++) {
+    if (return_route->vpn_id.bytes[i] != identity->bytes[i])
+      return false;
+  }
+  return true;
+}
+
 static __always_inline int handle_l2(struct __sk_buff *skb) {
   void *data = (void *)(long)skb->data;
   void *data_end = skb_data_end(skb);
@@ -2645,6 +2793,21 @@ static __always_inline int handle_l2(struct __sk_buff *skb) {
                        TRACE_HOOK_POD_EGRESS, TRACE_SCOPE_VPC, subnet->vpc_id,
                        val->subnet_id);
     return TC_ACT_SHOT;
+  }
+
+  if (h_proto == ETH_P_IP) {
+    struct iphdr *source_iph = (void *)(eth + 1);
+    if ((void *)(source_iph + 1) > data_end)
+      return TC_ACT_SHOT;
+    if (source_iph->saddr != val->ipv4 &&
+        val->kind != IFINDEX_SUBNET_KIND_TRUSTED_GATEWAY) {
+      struct vpn_gateway_key gateway_key = {.ifindex = skb->ifindex};
+      const struct vpn_identity *identity =
+          bpf_map_lookup_elem(&vpn_gateway, &gateway_key);
+      if (!identity || !vpn_source_allowed(skb, subnet, identity,
+                                           source_iph->saddr, source_iph->daddr))
+        return TC_ACT_SHOT;
+    }
   }
 
   // Apply forward DNAT recorded in conntrack for established Service

@@ -6,4 +6,5 @@ use (
 	./daemon
 	./kubectl-juneau
 	./test/e2e
+	./vpn-gateway
 )

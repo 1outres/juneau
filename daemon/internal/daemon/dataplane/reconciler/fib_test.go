@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -16,6 +17,7 @@ func newFibFixture(t *testing.T, objects ...runtime.Object) *Fib {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	utilruntime.Must(juneauv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(corev1.AddToScheme(scheme))
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(objects...).Build()
 	return &Fib{client: cl, snapshots: make(map[string]fibSnapshot)}
 }

@@ -35,4 +35,31 @@ server-side applyはcreate-or-mergeを1回のリクエストで行うので、co
 - `vpcPeering`: VpcPeeringで接続した対向VpcのSubnetへ向かう通信。`via.vpcPeering`で対象VpcPeeringの名前を指定します。`dst`は対向Vpcに存在するSubnetのCIDRと完全に一致させてください (例: [VpcPeeringガイド](../guides/vpc-peering.md))
 - `transitGateway`: TransitGateway経由で他のVpcへ向かう通信。`via.transitGateway`で対象TransitGatewayの名前を指定します。宛先の解決はTransitGatewayRouteTableで行われるため、`dst`はスーパーネットでも構いません (例: [TransitGatewayガイド](../guides/transit-gateway.md))
 - `vpcEndpoint`: VpcEndpointのVIP宛の通信。所属Vpcの `spec.endpointPool.cidrs` からコントローラが1つずつ自動注入します。`spec.routes`に手で書いても無視されるため、ユーザが指定することはできません (例: [VpcEndpoint](vpcendpoint.md))
+- `vpn`: オンプレ側へ向かう通信。`via.vpn.namespace`と`via.vpn.name`で対象[VPN](vpn.md)を指定します。BGPで受け取った経路は自動追加されません
+
+## VPNへの戻り経路
+
+VPNを作成してもRouteTableの経路は増えません。オンプレ宛のCIDRを、通信を開始するPodのSubnetが使うRouteTableに指定してください。メインRouteTableではなく個別のRouteTableを参照するSubnetにも、それぞれ経路が必要です。
+
+```yaml
+apiVersion: juneau.loutres.me/v1alpha1
+kind: RouteTable
+metadata:
+  name: production
+spec:
+  vpc: production
+  routes:
+    - dst: 192.0.2.0/24
+      via:
+        type: vpn
+        vpn:
+          namespace: default
+          name: branch
+```
+
+VPN経由で入るパケットについても、宛先Subnetの有効なRouteTableで送信元IPへの戻り経路を引きます。その経路が入ってきたVPNを向かない場合、パケットを破棄します。したがって、受信だけを想定しているSubnetにも経路を設定してください。経路障害時にInternetGatewayや別のVPNへ暗黙に迂回しません。
+
+`0.0.0.0/0`をVPNへ向けたいときは、同じ形式で`dst: 0.0.0.0/0`を明示してください。別の許可フラグはありません。同じRouteTableで`dst`を重複させることはできません。異なるRouteTableなら同じオンプレCIDRを別のVPNへ向けることができますが、オンプレ宛CIDRと到達可能なVpc側のSubnetやServiceなどを重複させることはできません。明示したdefault routeだけは、より具体的な到達可能経路と共存できます。
+
+直接のVpcPeeringやTransitGatewayの先からオンプレへ返す場合は、先方VpcのRouteTableにも経路を追加します。TransitGatewayでは接続先のTransitGatewayRouteTableにもオンプレ宛の静的経路を設定してください。VPNを作るだけでは他Vpcの経路は変更されません。設定の詳細は[VPN](vpn.md)を参照してください。
 

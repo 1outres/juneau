@@ -168,8 +168,8 @@ func TestL2GatewayStandsUpThePortOfASegment(t *testing.T) {
 
 	if got, ok := f.ifindexSubnet.entries[bpf.PodEgressIfindexSubnetKey{Ifindex: gatewayTestIfindex}]; !ok {
 		t.Error("ifindex_subnet has no entry for the gateway veth")
-	} else if got.(bpf.PodEgressIfindexSubnetVal).SubnetId != gatewayTestVNI {
-		t.Errorf("ifindex_subnet = %+v, want the segment behind the veth", got)
+	} else if value := got.(bpf.PodEgressIfindexSubnetVal); value.SubnetId != gatewayTestVNI || value.Kind != ifindexSubnetKindTrustedGateway {
+		t.Errorf("ifindex_subnet = %+v, want the trusted gateway of the segment", value)
 	}
 
 	if got, ok := f.ifindexMap.entries[bpf.PodEgressL2IfindexKey{Ifindex: gatewayTestIfindex}]; !ok {

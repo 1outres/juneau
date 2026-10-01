@@ -1,6 +1,7 @@
 package program_test
 
 import (
+	"fmt"
 	"net"
 	"testing"
 
@@ -194,6 +195,19 @@ func TestL2IngressDropsWhatTheIngressRulesRefuse(t *testing.T) {
 	frame := ports.gatewayFrame(t, outsideAddress, host2Address, clientPort, servicePort)
 	if verdict := bpftest.Run(t, ports.program, frame, ports.pod); verdict != bpftest.ActShot {
 		t.Errorf("verdict %d, want a drop (%d)", verdict, bpftest.ActShot)
+	}
+}
+
+func TestL2IngressFailsClosedUntilACLIsProgrammed(t *testing.T) {
+	for _, id := range []uint32{^uint32(0), 42} {
+		t.Run(fmt.Sprint(id), func(t *testing.T) {
+			ports := newL2IngressPorts(t)
+			ports.segment.standUpGateway(t, ports.gateway, ports.gatewayMAC, 0, id)
+			frame := ports.gatewayFrame(t, outsideAddress, host2Address, clientPort, servicePort)
+			if verdict := bpftest.Run(t, ports.program, frame, ports.pod); verdict != bpftest.ActShot {
+				t.Fatalf("verdict %d, want a drop (%d)", verdict, bpftest.ActShot)
+			}
+		})
 	}
 }
 

@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 
 	"github.com/cilium/ebpf"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	toolscache "k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -27,11 +29,14 @@ import (
 // if the endpoint is reassigned to another node or its attachment
 // disappears. Kind-agnostic: any endpoint with a real local veth (Pod,
 // Node, …) is handled here.
+const ifindexSubnetKindTrustedGateway = 1
+
 type PodIface struct {
 	client                 client.Client
 	ifindexSubnet          bpfMap
 	ifindexExternalNetwork bpfMap
 	ifindexHostMac         bpfMap
+	vpnGateway             bpfMap
 	nodeName               string
 
 	mu        sync.Mutex
@@ -44,6 +49,7 @@ func NewPodIface(cl client.Client, podEgress *program.PodEgress, nodeName string
 		ifindexSubnet:          podEgress.Objs.IfindexSubnet,
 		ifindexExternalNetwork: podEgress.Objs.IfindexExternalNetwork,
 		ifindexHostMac:         podEgress.Objs.IfindexHostMac,
+		vpnGateway:             podEgress.Objs.VpnGateway,
 		nodeName:               nodeName,
 		snapshots:              make(map[string]uint32),
 	}
@@ -94,7 +100,22 @@ func (r *PodIface) Reconcile(ctx context.Context, key string) error {
 	if !ready {
 		return r.delete(key)
 	}
-	return r.upsert(key, &nwep, entry)
+	if err := r.deleteVPNGateway(uint32(nwep.Spec.Attachment.Ifindex)); err != nil {
+		return err
+	}
+	identity, err := r.gatewayIdentity(ctx, &nwep)
+	if err != nil {
+		return err
+	}
+	if err := r.upsert(key, &nwep, entry); err != nil {
+		return err
+	}
+	if identity != nil {
+		if err := r.vpnGateway.Update(&bpf.PodEgressVpnGatewayKey{Ifindex: uint32(nwep.Spec.Attachment.Ifindex)}, &bpf.PodEgressVpnIdentity{Bytes: *identity}, ebpf.UpdateAny); err != nil {
+			return fmt.Errorf("update VpnGateway: %w", err)
+		}
+	}
+	return nil
 }
 
 // FanOutExternalNetworkToEndpoints re-enqueues the endpoints of an
@@ -122,9 +143,11 @@ func (r *PodIface) vethNetworkEntry(ctx context.Context, key string, nwep *junea
 		if err := r.client.Get(ctx, client.ObjectKey{Name: nwep.Spec.Subnet}, &subnet); err != nil {
 			return vethNetwork{}, false, err
 		}
-		return vethNetwork{
-			subnet: &bpf.PodEgressIfindexSubnetVal{SubnetId: subnet.Status.VNI, Ipv4: ipv4BE},
-		}, true, nil
+		value := &bpf.PodEgressIfindexSubnetVal{SubnetId: subnet.Status.VNI, Ipv4: ipv4BE}
+		if nwep.Spec.Kind == juneauv1alpha1.EndpointKindNode {
+			value.Kind = ifindexSubnetKindTrustedGateway
+		}
+		return vethNetwork{subnet: value}, true, nil
 	case endpointOnExternalNetwork:
 		networkID, ready, err := overlaySegmentID(ctx, r.client, nwep, network)
 		if err != nil || !ready {
@@ -252,6 +275,9 @@ func (r *PodIface) delete(key string) error {
 // deleteEntries removes every entry of a veth. The network entries go
 // before the host MAC, the reverse of upsert.
 func (r *PodIface) deleteEntries(ifindex uint32) error {
+	if err := r.deleteVPNGateway(ifindex); err != nil {
+		return err
+	}
 	if err := r.deleteSubnetEntry(ifindex); err != nil {
 		return err
 	}
@@ -262,6 +288,85 @@ func (r *PodIface) deleteEntries(ifindex uint32) error {
 		return fmt.Errorf("delete IfindexHostMac: %w", err)
 	}
 	return nil
+}
+
+func (r *PodIface) deleteVPNGateway(ifindex uint32) error {
+	if err := r.vpnGateway.Delete(&bpf.PodEgressVpnGatewayKey{Ifindex: ifindex}); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+		return fmt.Errorf("delete VpnGateway: %w", err)
+	}
+	return nil
+}
+
+func (r *PodIface) gatewayIdentity(ctx context.Context, ep *juneauv1alpha1.NetworkEndpoint) (*[16]uint8, error) {
+	if ep.Spec.PodRef == nil || ep.Spec.PodRef.Interface != "eth0" || ep.Spec.Kind != juneauv1alpha1.EndpointKindPod || ep.Spec.Subnet == "" {
+		return nil, nil
+	}
+	var pod corev1.Pod
+	if err := r.client.Get(ctx, client.ObjectKey{Namespace: ep.Namespace, Name: ep.Spec.PodRef.Name}, &pod); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if pod.UID == "" || string(pod.UID) != ep.Spec.PodRef.UID {
+		return nil, nil
+	}
+	for _, owner := range pod.OwnerReferences {
+		if owner.Kind != "VPN" || owner.Name == "" {
+			continue
+		}
+		var vpn juneauv1alpha1.VPN
+		if err := r.client.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: owner.Name}, &vpn); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		if vpn.UID == "" || vpn.UID != owner.UID {
+			return nil, nil
+		}
+		_, gatewayPod, _, endpoint, err := resolveVPNGateway(ctx, r.client, &vpn)
+		if err != nil || gatewayPod.UID != pod.UID || endpoint.Name != ep.Name {
+			return nil, nil
+		}
+		identity := vpnIdentity(vpn.UID)
+		return &identity, nil
+	}
+	return nil, nil
+}
+
+func (r *PodIface) FanOutGatewayEndpoints(obj any) []string {
+	var targetNamespace, targetPod string
+	switch item := obj.(type) {
+	case *corev1.Pod:
+		if strings.HasPrefix(item.Name, "vpn-") {
+			targetNamespace, targetPod = item.Namespace, item.Name
+		}
+	case *juneauv1alpha1.NetworkInterface:
+		if strings.HasPrefix(item.Name, "vpn-") && strings.HasSuffix(item.Name, ".eth0") {
+			targetNamespace, targetPod = item.Namespace, strings.TrimSuffix(item.Name, ".eth0")
+		}
+	case *juneauv1alpha1.VPN:
+		if item.UID != "" {
+			targetNamespace, targetPod = item.Namespace, vpnGatewayPodName(item)
+		}
+	}
+	if targetNamespace == "" || targetPod == "" {
+		return nil
+	}
+	var endpoints juneauv1alpha1.NetworkEndpointList
+	if err := r.client.List(context.Background(), &endpoints); err != nil {
+		return nil
+	}
+	var keys []string
+	for i := range endpoints.Items {
+		ep := &endpoints.Items[i]
+		if ep.Namespace != targetNamespace || ep.Name != targetPod+".eth0" {
+			continue
+		}
+		keys = append(keys, ep.Namespace+"/"+ep.Name)
+	}
+	return keys
 }
 
 func (r *PodIface) deleteSubnetEntry(ifindex uint32) error {

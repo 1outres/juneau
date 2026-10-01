@@ -121,14 +121,20 @@ func (r *NetworkACLReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	aclID := resource.Status.ACLID
 	if claim.Status.Phase == juneauv1alpha1.AllocationClaimPhaseAllocated && claim.Status.Value.Number > 0 {
-		if claim.Status.Value.Number > uint64(^uint32(0)) {
+		if claim.Status.Value.Number >= uint64(^uint32(0)) {
 			if err := r.updateStatusError(ctx, &resource, juneauv1alpha1.NetworkACLReasonAllocationFailed,
-				fmt.Sprintf("allocated aclID %d exceeds supported range", claim.Status.Value.Number)); err != nil {
+				fmt.Sprintf("allocated aclID %d is reserved or exceeds supported range", claim.Status.Value.Number)); err != nil {
 				return ctrl.Result{}, err
 			}
 			return ctrl.Result{}, nil
 		}
 		aclID = uint32(claim.Status.Value.Number)
+	}
+	if aclID == ^uint32(0) {
+		if err := r.updateStatusError(ctx, &resource, juneauv1alpha1.NetworkACLReasonAllocationFailed, "aclID is reserved for an unresolved NetworkACL"); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
 	}
 	if aclID == 0 {
 		if err := r.updateStatusPending(ctx, &resource, juneauv1alpha1.NetworkACLReasonAllocating,

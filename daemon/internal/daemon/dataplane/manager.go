@@ -56,6 +56,8 @@ type Manager struct {
 	natGatewayInformer                cache.Informer
 	serviceNATAttachmentInformer      cache.Informer
 	networkInterfaceInformer          cache.Informer
+	vpnInformer                       cache.Informer
+	podInformer                       cache.Informer
 	securityGroupInformer             cache.Informer
 	networkACLInformer                cache.Informer
 	nodeInformer                      cache.Informer
@@ -304,6 +306,21 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 			return fmt.Errorf("watch ExternalNetwork (pod-iface fan-out): %w", err)
 		}
 	}
+	if m.vpnInformer != nil {
+		if err := m.podIfaceRunner.WatchFanOut(m.vpnInformer, podIface.FanOutGatewayEndpoints); err != nil {
+			return fmt.Errorf("watch VPN (pod-iface fan-out): %w", err)
+		}
+	}
+	if m.podInformer != nil {
+		if err := m.podIfaceRunner.WatchFanOut(m.podInformer, podIface.FanOutGatewayEndpoints); err != nil {
+			return fmt.Errorf("watch Pod (pod-iface fan-out): %w", err)
+		}
+	}
+	if m.networkInterfaceInformer != nil {
+		if err := m.podIfaceRunner.WatchFanOut(m.networkInterfaceInformer, podIface.FanOutGatewayEndpoints); err != nil {
+			return fmt.Errorf("watch NetworkInterface (pod-iface fan-out): %w", err)
+		}
+	}
 	m.podIfaceRunner.Start(ctx, 1)
 
 	m.podAttacher = link.NewPodAttacher(m.client, m.podEgress, m.podIngress, m.l2Egress, m.l2Ingress, m.nodeName)
@@ -343,6 +360,21 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 			return fmt.Errorf("watch TransitGatewayRouteTable (fib fan-out): %w", err)
 		}
 	}
+	if m.vpnInformer != nil {
+		if err := m.fibRunner.WatchFanOut(m.vpnInformer, m.fib.FanOutVPNRouteTables); err != nil {
+			return fmt.Errorf("watch VPN (fib fan-out): %w", err)
+		}
+	}
+	if m.podInformer != nil {
+		if err := m.fibRunner.WatchFanOut(m.podInformer, m.fib.FanOutVPNRouteTables); err != nil {
+			return fmt.Errorf("watch Pod (fib fan-out): %w", err)
+		}
+	}
+	if m.networkInterfaceInformer != nil {
+		if err := m.fibRunner.WatchFanOut(m.networkInterfaceInformer, m.fib.FanOutVPNRouteTables); err != nil {
+			return fmt.Errorf("watch NetworkInterface (fib fan-out): %w", err)
+		}
+	}
 	m.fibRunner.Start(ctx, 1)
 
 	if m.tgwRouteTableInformer != nil {
@@ -353,6 +385,21 @@ func (m *Manager) startReconcilers(ctx context.Context) error {
 		}
 		if err := m.tgwFibRunner.WatchFanOut(m.subnetInformer, m.tgwFib.FanOutAllTransitGatewayRouteTables); err != nil {
 			return fmt.Errorf("watch Subnet (tgw-fib fan-out): %w", err)
+		}
+		if m.vpnInformer != nil {
+			if err := m.tgwFibRunner.WatchFanOut(m.vpnInformer, m.tgwFib.FanOutVPNRouteTables); err != nil {
+				return fmt.Errorf("watch VPN (tgw-fib fan-out): %w", err)
+			}
+		}
+		if m.podInformer != nil {
+			if err := m.tgwFibRunner.WatchFanOut(m.podInformer, m.tgwFib.FanOutVPNRouteTables); err != nil {
+				return fmt.Errorf("watch Pod (tgw-fib fan-out): %w", err)
+			}
+		}
+		if m.networkInterfaceInformer != nil {
+			if err := m.tgwFibRunner.WatchFanOut(m.networkInterfaceInformer, m.tgwFib.FanOutVPNRouteTables); err != nil {
+				return fmt.Errorf("watch NetworkInterface (tgw-fib fan-out): %w", err)
+			}
 		}
 		m.tgwFibRunner.Start(ctx, 1)
 	}
@@ -1065,6 +1112,8 @@ type ManagerConfig struct {
 	NATGatewayInformer                cache.Informer
 	ServiceNATAttachmentInformer      cache.Informer
 	NetworkInterfaceInformer          cache.Informer
+	VPNInformer                       cache.Informer
+	PodInformer                       cache.Informer
 	SecurityGroupInformer             cache.Informer
 	NetworkACLInformer                cache.Informer
 	ServiceLoadBalancerInformer       cache.Informer
@@ -1111,6 +1160,8 @@ func NewManager(cfg ManagerConfig) *Manager {
 		natGatewayInformer:                cfg.NATGatewayInformer,
 		serviceNATAttachmentInformer:      cfg.ServiceNATAttachmentInformer,
 		networkInterfaceInformer:          cfg.NetworkInterfaceInformer,
+		vpnInformer:                       cfg.VPNInformer,
+		podInformer:                       cfg.PodInformer,
 		securityGroupInformer:             cfg.SecurityGroupInformer,
 		networkACLInformer:                cfg.NetworkACLInformer,
 		serviceLoadBalancerInformer:       cfg.ServiceLoadBalancerInformer,

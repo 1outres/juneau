@@ -37,9 +37,8 @@ type TransitGatewayRouteTableSpec struct {
 
 // TransitGatewayRoute is one static entry of a TransitGatewayRouteTable.
 type TransitGatewayRoute struct {
-	// Dst is the destination prefix. It must match the CIDR of a Subnet
-	// in the target attachment's Vpc exactly, because the data plane
-	// resolves the route to a single destination Subnet VNI.
+	// Dst must match a Subnet CIDR or an explicit VPN route in the
+	// target attachment's Vpc.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	Dst string `json:"dst"`
@@ -67,7 +66,8 @@ type TransitGatewayRouteTableStatus struct {
 	// Routes is the resolved routing table: propagated routes from
 	// every attachment that propagates into this table, overridden by
 	// the static spec.routes for the same destination. Sorted by dst.
-	Routes []ResolvedTransitGatewayRoute `json:"routes,omitempty"`
+	Routes     []ResolvedTransitGatewayRoute `json:"routes,omitempty"`
+	PendingVPN string                        `json:"pendingVPN,omitempty"`
 }
 
 // ResolvedTransitGatewayRoute is one entry of the resolved routing
@@ -75,10 +75,11 @@ type TransitGatewayRouteTableStatus struct {
 type ResolvedTransitGatewayRoute struct {
 	Dst        string `json:"dst"`
 	Attachment string `json:"attachment,omitempty"`
-	// Subnet is the resolved target Subnet whose VNI and gateway MAC
-	// the data plane forwards to. Empty when Blackhole is true.
-	Subnet    string `json:"subnet,omitempty"`
-	Blackhole bool   `json:"blackhole,omitempty"`
+	// Subnet is the target Subnet or VPN gateway Subnet.
+	// Empty when Blackhole is true.
+	Subnet    string        `json:"subnet,omitempty"`
+	VPN       *VPNReference `json:"vpn,omitempty"`
+	Blackhole bool          `json:"blackhole,omitempty"`
 	// Origin records how the route entered the table.
 	// +kubebuilder:validation:Enum=static;propagated
 	Origin TransitGatewayRouteOrigin `json:"origin"`

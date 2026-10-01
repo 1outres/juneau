@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -40,21 +41,28 @@ type podIfaceMaps struct {
 	subnet          *fakeBpfMap
 	externalNetwork *fakeBpfMap
 	hostMAC         *fakeBpfMap
+	vpnGateway      *fakeBpfMap
 }
 
 func newPodIfaceFixture(t *testing.T, objs ...runtime.Object) (*PodIface, podIfaceMaps) {
 	t.Helper()
-	cl := fake.NewClientBuilder().WithScheme(newNatTestScheme(t)).WithRuntimeObjects(objs...).Build()
+	scheme := newNatTestScheme(t)
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(objs...).Build()
 	maps := podIfaceMaps{
 		subnet:          newFakeBpfMap(),
 		externalNetwork: newFakeBpfMap(),
 		hostMAC:         newFakeBpfMap(),
+		vpnGateway:      newFakeBpfMap(),
 	}
 	r := &PodIface{
 		client:                 cl,
 		ifindexSubnet:          maps.subnet,
 		ifindexExternalNetwork: maps.externalNetwork,
 		ifindexHostMac:         maps.hostMAC,
+		vpnGateway:             maps.vpnGateway,
 		nodeName:               "node-a",
 		snapshots:              make(map[string]uint32),
 	}
@@ -75,6 +83,30 @@ func TestPodIfaceWritesPodAddressInNetworkByteOrder(t *testing.T) {
 	want := bpf.PodEgressIfindexSubnetVal{SubnetId: 42, Ipv4: 0x0500100a}
 	if got != want {
 		t.Errorf("ifindex_subnet value = %+v, want %+v", got, want)
+	}
+}
+
+func TestPodIfaceMarksTrustedNodeWithoutMarkingPods(t *testing.T) {
+	endpoint := newPodIfaceEndpoint("10.16.0.5/24")
+	endpoint.Spec.Kind = juneauv1alpha1.EndpointKindNode
+	r, maps := newPodIfaceFixture(t, endpoint, newPodIfaceSubnet())
+	if err := r.Reconcile(context.Background(), "default/pod-a"); err != nil {
+		t.Fatal(err)
+	}
+	got := maps.subnet.entries[bpf.PodEgressIfindexSubnetKey{Ifindex: 7}].(bpf.PodEgressIfindexSubnetVal)
+	if got.Kind != 1 {
+		t.Fatalf("node kind = %d, want 1", got.Kind)
+	}
+	endpoint.Spec.Kind = juneauv1alpha1.EndpointKindPod
+	if err := r.client.Update(context.Background(), endpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Reconcile(context.Background(), "default/pod-a"); err != nil {
+		t.Fatal(err)
+	}
+	got = maps.subnet.entries[bpf.PodEgressIfindexSubnetKey{Ifindex: 7}].(bpf.PodEgressIfindexSubnetVal)
+	if got.Kind != 0 {
+		t.Fatalf("Pod kind = %d, want 0", got.Kind)
 	}
 }
 

@@ -79,6 +79,7 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var defaultSubnetCIDR string
+	var vpnTunnelPool, vpnGatewayImage string
 	var serviceClusterIPRange string
 	var defaultL2MTU int
 	var enableHTTP2 bool
@@ -96,6 +97,8 @@ func main() {
 	flag.BoolVar(&secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
 	flag.StringVar(&defaultSubnetCIDR, "default-subnet-cidr", "10.16.0.0/16", "CIDR block for the default subnet created at startup.")
+	flag.StringVar(&vpnTunnelPool, "vpn-tunnel-pool", "", "Name of a dedicated IPv4 AllocationPool configured by the cluster administrator for VPN tunnels.")
+	flag.StringVar(&vpnGatewayImage, "vpn-gateway-image", "", "Gateway image with vpn-gateway health command; required to start VPN gateways.")
 	flag.StringVar(&serviceClusterIPRange, "service-cluster-ip-range", "10.96.0.0/12", "Cluster-wide CIDR from which Kubernetes Service ClusterIPs are allocated.")
 	flag.IntVar(&defaultL2MTU, "default-l2-mtu", int(controller.DefaultL2NetworkMTU), "MTU given to an L2Network that does not set spec.mtu. The default is a 1500-byte underlay minus the 50 bytes of VXLAN overhead.")
 	flag.StringVar(&webhookCASecret, "webhook-ca-secret-name", "webhook-certs", "Secret name that holds webhook CA/certs")
@@ -447,7 +450,7 @@ func main() {
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookjuneauv1alpha1.SetupRouteTableWebhookWithManager(mgr); err != nil {
+		if err = webhookjuneauv1alpha1.SetupRouteTableWebhookWithManager(mgr, parsedServiceCIDR); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "RouteTable")
 			os.Exit(1)
 		}
@@ -692,6 +695,18 @@ func main() {
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
 		if err := webhookjuneauv1alpha1.SetupDNSRecordWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "DNSRecord")
+			os.Exit(1)
+		}
+	}
+	if err = (&controller.VPNReconciler{
+		Client: mgr.GetClient(), Scheme: mgr.GetScheme(), TunnelPool: vpnTunnelPool, GatewayImage: vpnGatewayImage,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "VPN")
+		os.Exit(1)
+	}
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err = webhookjuneauv1alpha1.SetupVPNWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "VPN")
 			os.Exit(1)
 		}
 	}

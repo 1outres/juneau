@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"net"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -38,9 +39,9 @@ import (
 var routetablelog = logf.Log.WithName("routetable-resource")
 
 // SetupRouteTableWebhookWithManager registers the webhook for RouteTable in the manager.
-func SetupRouteTableWebhookWithManager(mgr ctrl.Manager) error {
+func SetupRouteTableWebhookWithManager(mgr ctrl.Manager, serviceCIDR *net.IPNet) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&juneauv1alpha1.RouteTable{}).
-		WithValidator(&RouteTableCustomValidator{Reader: mgr.GetAPIReader()}).
+		WithValidator(&RouteTableCustomValidator{Reader: mgr.GetAPIReader(), ServiceCIDR: serviceCIDR}).
 		WithDefaulter(&RouteTableCustomDefaulter{}).
 		Complete()
 }
@@ -67,6 +68,7 @@ func (d *RouteTableCustomDefaulter) Default(ctx context.Context, obj runtime.Obj
 // RouteTableCustomValidator validates RouteTable resources.
 type RouteTableCustomValidator struct {
 	client.Reader
+	ServiceCIDR *net.IPNet
 }
 
 var _ webhook.CustomValidator = &RouteTableCustomValidator{}
@@ -226,7 +228,16 @@ func (v *RouteTableCustomValidator) validateRouteTableSpec(ctx context.Context, 
 	seenDst := map[string]struct{}{}
 	for i, route := range spec.Routes {
 		routePath := specPath.Child("routes").Index(i)
+		if route.Via.Type != juneauv1alpha1.ViaVPN && route.Via.VPN != nil {
+			errs = append(errs, field.Forbidden(routePath.Child("via", "vpn"), "vpn is only valid when via.type is vpn"))
+		}
 		switch route.Via.Type {
+		case juneauv1alpha1.ViaVPN:
+			vpnErrs, err := v.validateVPNRoute(ctx, routeTable, route, routePath)
+			if err != nil {
+				return nil, err
+			}
+			errs = append(errs, vpnErrs...)
 		case juneauv1alpha1.ViaEndpoint:
 			if route.Via.Endpoint == "" {
 				errs = append(errs, field.Required(routePath.Child("via", "endpointName"), "spec.routes[].via.endpointName is required when via.type is endpoint"))
@@ -298,13 +309,22 @@ func (v *RouteTableCustomValidator) validateRouteTableSpec(ctx context.Context, 
 			}
 		}
 
-		if _, ok := seenDst[route.Dst]; ok {
-			errs = append(errs, field.Duplicate(routePath.Child("dst"), route.Dst))
+		_, parsed, parseErr := net.ParseCIDR(route.Dst)
+		if parseErr != nil || parsed.IP.To4() == nil {
+			errs = append(errs, field.Invalid(routePath.Child("dst"), route.Dst, "must be an IPv4 CIDR"))
 			continue
 		}
-		seenDst[route.Dst] = struct{}{}
+		canonical := parsed.String()
+		if route.Dst != canonical {
+			errs = append(errs, field.Invalid(routePath.Child("dst"), route.Dst, fmt.Sprintf("must be canonical: %s", canonical)))
+		}
+		if _, ok := seenDst[canonical]; ok {
+			errs = append(errs, field.Duplicate(routePath.Child("dst"), canonical))
+			continue
+		}
+		seenDst[canonical] = struct{}{}
 
-		if subnetName, ok := connectedRoutes[route.Dst]; ok {
+		if subnetName, ok := connectedRoutes[canonical]; ok {
 			errs = append(errs, field.Invalid(routePath.Child("dst"), route.Dst, fmt.Sprintf("duplicates connected route for Subnet %q in Vpc %q", subnetName, spec.Vpc)))
 		}
 	}

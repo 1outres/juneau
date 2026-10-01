@@ -1,0 +1,15 @@
+apiVersion: juneau.loutres.me/v1alpha1
+kind: VPN
+metadata:
+  name: branch
+  namespace: default
+spec:
+  vpc: production
+  subnet: gateway
+  externalNetwork: public
+  localASN: 65001
+  remoteASN: 65002
+  peerIKEID: branch.example.com
+  pskSecretRef:
+    name: branch-psk
+    key: psk

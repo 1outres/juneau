@@ -119,16 +119,7 @@ func (r *Subnet) upsert(ctx context.Context, subnet *juneauv1alpha1.Subnet) erro
 		return err
 	}
 
-	// status.networkACL carries the resolved ACLID the daemon
-	// programs into subnet_map. nil status (no ACL configured) and a
-	// status with ACLID==0 (ACL named in spec but not yet allocated)
-	// both program a 0; the data plane treats 0 as "no ACL", so the
-	// boundary falls back to default-allow until the controller
-	// publishes a real number.
-	var aclID uint32
-	if subnet.Status.NetworkACL != nil {
-		aclID = subnet.Status.NetworkACL.ACLID
-	}
+	aclID := subnetACLID(subnet)
 
 	if err := r.hostEgress.Objs.SubnetMap.Update(
 		&bpf.PodEgressSubnetKey{SubnetId: subnet.Status.VNI},
@@ -169,6 +160,18 @@ func (r *Subnet) upsert(ctx context.Context, subnet *juneauv1alpha1.Subnet) erro
 	}
 
 	return nil
+}
+
+const pendingACLID = ^uint32(0)
+
+func subnetACLID(subnet *juneauv1alpha1.Subnet) uint32 {
+	if subnet.Spec.NetworkACL == "" {
+		return 0
+	}
+	if subnet.Status.NetworkACL == nil || subnet.Status.NetworkACL.Name != subnet.Spec.NetworkACL || subnet.Status.NetworkACL.ACLID == 0 {
+		return pendingACLID
+	}
+	return subnet.Status.NetworkACL.ACLID
 }
 
 // upsertDNSARP writes (or refreshes) the arp_table entry that lets

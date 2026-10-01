@@ -22,4 +22,5 @@ resources:
 - v1alpha1_l2network.yaml
 - v1alpha1_dnszone.yaml
 - v1alpha1_dnsrecord.yaml
+- v1alpha1_vpn.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

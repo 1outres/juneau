@@ -265,6 +265,15 @@ func NewApp() *cli.Command {
 				return fmt.Errorf("get ServiceNATAttachment informer: %w", err)
 			}
 
+			vpnInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.VPN{})
+			if err != nil {
+				return fmt.Errorf("get VPN informer: %w", err)
+			}
+			podInformer, err := cache.GetInformer(ctx, &corev1.Pod{})
+			if err != nil {
+				return fmt.Errorf("get Pod informer: %w", err)
+			}
+
 			networkInterfaceInformer, err := cache.GetInformer(ctx, &juneauv1alpha1.NetworkInterface{})
 			if err != nil {
 				return fmt.Errorf("get NetworkInterface informer: %w", err)
@@ -519,6 +528,8 @@ func NewApp() *cli.Command {
 				NATGatewayInformer:                natGatewayInformer,
 				ServiceNATAttachmentInformer:      serviceNATAttachmentInformer,
 				NetworkInterfaceInformer:          networkInterfaceInformer,
+				VPNInformer:                       vpnInformer,
+				PodInformer:                       podInformer,
 				SecurityGroupInformer:             securityGroupInformer,
 				NetworkACLInformer:                networkACLInformer,
 				ServiceLoadBalancerInformer:       serviceLoadBalancerInformer,

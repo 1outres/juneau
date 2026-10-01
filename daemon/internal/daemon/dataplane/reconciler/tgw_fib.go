@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 
 	"github.com/cilium/ebpf"
 	"go.uber.org/zap"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
@@ -55,15 +58,16 @@ func (r *TgwFib) Reconcile(ctx context.Context, key string) error {
 	if err != nil {
 		return err
 	}
+	if rt.DeletionTimestamp != nil {
+		return r.delete(key)
+	}
 	return r.upsert(ctx, key, &rt)
 }
 
 func (r *TgwFib) upsert(ctx context.Context, key string, rt *juneauv1alpha1.TransitGatewayRouteTable) error {
-	// A table ID of 0 means the controller has not allocated one yet.
-	// Programming it would claim key 0 of TgwFibMap for a table that
-	// will move as soon as the allocation lands, so wait instead.
+	// A table ID of 0 cannot own an entry in TgwFibMap.
 	if rt.Status.TableID == 0 {
-		return nil
+		return r.delete(key)
 	}
 
 	fib, err := ebpf.NewMap(r.podEgress.MapSpecs.TgwFibInner.Copy())
@@ -76,9 +80,11 @@ func (r *TgwFib) upsert(ctx context.Context, key string, rt *juneauv1alpha1.Tran
 		}
 	}()
 
-	for _, route := range rt.Status.Routes {
-		if err := r.populateRoute(ctx, fib, &route); err != nil {
-			return err
+	if rt.Status.ObservedGeneration == rt.Generation && meta.IsStatusConditionTrue(rt.Status.Conditions, juneauv1alpha1.TransitGatewayRouteTableStatusReady) {
+		for _, route := range rt.Status.Routes {
+			if err := r.populateRoute(ctx, fib, &route, rt.Spec.TransitGateway); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -132,7 +138,7 @@ func (r *TgwFib) delete(key string) error {
 	return nil
 }
 
-func (r *TgwFib) populateRoute(ctx context.Context, fib *ebpf.Map, route *juneauv1alpha1.ResolvedTransitGatewayRoute) error {
+func (r *TgwFib) populateRoute(ctx context.Context, fib *ebpf.Map, route *juneauv1alpha1.ResolvedTransitGatewayRoute, transitGateway string) error {
 	netaddr, ipnet, err := net.ParseCIDR(route.Dst)
 	if err != nil {
 		zap.S().Warnf("tgw-fib: parse CIDR %s: %v", route.Dst, err)
@@ -145,6 +151,13 @@ func (r *TgwFib) populateRoute(ctx context.Context, fib *ebpf.Map, route *juneau
 		Prefixlen: uint32(prefixlen),
 	}
 
+	if route.VPN != nil {
+		var attachment juneauv1alpha1.TransitGatewayAttachment
+		if err := r.client.Get(ctx, client.ObjectKey{Name: route.Attachment}, &attachment); err != nil || attachment.Spec.TransitGateway != transitGateway {
+			zap.S().Warnf("tgw-fib: VPN route %s has no attachment in TransitGateway %s: %v", route.Dst, transitGateway, err)
+			return nil
+		}
+	}
 	val, err := r.buildFibVal(ctx, route)
 	if err != nil {
 		zap.S().Warnf("tgw-fib: build transit route for %s: %v", route.Dst, err)
@@ -157,14 +170,42 @@ func (r *TgwFib) populateRoute(ctx context.Context, fib *ebpf.Map, route *juneau
 	return nil
 }
 
-// buildFibVal renders one resolved transit route. A blackhole route
-// carries nothing but its type; every other route forwards straight to
-// the target Subnet, which is why it reuses the connected route value.
-// route.Attachment and route.Origin are informational and never change
-// what the data plane does.
+// buildFibVal renders one resolved transit route. A blackhole carries
+// only its type; a VPN route carries its gateway MAC and VPN identity.
+// Other routes forward to the target Subnet.
 func (r *TgwFib) buildFibVal(ctx context.Context, route *juneauv1alpha1.ResolvedTransitGatewayRoute) (bpf.PodEgressFibVal, error) {
 	if route.Blackhole {
 		return bpf.PodEgressFibVal{Type: fibRouteTypeBlackhole}, nil
+	}
+	if route.VPN != nil {
+		if route.Origin != juneauv1alpha1.TransitGatewayRouteOriginStatic || route.Attachment == "" || route.VPN.Name == "" || route.VPN.Namespace == "" {
+			return bpf.PodEgressFibVal{}, fmt.Errorf("invalid transit VPN route")
+		}
+		var attachment juneauv1alpha1.TransitGatewayAttachment
+		if err := r.client.Get(ctx, client.ObjectKey{Name: route.Attachment}, &attachment); err != nil {
+			return bpf.PodEgressFibVal{}, err
+		}
+		if attachment.DeletionTimestamp != nil || attachment.Status.ObservedGeneration != attachment.Generation ||
+			!meta.IsStatusConditionTrue(attachment.Status.Conditions, juneauv1alpha1.TransitGatewayAttachmentStatusReady) {
+			return bpf.PodEgressFibVal{}, fmt.Errorf("transit VPN attachment is not ready")
+		}
+		var vpn juneauv1alpha1.VPN
+		if err := r.client.Get(ctx, client.ObjectKey{Namespace: route.VPN.Namespace, Name: route.VPN.Name}, &vpn); err != nil {
+			return bpf.PodEgressFibVal{}, err
+		}
+		if vpn.DeletionTimestamp != nil || vpn.Spec.Subnet != route.Subnet || vpn.Spec.Vpc != attachment.Spec.Vpc || vpn.UID == "" ||
+			vpn.Status.ObservedGeneration != vpn.Generation || !meta.IsStatusConditionTrue(vpn.Status.Conditions, "Ready") {
+			return bpf.PodEgressFibVal{}, fmt.Errorf("transit VPN route gateway is not ready in attached Vpc")
+		}
+		subnet, _, _, endpoint, err := resolveVPNGateway(ctx, r.client, &vpn)
+		if err != nil {
+			return bpf.PodEgressFibVal{}, err
+		}
+		val, skip, err := buildVPNFibVal(&vpn, subnet, endpoint)
+		if skip || err != nil {
+			return bpf.PodEgressFibVal{}, fmt.Errorf("transit VPN gateway is not ready: %v", err)
+		}
+		return val, nil
 	}
 
 	var subnet juneauv1alpha1.Subnet
@@ -198,6 +239,23 @@ func (r *TgwFib) CloseAll() error {
 // Runner.WatchFanOut: returns every TransitGatewayRouteTable's key
 // regardless of which object triggered the event. Used to re-enqueue
 // all of them when a referenced Subnet changes.
+func (r *TgwFib) FanOutVPNRouteTables(obj any) []string {
+	switch dependency := obj.(type) {
+	case *juneauv1alpha1.VPN:
+	case *corev1.Pod:
+		if !strings.HasPrefix(dependency.Name, "vpn-") {
+			return nil
+		}
+	case *juneauv1alpha1.NetworkInterface:
+		if !strings.HasPrefix(dependency.Spec.PodRef.Name, "vpn-") {
+			return nil
+		}
+	default:
+		return nil
+	}
+	return r.FanOutAllTransitGatewayRouteTables(nil)
+}
+
 func (r *TgwFib) FanOutAllTransitGatewayRouteTables(any) []string {
 	var rts juneauv1alpha1.TransitGatewayRouteTableList
 	if err := r.client.List(context.Background(), &rts); err != nil {

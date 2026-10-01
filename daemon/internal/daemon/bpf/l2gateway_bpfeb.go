@@ -146,6 +146,7 @@ type L2GatewayFibVal struct {
 	_        [3]byte
 	SubnetId uint32
 	Oif      uint32
+	VpnId    L2GatewayVpnIdentity
 }
 
 type L2GatewayIfindexExternalNetworkKey struct {
@@ -178,6 +179,8 @@ type L2GatewayIfindexSubnetVal struct {
 	_        structs.HostLayout
 	SubnetId uint32
 	Ipv4     uint32
+	Kind     uint8
+	_        [3]byte
 }
 
 type L2GatewayIpv4FragKey struct {
@@ -446,6 +449,23 @@ type L2GatewaySubnetVal struct {
 	AclId   uint32
 }
 
+type L2GatewayTgwFibKey struct {
+	_         structs.HostLayout
+	Prefixlen uint32
+	Dst       uint32
+}
+
+type L2GatewayTgwFibVal struct {
+	_        structs.HostLayout
+	Type     uint8
+	Dmac     [6]uint8
+	Smac     [6]uint8
+	_        [3]byte
+	SubnetId uint32
+	Oif      uint32
+	VpnId    L2GatewayVpnIdentity
+}
+
 type L2GatewayTraceConfigVal struct {
 	_            structs.HostLayout
 	ExpiresNs    uint64
@@ -527,6 +547,16 @@ type L2GatewayVpcEndpointKey struct {
 type L2GatewayVpcEndpointVal struct {
 	_         structs.HostLayout
 	ClusterIp uint32
+}
+
+type L2GatewayVpnGatewayKey struct {
+	_       structs.HostLayout
+	Ifindex uint32
+}
+
+type L2GatewayVpnIdentity struct {
+	_     structs.HostLayout
+	Bytes [16]uint8
 }
 
 // LoadL2Gateway returns the embedded CollectionSpec for L2Gateway.
@@ -637,6 +667,7 @@ type L2GatewayMapSpecs struct {
 	VirtualServiceFlowMap  *ebpf.MapSpec `ebpf:"virtual_service_flow_map"`
 	VirtualServiceMap      *ebpf.MapSpec `ebpf:"virtual_service_map"`
 	VpcEndpointMap         *ebpf.MapSpec `ebpf:"vpc_endpoint_map"`
+	VpnGateway             *ebpf.MapSpec `ebpf:"vpn_gateway"`
 	VxlanIfindex           *ebpf.MapSpec `ebpf:"vxlan_ifindex"`
 }
 
@@ -644,6 +675,10 @@ type L2GatewayMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type L2GatewayVariableSpecs struct {
+	FibKeyBtfAnchor    *ebpf.VariableSpec `ebpf:"_fib_key_btf_anchor"`
+	FibValBtfAnchor    *ebpf.VariableSpec `ebpf:"_fib_val_btf_anchor"`
+	TgwFibKeyBtfAnchor *ebpf.VariableSpec `ebpf:"_tgw_fib_key_btf_anchor"`
+	TgwFibValBtfAnchor *ebpf.VariableSpec `ebpf:"_tgw_fib_val_btf_anchor"`
 }
 
 // L2GatewayObjects contains all objects after they have been loaded into the kernel.
@@ -725,6 +760,7 @@ type L2GatewayMaps struct {
 	VirtualServiceFlowMap  *ebpf.Map `ebpf:"virtual_service_flow_map"`
 	VirtualServiceMap      *ebpf.Map `ebpf:"virtual_service_map"`
 	VpcEndpointMap         *ebpf.Map `ebpf:"vpc_endpoint_map"`
+	VpnGateway             *ebpf.Map `ebpf:"vpn_gateway"`
 	VxlanIfindex           *ebpf.Map `ebpf:"vxlan_ifindex"`
 }
 
@@ -789,6 +825,7 @@ func (m *L2GatewayMaps) Close() error {
 		m.VirtualServiceFlowMap,
 		m.VirtualServiceMap,
 		m.VpcEndpointMap,
+		m.VpnGateway,
 		m.VxlanIfindex,
 	)
 }
@@ -797,6 +834,10 @@ func (m *L2GatewayMaps) Close() error {
 //
 // It can be passed to LoadL2GatewayObjects or ebpf.CollectionSpec.LoadAndAssign.
 type L2GatewayVariables struct {
+	FibKeyBtfAnchor    *ebpf.Variable `ebpf:"_fib_key_btf_anchor"`
+	FibValBtfAnchor    *ebpf.Variable `ebpf:"_fib_val_btf_anchor"`
+	TgwFibKeyBtfAnchor *ebpf.Variable `ebpf:"_tgw_fib_key_btf_anchor"`
+	TgwFibValBtfAnchor *ebpf.Variable `ebpf:"_tgw_fib_val_btf_anchor"`
 }
 
 // L2GatewayPrograms contains all programs after they have been loaded into the kernel.
