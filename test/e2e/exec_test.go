@@ -11,6 +11,9 @@ import (
 )
 
 func runWithStdin(dir string, stdin string, name string, args ...string) error {
+	if name == "kubectl" {
+		args = kubectlCommandArgs(args)
+	}
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GO111MODULE=on", fmt.Sprintf("KIND_CLUSTER=%s", clusterName))

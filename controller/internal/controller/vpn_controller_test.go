@@ -37,11 +37,11 @@ func TestVPNWaitsForTwoClaimsAndRejectsForeignClaim(t *testing.T) {
 	vpn := &juneau.VPN{ObjectMeta: metav1.ObjectMeta{Name: "site", Namespace: "tenant", UID: "uid-a"}, Spec: juneau.VPNSpec{Vpc: "vpc", Subnet: "net", ExternalNetwork: "outside", LocalASN: 64512, RemoteASN: 64513, PeerIKEID: "@router", PSKSecretRef: juneau.VPNSecretRef{Name: "psk", Key: "key"}}}
 	pool := &juneau.AllocationPool{ObjectMeta: metav1.ObjectMeta{Name: "vpn-tunnels"}, Spec: juneau.AllocationPoolSpec{Type: juneau.AllocationTypeIP, IP: &juneau.AllocationPoolIPSpec{CIDRs: []string{"169.254.50.0/29"}}}}
 	vpc := &juneau.Vpc{ObjectMeta: metav1.ObjectMeta{Name: "vpc"}, Status: juneau.VpcStatus{MainRouteTable: "vpc"}}
-	subnet := &juneau.Subnet{ObjectMeta: metav1.ObjectMeta{Name: "net"}, Spec: juneau.SubnetSpec{Vpc: "vpc", CIDR: "10.0.0.0/24"}, Status: juneau.SubnetStatus{Conditions: []metav1.Condition{{Type: juneau.SubnetStatusReady, Status: metav1.ConditionTrue, Reason: "Ready"}}}}
+	subnet := &juneau.Subnet{ObjectMeta: metav1.ObjectMeta{Name: "net"}, Spec: juneau.SubnetSpec{Vpc: "vpc", CIDR: "10.0.0.0/24", NetworkACL: "ingress"}, Status: juneau.SubnetStatus{NetworkACL: &juneau.NetworkACLRef{Name: "ingress", ACLID: 1}, Conditions: []metav1.Condition{{Type: juneau.SubnetStatusReady, Status: metav1.ConditionTrue, Reason: "Ready"}}}}
 	table := &juneau.RouteTable{ObjectMeta: metav1.ObjectMeta{Name: "vpc"}, Spec: juneau.RouteTableSpec{Vpc: "vpc"}, Status: juneau.RouteTableStatus{Conditions: []metav1.Condition{{Type: juneau.RouteTableStatusReady, Status: metav1.ConditionTrue, Reason: "Ready"}}, Routes: []juneau.Route{{Dst: "10.0.0.0/24", Via: juneau.RouteVia{Type: juneau.ViaConnected}, Subnet: "net"}}}}
 	external := &juneau.ExternalNetwork{ObjectMeta: metav1.ObjectMeta{Name: "outside"}}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "psk", Namespace: "tenant"}, Data: map[string][]byte{"key": []byte("secret")}}
-	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(vpn, &juneau.AllocationClaim{}, &juneau.ElasticIP{}, &juneau.NetworkInterface{}, &corev1.Pod{}).WithObjects(vpn, pool, vpc, subnet, table, external, secret).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(vpn, &juneau.AllocationClaim{}, &juneau.ElasticIP{}, &juneau.NetworkInterface{}, &corev1.Pod{}).WithObjects(vpn, pool, vpc, subnet, table, external, secret, &juneau.NetworkACL{ObjectMeta: metav1.ObjectMeta{Name: "ingress"}, Spec: juneau.NetworkACLSpec{Vpc: "vpc"}, Status: juneau.NetworkACLStatus{ACLID: 1}}).Build()
 	r := &VPNReconciler{Client: c, Scheme: s, TunnelPool: "vpn-tunnels", GatewayImage: "gateway-image"}
 	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(vpn)}
 	for i := 0; i < 3; i++ {
@@ -129,8 +129,8 @@ func TestVPNWaitsForTwoClaimsAndRejectsForeignClaim(t *testing.T) {
 		t.Fatal("allocated address must remain visible while interfaces are not ready")
 	}
 	for _, nic := range []*juneau.NetworkInterface{
-		{ObjectMeta: metav1.ObjectMeta{Name: networkInterfaceNameForPod(pod.Name, "eth0"), Namespace: vpn.Namespace}, Spec: juneau.NetworkInterfaceSpec{PodRef: juneau.NetworkInterfacePodReference{UID: string(pod.UID), Interface: "eth0"}, Subnet: vpn.Spec.Subnet}, Status: juneau.NetworkInterfaceStatus{Phase: juneau.NetworkInterfacePhaseReady}},
-		{ObjectMeta: metav1.ObjectMeta{Name: networkInterfaceNameForPod(pod.Name, "ext0"), Namespace: vpn.Namespace}, Spec: juneau.NetworkInterfaceSpec{PodRef: juneau.NetworkInterfacePodReference{UID: string(pod.UID), Interface: "ext0"}, ElasticIP: eip.Name}, Status: juneau.NetworkInterfaceStatus{Phase: juneau.NetworkInterfacePhaseReady, Address: eip.Status.Address + "/32"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: networkInterfaceNameForPod(pod.Name, "eth0"), Namespace: vpn.Namespace}, Spec: juneau.NetworkInterfaceSpec{PodRef: juneau.NetworkInterfacePodReference{Name: pod.Name, UID: string(pod.UID), Interface: "eth0"}, Subnet: vpn.Spec.Subnet}, Status: juneau.NetworkInterfaceStatus{Phase: juneau.NetworkInterfacePhaseReady}},
+		{ObjectMeta: metav1.ObjectMeta{Name: networkInterfaceNameForPod(pod.Name, "ext0"), Namespace: vpn.Namespace}, Spec: juneau.NetworkInterfaceSpec{PodRef: juneau.NetworkInterfacePodReference{Name: pod.Name, UID: string(pod.UID), Interface: "ext0"}, ElasticIP: eip.Name}, Status: juneau.NetworkInterfaceStatus{Phase: juneau.NetworkInterfacePhaseReady, Address: eip.Status.Address + "/32"}},
 	} {
 		if err := c.Create(context.Background(), nic); err != nil {
 			t.Fatal(err)
@@ -184,6 +184,127 @@ func TestVPNWaitsForTwoClaimsAndRejectsForeignClaim(t *testing.T) {
 	}
 	if updated.Status.PublicIP != "203.0.113.20" || updated.Status.LocalTunnelIP != "169.254.50.1" || updated.Status.RemoteTunnelIP != "169.254.50.2" {
 		t.Fatalf("missing endpoint details after readiness: %+v", updated.Status)
+	}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(subnet), subnet); err != nil {
+		t.Fatal(err)
+	}
+	var routePendingNIC juneau.NetworkInterface
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: vpn.Namespace, Name: networkInterfaceNameForPod(pod.Name, "eth0")}, &routePendingNIC); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Delete(context.Background(), &routePendingNIC); err != nil {
+		t.Fatal(err)
+	}
+	var routeTable juneau.RouteTable
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(table), &routeTable); err != nil {
+		t.Fatal(err)
+	}
+	routeTable.Spec.Routes = append(routeTable.Spec.Routes, juneau.Route{Dst: "198.18.11.0/24", Via: juneau.RouteVia{Type: juneau.ViaVPN, VPN: &juneau.VPNReference{Namespace: vpn.Namespace, Name: vpn.Name}}})
+	routeTable.Status.TableID = 1
+	routeTable.Status.Conditions = []metav1.Condition{{Type: juneau.RouteTableStatusReady, Status: metav1.ConditionFalse, Reason: routeTableReasonVPNEndpointPending}}
+	routeTable.Status.PendingVPN = vpn.Namespace + "/" + vpn.Name
+	if err := c.Update(context.Background(), &routeTable); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(vpc), vpc); err != nil {
+		t.Fatal(err)
+	}
+	vpc.Status.VpcID = 1
+	vpc.Status.Conditions = []metav1.Condition{{Type: juneau.VpcStatusReady, Status: metav1.ConditionFalse, Reason: vpcReasonRouteTableNotReady}}
+	if err := c.Update(context.Background(), vpc); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(subnet), subnet); err != nil {
+		t.Fatal(err)
+	}
+	subnet.Status.VNI = 1
+	subnet.Status.Conditions = []metav1.Condition{{Type: juneau.SubnetStatusReady, Status: metav1.ConditionFalse, Reason: "VpcNotReady"}}
+	if err := c.Update(context.Background(), subnet); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	var retainedOnRouteUpdate corev1.Pod
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(&pod), &retainedOnRouteUpdate); err != nil || retainedOnRouteUpdate.UID != pod.UID {
+		t.Fatalf("a VPN route waiting on its own gateway must not delete that gateway: %v", err)
+	}
+	routePendingNIC.ResourceVersion = ""
+	if err := c.Create(context.Background(), &routePendingNIC); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Status().Update(context.Background(), &routePendingNIC); err != nil {
+		t.Fatal(err)
+	}
+	routeTable.Spec.Routes = nil
+	routeTable.Status.Conditions[0].Status = metav1.ConditionTrue
+	routeTable.Status.Conditions[0].Reason = "Ready"
+	routeTable.Status.PendingVPN = ""
+	if err := c.Update(context.Background(), &routeTable); err != nil {
+		t.Fatal(err)
+	}
+	vpc.Status.Conditions[0].Status = metav1.ConditionTrue
+	vpc.Status.Conditions[0].Reason = "Ready"
+	if err := c.Update(context.Background(), vpc); err != nil {
+		t.Fatal(err)
+	}
+	subnet.Status.Conditions[0].Status = metav1.ConditionTrue
+	subnet.Status.Conditions[0].Reason = "Ready"
+	if err := c.Update(context.Background(), subnet); err != nil {
+		t.Fatal(err)
+	}
+	var pendingNIC juneau.NetworkInterface
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: vpn.Namespace, Name: networkInterfaceNameForPod(pod.Name, "eth0")}, &pendingNIC); err != nil {
+		t.Fatal(err)
+	}
+	pendingNIC.Status.Phase = juneau.NetworkInterfacePhasePending
+	if err := c.Status().Update(context.Background(), &pendingNIC); err != nil {
+		t.Fatal(err)
+	}
+	subnet.Generation = 2
+	subnet.Status.VNI = 1
+	subnet.Status.ObservedGeneration = 1
+	subnet.Status.Conditions = []metav1.Condition{{Type: juneau.SubnetStatusReady, Status: metav1.ConditionTrue, Reason: "Ready", ObservedGeneration: 1}}
+	if err := c.Update(context.Background(), subnet); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	var retainedOnACLUpdate corev1.Pod
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(&pod), &retainedOnACLUpdate); err != nil || retainedOnACLUpdate.UID != pod.UID {
+		t.Fatalf("a stale subnet status with an installed ACL must keep the gateway Pod: %v", err)
+	}
+	newACL := &juneau.NetworkACL{ObjectMeta: metav1.ObjectMeta{Name: "ingress-new"}, Spec: juneau.NetworkACLSpec{Vpc: "vpc"}, Status: juneau.NetworkACLStatus{ACLID: 2}}
+	if err := c.Create(context.Background(), newACL); err != nil {
+		t.Fatal(err)
+	}
+	subnet.Spec.NetworkACL = newACL.Name
+	if err := c.Update(context.Background(), subnet); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(&pod), &retainedOnACLUpdate); err != nil || retainedOnACLUpdate.UID != pod.UID {
+		t.Fatalf("an allocated ACL must not delete the gateway before the subnet status catches up: %v", err)
+	}
+	subnet.Spec.NetworkACL = "ingress"
+	if err := c.Update(context.Background(), subnet); err != nil {
+		t.Fatal(err)
+	}
+	pendingNIC.Status.Phase = juneau.NetworkInterfacePhaseReady
+	if err := c.Status().Update(context.Background(), &pendingNIC); err != nil {
+		t.Fatal(err)
+	}
+	subnet.Status.ObservedGeneration = subnet.Generation
+	subnet.Status.Conditions[0].ObservedGeneration = subnet.Generation
+	subnet.Status.NetworkACL = &juneau.NetworkACLRef{Name: "ingress", ACLID: 1}
+	if err := c.Update(context.Background(), subnet); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
 	}
 	var gatewayNIC juneau.NetworkInterface
 	if err := c.Get(context.Background(), client.ObjectKey{Namespace: vpn.Namespace, Name: networkInterfaceNameForPod(pod.Name, "eth0")}, &gatewayNIC); err != nil {

@@ -38,7 +38,7 @@ func (r *RouteTableReconciler) resolvePeeringVPNRoute(ctx context.Context, sourc
 			}
 			reference = candidate.Via.VPN
 			activeRoute := false
-			if table.Status.TableID != 0 && conditionReady(table.Status.Conditions, juneau.RouteTableStatusReady, table.Generation) && table.Status.ObservedGeneration == table.Generation {
+			if table.Status.TableID != 0 && table.Status.ObservedGeneration == table.Generation {
 				for _, active := range table.Status.Routes {
 					if active.Dst == candidate.Dst && active.Via.Type == juneau.ViaVPN && active.Via.VPN != nil && *active.Via.VPN == *reference && active.Subnet != "" {
 						activeRoute = true

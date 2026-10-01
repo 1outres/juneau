@@ -96,7 +96,10 @@ func (r *VPNReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return r.waitStopped(ctx, &vpn, "SubnetNotReady", "Subnet must be active in the VPN Vpc")
 	}
 	if !conditionReady(subnet.Status.Conditions, juneau.SubnetStatusReady, subnet.Generation) {
-		if vpcPendingOnGatewayVPN(ctx, r.Client, &vpc, &subnet) && r.gatewayPlacementValid(ctx, &vpn, &subnet) {
+		if subnet.Status.ObservedGeneration < subnet.Generation && conditionReady(subnet.Status.Conditions, juneau.SubnetStatusReady, 0) && r.gatewayPodPlacementValid(ctx, &vpn, &subnet) {
+			return r.wait(ctx, &vpn, "SubnetNotReady", "waiting for gateway Subnet to reconcile")
+		}
+		if vpcPendingOnGatewayVPN(ctx, r.Client, &vpc, &subnet) && r.gatewayPodPlacementValid(ctx, &vpn, &subnet) {
 			return r.wait(ctx, &vpn, "SubnetNotReady", "waiting for gateway Subnet to reconcile")
 		}
 		return r.waitStopped(ctx, &vpn, "SubnetNotReady", "Subnet must be Ready in the VPN Vpc")
@@ -245,9 +248,15 @@ func (r *VPNReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	return ctrl.Result{}, r.setStatus(ctx, &vpn, metav1.ConditionTrue, "GatewayReady", "gateway passed its health check", eip.Status.Address, local.Status.Value.IP, remote.Status.Value.IP)
 }
 
-func (r *VPNReconciler) gatewayPlacementValid(ctx context.Context, vpn *juneau.VPN, subnet *juneau.Subnet) bool {
-	if subnet.Status.VNI == 0 || subnet.Status.NetworkACL != nil && subnet.Status.NetworkACL.Name != subnet.Spec.NetworkACL || subnet.Spec.NetworkACL != "" && (subnet.Status.NetworkACL == nil || subnet.Status.NetworkACL.ACLID == 0) {
+func (r *VPNReconciler) gatewayPodPlacementValid(ctx context.Context, vpn *juneau.VPN, subnet *juneau.Subnet) bool {
+	if subnet.Status.VNI == 0 {
 		return false
+	}
+	if subnet.Spec.NetworkACL != "" {
+		var acl juneau.NetworkACL
+		if err := r.Get(ctx, client.ObjectKey{Name: subnet.Spec.NetworkACL}, &acl); err != nil || acl.DeletionTimestamp != nil || acl.Spec.Vpc != vpn.Spec.Vpc || acl.Status.ACLID == 0 {
+			return false
+		}
 	}
 	var pod corev1.Pod
 	if err := r.Get(ctx, client.ObjectKey{Namespace: vpn.Namespace, Name: vpnPodName(vpn)}, &pod); err != nil || !ownedByVPN(&pod, vpn) || pod.DeletionTimestamp != nil || pod.UID == "" || pod.Status.Phase != corev1.PodRunning {
@@ -259,10 +268,15 @@ func (r *VPNReconciler) gatewayPlacementValid(ctx context.Context, vpn *juneau.V
 	}
 	for _, name := range []string{"eth0", "ext0"} {
 		var nic juneau.NetworkInterface
-		if err := r.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: networkInterfaceNameForPod(pod.Name, name)}, &nic); err != nil || nic.DeletionTimestamp != nil || nic.Spec.PodRef.UID != string(pod.UID) || nic.Spec.PodRef.Name != pod.Name || nic.Spec.PodRef.Interface != name || nic.Status.Phase != juneau.NetworkInterfacePhaseReady || nic.Status.ObservedGeneration != nic.Generation {
+		err := r.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: networkInterfaceNameForPod(pod.Name, name)}, &nic)
+		if apierrors.IsNotFound(err) {
+			// The Pod controller may still be creating NICs while this VPN route is pending.
+			continue
+		}
+		if err != nil || nic.DeletionTimestamp != nil || nic.Spec.PodRef.UID != string(pod.UID) || nic.Spec.PodRef.Name != pod.Name || nic.Spec.PodRef.Interface != name {
 			return false
 		}
-		if name == "eth0" && nic.Spec.Subnet != subnet.Name || name == "ext0" && (nic.Spec.ElasticIP != vpnEIPName(vpn) || nic.Status.Address == "") {
+		if name == "eth0" && nic.Spec.Subnet != subnet.Name || name == "ext0" && nic.Spec.ElasticIP != vpnEIPName(vpn) {
 			return false
 		}
 	}

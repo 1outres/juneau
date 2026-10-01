@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"time"
 
@@ -41,6 +42,8 @@ const (
 	// instance, including NICs the pod has stopped asking for.
 	networkInterfacePodUIDIndex = "spec.podRef.uid"
 )
+
+var errOldNetworkInterface = stderrors.New("waiting for the previous Pod's NetworkInterface to be deleted")
 
 // PodReconciler reconciles a Pod object for NetworkInterface provisioning.
 type PodReconciler struct {
@@ -105,6 +108,9 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	for _, attachment := range attachments {
 		wanted[attachment.Interface] = struct{}{}
 		if err := r.applyNetworkInterface(ctx, &pod, attachment); err != nil {
+			if err == errOldNetworkInterface {
+				return ctrl.Result{RequeueAfter: requeueDelay}, nil
+			}
 			if errors.IsConflict(err) || errors.IsAlreadyExists(err) {
 				return ctrl.Result{Requeue: true}, nil
 			}
@@ -143,7 +149,30 @@ func (r *PodReconciler) applyNetworkInterface(ctx context.Context, pod *corev1.P
 	nwiface.SetName(networkInterfaceNameForPod(pod.Name, attachment.Interface))
 	nwiface.SetNamespace(pod.Namespace)
 
-	_, err := ctrl.CreateOrUpdate(ctx, r.Client, nwiface, func() error {
+	err := r.Get(ctx, client.ObjectKeyFromObject(nwiface), nwiface)
+	if err != nil && !errors.IsNotFound(err) {
+		return err
+	}
+	if err == nil && nwiface.Spec.PodRef.UID != string(pod.UID) {
+		owned := false
+		for _, owner := range nwiface.OwnerReferences {
+			if owner.Kind == "Pod" && owner.APIVersion == "v1" && owner.Name == pod.Name && string(owner.UID) == nwiface.Spec.PodRef.UID && owner.Controller != nil && *owner.Controller {
+				owned = true
+				break
+			}
+		}
+		if !owned || nwiface.Spec.PodRef.Name != pod.Name {
+			return fmt.Errorf("NetworkInterface %s/%s belongs to another Pod", nwiface.Namespace, nwiface.Name)
+		}
+		if nwiface.DeletionTimestamp == nil {
+			if err := r.Delete(ctx, nwiface); err != nil && !errors.IsNotFound(err) {
+				return err
+			}
+		}
+		return errOldNetworkInterface
+	}
+
+	_, err = ctrl.CreateOrUpdate(ctx, r.Client, nwiface, func() error {
 		nwiface.Spec.PodRef.Name = pod.Name
 		nwiface.Spec.PodRef.UID = string(pod.UID)
 		nwiface.Spec.PodRef.Interface = attachment.Interface

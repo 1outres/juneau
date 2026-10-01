@@ -15,6 +15,7 @@ COPY controller/go.sum controller/go.sum
 COPY kubectl-juneau/go.mod kubectl-juneau/go.mod
 COPY kubectl-juneau/go.sum kubectl-juneau/go.sum
 COPY test/e2e/go.mod test/e2e/go.mod
+COPY vpn-gateway/go.mod vpn-gateway/go.mod
 
 # Pre-download module deps before pulling source so the cache layer is
 # only invalidated when go.mod/go.sum changes. The cache mount keeps

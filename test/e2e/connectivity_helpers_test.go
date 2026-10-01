@@ -362,6 +362,12 @@ type routeVia struct {
 	NATGateway     string       `json:"natGateway,omitempty"`
 	VpcPeering     string       `json:"vpcPeering,omitempty"`
 	TransitGateway string       `json:"transitGateway,omitempty"`
+	VPN            *vpnRouteRef `json:"vpn,omitempty"`
+}
+
+type vpnRouteRef struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
 }
 
 type route struct {

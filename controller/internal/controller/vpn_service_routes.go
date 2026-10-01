@@ -51,7 +51,8 @@ func vpnBackendReturns(ctx context.Context, r *VPNReconciler, vpn *juneau.VPN, v
 		}
 		for i := range candidates {
 			other, err := netip.ParsePrefix(candidates[i].Dst)
-			if err != nil || other.Bits() > prefix.Bits() && other.Overlaps(prefix) && !sameVPNRoute(&candidates[i], vpn) {
+			// Packet source checks use the longest route, so local routes can coexist with a default VPN route.
+			if err != nil || prefix.Bits() != 0 && other.Bits() > prefix.Bits() && other.Overlaps(prefix) && !sameVPNRoute(&candidates[i], vpn) {
 				return false
 			}
 		}

@@ -1,0 +1,9 @@
+apiVersion: juneau.loutres.me/v1alpha1
+kind: AllocationPool
+metadata:
+  name: e2e-vpn-tunnels
+spec:
+  type: ip
+  ip:
+    cidrs:
+      - 169.254.51.0/24

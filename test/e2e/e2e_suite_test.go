@@ -22,6 +22,9 @@ const (
 	webhookCertJobImage = "example.com/webhookcertjob:v0.0.1"
 	daemonImage         = "daemon:latest"
 	bgpSpeakerImage     = "bgp-speaker:latest"
+	vpnGatewayImage     = "vpn-gateway:latest"
+	vpnPeerImage        = "juneau-e2e-vpn-peer:latest"
+	vpnTunnelPool       = "e2e-vpn-tunnels"
 	controllerNamespace = "juneau-system"
 	daemonNamespace     = "kube-system"
 	bgpSpeakerNamespace = "kube-system"
@@ -34,6 +37,7 @@ const (
 var repoRoot string
 var workerNodes []string
 var currentCase *caseContext
+var suiteClusterCreated bool
 
 // testFixtureImages are the third-party container images used by
 // behavioral specs. They are pre-loaded into kind during BeforeSuite so
@@ -83,12 +87,15 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	skipBuild := envBool("E2E_SKIP_BUILD")
 	startBGPRouter := envBool("E2E_BGP_ROUTER")
 
-	runBestEffort(root, "kind", "delete", "cluster", "--name", clusterName)
+	clusters, err := kindClusters(root)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(clusters).NotTo(ContainElement(clusterName), "refusing to replace an existing kind cluster")
 
 	configFile, err := writeKindConfig(root, numWorkers)
 	Expect(err).NotTo(HaveOccurred())
 
 	mustRun(root, "kind", "create", "cluster", "--name", clusterName, "--config", configFile)
+	suiteClusterCreated = true
 
 	imageTargets := []struct {
 		makeTarget string
@@ -99,6 +106,7 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 		{"image-webhookcertjob", "WEBHOOKCERTJOB_IMAGE", webhookCertJobImage},
 		{"image-daemon", "DAEMON_IMAGE", daemonImage},
 		{"image-bgp-speaker", "BGP_SPEAKER_IMAGE", bgpSpeakerImage},
+		{"image-vpn-gateway", "VPN_GATEWAY_IMAGE", vpnGatewayImage},
 	}
 	for _, t := range imageTargets {
 		if skipBuild && dockerImageExists(t.image) {
@@ -108,32 +116,37 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 		mustRun(root, "make", t.makeTarget, fmt.Sprintf("%s=%s", t.envVar, t.image))
 	}
 
-	for _, image := range []string{controllerImage, webhookCertJobImage, daemonImage, bgpSpeakerImage} {
+	for _, image := range []string{controllerImage, webhookCertJobImage, daemonImage, bgpSpeakerImage, vpnGatewayImage} {
 		mustRun(root, "kind", "load", "docker-image", image, "--name", clusterName)
 	}
 
 	// Pre-load the third-party fixture images on every kind node so each
 	// connectivity / probe / NAT spec doesn't pay a registry pull on first
-	// Pod create. We re-tag through buildx (single-platform) to strip the
-	// multi-arch manifest list — kind v0.29 + Docker 29's containerd image
-	// store rejects `kind load docker-image` on multi-arch images otherwise
-	// ("ctr ... content digest ... not found").
+	// Pod create. We re-tag through buildx (single-platform for the host)
+	// to strip the multi-arch manifest list — kind v0.29 + Docker 29's
+	// containerd image store rejects `kind load docker-image` on multi-arch
+	// images otherwise ("ctr ... content digest ... not found").
 	for _, image := range testFixtureImages {
 		Expect(retagSinglePlatform(root, image)).To(Succeed())
 		mustRun(root, "kind", "load", "docker-image", image, "--name", clusterName)
 	}
 
-	mustRun(filepath.Join(root, "controller"), "make", "install")
+	if !skipBuild || !dockerImageExists(vpnPeerImage) {
+		mustRun(root, "docker", "buildx", "build", "--load", "-t", vpnPeerImage, "-f", "test/e2e/testdata/vpn-peer/Dockerfile", "test/e2e/testdata/vpn-peer")
+	}
+
+	mustRun(filepath.Join(root, "controller"), "make", "install", controllerKubectlTarget())
 	// The manager resolves the kinds it watches for lease retention once, at
 	// startup, so a VirtualMachine CRD installed after the deployment would
 	// never be watched. Install it first.
 	mustRun(root, "kubectl", "apply", "-f", filepath.Join(root, "test", "e2e", "testdata", "kubevirt-virtualmachine-crd.yaml"))
-	mustRun(filepath.Join(root, "controller"), "make", "deploy", fmt.Sprintf("IMG=%s", controllerImage))
+	mustRun(filepath.Join(root, "controller"), "make", "deploy", fmt.Sprintf("IMG=%s", controllerImage), controllerKubectlTarget())
 	// Probe rewriting is intentionally disabled by default. The E2E suite
 	// opts the controller into the compatibility mode so the overlapping
 	// address scenarios below exercise the feature.
+	mustRun(root, "kubectl", "apply", "-f", filepath.Join(root, "test", "e2e", "testdata", "vpn-tunnel-pool.yaml"))
 	mustRun(root, "kubectl", "patch", "deployment/juneau-controller-manager", "-n", controllerNamespace,
-		"--type=json", "-p", `[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--enable-probe-rewrite"}]`)
+		"--type=json", "-p", fmt.Sprintf(`[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--enable-probe-rewrite"},{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--vpn-tunnel-pool=%s"}]`, vpnTunnelPool))
 	mustRun(root, "kubectl", "label", "--overwrite", "namespace", controllerNamespace, "pod-security.kubernetes.io/enforce=privileged")
 	mustRun(root, "kubectl", "label", "--overwrite", "namespace", daemonNamespace, "pod-security.kubernetes.io/enforce=privileged")
 	// The daemon installs the CNI binary on each node; without it, nodes
@@ -207,7 +220,7 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 // kind cluster while the serial bgp/nat specs are still executing on
 // process 1.
 var _ = SynchronizedAfterSuite(func() {}, func() {
-	if strings.EqualFold(os.Getenv("E2E_KEEP_CLUSTER"), "true") {
+	if !suiteClusterCreated || strings.EqualFold(os.Getenv("E2E_KEEP_CLUSTER"), "true") {
 		return
 	}
 	teardownBGPRouter()
@@ -278,6 +291,24 @@ nodes:
 	return path, nil
 }
 
+func kindClusters(dir string) ([]string, error) {
+	cmd := exec.Command("kind", "get", "clusters")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("list kind clusters: %w", err)
+	}
+	return strings.Fields(string(out)), nil
+}
+
+func kubectlCommandArgs(args []string) []string {
+	return append([]string{"--context=kind-" + clusterName}, args...)
+}
+
+func controllerKubectlTarget() string {
+	return "KUBECTL=kubectl --context=kind-" + clusterName
+}
+
 func dockerImageExists(image string) bool {
 	cmd := exec.Command("docker", "image", "inspect", image)
 	cmd.Stdout = nil
@@ -285,15 +316,14 @@ func dockerImageExists(image string) bool {
 	return cmd.Run() == nil
 }
 
-// retagSinglePlatform rebuilds an upstream image as a single-platform
-// (linux/amd64) image with the same tag. This strips the multi-platform
-// manifest list so `kind load docker-image` succeeds on Docker 29's
+// retagSinglePlatform rebuilds an upstream image for the host platform
+// with the same tag. This strips the multi-platform manifest list so
+// `kind load docker-image` succeeds on Docker 29's
 // containerd image store; see the call site in SynchronizedBeforeSuite
 // for the underlying ctr / digest issue.
 func retagSinglePlatform(dir, image string) error {
 	dockerfile := fmt.Sprintf("FROM %s\n", image)
 	return runWithStdin(dir, dockerfile, "docker", "buildx", "build", "--load",
-		"--platform", "linux/amd64",
 		"-t", image,
 		"-",
 	)
@@ -332,6 +362,9 @@ func discoverNodesWithSelector(dir, selector string) ([]string, error) {
 }
 
 func run(dir string, name string, args ...string) error {
+	if name == "kubectl" {
+		args = kubectlCommandArgs(args)
+	}
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GO111MODULE=on", fmt.Sprintf("KIND_CLUSTER=%s", clusterName))
@@ -366,6 +399,7 @@ func mustRun(dir string, name string, args ...string) {
 }
 
 func kubectlOutput(dir string, args ...string) (string, error) {
+	args = kubectlCommandArgs(args)
 	cmd := exec.Command("kubectl", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), fmt.Sprintf("KIND_CLUSTER=%s", clusterName))

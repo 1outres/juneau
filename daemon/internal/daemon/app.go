@@ -25,7 +25,6 @@ import (
 	"golang.org/x/sys/unix"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
-	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -166,10 +165,8 @@ func NewApp() *cli.Command {
 					&juneauv1alpha1.DNSZone{}:                   {},
 					&juneauv1alpha1.DNSRecord{}:                 {},
 					&corev1.Service{}:                           {},
-					&corev1.Pod{}: {
-						Field: fields.OneTermEqualSelector("spec.nodeName", nodeName),
-					},
-					&discoveryv1.EndpointSlice{}: {},
+					&corev1.Pod{}:                               {},
+					&discoveryv1.EndpointSlice{}:                {},
 				},
 			})
 			if err != nil {

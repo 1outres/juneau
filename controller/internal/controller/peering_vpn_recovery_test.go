@@ -105,6 +105,24 @@ func TestPeeringVPNReturnWaitsForMatchingSourceGateway(t *testing.T) {
 	}
 }
 
+func TestPeeringVPNReturnAcceptsActiveRouteInPartiallyReadySourceTable(t *testing.T) {
+	r, _, _, _, _, source, peer := peeringRecoveryFixture(t)
+	ctx := context.Background()
+	source.Status.Conditions = []metav1.Condition{{Type: juneau.RouteTableStatusReady, Status: metav1.ConditionFalse, Reason: routeTableReasonNotReady, ObservedGeneration: source.Generation}}
+	if err := r.Status().Update(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(peer)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(peer), peer); err != nil {
+		t.Fatal(err)
+	}
+	if getRoute(peer.Status.Routes, "192.0.2.0/24") == nil {
+		t.Fatalf("ready VPN route was lost while another source route was pending: %+v", peer.Status)
+	}
+}
+
 func TestPeeringPendingVPNKeepsGatewayRoutes(t *testing.T) {
 	r, vpn, _, _, _, _, peer := peeringRecoveryFixture(t)
 	ctx := context.Background()

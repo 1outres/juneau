@@ -71,6 +71,52 @@ jobs:
       - name: Run tests
         run: make test
 
+  vpn-kernel:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+          cache: true
+          cache-dependency-path: |
+            go.work.sum
+            daemon/go.sum
+
+      - name: Install BPF build tools
+        run: |
+          sudo -n apt-get update
+          sudo -n apt-get install -y --no-install-recommends bpftool clang llvm libbpf-dev
+
+      - name: Build BPF objects from source
+        run: |
+          test -r /sys/kernel/btf/vmlinux
+          bpftool btf dump file /sys/kernel/btf/vmlinux format c > daemon/bpf/vmlinux.h
+          tools="$(mktemp -d)"
+          trap 'rm -rf "$tools"' EXIT
+          ln -s "$(command -v clang)" "$tools/bpf-clang"
+          ln -s "$(command -v llvm-strip)" "$tools/bpf-llvm-strip"
+          printf '#!/bin/sh\nexec go run github.com/cilium/ebpf/cmd/bpf2go@v0.20.0 "$@"\n' > "$tools/bpf2go"
+          chmod +x "$tools/bpf2go"
+          cd daemon
+          PATH="$tools:$PATH" go generate ./internal/daemon/bpf
+
+      - name: Run real-kernel VPN packet tests (no skips)
+        run: |
+          set -euo pipefail
+          sudo -n true
+          if ! mountpoint -q /sys/fs/bpf; then
+            sudo -n mount -t bpf bpf /sys/fs/bpf
+          fi
+          cd daemon
+          result="$(mktemp)"
+          trap 'rm -f "$result"' EXIT
+          go test -json -count=1 -exec 'sudo -n' -run '^TestVPN' ./internal/daemon/dataplane/program | tee "$result"
+          python3 scripts/check-vpn-kernel-tests.py < "$result"
+
   images:
     runs-on: ubuntu-latest
     steps:
