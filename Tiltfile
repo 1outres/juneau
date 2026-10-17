@@ -35,7 +35,9 @@ local_resource(
     ignore=['controller/*/*/zz_generated.deepcopy.go'], labels=[LABEL], env=NIX_ENV)
 
 watch_file('./controller/config/')
-k8s_yaml(kustomize('./controller/config/dev'))
+# mNi-Cloud/e2e sets MNI_DEV_OVERLAY to an overlay of controller/config/dev
+# that adds its own patches.
+k8s_yaml(kustomize(os.getenv('MNI_DEV_OVERLAY', './controller/config/dev')))
 
 local_resource(
     'juneau-webhookcertjob-compile', 'make build-webhookcertjob-bin', deps=['controller/cmd/webhookcertjob/main.go'], labels=[LABEL], env=NIX_ENV)
