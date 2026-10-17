@@ -66,10 +66,18 @@
           protocGenGoGrpc = pkgs.writeShellScriptBin "protoc-gen-go-grpc" ''
             exec go run google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1 "$@"
           '';
+          bpfToolchain = [
+            pkgs.go_1_25
+            self.packages.${system}.bpf-clang
+            self.packages.${system}.bpf-llvm-strip
+          ];
         in {
+          bpf = pkgs.mkShell {
+            packages = bpfToolchain;
+          };
+
           default = pkgs.mkShell {
-            packages = with pkgs; [
-              go_1_25
+            packages = bpfToolchain ++ (with pkgs; [
               python3
               python3Packages.pip
               python3Packages.mkdocs
@@ -92,9 +100,7 @@
               setupEnvtest
               protocGenGo
               protocGenGoGrpc
-              self.packages.${system}.bpf-clang
-              self.packages.${system}.bpf-llvm-strip
-            ];
+            ]);
 
             shellHook = ''
               export GOWORK="$PWD/go.work"
