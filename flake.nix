@@ -93,6 +93,7 @@
               clang
               llvmPackages.bintools
               bpftools
+              bear
               git
               docker
               controllerGen
