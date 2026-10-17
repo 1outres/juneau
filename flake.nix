@@ -35,9 +35,6 @@
           protocGenGoGrpc = pkgs.writeShellScriptBin "protoc-gen-go-grpc" ''
             exec go run google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1 "$@"
           '';
-          bpf2go = pkgs.writeShellScriptBin "bpf2go" ''
-            exec go run github.com/cilium/ebpf/cmd/bpf2go@v0.20.0 "$@"
-          '';
           bpfClang = pkgs.writeShellScriptBin "bpf-clang" ''
             exec ${pkgs.llvmPackages.clang-unwrapped}/bin/clang \
               -resource-dir ${pkgs.llvmPackages.clang-unwrapped.lib}/lib/clang/${pkgs.lib.versions.major pkgs.llvmPackages.clang-unwrapped.version} \
@@ -80,7 +77,6 @@
               setupEnvtest
               protocGenGo
               protocGenGoGrpc
-              bpf2go
               bpfClang
               bpfLlvmStrip
               generateVmlinuxHeader
