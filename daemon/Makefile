@@ -1,4 +1,4 @@
-.PHONY: generate generate-proto generate-bpf generate-bpf-native generate-bpf-container verifier-check
+.PHONY: generate generate-proto generate-bpf generate-bpf-native generate-bpf-container verify-bpf verifier-check
 
 UNAME_S := $(shell uname -s)
 
@@ -49,6 +49,13 @@ generate-bpf-container:
 		-w "$(REPO_ROOT)" \
 		$(NIX_IMAGE) \
 		sh -c 'git config --global safe.directory "*" && exec nix --extra-experimental-features "nix-command flakes" develop .#bpf -c make -C daemon generate-bpf-native'
+
+verify-bpf: generate-bpf
+	@if [ -n "$$(git status --porcelain -- internal/daemon/bpf)" ]; then \
+		git status --short -- internal/daemon/bpf; \
+		echo "The committed eBPF objects do not match the sources. Run 'make daemon-generate-bpf' and commit the result." >&2; \
+		exit 1; \
+	fi
 
 # verifier-check loads the generated eBPF objects into the running
 # kernel and prints how much of the verifier's instruction budget each
