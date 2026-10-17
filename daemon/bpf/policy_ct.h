@@ -7,7 +7,7 @@
 #ifndef JUNEAU_BPF_POLICY_CT_H
 #define JUNEAU_BPF_POLICY_CT_H
 
-#include "vmlinux.h"
+#include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
 #include "ct.h"
 #include "maps.h"

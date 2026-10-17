@@ -16,7 +16,38 @@
           name = system;
           value = f system;
         }) systems);
+
+      # The eBPF objects are committed, so every build host must produce the
+      # same bytes. The kernel types and headers they are compiled against
+      # therefore always come from x86_64-linux; only the tools that run
+      # during the build come from the host system.
+      bpfTargetPkgs = import nixpkgs { system = "x86_64-linux"; };
+      bpfKernel = bpfTargetPkgs.linuxPackages_6_12.kernel;
     in {
+      packages = forEachSystem (system:
+        let
+          pkgs = import nixpkgs { inherit system; };
+          clang = pkgs.llvmPackages.clang-unwrapped;
+        in rec {
+          vmlinux-h = pkgs.runCommand "vmlinux-h-${bpfKernel.version}" {
+            nativeBuildInputs = [ pkgs.bpftools ];
+          } ''
+            mkdir -p $out/include
+            bpftool btf dump file ${bpfKernel.dev}/vmlinux format c > $out/include/vmlinux.h
+          '';
+          bpf-clang = pkgs.writeShellScriptBin "bpf-clang" ''
+            exec ${clang}/bin/clang \
+              -resource-dir ${clang.lib}/lib/clang/${pkgs.lib.versions.major clang.version} \
+              -I ${vmlinux-h}/include \
+              -I ${bpfTargetPkgs.libbpf}/include \
+              -I ${bpfTargetPkgs.linuxHeaders}/include \
+              "$@"
+          '';
+          bpf-llvm-strip = pkgs.writeShellScriptBin "bpf-llvm-strip" ''
+            exec ${pkgs.llvmPackages.bintools-unwrapped}/bin/llvm-strip "$@"
+          '';
+        });
+
       devShells = forEachSystem (system:
         let
           pkgs = import nixpkgs { inherit system; };
@@ -34,22 +65,6 @@
           '';
           protocGenGoGrpc = pkgs.writeShellScriptBin "protoc-gen-go-grpc" ''
             exec go run google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1 "$@"
-          '';
-          bpfClang = pkgs.writeShellScriptBin "bpf-clang" ''
-            exec ${pkgs.llvmPackages.clang-unwrapped}/bin/clang \
-              -resource-dir ${pkgs.llvmPackages.clang-unwrapped.lib}/lib/clang/${pkgs.lib.versions.major pkgs.llvmPackages.clang-unwrapped.version} \
-              -I ${pkgs.libbpf}/include \
-              -I ${pkgs.linuxHeaders}/include \
-              "$@"
-          '';
-          bpfLlvmStrip = pkgs.writeShellScriptBin "bpf-llvm-strip" ''
-            exec ${pkgs.llvmPackages.bintools-unwrapped}/bin/llvm-strip "$@"
-          '';
-          generateVmlinuxHeader = pkgs.writeShellScriptBin "juneau-gen-vmlinux" ''
-            set -euo pipefail
-            out="''${1:-daemon/bpf/vmlinux.h}"
-            mkdir -p "$(dirname "$out")"
-            exec bpftool btf dump file /sys/kernel/btf/vmlinux format c > "$out"
           '';
         in {
           default = pkgs.mkShell {
@@ -77,9 +92,8 @@
               setupEnvtest
               protocGenGo
               protocGenGoGrpc
-              bpfClang
-              bpfLlvmStrip
-              generateVmlinuxHeader
+              self.packages.${system}.bpf-clang
+              self.packages.${system}.bpf-llvm-strip
             ];
 
             shellHook = ''

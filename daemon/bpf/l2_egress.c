@@ -10,7 +10,7 @@
 // the point of an L2Network: the workload may run its own bridge, its
 // own DHCP server or a router, and juneau must not answer for it.
 
-#include "vmlinux.h"
+#include <vmlinux.h>
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 #include <stdbool.h>

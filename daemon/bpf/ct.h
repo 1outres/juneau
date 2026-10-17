@@ -11,7 +11,7 @@
 #ifndef JUNEAU_BPF_CT_H
 #define JUNEAU_BPF_CT_H
 
-#include "vmlinux.h"
+#include <vmlinux.h>
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 #include "maps.h"

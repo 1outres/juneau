@@ -2,7 +2,7 @@
 #ifndef JUNEAU_BPF_MAPS_H
 #define JUNEAU_BPF_MAPS_H
 
-#include "vmlinux.h"
+#include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
 
 #ifndef MAX_IF_SUBNET

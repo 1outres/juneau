@@ -29,7 +29,6 @@ generate-bpf:
 	fi
 
 generate-bpf-linux:
-	juneau-gen-vmlinux bpf/vmlinux.h
 	$(GO) generate ./internal/daemon/bpf
 
 generate-bpf-docker: bpf-builder-image

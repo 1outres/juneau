@@ -29,7 +29,7 @@
 // traffic to be judged, which is a strange thing to ask for and not a
 // way around anything.
 
-#include "vmlinux.h"
+#include <vmlinux.h>
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 #include <stdbool.h>

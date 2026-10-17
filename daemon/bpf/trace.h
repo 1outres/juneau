@@ -17,7 +17,7 @@
 #ifndef JUNEAU_BPF_TRACE_H
 #define JUNEAU_BPF_TRACE_H
 
-#include "vmlinux.h"
+#include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
 
 // Verifier budget bounds. Each session consumes one trace_config_map
