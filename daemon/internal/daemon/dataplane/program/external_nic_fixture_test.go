@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -43,9 +44,17 @@ const (
 	internetPeer     = "198.51.100.7"
 )
 
+// A second router on the uplink, and the routing table whose default
+// route goes through it. Source-based rules send traffic to it.
+const (
+	policyRouterAddress = "192.0.2.2"
+	policyRoutingTable  = 100
+)
+
 var (
-	uplinkMAC = bpftest.MAC(0xa0)
-	routerMAC = bpftest.MAC(0xa1)
+	uplinkMAC       = bpftest.MAC(0xa0)
+	routerMAC       = bpftest.MAC(0xa1)
+	policyRouterMAC = bpftest.MAC(0xa2)
 )
 
 // endpointReconciler is what every reconciler that reads a
@@ -179,23 +188,47 @@ func buildUplink(t *testing.T) bpftest.Device {
 	if err := netlink.AddrAdd(built, address); err != nil {
 		t.Fatalf("give the uplink the node address: %v", err)
 	}
+
+	uplink := bpftest.Device{Name: "uplink", Index: built.Attrs().Index}
+	addRouter(t, uplink, routerAddress, routerMAC, unix.RT_TABLE_MAIN)
+	return uplink
+}
+
+// addRouter puts a router whose MAC is already resolved on the uplink and
+// sends the default route of a routing table through it.
+func addRouter(t *testing.T, uplink bpftest.Device, address string, mac net.HardwareAddr, table int) {
+	t.Helper()
+
 	if err := netlink.NeighAdd(&netlink.Neigh{
-		LinkIndex:    built.Attrs().Index,
+		LinkIndex:    uplink.Index,
 		Family:       netlink.FAMILY_V4,
 		State:        netlink.NUD_PERMANENT,
-		IP:           net.ParseIP(routerAddress),
-		HardwareAddr: routerMAC,
+		IP:           net.ParseIP(address),
+		HardwareAddr: mac,
 	}); err != nil {
-		t.Fatalf("resolve the router: %v", err)
+		t.Fatalf("resolve the router %s: %v", address, err)
 	}
 	if err := netlink.RouteAdd(&netlink.Route{
-		LinkIndex: built.Attrs().Index,
-		Gw:        net.ParseIP(routerAddress),
+		LinkIndex: uplink.Index,
+		Gw:        net.ParseIP(address),
+		Table:     table,
 	}); err != nil {
-		t.Fatalf("add the default route: %v", err)
+		t.Fatalf("add the default route through %s to table %d: %v", address, table, err)
 	}
+}
 
-	return bpftest.Device{Name: "uplink", Index: built.Attrs().Index}
+// routeSourceByTable makes the host look up what comes from source in
+// table, the way `ip rule add from <source> lookup <table>` does.
+func routeSourceByTable(t *testing.T, source string, table int) {
+	t.Helper()
+
+	rule := netlink.NewRule()
+	rule.Family = netlink.FAMILY_V4
+	rule.Src = &net.IPNet{IP: net.ParseIP(source).To4(), Mask: net.CIDRMask(32, 32)}
+	rule.Table = table
+	if err := netlink.RuleAdd(rule); err != nil {
+		t.Fatalf("look up what comes from %s in table %d: %v", source, table, err)
+	}
 }
 
 // addLocalNIC builds the host side of a NIC's veth on this node and
