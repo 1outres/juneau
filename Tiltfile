@@ -70,9 +70,15 @@ COPY ./bin/daemon /
 CMD ["/daemon"]
 '''
 
+# The generated objects are written to daemon/internal/daemon/bpf, which
+# juneau-daemon-compile watches, so new bytecode also rebuilds the daemon.
+local_resource(
+    'juneau-bpf-generate', 'make daemon-generate-bpf', deps=['daemon/bpf', 'daemon/internal/daemon/bpf/gen.go'],
+    ignore=['daemon/bpf/*.md'], labels=[LABEL], env=NIX_ENV)
+
 local_resource(
     'juneau-daemon-compile', 'make build-daemon-bin', deps=['daemon/cmd/juneaud/main.go', 'daemon/cmd/cni/main.go', 'daemon/internal/daemon', 'daemon/pkg', 'daemon/pkg/cnipb'],
-    ignore=[], labels=[LABEL], env=NIX_ENV)
+    ignore=[], resource_deps=['juneau-bpf-generate'], labels=[LABEL], env=NIX_ENV)
 
 docker_build_with_restart(
     'daemon:latest', './daemon',

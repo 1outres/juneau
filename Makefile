@@ -58,6 +58,10 @@ daemon-generate-proto: ## Generate daemon protobuf bindings.
 daemon-generate-bpf: ## Generate daemon eBPF bindings.
 	$(MAKE) -C daemon generate-bpf
 
+.PHONY: daemon-verify-bpf
+daemon-verify-bpf: ## Check that the committed daemon eBPF bindings match a fresh build.
+	$(MAKE) -C daemon verify-bpf
+
 .PHONY: docs-build
 docs-build: docs-api-reference ## Build documentation locally.
 	mkdocs build --strict

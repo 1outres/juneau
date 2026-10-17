@@ -1,0 +1,4 @@
+# bpf2go output. Never merge these by hand: regenerate them with
+# `make daemon-generate-bpf` (see docs/developer/bpf-build.md).
+daemon/internal/daemon/bpf/*_bpfe[lb].go linguist-generated -merge
+daemon/internal/daemon/bpf/*_bpfe[lb].o linguist-generated binary

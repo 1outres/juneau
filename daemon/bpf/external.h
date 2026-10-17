@@ -9,7 +9,7 @@
 #ifndef JUNEAU_BPF_EXTERNAL_H
 #define JUNEAU_BPF_EXTERNAL_H
 
-#include "vmlinux.h"
+#include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
 #include "maps.h"
 

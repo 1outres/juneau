@@ -23,7 +23,7 @@
 // them instead: that hook always runs on the node of the workload the
 // packet is addressed to, which is the node that holds the flow.
 
-#include "vmlinux.h"
+#include <vmlinux.h>
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 #include <stdbool.h>

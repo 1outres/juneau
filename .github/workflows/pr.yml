@@ -71,6 +71,24 @@ jobs:
       - name: Run tests
         run: make test
 
+  bpf:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Cache Nix store
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-bpf-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock') }}
+          restore-prefixes-first-match: nix-bpf-${{ runner.os }}-
+
+      - name: Check generated eBPF objects
+        run: nix develop .#bpf -c make daemon-verify-bpf
+
   images:
     runs-on: ubuntu-latest
     steps:

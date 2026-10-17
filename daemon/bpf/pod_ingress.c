@@ -6,7 +6,7 @@
 // original ClusterIP rather than the backend Pod IP. Forward DNAT lives
 // in pod_egress; the two programs together cover the symmetric NAT pair.
 
-#include "vmlinux.h"
+#include <vmlinux.h>
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 #include <stdbool.h>

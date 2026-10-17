@@ -65,3 +65,5 @@ require (
 )
 
 replace github.com/1outres/juneau/controller => ../controller
+
+tool github.com/cilium/ebpf/cmd/bpf2go
