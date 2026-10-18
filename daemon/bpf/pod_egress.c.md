@@ -70,7 +70,7 @@ hairpinするのは、値がEXTERNAL_ADDRESS_DELIVERED_HERE(このNodeに届くp
 
 hostのFIBに、ポートにつながったhostと同じようにルーティングさせる。
 
-1. bpf_fib_lookupでnext hopを引く(forward_via_host_fibと同じくBPF_FIB_LOOKUP_OUTPUTは付けない)
+1. bpf_fib_lookupでnext hopを引く(forward_via_host_fibと同じく送信元IPv4を渡し、BPF_FIB_LOOKUP_OUTPUTは付けない)
 2. SUCCESSとNO_NEIGHならforward_via_host_fibと同じようにredirectする
 3. 負の値(引数の誤り)ならドロップ
 4. それ以外はTC_ACT_OK
@@ -208,7 +208,7 @@ forward方向(caller→ClusterIP)のDNATのみを担当する。reverse SNATはp
 
 VPCの外に出るパケットをhost network stackに渡す共通処理。handle_snat、handle_napt、handle_service_host_remote、LBフローの応答レグ、リモートNodeのunderlay IP宛の応答が使う。
 
-1. bpf_fib_lookupでnext hopを引く(BPF_FIB_LOOKUP_OUTPUTは付けない。付けるとoifがPod側のvethに固定され、そのifindexに対するルートが無いため)
+1. bpf_fib_lookupでnext hopを引く(BPF_FIB_LOOKUP_OUTPUTは付けない。付けるとoifがPod側のvethに固定され、そのifindexに対するルートが無いため)。パケットの送信元IPv4(SNATなどで書き換えた後のもの)も渡すので、hostの送信元ベースのルール(`ip rule add from <prefix> lookup <table>`)が効く
 2. SUCCESS と NO_NEIGH 以外はTC_ACT_SHOT
 3. SUCCESSの場合、dmacとsmacを書き換えてegress ifindexにbpf_redirect
 4. NO_NEIGHの場合、bpf_redirect_neighでkernelのneighborサブシステムに渡す(ARPを送り、応答が来るまでパケットを保持してくれる)

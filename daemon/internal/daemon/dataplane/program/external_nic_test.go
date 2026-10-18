@@ -115,6 +115,30 @@ func TestPodEgressRoutesWhatANICOnAnElasticIPSendsThroughTheHost(t *testing.T) {
 	}
 }
 
+// The host may send what comes from an ElasticIP through another router
+// with a source-based rule. The host FIB lookup has to see the source of
+// the packet for that rule to match.
+func TestPodEgressRoutesWhatANICOnAnElasticIPSendsByTheSourceRulesOfTheHost(t *testing.T) {
+	node := newExternalNode(t)
+	web := node.addLocalNIC(t, "web", webElasticIP, webPodMAC, webHostMAC)
+	addRouter(t, node.uplink, policyRouterAddress, policyRouterMAC, policyRoutingTable)
+	routeSourceByTable(t, webElasticIP, policyRoutingTable)
+
+	frame := bpftest.Frame(t, webHostMAC, webPodMAC, bpftest.EtherTypeIPv4,
+		bpftest.TCPv4(t, webElasticIP, internetPeer, 40000, 443))
+	verdict, out := bpftest.RunFrame(t, node.podEgress.Objs.TcPodEgress, frame, web.veth)
+
+	if verdict != bpftest.ActRedirect {
+		t.Fatalf("verdict %d, want the packet sent out of the uplink (%d)", verdict, bpftest.ActRedirect)
+	}
+	if got := net.HardwareAddr(out[0:6]); got.String() != policyRouterMAC.String() {
+		t.Errorf("the packet leaves for %s, want the router of the source rule %s", got, policyRouterMAC)
+	}
+	if got := net.HardwareAddr(out[6:12]); got.String() != uplinkMAC.String() {
+		t.Errorf("the packet leaves from %s, want the uplink %s", got, uplinkMAC)
+	}
+}
+
 // kubelet reaches a Pod whose eth0 carries an ElasticIP over the host
 // route to it, and the reply comes back to an address of the node. The
 // host FIB does not forward that, and the node's own stack has to have it.
