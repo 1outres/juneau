@@ -999,6 +999,22 @@ struct {
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } policy_ct_map SEC(".maps");
 
+// policy_ct_stats counts the admissions whose pair policy_ct_install
+// could not write in full, which happens when policy_ct_map is full.
+// The conntrack GC reads the counts and logs how much they grew. The
+// slots are mirrored in daemon/internal/daemon/dataplane/policyct.
+#define POLICY_CT_STAT_REV_INSTALL_FAILED 0 // neither half was written
+#define POLICY_CT_STAT_FWD_INSTALL_FAILED 1 // only the reverse half was written
+#define POLICY_CT_STAT_MAX 2
+
+struct {
+  __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+  __uint(max_entries, POLICY_CT_STAT_MAX);
+  __type(key, __u32);
+  __type(value, __u64);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} policy_ct_stats SEC(".maps");
+
 // policy_epoch_map holds one counter at index 0: the generation of the
 // policy rules the data plane is enforcing. Every policy_ct_key starts
 // with that value, so bumping the counter puts the whole table out of

@@ -664,6 +664,7 @@ type PodEgressMapSpecs struct {
 	PodEgressEmitScratch   *ebpf.MapSpec `ebpf:"pod_egress_emit_scratch"`
 	PodEgressNatScratch    *ebpf.MapSpec `ebpf:"pod_egress_nat_scratch"`
 	PolicyCtMap            *ebpf.MapSpec `ebpf:"policy_ct_map"`
+	PolicyCtStats          *ebpf.MapSpec `ebpf:"policy_ct_stats"`
 	PolicyEpochMap         *ebpf.MapSpec `ebpf:"policy_epoch_map"`
 	ServiceAclMap          *ebpf.MapSpec `ebpf:"service_acl_map"`
 	ServiceAffinityMap     *ebpf.MapSpec `ebpf:"service_affinity_map"`
@@ -756,6 +757,7 @@ type PodEgressMaps struct {
 	PodEgressEmitScratch   *ebpf.Map `ebpf:"pod_egress_emit_scratch"`
 	PodEgressNatScratch    *ebpf.Map `ebpf:"pod_egress_nat_scratch"`
 	PolicyCtMap            *ebpf.Map `ebpf:"policy_ct_map"`
+	PolicyCtStats          *ebpf.Map `ebpf:"policy_ct_stats"`
 	PolicyEpochMap         *ebpf.Map `ebpf:"policy_epoch_map"`
 	ServiceAclMap          *ebpf.Map `ebpf:"service_acl_map"`
 	ServiceAffinityMap     *ebpf.Map `ebpf:"service_affinity_map"`
@@ -822,6 +824,7 @@ func (m *PodEgressMaps) Close() error {
 		m.PodEgressEmitScratch,
 		m.PodEgressNatScratch,
 		m.PolicyCtMap,
+		m.PolicyCtStats,
 		m.PolicyEpochMap,
 		m.ServiceAclMap,
 		m.ServiceAffinityMap,
