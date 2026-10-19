@@ -2,13 +2,12 @@ package l2
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/cilium/ebpf"
-	"go.uber.org/zap"
 
 	bpf "github.com/1outres/juneau/daemon/internal/daemon/bpf"
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/mapsweep"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/monotonic"
 )
 
@@ -66,50 +65,50 @@ func (g *FdbGC) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			g.Sweep()
+			for _, report := range g.Sweep() {
+				report.Log("l2 fdb gc")
+			}
 		}
 	}
 }
 
-// Sweep drops every entry that has not been seen for the aging time.
-// Exported so a test can run one pass without a ticker.
-func (g *FdbGC) Sweep() {
+// Sweep drops every entry that has not been seen for the aging time,
+// and reports the pass over the table of each network. Exported so a
+// test can run one pass without a ticker.
+func (g *FdbGC) Sweep() []mapsweep.Report {
 	if g.table == nil {
-		return
+		return nil
 	}
 	nowNs := g.now()
+	var reports []mapsweep.Report
 	g.table.ForEachInner(func(vni uint32, inner *ebpf.Map) {
-		g.sweepOne(vni, inner, nowNs)
+		stats, err := mapsweep.Sweep(inner, func(snapshot []mapsweep.Entry[fdbKey, fdbVal]) mapsweep.Plan[fdbKey, fdbVal] {
+			return planFdbAging(snapshot, nowNs, g.aging)
+		})
+		reports = append(reports, mapsweep.Report{Map: "l2_fdb", Stats: stats, Err: err, Fields: []any{"vni", vni}})
 	})
+	return reports
 }
 
-func (g *FdbGC) sweepOne(vni uint32, inner *ebpf.Map, nowNs uint64) {
-	var (
-		key bpf.PodEgressL2FdbKey
-		val bpf.PodEgressL2FdbVal
-	)
-	iter := inner.Iterate()
-	for iter.Next(&key, &val) {
+type (
+	fdbKey = bpf.PodEgressL2FdbKey
+	fdbVal = bpf.PodEgressL2FdbVal
+)
+
+const reasonAged mapsweep.Reason = "aged"
+
+func planFdbAging(snapshot []mapsweep.Entry[fdbKey, fdbVal], nowNs, aging uint64) mapsweep.Plan[fdbKey, fdbVal] {
+	return mapsweep.ByEntry(snapshot, reasonAged, func(_ fdbKey, val fdbVal) bool {
 		// The gateway entry is not learned and never goes stale: the
 		// port sends no frame to refresh its stamp with, and taking it
 		// out would cut the segment off from the rest of the Vpc until
 		// the reconciler noticed.
 		if val.Flags&FdbFlagGateway != 0 {
-			continue
+			return false
 		}
 		// A stamp from the future means the data plane refreshed the
 		// entry between the read of the clock and the read of the
 		// entry. It is fresh by definition, so leave it.
-		if val.LastSeenNs > nowNs || nowNs-val.LastSeenNs < g.aging {
-			continue
-		}
-		// Losing the race against a refresh or an LRU eviction is
-		// normal: the entry is gone either way.
-		if err := inner.Delete(&key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-			zap.S().Warnf("l2 fdb gc: delete from vni %d: %v", vni, err)
-		}
-	}
-	if err := iter.Err(); err != nil {
-		zap.S().Warnf("l2 fdb gc: iterate vni %d: %v", vni, err)
-	}
+		return val.LastSeenNs <= nowNs && nowNs-val.LastSeenNs >= aging
+	})
 }
