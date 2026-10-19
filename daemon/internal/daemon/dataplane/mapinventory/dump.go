@@ -2,8 +2,10 @@ package mapinventory
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"reflect"
 
 	"github.com/cilium/ebpf"
 
@@ -36,6 +38,9 @@ type DumpOptions struct {
 //     every key field, fall through to a single Lookup instead.
 //   - LPM_TRIE: same as plain HASH; entries are returned with their
 //     stored prefix lengths.
+//   - Per-CPU maps: same as plain HASH/ARRAY, with each value shown as
+//     the sum of the values of every CPU. Register lets a per-CPU map
+//     in only when its value is made of u64 counters.
 //   - HASH_OF_MAPS: InnerKey must resolve to a programmed inner map.
 //     The inner is opened, iterated, and closed. The outer key fields
 //     are echoed as part of the response so kubectl can render them.
@@ -80,17 +85,18 @@ func dumpFlat(ctx context.Context, d *Descriptor, opts DumpOptions, emit EntryEm
 		if err != nil {
 			return err
 		}
-		val := make([]byte, d.Value.Width())
+		values := valuesOf(d.Map, d.Value)
+		val := values.target()
 		if err := d.Map.Lookup(key, val); err != nil {
 			if errors.Is(err, ebpf.ErrKeyNotExist) {
 				return nil
 			}
 			return fmt.Errorf("lookup %s: %w", d.Name, err)
 		}
-		return emitOne(key, val)
+		return emitOne(key, values.bytes(val))
 	}
 
-	return iterateFlat(d.Map, d.Key.Width(), d.Value.Width(), opts.Limit, func(k, v []byte) (bool, error) {
+	return iterateFlat(d.Map, d.Key.Width(), valuesOf(d.Map, d.Value), opts.Limit, func(k, v []byte) (bool, error) {
 		if err := emitOne(k, v); err != nil {
 			return false, err
 		}
@@ -134,7 +140,7 @@ func dumpHashOfMaps(ctx context.Context, d *Descriptor, opts DumpOptions, emit E
 	defer func() { _ = inner.Close() }()
 
 	emitted := uint32(0)
-	return iterateFlat(inner, d.InnerKey.Width(), d.InnerValue.Width(), opts.Limit, func(k, v []byte) (bool, error) {
+	return iterateFlat(inner, d.InnerKey.Width(), valuesOf(inner, d.InnerValue), opts.Limit, func(k, v []byte) (bool, error) {
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
@@ -162,13 +168,13 @@ func dumpHashOfMaps(ctx context.Context, d *Descriptor, opts DumpOptions, emit E
 // iterateFlat walks every entry of m using the cilium/ebpf MapIterator.
 // The cb returns (continue, error). Iteration order is implementation
 // defined (HASH/LRU_HASH/LPM_TRIE all share this iteration semantics).
-func iterateFlat(m *ebpf.Map, keyW, valW int, _ uint32, cb func(k, v []byte) (bool, error)) error {
+func iterateFlat(m *ebpf.Map, keyW int, values valueReader, _ uint32, cb func(k, v []byte) (bool, error)) error {
 	key := make([]byte, keyW)
-	val := make([]byte, valW)
+	val := values.target()
 
 	it := m.Iterate()
-	for it.Next(&key, &val) {
-		cont, err := cb(key, val)
+	for it.Next(&key, val) {
+		cont, err := cb(key, values.bytes(val))
 		if err != nil {
 			return err
 		}
@@ -180,4 +186,43 @@ func iterateFlat(m *ebpf.Map, keyW, valW int, _ uint32, cb func(k, v []byte) (bo
 		return fmt.Errorf("iterate: %w", err)
 	}
 	return nil
+}
+
+// valueReader reads the value under a key as the bytes the value
+// schema decodes. A per-CPU map holds one value for each CPU, and the
+// reader adds them up field by field.
+type valueReader struct {
+	width  int
+	perCPU bool
+}
+
+func valuesOf(m *ebpf.Map, schema Schema) valueReader {
+	return valueReader{width: schema.Width(), perCPU: perCPU(m.Type())}
+}
+
+// target is what Map.Lookup and MapIterator.Next write a value into.
+func (r valueReader) target() any {
+	if r.perCPU {
+		counters := reflect.ArrayOf(r.width/8, reflect.TypeFor[uint64]())
+		return reflect.New(reflect.SliceOf(counters)).Interface()
+	}
+	buf := make([]byte, r.width)
+	return &buf
+}
+
+// bytes turns what target received into the bytes of one value.
+func (r valueReader) bytes(target any) []byte {
+	if !r.perCPU {
+		return *target.(*[]byte)
+	}
+	cpus := reflect.ValueOf(target).Elem()
+	out := make([]byte, r.width)
+	for field := range r.width / 8 {
+		var sum uint64
+		for cpu := range cpus.Len() {
+			sum += cpus.Index(cpu).Index(field).Uint()
+		}
+		binary.LittleEndian.PutUint64(out[8*field:], sum)
+	}
+	return out
 }

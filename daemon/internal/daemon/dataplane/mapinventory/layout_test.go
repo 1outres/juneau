@@ -127,6 +127,13 @@ func TestSchemaLayoutMatchesGenerated(t *testing.T) {
 			valueSize: unsafe.Sizeof(bpf.PodEgressPolicyCtVal{}),
 		},
 		{
+			name:      "policy_ct_stats",
+			key:       Schema{Fields: []Field{FieldU32Named("slot")}},
+			val:       Schema{Fields: []Field{FieldU64Named("count")}},
+			keySize:   4,
+			valueSize: 8,
+		},
+		{
 			name:      "policy_epoch_map",
 			key:       schemaPolicyEpochKey(),
 			val:       schemaPolicyEpochVal(),
