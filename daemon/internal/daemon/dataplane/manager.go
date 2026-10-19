@@ -813,8 +813,11 @@ func (m *Manager) TraceStore() *trace.Store { return m.traceStore }
 // what removes them.
 func (m *Manager) startConntrackGC(ctx context.Context, policyEpoch reconciler.EpochSource) {
 	gc := reconciler.NewConntrack(
-		m.podEgress.Objs.CtMap,
-		m.podEgress.Objs.PolicyCtMap,
+		reconciler.ConntrackMaps{
+			CT:            m.podEgress.Objs.CtMap,
+			PolicyCT:      m.podEgress.Objs.PolicyCtMap,
+			PolicyCTStats: m.podEgress.Objs.PolicyCtStats,
+		},
 		policyEpoch,
 		reconciler.ConntrackGCInterval,
 	)
