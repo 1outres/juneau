@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -67,9 +66,6 @@ func ensureARPClient() (*arpClientInstance, error) {
 }
 
 func teardownARPClient() {
-	if strings.EqualFold(os.Getenv("E2E_KEEP_CLUSTER"), "true") {
-		return
-	}
 	runBestEffort(repoRoot, "docker", "rm", "-f", arpClientContainerName)
 }
 

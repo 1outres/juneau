@@ -122,9 +122,6 @@ func discoverRouterIP(name string) (string, error) {
 }
 
 func teardownBGPRouter() {
-	if strings.EqualFold(os.Getenv("E2E_KEEP_CLUSTER"), "true") {
-		return
-	}
 	runBestEffort(repoRoot, "docker", "rm", "-f", bgpRouterContainerName)
 	cleanupKindBridgeHostRPFWorkaround(bgpExternalCIDR)
 }

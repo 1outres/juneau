@@ -216,7 +216,7 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 // kind cluster while the serial bgp/nat specs are still executing on
 // process 1.
 var _ = SynchronizedAfterSuite(func() {}, func() {
-	if strings.EqualFold(os.Getenv("E2E_KEEP_CLUSTER"), "true") {
+	if envBool("E2E_KEEP_CLUSTER") {
 		return
 	}
 	teardownBGPRouter()
