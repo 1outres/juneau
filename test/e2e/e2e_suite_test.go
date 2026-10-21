@@ -90,6 +90,15 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 
 	mustRun(root, "kind", "create", "cluster", "--name", clusterName, "--config", configFile)
 
+	// Ginkgo reports a failed BeforeSuite only after AfterSuite deleted the
+	// cluster, so the state has to be dumped while the failure unwinds.
+	defer func() {
+		if failure := recover(); failure != nil {
+			dumpBringUpDiagnostics()
+			panic(failure)
+		}
+	}()
+
 	imageTargets := []struct {
 		makeTarget string
 		envVar     string
@@ -419,6 +428,50 @@ func dumpDescribe(resource string, args ...string) {
 		return
 	}
 	_, _ = fmt.Fprintf(GinkgoWriter, "\ndescribe %s\n%s\n", resource, out)
+}
+
+// dumpBringUpDiagnostics writes what is needed to see why the cluster did
+// not come up.
+func dumpBringUpDiagnostics() {
+	dumpResource("nodes", "-o", "wide")
+	dumpDescribe("nodes")
+	dumpResource("pods", "-A", "-o", "wide")
+	dumpEvents()
+	dumpDescribe("pods", "-n", controllerNamespace)
+	dumpLogs(controllerNamespace, "deployment/juneau-controller-manager")
+	dumpPodLogs(daemonNamespace, "app=cni-daemon")
+}
+
+// dumpPodLogs writes the current and the previous logs of every container
+// of the matching Pods, one container at a time because kubectl stops at the
+// first container that has no previous log.
+func dumpPodLogs(namespace string, selector string) {
+	pods, err := kubectlOutput(repoRoot, "get", "pods", "-n", namespace, "-l", selector, "-o",
+		`jsonpath={range .items[*]}{.metadata.name}{"="}{range .spec.initContainers[*]}{.name}{","}{end}{range .spec.containers[*]}{.name}{","}{end}{"\n"}{end}`)
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "failed to list pods %s in %s: %v\n", selector, namespace, err)
+		return
+	}
+	for _, line := range strings.Split(pods, "\n") {
+		pod, containers, found := strings.Cut(strings.TrimSpace(line), "=")
+		if !found {
+			continue
+		}
+		for _, container := range strings.Split(strings.TrimSuffix(containers, ","), ",") {
+			for _, previous := range []bool{false, true} {
+				args := []string{"logs", "-n", namespace, pod, "-c", container}
+				if previous {
+					args = append(args, "--previous")
+				}
+				out, err := kubectlOutput(repoRoot, args...)
+				if err != nil {
+					_, _ = fmt.Fprintf(GinkgoWriter, "failed to dump logs for %s/%s container %s (previous=%t): %v\n", namespace, pod, container, previous, err)
+					continue
+				}
+				_, _ = fmt.Fprintf(GinkgoWriter, "\nlogs %s/%s container %s (previous=%t)\n%s\n", namespace, pod, container, previous, out)
+			}
+		}
+	}
 }
 
 func dumpEvents() {
