@@ -76,6 +76,8 @@ MACのspoofingは許容します。L2Networkはユーザが自分で作るセグ
 
 掃除は`daemon/internal/daemon/dataplane/l2/fdb_gc.go`のtickerが30秒ごとに回します。MACが黙ったことを知らせるKubernetesのイベントは存在しないので、`reconciler/service/affinity_gc.go`と同じ形です。時刻の読み取りには`internal/monotonic.Ns`を使っています。wall clockで比べるとNTPの調整でTTLの比較が静かに壊れます。
 
+表の読み書きは`internal/mapsweep`に任せています。batch lookupで取ったスナップショットから古いエントリを選び、消す直前に読み直して、まだ古いものだけを消します。`policy_ct_map`のGCと同じ処理です。
+
 LRUなのでテーブルが溢れても正しさは壊れません。掃除が足すのは、Juneauから見えない場所へ移ったMACが、エージング時間を過ぎたら古い場所へ送られなくなるという性質です。
 
 ## BUMフラッディング

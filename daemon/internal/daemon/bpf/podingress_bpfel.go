@@ -618,6 +618,7 @@ type PodIngressMapSpecs struct {
 	NodeIngressIfindex     *ebpf.MapSpec `ebpf:"node_ingress_ifindex"`
 	NodeUnderlays          *ebpf.MapSpec `ebpf:"node_underlays"`
 	PolicyCtMap            *ebpf.MapSpec `ebpf:"policy_ct_map"`
+	PolicyCtStats          *ebpf.MapSpec `ebpf:"policy_ct_stats"`
 	PolicyEpochMap         *ebpf.MapSpec `ebpf:"policy_epoch_map"`
 	ServiceAclMap          *ebpf.MapSpec `ebpf:"service_acl_map"`
 	ServiceAffinityMap     *ebpf.MapSpec `ebpf:"service_affinity_map"`
@@ -708,6 +709,7 @@ type PodIngressMaps struct {
 	NodeIngressIfindex     *ebpf.Map `ebpf:"node_ingress_ifindex"`
 	NodeUnderlays          *ebpf.Map `ebpf:"node_underlays"`
 	PolicyCtMap            *ebpf.Map `ebpf:"policy_ct_map"`
+	PolicyCtStats          *ebpf.Map `ebpf:"policy_ct_stats"`
 	PolicyEpochMap         *ebpf.Map `ebpf:"policy_epoch_map"`
 	ServiceAclMap          *ebpf.Map `ebpf:"service_acl_map"`
 	ServiceAffinityMap     *ebpf.Map `ebpf:"service_affinity_map"`
@@ -772,6 +774,7 @@ func (m *PodIngressMaps) Close() error {
 		m.NodeIngressIfindex,
 		m.NodeUnderlays,
 		m.PolicyCtMap,
+		m.PolicyCtStats,
 		m.PolicyEpochMap,
 		m.ServiceAclMap,
 		m.ServiceAffinityMap,

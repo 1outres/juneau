@@ -157,6 +157,10 @@ admissionが成立すると、`apply_policy`は`policy_ct_install`を呼んで`p
 
 keyにhookが入っているので、エントリは「このenforcement pointがこのフローを許可した」という意味を持ちます。他のhookが書いたエントリを拾うことはありません。次のパケットからは、そのhookでのlookupがヒットして層ごとのルール走査を飛ばします。応答パケットは、それを許可したhookが自分で書いた逆向きエントリで短絡します。
 
+書く順番は逆方向が先で、逆方向の書き込みが成功したときだけ順方向を書きます。順方向だけが残ると、そのhookは以後のパケットを短絡させて評価をやり直さないので、逆方向は二度と書かれません。応答は相手側のルールで新しいフローとして判定され、ingressがdeny-by-defaultなら落ち続けます (Issue #77)。逆方向だけが残った場合は、次のパケットがmissして評価をやり直し、2エントリを書き直します。
+
+書き込みが失敗するのは`policy_ct_map`が満杯のときです。パケットはルールが許可しているのでそのまま通し、失敗の回数をPERCPU_ARRAYの`policy_ct_stats`に数えます。slot 0は逆方向が書けず、どちらも書かなかった回数です。slot 1は逆方向だけ書けて、順方向が書けなかった回数です。
+
 短絡したときにやるのは`last_seen_ns`の更新と、TCPならflagsの取り込みと状態遷移だけです。CLOSEDまで進んだら、そのhookが入れた2エントリをその場で消します。他方のhookのエントリには触りません。相手側のhookは同じhandshakeを自分で見て、自分のエントリを閉じます。
 
 エントリを書く条件は「どちらかの層がenforcingであること」で、`acl_id != 0` または selfにSGが1つ以上付いている、のいずれかです。どちらも該当しないフローにはエントリを作りません。誰も取り締まっていないフローの状態を持っても引くことがないからです。
@@ -258,9 +262,15 @@ L4を読めなかったパケットと非IPv4のフレームをfail-closedにし
 
 `policy_ct_map`は`BPF_MAP_TYPE_HASH`です。LRUではないので、埋まってもカーネルが古いエントリを追い出すことはありません。回収は`reconciler.Conntrack`のGCが唯一の経路です。
 
-GCは`ConntrackGCInterval` (30秒) ごとに`ct_map`と`policy_ct_map`の両方を走査し、`ctstate.ShouldEvict`が真になったエントリを消します。TTL判定は両テーブル共通です。
+GCは`ConntrackGCInterval` (30秒) ごとに`ct_map`と`policy_ct_map`の両方を走査します。TTLの判定は`ctstate.ShouldEvict`で、両テーブル共通です。
 
-`policy_ct_map`にはもう1つ判定があって、keyの`epoch`が現在の世代と違うエントリはTTLの残りに関係なく落とします。到達不能になったエントリを、TTL (established TCPなら1時間) まで抱えないためです。走査は元から全エントリを回っているので、追加コストは比較1回分です。
+走査は`internal/mapsweep`が受け持ち、読む段階と消す段階を分けています。読む段階では`BPF_MAP_LOOKUP_BATCH`で全件のスナップショットを取ります。HASHのbatchのカーソルはバケット番号なので、data planeが同時に削除しても先頭に戻りません。以前は`Map.Iterate`で走査しながら今のキーを消していました。`BPF_MAP_GET_NEXT_KEY`は渡したキーが無いと先頭のキーを返すので、削除のたびに走査が先頭に戻り、cilium/ebpfが`max_entries`回で`iteration aborted`として打ち切っていました。1回のパスで消せるのは数百件で、表の後半に届かないまま`policy_ct_map`が満杯になっていました (Issue #77)。
+
+消す段階では、候補を消す直前に`Lookup`で読み直して判定をやり直します。スナップショットの後にdata planeが使ったエントリは残ります。`BPF_MAP_DELETE_BATCH`は存在しないキーで止まるので使わず、1件ずつ`Delete`します。data planeが先に消していたキーは、消せなくても正常として扱います。
+
+`policy_ct_map`には判定がもう2つあります。1つ目は世代で、keyの`epoch`が現在の世代と違うエントリはTTLの残りに関係なく落とします。到達不能になったエントリを、TTL (established TCPなら1時間) まで抱えないためです。現在の世代はスナップショットを読んだ後に読むので、読んでいる最中にbumpされても、新しい世代で書かれたエントリを古い世代として消すことはありません。
+
+2つ目はペアです。現在の世代のエントリは、同じadmissionが書いたキーKとその逆向きのキー (`policyct.Reverse(K)`) の2つで1組です。GCは、残っている側がすべて期限切れのときだけ、2つを一緒に消します。片方ずつTTLで判定すると、片方向のUDPで、送り続ける側の順方向は新しいまま、たまにしか返らない逆方向だけが消えます。残った順方向は「policy_ct_mapによるステートフル化」の節で書いた、順方向だけが残った状態と同じで、応答が通らなくなります。
 
 | 状態 | TTL |
 |---|---|
@@ -276,7 +286,7 @@ GCは`ConntrackGCInterval` (30秒) ごとに`ct_map`と`policy_ct_map`の両方�
 
 CLOSEDになったTCPのエントリは、FINやRSTを見たhookが`policy_ct_observe_tcp`の中で消します。GCが拾うのはその取りこぼしと、片方向しか閉じなかったフローです。
 
-mapが埋まると新しいフローはエントリを持てません。順方向はパケットごとに層の評価が走るだけですが、応答パケットは短絡できなくなるので、ingressがdeny-by-defaultのPodでは応答が落ちます。
+mapが埋まると新しいフローはエントリを持てません。順方向はパケットごとに層の評価が走るだけですが、応答パケットは短絡できなくなるので、ingressがdeny-by-defaultのPodでは応答が落ちます。SGを迂回して応答を通すことはしません。埋まる前に気づけるように、GCは占有率が80%以上になるとWarnのログを出します。
 
 ## 観測する
 
@@ -304,6 +314,14 @@ $ kubectl juneau bpf dump policy_epoch_map
 
 index 0のエントリが1つ出るだけです。ルールを変更したあとにこの値が動いていなければ、daemonがbumpしていません。値が動いているのに古い判定のままなら、`policy_ct_map`のdumpでkeyの`epoch`列を見てください。短絡に使われているエントリは必ず現在の世代の値を持っています。
 
+`policy_ct_install`が書けなかった回数の累計は`policy_ct_stats`で読めます。CPUごとの値を全CPU分足して出します。
+
+```console
+$ kubectl juneau bpf dump policy_ct_stats
+```
+
+GCは1回のパスごとに、表ごとに1行のログを出します。`read`は読んだ件数、`removed`は消した件数で、`policy_ct_map`では`staleEpoch` (世代が古い) と`expired` (期限切れ) に分かれます。`kept`は再確認で残した件数、`occupancyPercent`は`max_entries`に対する占有率です。`policy_ct_map`の行には、前のパスから増えた`policy_ct_stats`の値も`reverseInstallFailures`と`forwardInstallFailures`として載ります。普段はDebugで、占有率が80%以上のとき、installの失敗が増えたとき、走査が失敗したときはWarnになります。
+
 パケット単位で追いたい場合はTraceSessionを使います。
 
 ```console
@@ -319,12 +337,14 @@ policyの層ごとのイベント (`acl pass`、`acl drop`、`sg pass`、`sg dro
 
 - `daemon/bpf/policy.h`: `apply_policy`。ACL → SG → CT installの本体
 - `daemon/bpf/policy_tuple.h`: policyがマッチするtupleの組み立てと、`ipv4_frag_map`によるfragmentのポート復元
-- `daemon/bpf/policy_ct.h`: `policy_ct_map`の読み書き。key構築、両方向install、TCP観測とCLOSE時の削除
-- `daemon/bpf/maps.h`: `policy_ct_key` / `policy_ct_val` / `policy_epoch_map`の定義と`POLICY_HOOK_*`、`MAX_ACL_RULES_PER_DIR` / `MAX_SG_RULES_PER_DIR`
+- `daemon/bpf/policy_ct.h`: `policy_ct_map`の読み書き。key構築、逆方向を先に書く両方向install、installの失敗の計数、TCP観測とCLOSE時の削除
+- `daemon/bpf/maps.h`: `policy_ct_key` / `policy_ct_val` / `policy_ct_stats` / `policy_epoch_map`の定義と`POLICY_HOOK_*`、`MAX_ACL_RULES_PER_DIR` / `MAX_SG_RULES_PER_DIR`
 - `daemon/bpf/acl.h`、`daemon/bpf/sg.h`: 層ごとのルール走査
 - `controller/api/v1alpha1/policy_capacity.go`: エントリ数の数え方とdirectionごとの上限。webhook、controller、daemonが共有する唯一の定義
 - `controller/api/v1alpha1/protocol.go`: protocolのキーワード表と番号への解決。ここも3者が共有します
 - `daemon/internal/daemon/dataplane/policy/`: ルールの反映 (`aclstore.go`、`sgstore.go`、`membership.go`、`rotator.go`)、容量判定とfail-closed (`capacity.go`)、世代管理 (`epoch.go`、`invalidator.go`)
-- `daemon/internal/daemon/dataplane/reconciler/conntrack.go`、`daemon/internal/daemon/dataplane/ctstate/ttl.go`: GC、TTL、世代の外れたエントリの回収
+- `daemon/internal/daemon/dataplane/reconciler/conntrack.go`、`daemon/internal/daemon/dataplane/ctstate/ttl.go`: GC、TTL、世代の外れたエントリの回収、ペアの判定
+- `daemon/internal/daemon/dataplane/internal/mapsweep/`: 動いているHASH mapを、スナップショットと消す直前の読み直しで掃除する共通処理。L2 FDBとService affinityのGCも使います
+- `daemon/internal/daemon/dataplane/policyct/`: `policy_ct.h`のうちユーザ空間が使う部分 (逆向きのkeyの作り方と`policy_ct_stats`のslot) の写し
 - `daemon/internal/daemon/dataplane/mapinventory/register.go`: `kubectl juneau bpf`に見せているスキーマ
 - `daemon/cmd/verifiercheck/`: `make -C daemon verifier-check`の中身。verifierの命令数を実機で測る

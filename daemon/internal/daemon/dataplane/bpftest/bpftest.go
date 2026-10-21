@@ -61,12 +61,29 @@ type Objects struct {
 	collection *ebpf.Collection
 }
 
+// Option changes the layout of an object before Load builds it.
+type Option func(t *testing.T, spec *ebpf.CollectionSpec)
+
+// WithMaxEntries gives the map of the given name room for maxEntries
+// entries. A test about a full map fills a small one, which is much
+// faster than filling one of the real size.
+func WithMaxEntries(name string, maxEntries uint32) Option {
+	return func(t *testing.T, spec *ebpf.CollectionSpec) {
+		t.Helper()
+		m, ok := spec.Maps[name]
+		if !ok {
+			t.Fatalf("bpftest: the object has no map %q", name)
+		}
+		m.MaxEntries = maxEntries
+	}
+}
+
 // Load builds a fresh copy of one generated object. Pinning is
 // stripped first: the daemon shares maps between programs by pinning
 // them under one path, and a test that did the same would inherit
 // whatever a previous test — or a daemon on this host — had left in
 // them.
-func Load(t *testing.T, load func() (*ebpf.CollectionSpec, error)) *Objects {
+func Load(t *testing.T, load func() (*ebpf.CollectionSpec, error), opts ...Option) *Objects {
 	t.Helper()
 
 	spec, err := load()
@@ -75,6 +92,9 @@ func Load(t *testing.T, load func() (*ebpf.CollectionSpec, error)) *Objects {
 	}
 	for _, m := range spec.Maps {
 		m.Pinning = ebpf.PinNone
+	}
+	for _, opt := range opts {
+		opt(t, spec)
 	}
 
 	collection, err := ebpf.NewCollection(spec)

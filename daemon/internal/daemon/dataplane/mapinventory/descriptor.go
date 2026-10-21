@@ -112,6 +112,11 @@ func (inv *Inventory) Register(d *Descriptor) error {
 			return fmt.Errorf("%w: %q value schema=%d bytes, map=%d", ErrSchemaMismatch, d.Name, valW, info.ValueSize)
 		}
 	}
+	if perCPU(info.Type) {
+		if err := requireCounters(d); err != nil {
+			return err
+		}
+	}
 
 	inv.byName[d.Name] = d
 	inv.order = append(inv.order, d.Name)
@@ -222,4 +227,25 @@ func mapTypeName(info *ebpf.MapInfo) string {
 		return "UNKNOWN"
 	}
 	return info.Type.String()
+}
+
+// perCPU reports whether a map of type t holds one value for each CPU.
+func perCPU(t ebpf.MapType) bool {
+	switch t {
+	case ebpf.PerCPUHash, ebpf.PerCPUArray, ebpf.LRUCPUHash, ebpf.PerCPUCGroupStorage:
+		return true
+	}
+	return false
+}
+
+// requireCounters checks that every value field of a per-CPU map is a
+// u64. A dump shows such a value as the sum over the CPUs, and a sum
+// only means something for a counter.
+func requireCounters(d *Descriptor) error {
+	for _, f := range d.Value.Fields {
+		if f.Type != FieldU64 {
+			return fmt.Errorf("%w: %q has the %s field %q", ErrPerCPUValue, d.Name, fieldTypeName(f), f.Name)
+		}
+	}
+	return nil
 }

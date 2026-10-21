@@ -107,10 +107,23 @@ func ipv4Bytes(t *testing.T, address string) []byte {
 	return ip
 }
 
+// TCP flags a test can put on a segment.
+const (
+	TCPFlagSYN = 0x02
+	TCPFlagACK = 0x10
+)
+
 // TCPv4 builds the payload of a minimal IPv4 TCP segment. The checksums
 // are left at zero: the data plane only ever updates them
 // incrementally, so nothing along the way reads them.
 func TCPv4(t *testing.T, src, dst string, sport, dport uint16) []byte {
+	t.Helper()
+	return TCPv4Flags(t, src, dst, sport, dport, TCPFlagACK)
+}
+
+// TCPv4Flags is TCPv4 with the TCP flags of the segment named, for the
+// tests that open a flow with a SYN.
+func TCPv4Flags(t *testing.T, src, dst string, sport, dport uint16, flags byte) []byte {
 	t.Helper()
 
 	packet := make([]byte, 40)
@@ -124,7 +137,7 @@ func TCPv4(t *testing.T, src, dst string, sport, dport uint16) []byte {
 	binary.BigEndian.PutUint16(packet[20:22], sport)
 	binary.BigEndian.PutUint16(packet[22:24], dport)
 	packet[32] = 5 << 4 // data offset: 5 words
-	packet[33] = 0x10   // ACK
+	packet[33] = flags
 	return packet
 }
 

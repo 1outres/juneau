@@ -73,9 +73,25 @@ policy_ct_build_key(__u8 hook, __u32 epoch, __u32 vpc_id, __be32 saddr, __be32 d
   return key;
 }
 
+static __always_inline void policy_ct_count_failure(__u32 slot) {
+  __u64 *count = bpf_map_lookup_elem(&policy_ct_stats, &slot);
+  if (count)
+    *count += 1;
+}
+
 // policy_ct_install writes the admission for both directions of the
 // flow, as seen from one enforcement point: fwd_key as given, plus the
 // inverted tuple under the peer hook.
+//
+// The reverse half is written first, and the forward half only once
+// the reverse half is in (issue #77). A forward half on its own
+// short-circuits every later packet of the flow at this hook, so the
+// reverse half is never written again and every reply is judged as a
+// new flow by the rules of the other side. A reverse half on its own
+// does no harm: the next packet of the flow misses, is evaluated again
+// and writes the pair. A write fails only when policy_ct_map is full.
+// The packet still goes through, because the rules admitted it, and
+// the failure is counted in policy_ct_stats.
 //
 // Marked as a BPF-to-BPF subprogram (noinline) so the key and value it
 // builds live in their own stack frame. Re-using the caller's fwd key
@@ -89,10 +105,14 @@ policy_ct_install(const struct policy_ct_key *fwd_key, __u8 init_state,
       .flags_seen = init_flags,
       .last_seen_ns = bpf_ktime_get_ns(),
   };
-  bpf_map_update_elem(&policy_ct_map, fwd_key, &val, BPF_ANY);
 
   struct policy_ct_key rev_key = policy_ct_reverse_key(fwd_key);
-  bpf_map_update_elem(&policy_ct_map, &rev_key, &val, BPF_ANY);
+  if (bpf_map_update_elem(&policy_ct_map, &rev_key, &val, BPF_ANY) != 0) {
+    policy_ct_count_failure(POLICY_CT_STAT_REV_INSTALL_FAILED);
+    return;
+  }
+  if (bpf_map_update_elem(&policy_ct_map, fwd_key, &val, BPF_ANY) != 0)
+    policy_ct_count_failure(POLICY_CT_STAT_FWD_INSTALL_FAILED);
 }
 
 // policy_ct_observe_tcp records flags, advances the state, and on

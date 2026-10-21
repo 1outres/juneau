@@ -2,13 +2,12 @@ package service
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/cilium/ebpf"
-	"go.uber.org/zap"
 
 	bpf "github.com/1outres/juneau/daemon/internal/daemon/bpf"
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/mapsweep"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/monotonic"
 )
 
@@ -53,33 +52,33 @@ func (g *AffinityGC) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			g.gcOnce()
+			for _, report := range g.gcOnce() {
+				report.Log("service affinity gc")
+			}
 		}
 	}
 }
 
-func (g *AffinityGC) gcOnce() {
+func (g *AffinityGC) gcOnce() []mapsweep.Report {
 	if g.affinityMap == nil {
-		return
+		return nil
 	}
 	nowNs := g.now()
+	stats, err := mapsweep.Sweep(g.affinityMap, func(snapshot []mapsweep.Entry[affinityKey, affinityVal]) mapsweep.Plan[affinityKey, affinityVal] {
+		return planAffinityExpiry(snapshot, nowNs)
+	})
+	return []mapsweep.Report{{Map: "service_affinity_map", Stats: stats, Err: err}}
+}
 
-	var (
-		key bpf.PodEgressServiceAffinityKey
-		val bpf.PodEgressServiceAffinityVal
-	)
-	iter := g.affinityMap.Iterate()
-	for iter.Next(&key, &val) {
-		if val.ExpiresAtNs > nowNs {
-			continue
-		}
-		// Racing against BPF inline updates / LRU eviction is normal —
-		// silently skip when the entry has already vanished.
-		if err := g.affinityMap.Delete(&key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-			zap.S().Warnf("service affinity gc: delete: %v", err)
-		}
-	}
-	if err := iter.Err(); err != nil {
-		zap.S().Warnf("service affinity gc: iterate: %v", err)
-	}
+type (
+	affinityKey = bpf.PodEgressServiceAffinityKey
+	affinityVal = bpf.PodEgressServiceAffinityVal
+)
+
+const reasonExpired mapsweep.Reason = "expired"
+
+func planAffinityExpiry(snapshot []mapsweep.Entry[affinityKey, affinityVal], nowNs uint64) mapsweep.Plan[affinityKey, affinityVal] {
+	return mapsweep.ByEntry(snapshot, reasonExpired, func(_ affinityKey, val affinityVal) bool {
+		return val.ExpiresAtNs <= nowNs
+	})
 }

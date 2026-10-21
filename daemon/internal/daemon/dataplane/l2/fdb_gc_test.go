@@ -1,6 +1,7 @@
 package l2
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -8,6 +9,7 @@ import (
 
 	bpf "github.com/1outres/juneau/daemon/internal/daemon/bpf"
 	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/bpftest"
+	"github.com/1outres/juneau/daemon/internal/daemon/dataplane/internal/mapsweep"
 )
 
 const gcTestVNI = 4242
@@ -101,7 +103,7 @@ func TestFdbGCDropsWhatHasNotBeenSeenForTheAgingTime(t *testing.T) {
 
 	gc := NewFdbGC(table, FdbAging, FdbGCInterval)
 	gc.now = func() uint64 { return now }
-	gc.Sweep()
+	reports := gc.Sweep()
 
 	if !has(t, table, fresh) {
 		t.Error("the sweep dropped an entry that was seen ten seconds ago")
@@ -111,6 +113,41 @@ func TestFdbGCDropsWhatHasNotBeenSeenForTheAgingTime(t *testing.T) {
 	}
 	if has(t, table, exactlyAtTheLimit) {
 		t.Error("the sweep kept an entry that reached the aging time exactly")
+	}
+	if len(reports) != 1 {
+		t.Fatalf("got %d reports, want one for the one network", len(reports))
+	}
+	if r := reports[0]; r.Err != nil || r.Stats.Read != 3 || r.Stats.Removed[reasonAged] != 2 {
+		t.Errorf("report = %+v, want 3 read and 2 removed for their age", r)
+	}
+}
+
+func TestFdbAgingPlanJudgesTheStampAndLeavesTheGatewayAlone(t *testing.T) {
+	const now = uint64(10 * time.Hour)
+	entry := func(last byte, lastSeenNs uint64, flags uint32) mapsweep.Entry[fdbKey, fdbVal] {
+		return mapsweep.Entry[fdbKey, fdbVal]{
+			Key:   fdbKey{Mac: [6]uint8{0x02, 0, 0, 0, 0, last}},
+			Value: fdbVal{LastSeenNs: lastSeenNs, Flags: flags},
+		}
+	}
+	fresh := entry(1, now-uint64(10*time.Second), 0)
+	stale := entry(2, now-uint64(FdbAging)-1, 0)
+	atTheLimit := entry(3, now-uint64(FdbAging), 0)
+	fromTheFuture := entry(4, now+1, 0)
+	gateway := entry(5, 0, FdbFlagGateway)
+
+	plan := planFdbAging([]mapsweep.Entry[fdbKey, fdbVal]{fresh, stale, atTheLimit, fromTheFuture, gateway}, now, uint64(FdbAging))
+
+	var got []fdbKey
+	for _, g := range plan.Groups {
+		got = append(got, g.Keys...)
+	}
+	if want := []fdbKey{stale.Key, atTheLimit.Key}; !slices.Equal(got, want) {
+		t.Errorf("planned %v, want %v", got, want)
+	}
+	refreshed := mapsweep.Current[fdbKey, fdbVal]{Key: stale.Key, Value: fdbVal{LastSeenNs: now}, Present: true}
+	if plan.Confirm(plan.Groups[0], []mapsweep.Current[fdbKey, fdbVal]{refreshed}) {
+		t.Error("the recheck removed an entry the data plane refreshed after the snapshot")
 	}
 }
 

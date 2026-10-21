@@ -41,6 +41,7 @@ func RegisterPodEgress(inv *Inventory, p *program.PodEgress) error {
 		registerServiceAffinity,
 		registerCT,
 		registerPolicyCT,
+		registerPolicyCTStats,
 		registerPolicyEpoch,
 		registerIPv4Frag,
 		registerNAPTSrc,
@@ -498,6 +499,19 @@ func registerPolicyCT(inv *Inventory, p *program.PodEgress) error {
 			FieldU8Named("flags_seen", "TCP flags OR-accumulated on this direction"),
 			FieldPadOf(6),
 			FieldU64Named("last_seen_ns"),
+		}},
+	})
+}
+
+func registerPolicyCTStats(inv *Inventory, p *program.PodEgress) error {
+	return inv.Register(&Descriptor{
+		Name: "policy_ct_stats",
+		Map:  p.Objs.PolicyCtStats,
+		Key: Schema{Fields: []Field{
+			FieldU32Named("slot", "0 = neither half of a pair was written, 1 = only the reverse half was written"),
+		}},
+		Value: Schema{Fields: []Field{
+			FieldU64Named("count", "summed over every CPU"),
 		}},
 	})
 }
