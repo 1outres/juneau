@@ -111,10 +111,17 @@ jobs:
             bgp-speaker/go.sum
             test/e2e/go.sum
 
+      - name: Raise inotify limits for kind nodes
+        # See https://kind.sigs.k8s.io/docs/user/known-issues/#pod-errors-due-to-too-many-open-files
+        run: sudo sysctl -w fs.inotify.max_user_watches=524288 fs.inotify.max_user_instances=512
+
       - name: Install kind
         uses: engineerd/setup-kind@ecfad61750951586a9ef973db567df1d28671bdc # v0.6.2
         with:
           version: v0.29.0
+          skipClusterCreation: "true"
+          skipClusterDeletion: "true"
+          skipClusterLogsExport: "true"
 
       - name: Install kubectl
         uses: azure/setup-kubectl@v4
@@ -125,7 +132,38 @@ jobs:
         run: kubectl version --client
 
       - name: Run repository E2E
+        env:
+          # Keep the kind cluster so the failure steps below can export its logs.
+          E2E_KEEP_CLUSTER: "true"
         run: make e2e
+
+      - name: Collect kind and host logs
+        if: failure()
+        shell: bash
+        env:
+          LOGS_DIR: ${{ runner.temp }}/e2e-logs
+        run: |
+          for cluster in $(kind get clusters); do
+            kind export logs "$LOGS_DIR/kind/$cluster" --name "$cluster"
+          done
+          mkdir -p "$LOGS_DIR/host"
+          docker ps -a > "$LOGS_DIR/host/docker-ps.txt"
+          uname -a > "$LOGS_DIR/host/uname.txt"
+          cp /etc/os-release "$LOGS_DIR/host/os-release.txt"
+          lsmod > "$LOGS_DIR/host/lsmod.txt"
+          sysctl fs.inotify fs.file-max fs.nr_open > "$LOGS_DIR/host/sysctl.txt"
+          sudo dmesg | tee "$LOGS_DIR/host/dmesg.txt" > /dev/null
+          grep -E 'NETFILTER_XTABLES|IP_NF_|IP6_NF_|NF_TABLES' "/boot/config-$(uname -r)" > "$LOGS_DIR/host/kernel-netfilter-config.txt"
+          sudo iptables-save | tee "$LOGS_DIR/host/iptables-save.txt" > /dev/null
+
+      - name: Upload kind and host logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-logs-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/e2e-logs
+          if-no-files-found: error
+          retention-days: 14
 
   report:
     if: ${{ always() }}

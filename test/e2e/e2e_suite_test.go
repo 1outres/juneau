@@ -25,6 +25,7 @@ const (
 	controllerNamespace = "juneau-system"
 	daemonNamespace     = "kube-system"
 	bgpSpeakerNamespace = "kube-system"
+	kubeSystemNamespace = "kube-system"
 	defaultVpcName      = "default"
 	defaultSubnetName   = "default"
 	kindKubectlTimeout  = 5 * time.Minute
@@ -216,7 +217,7 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 // kind cluster while the serial bgp/nat specs are still executing on
 // process 1.
 var _ = SynchronizedAfterSuite(func() {}, func() {
-	if strings.EqualFold(os.Getenv("E2E_KEEP_CLUSTER"), "true") {
+	if envBool("E2E_KEEP_CLUSTER") {
 		return
 	}
 	teardownBGPRouter()
@@ -438,37 +439,73 @@ func dumpBringUpDiagnostics() {
 	dumpResource("pods", "-A", "-o", "wide")
 	dumpEvents()
 	dumpDescribe("pods", "-n", controllerNamespace)
-	dumpLogs(controllerNamespace, "deployment/juneau-controller-manager")
-	dumpPodLogs(daemonNamespace, "app=cni-daemon")
+	dumpPodLogs(controllerNamespace, "control-plane=controller-manager", anyPod)
+	dumpPodLogs(daemonNamespace, "app=cni-daemon", anyPod)
+	dumpPodLogs(kubeSystemNamespace, "app!=cni-daemon", notReadyPod)
+}
+
+// podContainers is a Pod with its Ready state and the names of its init
+// containers and containers.
+type podContainers struct {
+	name       string
+	ready      bool
+	containers []string
+}
+
+func anyPod(podContainers) bool { return true }
+
+func notReadyPod(pod podContainers) bool { return !pod.ready }
+
+func listPodContainers(namespace string, selector string) ([]podContainers, error) {
+	out, err := kubectlOutput(repoRoot, "get", "pods", "-n", namespace, "-l", selector, "-o",
+		`jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\t"}{range .spec.initContainers[*]}{.name}{","}{end}{range .spec.containers[*]}{.name}{","}{end}{"\n"}{end}`)
+	if err != nil {
+		return nil, err
+	}
+	var pods []podContainers
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) != 3 {
+			return nil, fmt.Errorf("unexpected pod line %q", line)
+		}
+		pods = append(pods, podContainers{
+			name:       fields[0],
+			ready:      fields[1] == "True",
+			containers: strings.Split(strings.TrimSuffix(fields[2], ","), ","),
+		})
+	}
+	return pods, nil
 }
 
 // dumpPodLogs writes the current and the previous logs of every container
-// of the matching Pods, one container at a time because kubectl stops at the
-// first container that has no previous log.
-func dumpPodLogs(namespace string, selector string) {
-	pods, err := kubectlOutput(repoRoot, "get", "pods", "-n", namespace, "-l", selector, "-o",
-		`jsonpath={range .items[*]}{.metadata.name}{"="}{range .spec.initContainers[*]}{.name}{","}{end}{range .spec.containers[*]}{.name}{","}{end}{"\n"}{end}`)
+// of the matching Pods for which include returns true, one container at a time
+// because kubectl stops at the first container that has no previous log.
+func dumpPodLogs(namespace string, selector string, include func(podContainers) bool) {
+	pods, err := listPodContainers(namespace, selector)
 	if err != nil {
 		_, _ = fmt.Fprintf(GinkgoWriter, "failed to list pods %s in %s: %v\n", selector, namespace, err)
 		return
 	}
-	for _, line := range strings.Split(pods, "\n") {
-		pod, containers, found := strings.Cut(strings.TrimSpace(line), "=")
-		if !found {
+	for _, pod := range pods {
+		if !include(pod) {
 			continue
 		}
-		for _, container := range strings.Split(strings.TrimSuffix(containers, ","), ",") {
+		for _, container := range pod.containers {
 			for _, previous := range []bool{false, true} {
-				args := []string{"logs", "-n", namespace, pod, "-c", container}
+				args := []string{"logs", "-n", namespace, pod.name, "-c", container}
 				if previous {
 					args = append(args, "--previous")
 				}
 				out, err := kubectlOutput(repoRoot, args...)
 				if err != nil {
-					_, _ = fmt.Fprintf(GinkgoWriter, "failed to dump logs for %s/%s container %s (previous=%t): %v\n", namespace, pod, container, previous, err)
+					_, _ = fmt.Fprintf(GinkgoWriter, "failed to dump logs for %s/%s container %s (previous=%t): %v\n", namespace, pod.name, container, previous, err)
 					continue
 				}
-				_, _ = fmt.Fprintf(GinkgoWriter, "\nlogs %s/%s container %s (previous=%t)\n%s\n", namespace, pod, container, previous, out)
+				_, _ = fmt.Fprintf(GinkgoWriter, "\nlogs %s/%s container %s (previous=%t)\n%s\n", namespace, pod.name, container, previous, out)
 			}
 		}
 	}
