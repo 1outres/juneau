@@ -13,6 +13,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/yaml"
 )
 
 var _ = Describe("Juneau VPC-private DNS", func() {
@@ -172,7 +173,7 @@ func privateDNSResourcesManifest(f privateDNSFixture) (string, error) {
 
 	var documents strings.Builder
 	for i, object := range objects {
-		encoded, err := json.Marshal(object)
+		encoded, err := yaml.Marshal(object)
 		if err != nil {
 			return "", fmt.Errorf("encode private DNS resource %d: %w", i, err)
 		}
@@ -180,7 +181,6 @@ func privateDNSResourcesManifest(f privateDNSFixture) (string, error) {
 			documents.WriteString("---\n")
 		}
 		documents.Write(encoded)
-		documents.WriteByte('\n')
 	}
 	return documents.String(), nil
 }
