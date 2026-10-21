@@ -75,7 +75,10 @@ var _ = Describe("Juneau kubelet readiness probe", Ordered, func() {
 	})
 })
 
-var _ = Describe("Juneau overlapping-address probe compatibility", Ordered, func() {
+// Serial: the restart spec deletes the cni-daemon pod on workerNodes[0], and
+// policies on that node are not enforced until the new daemon is up. Ginkgo
+// only accepts Serial on the outer Ordered container.
+var _ = Describe("Juneau overlapping-address probe compatibility", Ordered, Serial, func() {
 	const (
 		vpcA    = "probe-overlap-vpc-a"
 		vpcB    = "probe-overlap-vpc-b"

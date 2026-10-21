@@ -9,13 +9,7 @@ import (
 )
 
 const (
-	l2Namespace = "e2e-l2-network"
-	l2Vpc       = "vpc-l2-network"
-
-	l2PrimarySubnet = "subnet-l2-primary"
-	l2PrimaryCIDR   = "10.242.0.0/24"
-	l2NetworkName   = "l2net-lab"
-	l2NetworkMTU    = 1400
+	l2NetworkMTU = 1400
 
 	l2ClientPod = "l2-client"
 	l2ServerPod = "l2-server"
@@ -48,63 +42,67 @@ var _ = Describe("Juneau L2Network", func() {
 	})
 
 	It("carries a segment the pods address themselves, across nodes", func() {
-		createL2Segment()
+		f := newL2Fixture("l2-self-addressed")
+		f.create()
 
 		By("checking juneau built runtime resources naming the L2Network")
-		assertPodNICL2Network(l2Namespace, l2ClientPod, l2ExtraIf, l2NetworkName)
-		assertPodNICL2Network(l2Namespace, l2ServerPod, l2ExtraIf, l2NetworkName)
+		assertPodNICL2Network(f.namespace, l2ClientPod, l2ExtraIf, f.network)
+		assertPodNICL2Network(f.namespace, l2ServerPod, l2ExtraIf, f.network)
 
 		By("checking the extra NIC came up without an address")
-		assertPodInterfaceHasNoAddress(l2Namespace, l2ClientPod, l2ExtraIf)
+		assertPodInterfaceHasNoAddress(f.namespace, l2ClientPod, l2ExtraIf)
 
 		By("checking the extra NIC took the MTU of the segment")
-		assertPodInterfaceMTU(l2Namespace, l2ClientPod, l2ExtraIf, l2NetworkMTU)
-		assertPodInterfaceMTU(l2Namespace, l2ServerPod, l2ExtraIf, l2NetworkMTU)
+		assertPodInterfaceMTU(f.namespace, l2ClientPod, l2ExtraIf, l2NetworkMTU)
+		assertPodInterfaceMTU(f.namespace, l2ServerPod, l2ExtraIf, l2NetworkMTU)
 
 		By("checking eth0 kept the address and the MTU it always had")
-		Expect(mustPodIP(l2Namespace, l2ClientPod)).To(HavePrefix("10.242.0."))
-		assertPodInterfaceMTU(l2Namespace, l2ClientPod, podIfaceName, 1500)
+		address := mustPodIP(f.namespace, l2ClientPod)
+		Expect(addressInCIDR(f.subnetCIDR, address)).To(BeTrue(), "Pod IP %s should come from %s", address, f.subnetCIDR)
+		assertPodInterfaceMTU(f.namespace, l2ClientPod, podIfaceName, 1500)
 
 		By("addressing the segment from inside the pods")
-		addPodAddress(l2Namespace, l2ClientPod, l2ExtraIf, l2ClientAddress+"/24")
-		addPodAddress(l2Namespace, l2ServerPod, l2ExtraIf, l2ServerAddress+"/24")
+		addPodAddress(f.namespace, l2ClientPod, l2ExtraIf, l2ClientAddress+"/24")
+		addPodAddress(f.namespace, l2ServerPod, l2ExtraIf, l2ServerAddress+"/24")
 
 		By("reaching the other node over the segment")
-		assertPodPing(l2Namespace, l2ClientPod, l2ServerAddress)
-		assertPodPing(l2Namespace, l2ServerPod, l2ClientAddress)
+		assertPodPing(f.namespace, l2ClientPod, l2ServerAddress)
+		assertPodPing(f.namespace, l2ServerPod, l2ClientAddress)
 	})
 
 	It("carries an EtherType a Subnet would not", func() {
-		createL2Segment()
+		f := newL2Fixture("l2-ipv6")
+		f.create()
 
 		By("addressing the segment with IPv6 only")
-		addPodAddress(l2Namespace, l2ClientPod, l2ExtraIf, l2ClientV6+"/64")
-		addPodAddress(l2Namespace, l2ServerPod, l2ExtraIf, l2ServerV6+"/64")
+		addPodAddress(f.namespace, l2ClientPod, l2ExtraIf, l2ClientV6+"/64")
+		addPodAddress(f.namespace, l2ServerPod, l2ExtraIf, l2ServerV6+"/64")
 
 		// Neighbor discovery rides on IPv6 multicast (33:33:*), which
 		// the segment floods like any other BUM frame. juneau has no
 		// IPv6 support of its own, so a reply here means the data plane
 		// never looked at the ethertype.
 		By("reaching the other node over IPv6")
-		assertPodPing6(l2Namespace, l2ClientPod, l2ServerV6)
+		assertPodPing6(f.namespace, l2ClientPod, l2ServerV6)
 	})
 
 	It("follows a MAC that changes on the segment", func() {
-		createL2Segment()
+		f := newL2Fixture("l2-mac-change")
+		f.create()
 
-		addPodAddress(l2Namespace, l2ClientPod, l2ExtraIf, l2ClientAddress+"/24")
-		addPodAddress(l2Namespace, l2ServerPod, l2ExtraIf, l2ServerAddress+"/24")
-		assertPodPing(l2Namespace, l2ClientPod, l2ServerAddress)
+		addPodAddress(f.namespace, l2ClientPod, l2ExtraIf, l2ClientAddress+"/24")
+		addPodAddress(f.namespace, l2ServerPod, l2ExtraIf, l2ServerAddress+"/24")
+		assertPodPing(f.namespace, l2ClientPod, l2ServerAddress)
 
 		By("giving the server NIC a MAC juneau never handed out")
-		setPodInterfaceMAC(l2Namespace, l2ServerPod, l2ExtraIf, l2ServerNewMAC)
-		flushPodNeighbours(l2Namespace, l2ClientPod, l2ExtraIf)
+		setPodInterfaceMAC(f.namespace, l2ServerPod, l2ExtraIf, l2ServerNewMAC)
+		flushPodNeighbours(f.namespace, l2ClientPod, l2ExtraIf)
 
 		// Nothing in the API says the MAC changed. The segment learns
 		// it from the first frame the server sends under it, which is
 		// the ARP reply to the client.
 		By("reaching the server again under its new MAC")
-		assertPodPing(l2Namespace, l2ClientPod, l2ServerAddress)
+		assertPodPing(f.namespace, l2ClientPod, l2ServerAddress)
 	})
 
 	// A Pod whose eth0 sits on a segment with an address and a gateway
@@ -148,23 +146,43 @@ var _ = Describe("Juneau L2Network", func() {
 	})
 })
 
-// createL2Segment builds the VPC, the subnet eth0 sits on, the
-// L2Network, and one pod per worker node with a second NIC on the
-// segment.
-func createL2Segment() {
+// l2Fixture names the objects of one L2Network spec. Every spec gets its
+// own set so specs can run in parallel.
+type l2Fixture struct {
+	namespace  string
+	vpc        string
+	subnet     string
+	subnetCIDR string
+	network    string
+}
+
+func newL2Fixture(name string) l2Fixture {
+	base := sanitizeName(name)
+	return l2Fixture{
+		namespace:  "e2e-" + base,
+		vpc:        "vpc-" + base,
+		subnet:     "subnet-" + base,
+		subnetCIDR: cidrForScenario(base, 0),
+		network:    "l2net-" + base,
+	}
+}
+
+// create builds the VPC, the subnet eth0 sits on, the L2Network, and one
+// pod per worker node with a second NIC on the segment.
+func (f l2Fixture) create() {
 	GinkgoHelper()
 	By("creating a VPC, a subnet for eth0 and an L2Network without a CIDR")
-	Expect(applyManifest(l2NetworkManifest())).To(Succeed())
-	DeferCleanup(cleanupL2NetworkResources)
-	waitSubnetReady(l2PrimarySubnet)
-	waitResourceReady("l2network", l2NetworkName)
+	Expect(applyManifest(f.networkManifest())).To(Succeed())
+	DeferCleanup(f.cleanup)
+	waitSubnetReady(f.subnet)
+	waitResourceReady("l2network", f.network)
 
-	createNamespace(l2Namespace)
+	createNamespace(f.namespace)
 
 	By("creating two pods on different nodes with a second NIC on the segment")
-	Expect(applyManifest(l2PodManifest(l2ClientPod, workerNodes[0]))).To(Succeed())
-	Expect(applyManifest(l2PodManifest(l2ServerPod, workerNodes[1]))).To(Succeed())
-	waitPodsReady(l2Namespace, l2ClientPod, l2ServerPod)
+	Expect(applyManifest(f.podManifest(l2ClientPod, workerNodes[0]))).To(Succeed())
+	Expect(applyManifest(f.podManifest(l2ServerPod, workerNodes[1]))).To(Succeed())
+	waitPodsReady(f.namespace, l2ClientPod, l2ServerPod)
 }
 
 // assertPodNICL2Network requires both runtime resources of one NIC to
@@ -239,7 +257,7 @@ func assertPodPing6(namespace string, podName string, target string) {
 	}).Should(Succeed())
 }
 
-func l2NetworkManifest() string {
+func (f l2Fixture) networkManifest() string {
 	return fmt.Sprintf(`apiVersion: juneau.loutres.me/v1alpha1
 kind: Vpc
 metadata:
@@ -260,10 +278,10 @@ metadata:
 spec:
   vpc: %s
   mtu: %d
-`, l2Vpc, l2PrimarySubnet, l2Vpc, l2PrimaryCIDR, l2NetworkName, l2Vpc, l2NetworkMTU)
+`, f.vpc, f.subnet, f.vpc, f.subnetCIDR, f.network, f.vpc, l2NetworkMTU)
 }
 
-func l2PodManifest(podName string, nodeName string) string {
+func (f l2Fixture) podManifest(podName string, nodeName string) string {
 	return fmt.Sprintf(`apiVersion: v1
 kind: Pod
 metadata:
@@ -283,7 +301,7 @@ spec:
       securityContext:
         capabilities:
           add: ["NET_ADMIN"]
-`, l2Namespace, podName, l2PrimarySubnet, l2ExtraIf, l2NetworkName, nodeName, netshootImage)
+`, f.namespace, podName, f.subnet, l2ExtraIf, f.network, nodeName, netshootImage)
 }
 
 func l2Eth0NetworkManifest() string {
@@ -338,9 +356,9 @@ func cleanupL2Eth0Resources() {
 	runBestEffort(repoRoot, "kubectl", "delete", "vpc", l2Eth0Vpc, "--ignore-not-found=true")
 }
 
-func cleanupL2NetworkResources() {
-	runBestEffort(repoRoot, "kubectl", "delete", "namespace", l2Namespace, "--ignore-not-found=true", "--timeout=60s")
-	runBestEffort(repoRoot, "kubectl", "delete", "l2network", l2NetworkName, "--ignore-not-found=true")
-	runBestEffort(repoRoot, "kubectl", "delete", "subnet", l2PrimarySubnet, "--ignore-not-found=true")
-	runBestEffort(repoRoot, "kubectl", "delete", "vpc", l2Vpc, "--ignore-not-found=true")
+func (f l2Fixture) cleanup() {
+	runBestEffort(repoRoot, "kubectl", "delete", "namespace", f.namespace, "--ignore-not-found=true", "--timeout=60s")
+	runBestEffort(repoRoot, "kubectl", "delete", "l2network", f.network, "--ignore-not-found=true")
+	runBestEffort(repoRoot, "kubectl", "delete", "subnet", f.subnet, "--ignore-not-found=true")
+	runBestEffort(repoRoot, "kubectl", "delete", "vpc", f.vpc, "--ignore-not-found=true")
 }

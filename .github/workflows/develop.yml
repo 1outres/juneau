@@ -107,7 +107,7 @@ jobs:
 
   e2e:
     needs: verify
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - name: Checkout
@@ -143,6 +143,11 @@ jobs:
 
       - name: Install kubectl
         uses: azure/setup-kubectl@v4
+        with:
+          version: v1.33.1
+
+      - name: Show kubectl version
+        run: kubectl version --client
 
       - name: Run repository E2E
         run: make e2e
