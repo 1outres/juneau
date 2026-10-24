@@ -20,14 +20,20 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
 	"github.com/1outres/juneau/controller/internal/addressrange"
@@ -65,6 +71,8 @@ func AddressPoolAllocationPoolName(addressPoolName string) string {
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=addresspools/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=addresspools/finalizers,verbs=update
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=allocationpools,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=allocationclaims,verbs=get;list;watch
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=allocationleases,verbs=get;list;watch
 
 // Reconcile keeps the AllocationPool that backs an AddressPool in sync
 // with the user-declared CIDR list.
@@ -84,6 +92,11 @@ func (r *AddressPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	if err := r.ensureAllocationPool(ctx, &addressPool); err != nil {
 		logger.Error(err, "unable to ensure backing AllocationPool", "addressPool", req.Name)
+		return ctrl.Result{}, err
+	}
+
+	if err := r.updateStatus(ctx, &addressPool); err != nil {
+		logger.Error(err, "unable to update AddressPool status", "addressPool", req.Name)
 		return ctrl.Result{}, err
 	}
 
@@ -168,11 +181,88 @@ func allocationPoolIPSpec(addressPool *juneauv1alpha1.AddressPool) (*juneauv1alp
 	return nil, fmt.Errorf("unsupported advertiseMode %q", addressPool.Spec.AdvertiseMode)
 }
 
+// updateStatus writes the address counts. Nothing is written when the counts
+// are already current, so the claim and lease events that do not change them
+// cost no API call.
+func (r *AddressPoolReconciler) updateStatus(ctx context.Context, addressPool *juneauv1alpha1.AddressPool) error {
+	ipSpec, err := allocationPoolIPSpec(addressPool)
+	if err != nil {
+		return err
+	}
+
+	var claims juneauv1alpha1.AllocationClaimList
+	if err := r.List(ctx, &claims); err != nil {
+		return fmt.Errorf("list AllocationClaims: %w", err)
+	}
+	var leases juneauv1alpha1.AllocationLeaseList
+	if err := r.List(ctx, &leases); err != nil {
+		return fmt.Errorf("list AllocationLeases: %w", err)
+	}
+	poolName := AddressPoolAllocationPoolName(addressPool.Name)
+	used := usedPoolIPs(poolName, "", "", claims.Items, leases.Items)
+
+	counts, err := countPoolAddresses(ipSpec, used)
+	if err != nil {
+		return err
+	}
+
+	desired := juneauv1alpha1.AddressPoolStatus{
+		ObservedGeneration: addressPool.Generation,
+		TotalAddresses:     counts.total,
+		AllocatedAddresses: counts.allocated,
+		AvailableAddresses: counts.available,
+	}
+	if addressPool.Status == desired {
+		return nil
+	}
+	updated := addressPool.DeepCopy()
+	updated.Status = desired
+	return r.Status().Update(ctx, updated)
+}
+
+// addressPoolForAllocationPool maps a claim or lease to the AddressPool that
+// backs the pool it points at. Pools that are not backed by an AddressPool
+// map to nothing.
+func addressPoolForAllocationPool(poolName string) (string, bool) {
+	name, ok := strings.CutPrefix(poolName, addressPoolAllocationPoolPrefix)
+	return name, ok && name != ""
+}
+
+func requestsForAllocationClaim(_ context.Context, obj client.Object) []reconcile.Request {
+	claim, ok := obj.(*juneauv1alpha1.AllocationClaim)
+	if !ok {
+		return nil
+	}
+	var requests []reconcile.Request
+	for _, ref := range claim.Spec.PoolRefs {
+		if name, ok := addressPoolForAllocationPool(ref.Name); ok {
+			requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: name}})
+		}
+	}
+	return requests
+}
+
+func requestsForAllocationLease(_ context.Context, obj client.Object) []reconcile.Request {
+	lease, ok := obj.(*juneauv1alpha1.AllocationLease)
+	if !ok {
+		return nil
+	}
+	name, ok := addressPoolForAllocationPool(lease.Spec.PoolRef.Name)
+	if !ok {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: name}}}
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *AddressPoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&juneauv1alpha1.AddressPool{}).
+		// Status writes do not bump the generation, so this keeps the
+		// controller from reconciling on its own status updates.
+		For(&juneauv1alpha1.AddressPool{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Owns(&juneauv1alpha1.AllocationPool{}).
+		Watches(&juneauv1alpha1.AllocationClaim{}, handler.EnqueueRequestsFromMapFunc(requestsForAllocationClaim)).
+		Watches(&juneauv1alpha1.AllocationLease{}, handler.EnqueueRequestsFromMapFunc(requestsForAllocationLease)).
 		Named("addresspool").
 		Complete(r)
 }

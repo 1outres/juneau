@@ -476,8 +476,19 @@ func (r *AllocationClaimReconciler) collectUsedIPs(ctx context.Context, poolName
 	if err := r.reader().List(ctx, &claims); err != nil {
 		return nil, fmt.Errorf("failed to list claims for pool %q: %w", poolName, err)
 	}
-	used := make(map[netip.Addr]string, len(claims.Items))
-	for _, existing := range claims.Items {
+	var leases juneauloutresmev1alpha1.AllocationLeaseList
+	if err := r.reader().List(ctx, &leases); err != nil {
+		return nil, fmt.Errorf("failed to list leases for pool %q: %w", poolName, err)
+	}
+	return usedPoolIPs(poolName, selfClaimName, selfLeaseName, claims.Items, leases.Items), nil
+}
+
+// usedPoolIPs returns the addresses of a pool that first-fit must not hand
+// out: those of Allocated claims plus those of leases, which outlive their
+// claim. The claim and the lease named as self are skipped.
+func usedPoolIPs(poolName, selfClaimName, selfLeaseName string, claims []juneauloutresmev1alpha1.AllocationClaim, leases []juneauloutresmev1alpha1.AllocationLease) map[netip.Addr]string {
+	used := make(map[netip.Addr]string, len(claims))
+	for _, existing := range claims {
 		if existing.Name == selfClaimName {
 			continue
 		}
@@ -497,11 +508,7 @@ func (r *AllocationClaimReconciler) collectUsedIPs(ctx context.Context, poolName
 		used[addr] = existing.Name
 	}
 
-	var leases juneauloutresmev1alpha1.AllocationLeaseList
-	if err := r.reader().List(ctx, &leases); err != nil {
-		return nil, fmt.Errorf("failed to list leases for pool %q: %w", poolName, err)
-	}
-	for _, lease := range leases.Items {
+	for _, lease := range leases {
 		if lease.Spec.PoolRef.Name != poolName {
 			continue
 		}
@@ -519,7 +526,7 @@ func (r *AllocationClaimReconciler) collectUsedIPs(ctx context.Context, poolName
 			used[addr] = "lease/" + lease.Name
 		}
 	}
-	return used, nil
+	return used
 }
 
 // reconcileLease brings the lease of an already allocated claim back to its

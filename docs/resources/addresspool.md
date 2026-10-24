@@ -45,3 +45,22 @@ ElasticIPやServiceLoadBalancerが実際にアドレスを確保するのはこ�
 
 `advertiseMode=arp`のAddressPoolの範囲に、NodeのInternalIPを含めないでください。
 そのアドレスがElasticIPなどに払い出されると、[ARPAdvertisement](arpadvertisement.md)の作成がwebhookに拒否され、そのリソースは利用可能になりません。
+
+## 払い出し状況
+
+`status`には、このAddressPoolから払い出せるアドレスの数が入ります。
+
+- `status.totalAddresses`:払い出せるアドレスの総数。`bgp`のCIDRではネットワークアドレスとブロードキャストアドレスを数えません。AllocationPoolの`spec.ip.excluded`にあるアドレスも数えません。複数の要素が重なる場合は、重なったアドレスを1つとして数えます。
+- `status.allocatedAddresses`:払い出し済みのアドレスの数。割り当て済みのAllocationClaimに加えて、claimの削除後も保持されているAllocationLeaseのアドレスも数えます。
+- `status.availableAddresses`:あと払い出せるアドレスの数。`totalAddresses`から`allocatedAddresses`を引いた値です。
+- `status.observedGeneration`:この数を計算したときの`metadata.generation`です。
+
+数は、払い出しに使われる範囲の計算と同じ規則で求めます。
+IPv6の大きなプレフィックスなど、数がint64に収まらない場合は、int64の最大値で打ち切ります。
+
+AddressPoolを参照するAllocationClaimやAllocationLeaseが変わるたびに、controllerがこの数を更新します。
+`kubectl get addresspools`では、`Total`、`Allocated`、`Available`の列で確認できます。
+
+同じ数がPrometheusのメトリクス`juneau_addresspool_addresses`としても公開されます。
+`pool`ラベルにAddressPool名、`state`ラベルに`total`、`allocated`、`available`が入ります。
+まだ数を計算していないAddressPoolと、削除されたAddressPoolの系列は出力されません。
