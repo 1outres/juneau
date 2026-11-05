@@ -14,7 +14,20 @@ spec:
     singular: addresspool
   scope: Cluster
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.advertiseMode
+      name: Mode
+      type: string
+    - jsonPath: .status.totalAddresses
+      name: Total
+      type: integer
+    - jsonPath: .status.allocatedAddresses
+      name: Allocated
+      type: integer
+    - jsonPath: .status.availableAddresses
+      name: Available
+      type: integer
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: AddressPool is the Schema for the addresspools API.
@@ -57,6 +70,30 @@ spec:
             type: object
           status:
             description: AddressPoolStatus defines the observed state of AddressPool.
+            properties:
+              allocatedAddresses:
+                description: |-
+                  AllocatedAddresses is the number of those addresses taken by allocated
+                  claims and by leases that still hold a value.
+                format: int64
+                type: integer
+              availableAddresses:
+                description: |-
+                  AvailableAddresses is the number of addresses that can still be handed
+                  out.
+                format: int64
+                type: integer
+              observedGeneration:
+                format: int64
+                type: integer
+              totalAddresses:
+                description: |-
+                  TotalAddresses is the number of addresses the pool can hand out. It
+                  follows the allocator: the network and broadcast addresses of each
+                  CIDR are not counted. Capped at the maximum int64 value for very
+                  large IPv6 prefixes.
+                format: int64
+                type: integer
             type: object
         type: object
     served: true

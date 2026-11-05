@@ -18,9 +18,11 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -179,5 +181,84 @@ var _ = Describe("AddressPool controller", func() {
 			g.Expect(ref.BlockOwnerDeletion).NotTo(BeNil())
 			g.Expect(*ref.BlockOwnerDeletion).To(BeTrue())
 		}).Should(Succeed())
+	})
+
+	Describe("address counts", func() {
+		newPool := func(name string) *juneauv1alpha1.AddressPool {
+			ap := &juneauv1alpha1.AddressPool{
+				ObjectMeta: metav1.ObjectMeta{Name: name},
+				Spec: juneauv1alpha1.AddressPoolSpec{
+					AdvertiseMode: juneauv1alpha1.AddressPoolAdvertiseModeARP,
+					Addresses:     []string{"198.18.0.10-198.18.0.19"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ap)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, ap)
+			})
+			return ap
+		}
+
+		expectCounts := func(name string, total, allocated, available int64) {
+			Eventually(func(g Gomega) {
+				var got juneauv1alpha1.AddressPool
+				g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: name}, &got)).To(Succeed())
+				g.Expect(got.Status.ObservedGeneration).To(Equal(got.Generation))
+				g.Expect(got.Status.TotalAddresses).To(Equal(total))
+				g.Expect(got.Status.AllocatedAddresses).To(Equal(allocated))
+				g.Expect(got.Status.AvailableAddresses).To(Equal(available))
+			}).Should(Succeed())
+		}
+
+		It("reports the total of a new pool", func() {
+			ap := newPool(uniqueTestName("ap-count-total"))
+			expectCounts(ap.Name, 10, 0, 10)
+		})
+
+		It("follows claims and the leases that outlive them", func() {
+			ap := newPool(uniqueTestName("ap-count-claims"))
+			expectCounts(ap.Name, 10, 0, 10)
+
+			owner := &juneauv1alpha1.Vpc{ObjectMeta: metav1.ObjectMeta{Name: uniqueTestName("ap-count-owner")}}
+			Expect(k8sClient.Create(ctx, owner)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, owner)
+			})
+			requested := "198.18.0.12"
+			claim := &juneauv1alpha1.AllocationClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: uniqueTestName("ap-count-claim")},
+				Spec: juneauv1alpha1.AllocationClaimSpec{
+					PoolRefs:     []juneauv1alpha1.AllocationPoolReference{{Name: AddressPoolAllocationPoolName(ap.Name)}},
+					ResourceRef:  juneauv1alpha1.AllocationResourceReference{APIVersion: juneauv1alpha1.GroupVersion.String(), Kind: "Vpc", Name: owner.Name},
+					Attribute:    "status.address",
+					RequestedIP:  &requested,
+					ReleaseAfter: &metav1.Duration{Duration: time.Hour},
+				},
+			}
+			Expect(k8sClient.Create(ctx, claim)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, claim)
+			})
+			expectCounts(ap.Name, 10, 1, 9)
+
+			// The claim and its lease hold the same address, so deleting the
+			// claim must keep it counted while the lease is alive.
+			Expect(k8sClient.Delete(ctx, claim)).To(Succeed())
+			Eventually(func(g Gomega) {
+				err := k8sClient.Get(ctx, client.ObjectKeyFromObject(claim), &juneauv1alpha1.AllocationClaim{})
+				g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+			}).Should(Succeed())
+			expectCounts(ap.Name, 10, 1, 9)
+		})
+
+		It("recomputes the total when addresses are added", func() {
+			ap := newPool(uniqueTestName("ap-count-grow"))
+			expectCounts(ap.Name, 10, 0, 10)
+
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: ap.Name}, ap)).To(Succeed())
+			ap.Spec.Addresses = append(ap.Spec.Addresses, "198.18.1.0-198.18.1.4")
+			Expect(k8sClient.Update(ctx, ap)).To(Succeed())
+			expectCounts(ap.Name, 15, 0, 15)
+		})
 	})
 })

@@ -42,6 +42,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -347,6 +348,7 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	metrics.Registry.MustRegister(controller.NewAddressPoolCollector(mgr.GetClient()))
 	if err = (&controller.AddressPoolReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),

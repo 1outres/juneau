@@ -35,6 +35,24 @@ type AddressPoolSpec struct {
 
 // AddressPoolStatus defines the observed state of AddressPool.
 type AddressPoolStatus struct {
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// TotalAddresses is the number of addresses the pool can hand out. It
+	// follows the allocator: the network and broadcast addresses of each
+	// CIDR are not counted. Capped at the maximum int64 value for very
+	// large IPv6 prefixes.
+	// +optional
+	TotalAddresses int64 `json:"totalAddresses,omitempty"`
+
+	// AllocatedAddresses is the number of those addresses taken by allocated
+	// claims and by leases that still hold a value.
+	// +optional
+	AllocatedAddresses int64 `json:"allocatedAddresses,omitempty"`
+
+	// AvailableAddresses is the number of addresses that can still be handed
+	// out.
+	// +optional
+	AvailableAddresses int64 `json:"availableAddresses,omitempty"`
 }
 
 type AddressPoolAdvertiseMode string
@@ -47,6 +65,10 @@ const (
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
+// +kubebuilder:printcolumn:name="Mode",type="string",JSONPath=".spec.advertiseMode"
+// +kubebuilder:printcolumn:name="Total",type="integer",JSONPath=".status.totalAddresses"
+// +kubebuilder:printcolumn:name="Allocated",type="integer",JSONPath=".status.allocatedAddresses"
+// +kubebuilder:printcolumn:name="Available",type="integer",JSONPath=".status.availableAddresses"
 
 // AddressPool is the Schema for the addresspools API.
 type AddressPool struct {
