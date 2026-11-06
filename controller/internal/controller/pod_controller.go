@@ -86,6 +86,11 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		logger.Error(err, "unable to read the network annotations of the Pod", "name", req.NamespacedName)
 		return ctrl.Result{}, reconcile.TerminalError(err)
 	}
+	identity, err := workload.AllocationIdentity(&pod)
+	if err != nil {
+		logger.Error(err, "unable to read the allocation identity of the Pod", "name", req.NamespacedName)
+		return ctrl.Result{}, reconcile.TerminalError(err)
+	}
 
 	if pod.Spec.NodeName == "" {
 		// ノード未確定なので少し待つ
@@ -104,7 +109,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	wanted := make(map[string]struct{}, len(attachments))
 	for _, attachment := range attachments {
 		wanted[attachment.Interface] = struct{}{}
-		if err := r.applyNetworkInterface(ctx, &pod, attachment); err != nil {
+		if err := r.applyNetworkInterface(ctx, &pod, identity, attachment); err != nil {
 			if errors.IsConflict(err) || errors.IsAlreadyExists(err) {
 				return ctrl.Result{Requeue: true}, nil
 			}
@@ -138,7 +143,7 @@ func (r *PodReconciler) findUnusableNetwork(ctx context.Context, namespace strin
 	return "", nil
 }
 
-func (r *PodReconciler) applyNetworkInterface(ctx context.Context, pod *corev1.Pod, attachment juneauv1alpha1.PodNetworkAttachment) error {
+func (r *PodReconciler) applyNetworkInterface(ctx context.Context, pod *corev1.Pod, identity string, attachment juneauv1alpha1.PodNetworkAttachment) error {
 	nwiface := &juneauv1alpha1.NetworkInterface{}
 	nwiface.SetName(networkInterfaceNameForPod(pod.Name, attachment.Interface))
 	nwiface.SetNamespace(pod.Namespace)
@@ -154,7 +159,12 @@ func (r *PodReconciler) applyNetworkInterface(ctx context.Context, pod *corev1.P
 		nwiface.Spec.ElasticIP = attachment.ElasticIP
 		nwiface.Spec.Address = attachment.Address
 		nwiface.Spec.SecurityGroups = attachment.SecurityGroups
-		nwiface.Spec.AllocationIdentity = workload.AllocationIdentity(pod)
+		// spec.allocationIdentity is immutable, so only a new interface
+		// takes it from the pod. One made before pods had a default
+		// identity keeps the empty identity it was created with.
+		if nwiface.CreationTimestamp.IsZero() {
+			nwiface.Spec.AllocationIdentity = identity
+		}
 		nwiface.Spec.RetainWhile = workload.RetainReference(pod)
 
 		return ctrl.SetControllerReference(pod, nwiface, r.Scheme)

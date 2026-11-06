@@ -178,6 +178,45 @@ var _ = Describe("NetworkInterface controller", func() {
 		Expect(second.Status.AllocationClaim).NotTo(Equal(firstClaimName))
 	})
 
+	// A pod without an identity keys its lease by the claim name, and that
+	// name flattens "." to "-". A pod named "pod-clash" without an identity
+	// therefore shares the lease name of the identity "pod.clash". The live
+	// holder keeps the lease and the newcomer gets its own address.
+	It("never gives one address to two live interfaces whose lease names flatten to the same text", func() {
+		legacy := &juneauv1alpha1.NetworkInterface{
+			ObjectMeta: metav1.ObjectMeta{Name: "pod-clash.eth0", Namespace: "default"},
+			Spec: juneauv1alpha1.NetworkInterfaceSpec{
+				PodRef:   juneauv1alpha1.NetworkInterfacePodReference{UID: "uid-clash-a", Name: "pod-clash", Interface: "eth0"},
+				NodeName: "node-a",
+				Subnet:   "default",
+			},
+		}
+		named := &juneauv1alpha1.NetworkInterface{
+			ObjectMeta: metav1.ObjectMeta{Name: "clash.eth0", Namespace: "default"},
+			Spec: juneauv1alpha1.NetworkInterfaceSpec{
+				PodRef:             juneauv1alpha1.NetworkInterfacePodReference{UID: "uid-clash-b", Name: "clash", Interface: "eth0"},
+				NodeName:           "node-a",
+				Subnet:             "default",
+				AllocationIdentity: "pod.clash",
+			},
+		}
+		Expect(leaseNameForNetworkInterface(legacy)).To(Equal(leaseNameForNetworkInterface(named)))
+
+		for _, ni := range []*juneauv1alpha1.NetworkInterface{legacy, named} {
+			Expect(k8sClient.Create(ctx, ni)).To(Succeed())
+			DeferCleanup(func() {
+				cleanupNetworkInterface(ctx, ni)
+				_ = k8sClient.Delete(ctx, &juneauv1alpha1.AllocationLease{ObjectMeta: metav1.ObjectMeta{Name: leaseNameForNetworkInterface(ni)}})
+			})
+			allocateNetworkInterface(ni)
+		}
+
+		Expect(named.Status.Address).NotTo(Equal(legacy.Status.Address))
+		var lease juneauv1alpha1.AllocationLease
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: leaseNameForNetworkInterface(legacy)}, &lease)).To(Succeed())
+		Expect(lease.Spec.ClaimRef.Name).To(Equal(legacy.Status.AllocationClaim))
+	})
+
 	It("copies spec.retainWhile onto the backing AllocationClaim", func() {
 		retain := juneauv1alpha1.RetainReference{
 			APIVersion: "v1",
@@ -222,6 +261,81 @@ var _ = Describe("NetworkInterface controller", func() {
 		var claim juneauv1alpha1.AllocationClaim
 		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: ni.Status.AllocationClaim}, &claim)).To(Succeed())
 		Expect(claim.Spec.RetainWhile).To(BeNil())
+	})
+
+	It("records the network interface identity on the backing AllocationClaim", func() {
+		ni := &juneauv1alpha1.NetworkInterface{
+			ObjectMeta: metav1.ObjectMeta{Name: "ni-nic-identity.eth1", Namespace: "default"},
+			Spec: juneauv1alpha1.NetworkInterfaceSpec{
+				PodRef:             juneauv1alpha1.NetworkInterfacePodReference{UID: "uid-nic-identity", Name: "pod-nic-identity", Interface: "eth1"},
+				NodeName:           "node-a",
+				Subnet:             "default",
+				AllocationIdentity: "vmi.nic-identity",
+			},
+		}
+		Expect(k8sClient.Create(ctx, ni)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupNetworkInterface(ctx, ni)
+			_ = k8sClient.Delete(ctx, &juneauv1alpha1.AllocationLease{ObjectMeta: metav1.ObjectMeta{Name: leaseNameForNetworkInterface(ni)}})
+		})
+
+		allocateNetworkInterface(ni)
+
+		var claim juneauv1alpha1.AllocationClaim
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: ni.Status.AllocationClaim}, &claim)).To(Succeed())
+		Expect(claim.Spec.NetworkInterface).To(Equal(&juneauv1alpha1.NetworkInterfaceIdentity{
+			Namespace:          "default",
+			AllocationIdentity: "vmi.nic-identity",
+			Interface:          "eth1",
+		}))
+	})
+
+	It("leaves the backing AllocationClaim without a network interface identity when the interface has no allocation identity", func() {
+		ni := &juneauv1alpha1.NetworkInterface{
+			ObjectMeta: metav1.ObjectMeta{Name: "ni-no-nic-identity.eth0", Namespace: "default"},
+			Spec: juneauv1alpha1.NetworkInterfaceSpec{
+				PodRef:   juneauv1alpha1.NetworkInterfacePodReference{UID: "uid-no-nic-identity", Name: "pod-no-nic-identity", Interface: "eth0"},
+				NodeName: "node-a",
+				Subnet:   "default",
+			},
+		}
+		Expect(k8sClient.Create(ctx, ni)).To(Succeed())
+		DeferCleanup(func() { cleanupNetworkInterface(ctx, ni) })
+
+		allocateNetworkInterface(ni)
+
+		var claim juneauv1alpha1.AllocationClaim
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: ni.Status.AllocationClaim}, &claim)).To(Succeed())
+		Expect(claim.Spec.NetworkInterface).To(BeNil())
+	})
+
+	It("adds the network interface identity to a claim created before the field existed", func() {
+		ni := &juneauv1alpha1.NetworkInterface{
+			ObjectMeta: metav1.ObjectMeta{Name: "ni-upgrade-identity.eth0", Namespace: "default"},
+			Spec: juneauv1alpha1.NetworkInterfaceSpec{
+				PodRef:             juneauv1alpha1.NetworkInterfacePodReference{UID: "uid-upgrade-identity", Name: "pod-upgrade-identity", Interface: "eth0"},
+				NodeName:           "node-a",
+				Subnet:             "default",
+				AllocationIdentity: "vmi.upgrade-identity",
+			},
+		}
+		Expect(k8sClient.Create(ctx, ni)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupNetworkInterface(ctx, ni)
+			_ = k8sClient.Delete(ctx, &juneauv1alpha1.AllocationLease{ObjectMeta: metav1.ObjectMeta{Name: leaseNameForNetworkInterface(ni)}})
+		})
+		allocateNetworkInterface(ni)
+
+		var claim juneauv1alpha1.AllocationClaim
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: ni.Status.AllocationClaim}, &claim)).To(Succeed())
+		claim.Spec.NetworkInterface = nil
+		Expect(k8sClient.Update(ctx, &claim)).To(Succeed())
+
+		allocateNetworkInterface(ni)
+
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: ni.Status.AllocationClaim}, &claim)).To(Succeed())
+		Expect(claim.Spec.NetworkInterface).NotTo(BeNil())
+		Expect(claim.Spec.NetworkInterface.AllocationIdentity).To(Equal("vmi.upgrade-identity"))
 	})
 
 	It("auto-generates a per-subnet AllocationPool with the gateway excluded", func() {

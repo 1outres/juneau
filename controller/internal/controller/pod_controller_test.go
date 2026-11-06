@@ -95,13 +95,160 @@ var _ = Describe("Pod controller", func() {
 		Expect(interfaceOf(pod).Spec.AllocationIdentity).To(Equal("vmi.pod-identity-vm"))
 	})
 
-	It("leaves the allocation identity empty for a pod KubeVirt does not manage", func() {
+	It("names a pod KubeVirt does not manage after the pod itself", func() {
 		pod := newPod("plain-pod-identity", map[string]string{"app": "web"})
 		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
 		DeferCleanup(func() { cleanupPodTestArtifacts(ctx, pod) })
 
 		reconcilePod(pod)
+		Expect(interfaceOf(pod).Spec.AllocationIdentity).To(Equal("pod.plain-pod-identity"))
+	})
+
+	It("leaves the identity of an existing NetworkInterface alone", func() {
+		pod := newPod("legacy-identity", map[string]string{"app": "web"})
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		DeferCleanup(func() { cleanupPodTestArtifacts(ctx, pod) })
+
+		// An interface made before pods got a default identity has none, and
+		// spec.allocationIdentity cannot change afterwards.
+		legacy := &juneauv1alpha1.NetworkInterface{
+			ObjectMeta: metav1.ObjectMeta{Name: pod.Name + ".eth0", Namespace: pod.Namespace},
+			Spec: juneauv1alpha1.NetworkInterfaceSpec{
+				PodRef:   juneauv1alpha1.NetworkInterfacePodReference{Name: pod.Name, UID: string(pod.UID), Interface: "eth0"},
+				NodeName: "node-a",
+				Subnet:   "default",
+			},
+		}
+		Expect(k8sClient.Create(ctx, legacy)).To(Succeed())
+
+		reconcilePod(pod)
 		Expect(interfaceOf(pod).Spec.AllocationIdentity).To(BeEmpty())
+	})
+
+	It("does not follow a changed annotation on an existing NetworkInterface", func() {
+		pod := newPod("annotation-changed", map[string]string{"app": "router"})
+		pod.Annotations = map[string]string{juneauv1alpha1.PodAnnotationAllocationIdentity: "router-a"}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		DeferCleanup(func() { cleanupPodTestArtifacts(ctx, pod) })
+		reconcilePod(pod)
+
+		pod.Annotations[juneauv1alpha1.PodAnnotationAllocationIdentity] = "router-b"
+		Expect(k8sClient.Update(ctx, pod)).To(Succeed())
+		reconcilePod(pod)
+		Expect(interfaceOf(pod).Spec.AllocationIdentity).To(Equal("router-a"))
+	})
+
+	It("gives pods with different names different identities", func() {
+		first := newPod("member-aaaaa", map[string]string{"app": "pool"})
+		second := newPod("member-bbbbb", map[string]string{"app": "pool"})
+		for _, pod := range []*corev1.Pod{first, second} {
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+			DeferCleanup(func() { cleanupPodTestArtifacts(ctx, pod) })
+			reconcilePod(pod)
+			allocateNetworkInterfaceForPod(ctx, interfaceOf(pod))
+		}
+
+		firstIface, secondIface := interfaceOf(first), interfaceOf(second)
+		Expect(firstIface.Spec.AllocationIdentity).To(Equal("pod.member-aaaaa"))
+		Expect(secondIface.Spec.AllocationIdentity).To(Equal("pod.member-bbbbb"))
+		Expect(leaseNameForNetworkInterface(firstIface)).NotTo(Equal(leaseNameForNetworkInterface(secondIface)))
+		Expect(firstIface.Status.Address).NotTo(Equal(secondIface.Status.Address))
+	})
+
+	It("keeps the address when a pod comes back under the same name", func() {
+		first := newPod("bare-same-name", map[string]string{"app": "web"})
+		Expect(k8sClient.Create(ctx, first)).To(Succeed())
+		reconcilePod(first)
+
+		firstIface := interfaceOf(first)
+		allocateNetworkInterfaceForPod(ctx, firstIface)
+		firstAddress := firstIface.Status.Address
+		Expect(firstAddress).NotTo(BeEmpty())
+		releasePodInterface(ctx, first, firstIface)
+		Eventually(func(g Gomega) {
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: firstIface.Status.AllocationClaim}, &juneauv1alpha1.AllocationClaim{})
+			g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		}).Should(Succeed())
+		Eventually(func(g Gomega) {
+			err := k8sClient.Get(ctx, client.ObjectKeyFromObject(first), &corev1.Pod{})
+			g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		}).Should(Succeed())
+
+		second := newPod("bare-same-name", map[string]string{"app": "web"})
+		Expect(k8sClient.Create(ctx, second)).To(Succeed())
+		DeferCleanup(func() { cleanupPodTestArtifacts(ctx, second) })
+		reconcilePod(second)
+
+		secondIface := interfaceOf(second)
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, &juneauv1alpha1.AllocationLease{ObjectMeta: metav1.ObjectMeta{Name: leaseNameForNetworkInterface(secondIface)}})
+		})
+		Expect(secondIface.Spec.PodRef.UID).NotTo(Equal(firstIface.Spec.PodRef.UID))
+		Expect(secondIface.Spec.AllocationIdentity).To(Equal("pod.bare-same-name"))
+		allocateNetworkInterfaceForPod(ctx, secondIface)
+		Expect(secondIface.Status.Address).To(Equal(firstAddress))
+	})
+
+	It("builds no NetworkInterface for a pod on the host network", func() {
+		pod := newPod("host-network", nil)
+		pod.Spec.HostNetwork = true
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		DeferCleanup(func() { cleanupPodTestArtifacts(ctx, pod) })
+
+		expectNoInterface(pod, "eth0")
+	})
+
+	It("builds no NetworkInterface for a mirror pod", func() {
+		pod := newPod("mirror-pod", nil)
+		pod.Annotations = map[string]string{"kubernetes.io/config.mirror": "abc"}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		DeferCleanup(func() { cleanupPodTestArtifacts(ctx, pod) })
+
+		expectNoInterface(pod, "eth0")
+	})
+
+	It("stamps the allocation-identity annotation onto every NetworkInterface of the pod", func() {
+		extra := createPodTestSubnet(uniqueTestName("annotated-extra"), "10.231.0.0/24")
+		pod := newPod("annotated-identity", map[string]string{"app": "router"})
+		pod.Annotations = map[string]string{
+			juneauv1alpha1.PodAnnotationAllocationIdentity: "router-a",
+			juneauv1alpha1.PodAnnotationNetworks:           fmt.Sprintf(`[{"interface":"eth1","subnet":%q}]`, extra),
+		}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		DeferCleanup(func() { cleanupPodTestArtifacts(ctx, pod) })
+
+		reconcilePod(pod, "eth0", "eth1")
+		Expect(interfaceNamed(pod, "eth0").Spec.AllocationIdentity).To(Equal("router-a"))
+		Expect(interfaceNamed(pod, "eth1").Spec.AllocationIdentity).To(Equal("router-a"))
+		Expect(interfaceOf(pod).Spec.RetainWhile).To(BeNil())
+	})
+
+	It("takes the annotation over the virtual machine identity and still retains for the virtual machine", func() {
+		pod := newPod("vl-annotated-identity", virtLauncherLabels("annotated-vm"))
+		pod.Annotations = map[string]string{juneauv1alpha1.PodAnnotationAllocationIdentity: "vmi.vm-annotated-vm"}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		DeferCleanup(func() { cleanupPodTestArtifacts(ctx, pod) })
+
+		reconcilePod(pod)
+		nwiface := interfaceOf(pod)
+		Expect(nwiface.Spec.AllocationIdentity).To(Equal("vmi.vm-annotated-vm"))
+		Expect(nwiface.Spec.RetainWhile).NotTo(BeNil())
+		Expect(nwiface.Spec.RetainWhile.Name).To(Equal("annotated-vm"))
+	})
+
+	It("refuses to build a pod whose allocation-identity annotation is invalid", func() {
+		pod := newPod("invalid-identity", nil)
+		pod.Annotations = map[string]string{juneauv1alpha1.PodAnnotationAllocationIdentity: "Not_Valid"}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		DeferCleanup(func() { cleanupPodTestArtifacts(ctx, pod) })
+
+		Eventually(func(g Gomega) {
+			_, err := newPodReconciler().Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(pod)})
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(juneauv1alpha1.PodAnnotationAllocationIdentity))
+		}).Should(Succeed())
+		err := k8sClient.Get(ctx, podInterfaceKey(pod, "eth0"), &juneauv1alpha1.NetworkInterface{})
+		Expect(apierrors.IsNotFound(err)).To(BeTrue())
 	})
 
 	It("points the NetworkInterface at the virtual machine that must keep the address", func() {

@@ -570,3 +570,68 @@ func TestPodPrimaryNetworkAttachment(t *testing.T) {
 		}
 	})
 }
+
+func TestPodAllocationIdentity(t *testing.T) {
+	path := field.NewPath("metadata", "annotations").Key(PodAnnotationAllocationIdentity).String()
+	cases := []struct {
+		name        string
+		annotations map[string]string
+		want        string
+		wantSet     bool
+		wantInvalid bool
+	}{
+		{name: "unset", annotations: map[string]string{"app": "router"}},
+		{name: "nil annotations", annotations: nil},
+		{name: "plain name", annotations: map[string]string{PodAnnotationAllocationIdentity: "router"}, want: "router", wantSet: true},
+		{name: "dotted name", annotations: map[string]string{PodAnnotationAllocationIdentity: "vmi.vm-router"}, want: "vmi.vm-router", wantSet: true},
+		{name: "empty value", annotations: map[string]string{PodAnnotationAllocationIdentity: ""}, wantSet: true, wantInvalid: true},
+		{name: "upper case", annotations: map[string]string{PodAnnotationAllocationIdentity: "Router"}, wantSet: true, wantInvalid: true},
+		{name: "slash", annotations: map[string]string{PodAnnotationAllocationIdentity: "ns/router"}, wantSet: true, wantInvalid: true},
+		{name: "too long", annotations: map[string]string{PodAnnotationAllocationIdentity: strings.Repeat("a", 254)}, wantSet: true, wantInvalid: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, set, errs := PodAllocationIdentity(tc.annotations)
+			if set != tc.wantSet {
+				t.Fatalf("set = %v, want %v", set, tc.wantSet)
+			}
+			if tc.wantInvalid {
+				if len(errs) == 0 {
+					t.Fatalf("PodAllocationIdentity(%v) accepted an invalid value", tc.annotations)
+				}
+				for _, err := range errs {
+					if err.Field != path {
+						t.Errorf("error at %q, want %q", err.Field, path)
+					}
+				}
+				if got != "" {
+					t.Errorf("identity = %q, want empty for an invalid value", got)
+				}
+				return
+			}
+			if len(errs) > 0 {
+				t.Fatalf("unexpected errors: %v", errs)
+			}
+			if got != tc.want {
+				t.Errorf("identity = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateAllocationIdentity(t *testing.T) {
+	path := field.NewPath("spec", "allocationIdentity")
+	if errs := ValidateAllocationIdentity("", path); len(errs) > 0 {
+		t.Errorf("an empty identity means none and must pass, got %v", errs)
+	}
+	if errs := ValidateAllocationIdentity("vmi.web-0", path); len(errs) > 0 {
+		t.Errorf("unexpected errors: %v", errs)
+	}
+	errs := ValidateAllocationIdentity("Web_0", path)
+	if len(errs) == 0 {
+		t.Fatal("ValidateAllocationIdentity accepted a value that is not a DNS-1123 subdomain")
+	}
+	if errs[0].Field != path.String() {
+		t.Errorf("error at %q, want %q", errs[0].Field, path.String())
+	}
+}

@@ -847,3 +847,145 @@ func cleanupLeaseTestArtifacts(ctx context.Context, leaseName string, owner clie
 		_ = k8sClient.Delete(ctx, pool)
 	}
 }
+
+var _ = Describe("Allocation lease NetworkInterface identity", func() {
+	ctx := context.Background()
+
+	identity := func() *juneauv1alpha1.NetworkInterfaceIdentity {
+		return &juneauv1alpha1.NetworkInterfaceIdentity{Namespace: "default", AllocationIdentity: "vmi.web-0", Interface: "eth0"}
+	}
+
+	type fixture struct {
+		pool       *juneauv1alpha1.AllocationPool
+		owner      *juneauv1alpha1.Vpc
+		reconciler *AllocationClaimReconciler
+		newClaim   func(name string, nic *juneauv1alpha1.NetworkInterfaceIdentity) *juneauv1alpha1.AllocationClaim
+	}
+
+	setup := func(suffix string, min uint64) fixture {
+		pool := &juneauv1alpha1.AllocationPool{
+			ObjectMeta: metav1.ObjectMeta{Name: "pool-lease-nic-" + suffix},
+			Spec: juneauv1alpha1.AllocationPoolSpec{
+				Type:     juneauv1alpha1.AllocationTypeNumber,
+				Strategy: juneauv1alpha1.AllocationStrategyFirstFit,
+				Number:   &juneauv1alpha1.AllocationPoolNumberSpec{Min: min, Max: min + 99},
+			},
+		}
+		owner := &juneauv1alpha1.Vpc{ObjectMeta: metav1.ObjectMeta{Name: "lease-nic-owner-" + suffix}}
+		Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+		Expect(k8sClient.Create(ctx, owner)).To(Succeed())
+		reuseKey := "lease-nic-key-" + suffix
+		DeferCleanup(func() {
+			cleanupLeaseTestArtifacts(ctx, reuseKey, owner, pool)
+		})
+		return fixture{
+			pool:       pool,
+			owner:      owner,
+			reconciler: &AllocationClaimReconciler{Client: k8sClient, APIReader: k8sClient, Scheme: k8sClient.Scheme()},
+			newClaim: func(name string, nic *juneauv1alpha1.NetworkInterfaceIdentity) *juneauv1alpha1.AllocationClaim {
+				return &juneauv1alpha1.AllocationClaim{
+					ObjectMeta: metav1.ObjectMeta{Name: name},
+					Spec: juneauv1alpha1.AllocationClaimSpec{
+						PoolRefs:         []juneauv1alpha1.AllocationPoolReference{{Name: pool.Name}},
+						ResourceRef:      juneauv1alpha1.AllocationResourceReference{APIVersion: juneauv1alpha1.GroupVersion.String(), Kind: "Vpc", Name: owner.Name},
+						Attribute:        "status.vni",
+						ReuseKey:         reuseKey,
+						ReleaseAfter:     &metav1.Duration{Duration: time.Hour},
+						NetworkInterface: nic,
+					},
+				}
+			},
+		}
+	}
+
+	allocate := func(f fixture, claim *juneauv1alpha1.AllocationClaim) {
+		Expect(k8sClient.Create(ctx, claim)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, claim) })
+		Eventually(func(g Gomega) {
+			_, err := f.reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: claim.Name}})
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(claim), claim)).To(Succeed())
+			g.Expect(claim.Status.Phase).To(Equal(juneauv1alpha1.AllocationClaimPhaseAllocated))
+		}).Should(Succeed())
+	}
+
+	getLease := func(name string) *juneauv1alpha1.AllocationLease {
+		var lease juneauv1alpha1.AllocationLease
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: name}, &lease)).To(Succeed())
+		return &lease
+	}
+
+	It("records the identity on the lease it creates and keeps it after the claim is deleted", func() {
+		f := setup("create", 1000)
+		claim := f.newClaim("lease-nic-claim-create", identity())
+		allocate(f, claim)
+
+		Expect(getLease(claim.Spec.ReuseKey).Spec.NetworkInterface).To(Equal(identity()))
+
+		Expect(k8sClient.Delete(ctx, claim)).To(Succeed())
+		Eventually(func(g Gomega) {
+			_, err := f.reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: claim.Name}})
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(errors.IsNotFound(k8sClient.Get(ctx, client.ObjectKeyFromObject(claim), &juneauv1alpha1.AllocationClaim{}))).To(BeTrue())
+		}).Should(Succeed())
+
+		released := getLease(claim.Spec.ReuseKey)
+		Expect(released.Spec.OwnerDeletionTimestamp).NotTo(BeNil())
+		Expect(released.Spec.NetworkInterface).To(Equal(identity()))
+	})
+
+	It("leaves the lease without an identity when the claim has none", func() {
+		f := setup("none", 1200)
+		claim := f.newClaim("lease-nic-claim-none", nil)
+		allocate(f, claim)
+
+		Expect(getLease(claim.Spec.ReuseKey).Spec.NetworkInterface).To(BeNil())
+	})
+
+	It("fills in the identity when a claim takes over a released lease that has none", func() {
+		f := setup("takeover", 1400)
+		old := f.newClaim("lease-nic-claim-old", nil)
+		allocate(f, old)
+		Expect(k8sClient.Delete(ctx, old)).To(Succeed())
+		Eventually(func(g Gomega) {
+			_, err := f.reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: old.Name}})
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(getLease(old.Spec.ReuseKey).Spec.OwnerDeletionTimestamp).NotTo(BeNil())
+		}).Should(Succeed())
+
+		successor := f.newClaim("lease-nic-claim-new", identity())
+		allocate(f, successor)
+
+		lease := getLease(successor.Spec.ReuseKey)
+		Expect(lease.Spec.ClaimRef.Name).To(Equal(successor.Name))
+		Expect(lease.Spec.NetworkInterface).To(Equal(identity()))
+	})
+
+	It("fills in the identity on the lease of a claim that is already allocated", func() {
+		f := setup("allocated", 1600)
+		claim := f.newClaim("lease-nic-claim-allocated", nil)
+		allocate(f, claim)
+		Expect(getLease(claim.Spec.ReuseKey).Spec.NetworkInterface).To(BeNil())
+
+		claim.Spec.NetworkInterface = identity()
+		Expect(k8sClient.Update(ctx, claim)).To(Succeed())
+		_, err := f.reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: claim.Name}})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(getLease(claim.Spec.ReuseKey).Spec.NetworkInterface).To(Equal(identity()))
+	})
+
+	It("does not rewrite the identity of a lease that already has one", func() {
+		f := setup("keep", 1800)
+		claim := f.newClaim("lease-nic-claim-keep", identity())
+		allocate(f, claim)
+
+		other := &juneauv1alpha1.NetworkInterfaceIdentity{Namespace: "default", AllocationIdentity: "vmi.web-1", Interface: "eth0"}
+		claim.Spec.NetworkInterface = other
+		Expect(k8sClient.Update(ctx, claim)).To(Succeed())
+		_, err := f.reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: claim.Name}})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(getLease(claim.Spec.ReuseKey).Spec.NetworkInterface).To(Equal(identity()))
+	})
+})

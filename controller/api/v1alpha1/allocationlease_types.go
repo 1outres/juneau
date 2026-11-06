@@ -69,6 +69,21 @@ type AllocationLeaseSpec struct {
 	// claim generation may point the same lease at a different object.
 	// +optional
 	RetainWhile *RetainReference `json:"retainWhile,omitempty"`
+
+	// NetworkInterface names the NetworkInterface this lease keeps an
+	// address for. It stays on the lease while the lease is Retained or
+	// Released, when no claim and no NetworkInterface exist, so a consumer
+	// can read whose address this is without parsing the lease name.
+	//
+	// The reuse key of the lease is made of these three values, so one
+	// lease always belongs to one NetworkInterface identity. The field is
+	// written when a claim for a NetworkInterface with an allocation
+	// identity creates or takes over the lease, and it is never changed
+	// after that. Leases of other consumers do not have it. A lease
+	// written before this field existed gets it the next time such a claim
+	// takes the lease; until then it reads back empty.
+	// +optional
+	NetworkInterface *NetworkInterfaceIdentity `json:"networkInterface,omitempty"`
 }
 
 // AllocationLeaseClaimReference names the AllocationClaim that holds a lease.

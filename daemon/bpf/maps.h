@@ -307,8 +307,8 @@
 // id, the same field reuse FIB_ROUTE_TYPE_NAPT does for its gateway
 // id. A second lookup in tgw_fib_map resolves the real destination.
 #define FIB_ROUTE_TYPE_TRANSIT 8
-// BLACKHOLE only shows up inside tgw_fib_map: the route exists but the
-// operator asked for its traffic to be dropped.
+// BLACKHOLE: the route exists but its traffic is dropped. fib_map has no
+// branch for it, so it falls through to the final drop.
 #define FIB_ROUTE_TYPE_BLACKHOLE 9
 // VPC_ENDPOINT covers the Vpc's endpoint pool: the destination is a
 // VpcEndpoint VIP that vpc_endpoint_map must first resolve to the

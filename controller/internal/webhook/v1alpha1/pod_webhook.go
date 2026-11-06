@@ -253,8 +253,9 @@ func mergeDNSConfig(existing *corev1.PodDNSConfig, dnsVIP, podNamespace string) 
 //  6. A NIC on an ElasticIP follows the direct-use rules of
 //     validateElasticIPDirectUse.
 //
-// It also rejects network annotations Juneau cannot turn into NICs, and
-// extra NICs whose Subnet does not exist.
+// It also rejects network annotations Juneau cannot turn into NICs, extra
+// NICs whose Subnet does not exist, and an allocation-identity annotation
+// that is not a valid identity.
 //
 // Mirror Pods, hostNetwork Pods, and Pods whose primary Subnet cannot be
 // resolved are always exempt — admission must keep working when the
@@ -295,11 +296,21 @@ func (v *PodSecurityGroupValidator) validate(ctx context.Context, pod *corev1.Po
 		return nil, nil
 	}
 
+	if _, _, errs := juneauv1alpha1.PodAllocationIdentity(pod.Annotations); len(errs) > 0 {
+		return nil, apierrors.NewInvalid(schema.GroupKind{Group: "", Kind: "Pod"}, pod.Name, errs)
+	}
+	identity, err := workload.AllocationIdentity(pod)
+	if err != nil {
+		return nil, apierrors.NewInvalid(schema.GroupKind{Group: "", Kind: "Pod"}, pod.Name, field.ErrorList{
+			field.Invalid(field.NewPath("metadata", "name"), pod.Name, err.Error()),
+		})
+	}
+
 	nics, errs := podNICsToValidate(pod)
 	networks := make(map[string]*podnetwork.Network, len(nics))
 	for _, nic := range nics {
 		if nic.attachment.ElasticIP != "" {
-			nicErrs, err := v.validateElasticIPNIC(ctx, pod, nic)
+			nicErrs, err := v.validateElasticIPNIC(ctx, pod, identity, nic)
 			if err != nil {
 				return nil, err
 			}
@@ -452,11 +463,11 @@ func (v *PodSecurityGroupValidator) validateNIC(ctx context.Context, namespace s
 
 // validateElasticIPNIC checks a NIC that carries an ElasticIP directly.
 // It has no network, Vpc or SecurityGroup to look up.
-func (v *PodSecurityGroupValidator) validateElasticIPNIC(ctx context.Context, pod *corev1.Pod, nic podNIC) (field.ErrorList, error) {
+func (v *PodSecurityGroupValidator) validateElasticIPNIC(ctx context.Context, pod *corev1.Pod, allocationIdentity string, nic podNIC) (field.ErrorList, error) {
 	return validateElasticIPDirectUse(ctx, v.Reader, elasticIPDirectUse{
 		namespace:          pod.Namespace,
 		elasticIP:          nic.attachment.ElasticIP,
-		allocationIdentity: workload.AllocationIdentity(pod),
+		allocationIdentity: allocationIdentity,
 		podUID:             pod.UID,
 	}, nic.path, nic.value)
 }

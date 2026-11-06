@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -1269,5 +1271,79 @@ var _ = Describe("Pod primary NIC on an L2Network", func() {
 
 	It("accepts an L2Network that does not exist yet", func() {
 		Expect(createPodOn(webhookUniqueTestName("missing-l2net"))).To(Succeed())
+	})
+})
+
+var _ = Describe("Pod allocation identity annotation", func() {
+	createPod := func(identity string) error {
+		subnet := customSubnetFixture()
+		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
+			juneauv1alpha1.PodAnnotationSubnet:             subnet.Name,
+			juneauv1alpha1.PodAnnotationAllocationIdentity: identity,
+		})
+		err := webhookK8sClient.Create(context.Background(), pod)
+		if err == nil {
+			DeferCleanup(func() {
+				_ = webhookK8sClient.Delete(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: "default"}})
+			})
+		}
+		return err
+	}
+
+	It("accepts a DNS-1123 subdomain", func() {
+		Expect(createPod("vmi.vm-router")).To(Succeed())
+	})
+
+	It("rejects an empty value", func() {
+		err := createPod("")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(juneauv1alpha1.PodAnnotationAllocationIdentity))
+	})
+
+	It("rejects a value that is not a DNS-1123 subdomain", func() {
+		err := createPod("Router_A")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(juneauv1alpha1.PodAnnotationAllocationIdentity))
+	})
+})
+
+var _ = Describe("Pod allocation identity from the pod name", func() {
+	createPodNamed := func(name string) error {
+		subnet := customSubnetFixture()
+		pod := makePodWithImage(name, "default", map[string]string{
+			juneauv1alpha1.PodAnnotationSubnet: subnet.Name,
+		})
+		err := webhookK8sClient.Create(context.Background(), pod)
+		if err == nil {
+			DeferCleanup(func() {
+				_ = webhookK8sClient.Delete(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: "default"}})
+			})
+		}
+		return err
+	}
+
+	It("accepts a pod whose identity fits", func() {
+		Expect(createPodNamed(uniquePodName())).To(Succeed())
+	})
+
+	It("accepts a pod whose name the API server generates", func() {
+		subnet := customSubnetFixture()
+		pod := makePodWithImage("unused", "default", map[string]string{
+			juneauv1alpha1.PodAnnotationSubnet: subnet.Name,
+		})
+		pod.Name = ""
+		pod.GenerateName = "generated-identity-"
+		Expect(webhookK8sClient.Create(context.Background(), pod)).To(Succeed())
+		DeferCleanup(func() {
+			_ = webhookK8sClient.Delete(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: "default"}})
+		})
+		Expect(pod.Name).To(HavePrefix("generated-identity-"))
+	})
+
+	It("rejects a pod whose name is too long to form an identity", func() {
+		err := createPodNamed(strings.Repeat("a", 250))
+		Expect(err).To(HaveOccurred())
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "got %v", err)
+		Expect(err.Error()).To(ContainSubstring("metadata.name"))
 	})
 })

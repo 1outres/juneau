@@ -10,6 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	juneauv1alpha1 "github.com/1outres/juneau/controller/api/v1alpha1"
+	bpf "github.com/1outres/juneau/daemon/internal/daemon/bpf"
 )
 
 func newFibFixture(t *testing.T, objects ...runtime.Object) *Fib {
@@ -33,7 +34,7 @@ func peerSubnet() *juneauv1alpha1.Subnet {
 func TestBuildFibValVpcPeeringForwardsToPeerSubnet(t *testing.T) {
 	r := newFibFixture(t, peerSubnet())
 
-	route := &juneauv1alpha1.Route{
+	route := &juneauv1alpha1.ResolvedRoute{
 		Dst:    "10.1.0.0/24",
 		Subnet: "peer-subnet",
 		Via: juneauv1alpha1.RouteVia{
@@ -67,7 +68,7 @@ func TestBuildFibValVpcPeeringForwardsToPeerSubnet(t *testing.T) {
 func TestBuildFibValVpcPeeringOnlyDiffersFromConnectedByType(t *testing.T) {
 	r := newFibFixture(t, peerSubnet())
 
-	connected, _, err := r.buildFibVal(context.Background(), &juneauv1alpha1.Route{
+	connected, _, err := r.buildFibVal(context.Background(), &juneauv1alpha1.ResolvedRoute{
 		Dst:    "10.1.0.0/24",
 		Subnet: "peer-subnet",
 		Via:    juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaConnected},
@@ -75,7 +76,7 @@ func TestBuildFibValVpcPeeringOnlyDiffersFromConnectedByType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildFibVal connected: %v", err)
 	}
-	peering, _, err := r.buildFibVal(context.Background(), &juneauv1alpha1.Route{
+	peering, _, err := r.buildFibVal(context.Background(), &juneauv1alpha1.ResolvedRoute{
 		Dst:    "10.1.0.0/24",
 		Subnet: "peer-subnet",
 		Via:    juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaVpcPeering, VpcPeering: "peering-a"},
@@ -96,7 +97,7 @@ func TestBuildFibValVpcPeeringOnlyDiffersFromConnectedByType(t *testing.T) {
 func TestBuildFibValVpcPeeringMissingSubnetFails(t *testing.T) {
 	r := newFibFixture(t)
 
-	_, _, err := r.buildFibVal(context.Background(), &juneauv1alpha1.Route{
+	_, _, err := r.buildFibVal(context.Background(), &juneauv1alpha1.ResolvedRoute{
 		Dst:    "10.1.0.0/24",
 		Subnet: "peer-subnet",
 		Via:    juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaVpcPeering, VpcPeering: "peering-a"},
@@ -114,8 +115,8 @@ func transitRouteTable(tableID uint32) *juneauv1alpha1.TransitGatewayRouteTable 
 	}
 }
 
-func transitRoute() *juneauv1alpha1.Route {
-	return &juneauv1alpha1.Route{
+func transitRoute() *juneauv1alpha1.ResolvedRoute {
+	return &juneauv1alpha1.ResolvedRoute{
 		Dst:                      "10.2.0.0/16",
 		TransitGatewayRouteTable: "hub",
 		Via: juneauv1alpha1.RouteVia{
@@ -170,7 +171,7 @@ func TestBuildFibValTransitGatewayMissingRouteTableFails(t *testing.T) {
 func TestBuildFibValVpcEndpointCarriesOnlyTheType(t *testing.T) {
 	r := newFibFixture(t)
 
-	route := &juneauv1alpha1.Route{
+	route := &juneauv1alpha1.ResolvedRoute{
 		Dst: "10.9.0.0/24",
 		Via: juneauv1alpha1.RouteVia{
 			Type: juneauv1alpha1.ViaVpcEndpoint,
@@ -198,14 +199,14 @@ func TestBuildFibValVpcEndpointCarriesOnlyTheType(t *testing.T) {
 func TestBuildFibValVpcEndpointDiffersFromServiceOnlyByType(t *testing.T) {
 	r := newFibFixture(t)
 
-	service, _, err := r.buildFibVal(context.Background(), &juneauv1alpha1.Route{
+	service, _, err := r.buildFibVal(context.Background(), &juneauv1alpha1.ResolvedRoute{
 		Dst: "10.9.0.0/24",
 		Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
 	})
 	if err != nil {
 		t.Fatalf("buildFibVal(service): %v", err)
 	}
-	endpoint, _, err := r.buildFibVal(context.Background(), &juneauv1alpha1.Route{
+	endpoint, _, err := r.buildFibVal(context.Background(), &juneauv1alpha1.ResolvedRoute{
 		Dst: "10.9.0.0/24",
 		Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaVpcEndpoint},
 	})
@@ -233,7 +234,7 @@ func TestBuildFibValL2GatewayRoute(t *testing.T) {
 	}
 	r := &Fib{client: fake.NewClientBuilder().WithScheme(newNatTestScheme(t)).WithRuntimeObjects(network).Build()}
 
-	val, skip, err := r.buildFibVal(context.Background(), &juneauv1alpha1.Route{
+	val, skip, err := r.buildFibVal(context.Background(), &juneauv1alpha1.ResolvedRoute{
 		Dst:       "10.60.0.0/24",
 		L2Network: "lab-net",
 		Via:       juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaConnected},
@@ -260,7 +261,7 @@ func TestBuildFibValSkipsAnL2NetworkWithoutAVni(t *testing.T) {
 	}
 	r := &Fib{client: fake.NewClientBuilder().WithScheme(newNatTestScheme(t)).WithRuntimeObjects(network).Build()}
 
-	_, skip, err := r.buildFibVal(context.Background(), &juneauv1alpha1.Route{
+	_, skip, err := r.buildFibVal(context.Background(), &juneauv1alpha1.ResolvedRoute{
 		Dst:       "10.60.0.0/24",
 		L2Network: "lab-net",
 		Via:       juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaConnected},
@@ -270,5 +271,152 @@ func TestBuildFibValSkipsAnL2NetworkWithoutAVni(t *testing.T) {
 	}
 	if !skip {
 		t.Error("a segment with no VNI was programmed anyway")
+	}
+}
+
+func endpointSubnet() *juneauv1alpha1.Subnet {
+	return &juneauv1alpha1.Subnet{
+		ObjectMeta: metav1.ObjectMeta{Name: "router-subnet"},
+		Status: juneauv1alpha1.SubnetStatus{
+			VNI:        88,
+			GatewayMAC: "02:00:00:00:00:08",
+		},
+	}
+}
+
+func routerEndpoint(namespace string, mac string) *juneauv1alpha1.NetworkEndpoint {
+	return &juneauv1alpha1.NetworkEndpoint{
+		ObjectMeta: metav1.ObjectMeta{Name: "router-a.eth0", Namespace: namespace},
+		Spec: juneauv1alpha1.NetworkEndpointSpec{
+			Kind:       juneauv1alpha1.EndpointKindPod,
+			NodeName:   "node-a",
+			Subnet:     "router-subnet",
+			MACAddress: mac,
+		},
+	}
+}
+
+func endpointRoute(state juneauv1alpha1.RouteState, endpoint *juneauv1alpha1.ResolvedNetworkEndpointReference) *juneauv1alpha1.ResolvedRoute {
+	route := &juneauv1alpha1.ResolvedRoute{
+		Dst: "10.200.0.0/16",
+		Via: juneauv1alpha1.RouteVia{
+			Type: juneauv1alpha1.ViaEndpoint,
+			Endpoint: &juneauv1alpha1.RouteEndpointReference{
+				Namespace:          "net",
+				AllocationIdentity: "router",
+				Interface:          "eth0",
+			},
+		},
+		NetworkEndpoint: endpoint,
+		State:           state,
+	}
+	if state == juneauv1alpha1.RouteStateActive {
+		route.Subnet = "router-subnet"
+	}
+	return route
+}
+
+// The NetworkEndpoint is namespaced. The route names the namespace the
+// controller resolved it in, and an endpoint of the same name in another
+// namespace belongs to someone else.
+func TestBuildFibValEndpointForwardsToTheResolvedEndpoint(t *testing.T) {
+	r := newFibFixture(t,
+		endpointSubnet(),
+		routerEndpoint("net", "02:42:ac:10:00:01"),
+		routerEndpoint("other", "02:42:ac:10:00:99"),
+	)
+
+	val, skip, err := r.buildFibVal(context.Background(), endpointRoute(juneauv1alpha1.RouteStateActive,
+		&juneauv1alpha1.ResolvedNetworkEndpointReference{Namespace: "net", Name: "router-a.eth0"}))
+	if err != nil {
+		t.Fatalf("buildFibVal: %v", err)
+	}
+	if skip {
+		t.Fatal("buildFibVal skipped an active endpoint route")
+	}
+	if val.Type != fibRouteTypeEndpoint {
+		t.Errorf("type = %d, want %d", val.Type, fibRouteTypeEndpoint)
+	}
+	if val.SubnetId != 88 {
+		t.Errorf("subnet ID = %d, want 88", val.SubnetId)
+	}
+	if want := [6]uint8{0x02, 0x42, 0xac, 0x10, 0x00, 0x01}; val.Dmac != want {
+		t.Errorf("dmac = %v, want the MAC of the endpoint in namespace net %v", val.Dmac, want)
+	}
+	if want := [6]uint8{0x02, 0x00, 0x00, 0x00, 0x00, 0x08}; val.Smac != want {
+		t.Errorf("smac = %v, want the gateway MAC of the Subnet %v", val.Smac, want)
+	}
+}
+
+func TestBuildFibValEndpointWithoutResolvedEndpointFails(t *testing.T) {
+	r := newFibFixture(t, endpointSubnet())
+
+	_, _, err := r.buildFibVal(context.Background(), endpointRoute(juneauv1alpha1.RouteStateActive, nil))
+	if err == nil {
+		t.Fatal("buildFibVal accepted an active endpoint route that names no NetworkEndpoint")
+	}
+}
+
+func TestBuildFibValBlackholeStateDropsWithoutLookingAnythingUp(t *testing.T) {
+	r := newFibFixture(t)
+
+	val, skip, err := r.buildFibVal(context.Background(), endpointRoute(juneauv1alpha1.RouteStateBlackhole, nil))
+	if err != nil {
+		t.Fatalf("buildFibVal: %v", err)
+	}
+	if skip {
+		t.Fatal("buildFibVal skipped a blackhole route; the traffic would match a shorter prefix instead")
+	}
+	if val != (bpf.PodEgressFibVal{Type: fibRouteTypeBlackhole}) {
+		t.Errorf("value = %+v, want a bare blackhole", val)
+	}
+}
+
+func TestBuildFibValBlackholeRoute(t *testing.T) {
+	r := newFibFixture(t)
+
+	val, skip, err := r.buildFibVal(context.Background(), &juneauv1alpha1.ResolvedRoute{
+		Dst:   "10.201.0.0/16",
+		Via:   juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaBlackhole},
+		State: juneauv1alpha1.RouteStateBlackhole,
+	})
+	if err != nil {
+		t.Fatalf("buildFibVal: %v", err)
+	}
+	if skip {
+		t.Fatal("buildFibVal skipped a blackhole route")
+	}
+	if val != (bpf.PodEgressFibVal{Type: fibRouteTypeBlackhole}) {
+		t.Errorf("value = %+v, want a bare blackhole", val)
+	}
+}
+
+// An endpoint route usually sends traffic through a firewall. When the
+// daemon cannot build it, leaving it out would let the traffic match a
+// shorter prefix, such as 0.0.0.0/0, and go around the firewall.
+func TestFibValForDropsAnEndpointRouteItCannotBuild(t *testing.T) {
+	r := newFibFixture(t, endpointSubnet())
+
+	val, install := r.fibValFor(context.Background(), endpointRoute(juneauv1alpha1.RouteStateActive,
+		&juneauv1alpha1.ResolvedNetworkEndpointReference{Namespace: "net", Name: "router-a.eth0"}))
+	if !install {
+		t.Fatal("fibValFor left out an endpoint route whose NetworkEndpoint is missing")
+	}
+	if val != (bpf.PodEgressFibVal{Type: fibRouteTypeBlackhole}) {
+		t.Errorf("value = %+v, want a bare blackhole", val)
+	}
+}
+
+func TestFibValForLeavesOutOtherRoutesItCannotBuild(t *testing.T) {
+	r := newFibFixture(t)
+
+	_, install := r.fibValFor(context.Background(), &juneauv1alpha1.ResolvedRoute{
+		Dst:    "10.1.0.0/24",
+		Subnet: "peer-subnet",
+		Via:    juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaVpcPeering, VpcPeering: "peering-a"},
+		State:  juneauv1alpha1.RouteStateActive,
+	})
+	if install {
+		t.Fatal("fibValFor installed a vpcPeering route with no peer Subnet")
 	}
 }

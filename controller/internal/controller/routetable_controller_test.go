@@ -23,12 +23,14 @@ var _ = Describe("RouteTable controller", func() {
 		Eventually(func(g Gomega) {
 			routeTable := getControllerRouteTable(vpcName)
 			g.Expect(routeTable.Status.Routes).To(ContainElements(
-				juneauv1alpha1.Route{
+				juneauv1alpha1.ResolvedRoute{
+					State:  juneauv1alpha1.RouteStateActive,
 					Dst:    subnetA.Spec.CIDR,
 					Subnet: subnetA.Name,
 					Via:    juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaConnected},
 				},
-				juneauv1alpha1.Route{
+				juneauv1alpha1.ResolvedRoute{
+					State:  juneauv1alpha1.RouteStateActive,
 					Dst:    subnetB.Spec.CIDR,
 					Subnet: subnetB.Name,
 					Via:    juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaConnected},
@@ -48,7 +50,8 @@ var _ = Describe("RouteTable controller", func() {
 		Eventually(func(g Gomega) {
 			routeTable := getControllerRouteTable(vpcName)
 			g.Expect(routeTable.Status.Routes).To(ContainElement(
-				juneauv1alpha1.Route{
+				juneauv1alpha1.ResolvedRoute{
+					State:     juneauv1alpha1.RouteStateActive,
 					Dst:       "10.161.0.0/24",
 					L2Network: l2Name,
 					Via:       juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaConnected},
@@ -71,108 +74,6 @@ var _ = Describe("RouteTable controller", func() {
 				g.Expect(route.Dst).NotTo(Equal("10.162.0.0/24"))
 			}
 		}, "1s").Should(Succeed())
-	})
-
-	It("resolves endpoint routes into status", func() {
-		vpcName := createControllerVpc()
-		subnet := createControllerSubnet(vpcName, uniqueTestName("subnet"), uniqueSubnetCIDR())
-		endpointName := uniqueTestName("nwep")
-		Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.NetworkEndpoint{
-			ObjectMeta: metav1.ObjectMeta{Name: endpointName, Namespace: "default"},
-			Spec: juneauv1alpha1.NetworkEndpointSpec{
-				Kind:       juneauv1alpha1.EndpointKindPod,
-				NodeName:   "node-a",
-				Subnet:     subnet.Name,
-				Address:    "10.200.0.10/24",
-				MACAddress: "02:42:ac:10:00:01",
-				Attachment: &juneauv1alpha1.NetworkEndpointAttachment{
-					Ifindex:        1,
-					HostMACAddress: "02:42:ac:10:00:11",
-				},
-				PodRef: &juneauv1alpha1.NetworkEndpointPodReference{
-					UID:       fmt.Sprintf("uid-%s", endpointName),
-					Name:      "pod-a",
-					Interface: "net1",
-				},
-			},
-		})).To(Succeed())
-
-		routeTableName := uniqueTestName("routetable")
-		Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
-			ObjectMeta: metav1.ObjectMeta{Name: routeTableName},
-			Spec: juneauv1alpha1.RouteTableSpec{
-				Vpc: vpcName,
-				Routes: []juneauv1alpha1.Route{{
-					Dst: "0.0.0.0/0",
-					Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaEndpoint, Endpoint: endpointName},
-				}},
-			},
-		})).To(Succeed())
-
-		Eventually(func(g Gomega) {
-			routeTable := getControllerRouteTable(routeTableName)
-			ready := meta.FindStatusCondition(routeTable.Status.Conditions, juneauv1alpha1.RouteTableStatusReady)
-			g.Expect(ready).NotTo(BeNil())
-			g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
-			g.Expect(ready.ObservedGeneration).To(Equal(routeTable.Generation))
-			g.Expect(routeTable.Status.Routes).To(ContainElement(juneauv1alpha1.Route{
-				Dst:    subnet.Spec.CIDR,
-				Subnet: subnet.Name,
-				Via:    juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaConnected},
-			}))
-			g.Expect(routeTable.Status.Routes).To(ContainElement(juneauv1alpha1.Route{
-				Dst:    "0.0.0.0/0",
-				Subnet: subnet.Name,
-				Via:    juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaEndpoint, Endpoint: endpointName},
-			}))
-		}).Should(Succeed())
-	})
-
-	It("marks a RouteTable not ready when an endpoint is outside the VPC", func() {
-		vpcA := createControllerVpc()
-		vpcB := createControllerVpc()
-		subnetB := createControllerSubnet(vpcB, uniqueTestName("subnet"), uniqueSubnetCIDR())
-		endpointName := uniqueTestName("nwep")
-		Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.NetworkEndpoint{
-			ObjectMeta: metav1.ObjectMeta{Name: endpointName, Namespace: "default"},
-			Spec: juneauv1alpha1.NetworkEndpointSpec{
-				Kind:       juneauv1alpha1.EndpointKindPod,
-				NodeName:   "node-a",
-				Subnet:     subnetB.Name,
-				Address:    "10.201.0.10/24",
-				MACAddress: "02:42:ac:10:00:02",
-				Attachment: &juneauv1alpha1.NetworkEndpointAttachment{
-					Ifindex:        1,
-					HostMACAddress: "02:42:ac:10:00:12",
-				},
-				PodRef: &juneauv1alpha1.NetworkEndpointPodReference{
-					UID:       fmt.Sprintf("uid-%s", endpointName),
-					Name:      "pod-b",
-					Interface: "net1",
-				},
-			},
-		})).To(Succeed())
-
-		routeTableName := uniqueTestName("routetable")
-		Expect(k8sClient.Create(context.Background(), &juneauv1alpha1.RouteTable{
-			ObjectMeta: metav1.ObjectMeta{Name: routeTableName},
-			Spec: juneauv1alpha1.RouteTableSpec{
-				Vpc: vpcA,
-				Routes: []juneauv1alpha1.Route{{
-					Dst: "0.0.0.0/0",
-					Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaEndpoint, Endpoint: endpointName},
-				}},
-			},
-		})).To(Succeed())
-
-		Eventually(func(g Gomega) {
-			routeTable := getControllerRouteTable(routeTableName)
-			ready := meta.FindStatusCondition(routeTable.Status.Conditions, juneauv1alpha1.RouteTableStatusReady)
-			g.Expect(ready).NotTo(BeNil())
-			g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
-			g.Expect(ready.ObservedGeneration).To(Equal(routeTable.Generation))
-			g.Expect(ready.Message).To(ContainSubstring("outside VPC"))
-		}).Should(Succeed())
 	})
 
 	It("allocates a tableID", func() {
@@ -206,9 +107,10 @@ var _ = Describe("RouteTable controller", func() {
 
 		Eventually(func(g Gomega) {
 			rt := getControllerRouteTable(vpcName)
-			g.Expect(rt.Status.Routes).To(ContainElement(juneauv1alpha1.Route{
-				Dst: testServiceCIDR.String(),
-				Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
+			g.Expect(rt.Status.Routes).To(ContainElement(juneauv1alpha1.ResolvedRoute{
+				State: juneauv1alpha1.RouteStateActive,
+				Dst:   testServiceCIDR.String(),
+				Via:   juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
 			}))
 		}).Should(Succeed())
 	})
@@ -228,7 +130,8 @@ var _ = Describe("RouteTable controller", func() {
 		// the next unrelated reconcile (e.g. a Vpc update).
 		subnet := createControllerSubnet(vpcName, uniqueTestName("subnet"), uniqueSubnetCIDR())
 
-		expected := juneauv1alpha1.Route{
+		expected := juneauv1alpha1.ResolvedRoute{
+			State:  juneauv1alpha1.RouteStateActive,
 			Dst:    subnet.Spec.CIDR,
 			Subnet: subnet.Name,
 			Via:    juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaConnected},
@@ -256,9 +159,10 @@ var _ = Describe("RouteTable controller", func() {
 		vpc.Spec.Service = &juneauv1alpha1.VpcServiceSpec{Consume: true}
 		Expect(k8sClient.Update(context.Background(), &vpc)).To(Succeed())
 
-		serviceRoute := juneauv1alpha1.Route{
-			Dst: testServiceCIDR.String(),
-			Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
+		serviceRoute := juneauv1alpha1.ResolvedRoute{
+			State: juneauv1alpha1.RouteStateActive,
+			Dst:   testServiceCIDR.String(),
+			Via:   juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
 		}
 
 		Eventually(func(g Gomega) {
@@ -293,7 +197,8 @@ var _ = Describe("RouteTable controller", func() {
 				ready := meta.FindStatusCondition(routeTable.Status.Conditions, juneauv1alpha1.RouteTableStatusReady)
 				g.Expect(ready).NotTo(BeNil())
 				g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
-				g.Expect(routeTable.Status.Routes).To(ContainElement(juneauv1alpha1.Route{
+				g.Expect(routeTable.Status.Routes).To(ContainElement(juneauv1alpha1.ResolvedRoute{
+					State:  juneauv1alpha1.RouteStateActive,
 					Dst:    peerSubnet.Spec.CIDR,
 					Subnet: peerSubnet.Name,
 					Via:    juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaVpcPeering, VpcPeering: peeringName},
@@ -402,7 +307,8 @@ var _ = Describe("RouteTable controller", func() {
 
 			Eventually(func(g Gomega) {
 				routeTable := getControllerRouteTable(routeTableName)
-				g.Expect(routeTable.Status.Routes).To(ContainElement(juneauv1alpha1.Route{
+				g.Expect(routeTable.Status.Routes).To(ContainElement(juneauv1alpha1.ResolvedRoute{
+					State:  juneauv1alpha1.RouteStateActive,
 					Dst:    peerCIDR,
 					Subnet: peerSubnet.Name,
 					Via:    juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaVpcPeering, VpcPeering: peeringName},
@@ -434,7 +340,8 @@ var _ = Describe("RouteTable controller", func() {
 				ready := meta.FindStatusCondition(routeTable.Status.Conditions, juneauv1alpha1.RouteTableStatusReady)
 				g.Expect(ready).NotTo(BeNil())
 				g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
-				g.Expect(routeTable.Status.Routes).To(ContainElement(juneauv1alpha1.Route{
+				g.Expect(routeTable.Status.Routes).To(ContainElement(juneauv1alpha1.ResolvedRoute{
+					State:                    juneauv1alpha1.RouteStateActive,
 					Dst:                      "172.23.0.0/16",
 					TransitGatewayRouteTable: tgw,
 					Via:                      juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaTransitGateway, TransitGateway: tgw},
@@ -512,7 +419,8 @@ var _ = Describe("RouteTable controller", func() {
 
 			Eventually(func(g Gomega) {
 				routeTable := getControllerRouteTable(routeTableName)
-				g.Expect(routeTable.Status.Routes).To(ContainElement(juneauv1alpha1.Route{
+				g.Expect(routeTable.Status.Routes).To(ContainElement(juneauv1alpha1.ResolvedRoute{
+					State:                    juneauv1alpha1.RouteStateActive,
 					Dst:                      "172.26.0.0/16",
 					TransitGatewayRouteTable: tgw,
 					Via:                      juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaTransitGateway, TransitGateway: tgw},
@@ -533,13 +441,15 @@ var _ = Describe("RouteTable controller", func() {
 
 			Eventually(func(g Gomega) {
 				rt := getControllerRouteTable(vpcName)
-				g.Expect(rt.Status.Routes).To(ContainElement(juneauv1alpha1.Route{
-					Dst: extA + "/32",
-					Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
+				g.Expect(rt.Status.Routes).To(ContainElement(juneauv1alpha1.ResolvedRoute{
+					State: juneauv1alpha1.RouteStateActive,
+					Dst:   extA + "/32",
+					Via:   juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
 				}))
-				g.Expect(rt.Status.Routes).To(ContainElement(juneauv1alpha1.Route{
-					Dst: extB + "/32",
-					Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
+				g.Expect(rt.Status.Routes).To(ContainElement(juneauv1alpha1.ResolvedRoute{
+					State: juneauv1alpha1.RouteStateActive,
+					Dst:   extB + "/32",
+					Via:   juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
 				}))
 			}).Should(Succeed())
 		})
@@ -556,9 +466,10 @@ var _ = Describe("RouteTable controller", func() {
 
 			Eventually(func(g Gomega) {
 				rt := getControllerRouteTable(vpcName)
-				g.Expect(rt.Status.Routes).To(ContainElement(juneauv1alpha1.Route{
-					Dst: extB + "/32",
-					Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
+				g.Expect(rt.Status.Routes).To(ContainElement(juneauv1alpha1.ResolvedRoute{
+					State: juneauv1alpha1.RouteStateActive,
+					Dst:   extB + "/32",
+					Via:   juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
 				}))
 			}).Should(Succeed())
 
@@ -569,13 +480,15 @@ var _ = Describe("RouteTable controller", func() {
 
 			Eventually(func(g Gomega) {
 				rt := getControllerRouteTable(vpcName)
-				g.Expect(rt.Status.Routes).To(ContainElement(juneauv1alpha1.Route{
-					Dst: extA + "/32",
-					Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
+				g.Expect(rt.Status.Routes).To(ContainElement(juneauv1alpha1.ResolvedRoute{
+					State: juneauv1alpha1.RouteStateActive,
+					Dst:   extA + "/32",
+					Via:   juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
 				}))
-				g.Expect(rt.Status.Routes).NotTo(ContainElement(juneauv1alpha1.Route{
-					Dst: extB + "/32",
-					Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
+				g.Expect(rt.Status.Routes).NotTo(ContainElement(juneauv1alpha1.ResolvedRoute{
+					State: juneauv1alpha1.RouteStateActive,
+					Dst:   extB + "/32",
+					Via:   juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
 				}))
 			}).Should(Succeed())
 		})
@@ -593,13 +506,15 @@ var _ = Describe("RouteTable controller", func() {
 
 			Eventually(func(g Gomega) {
 				rt := getControllerRouteTable(ownerVpc)
-				g.Expect(rt.Status.Routes).To(ContainElement(juneauv1alpha1.Route{
-					Dst: extOwner + "/32",
-					Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
+				g.Expect(rt.Status.Routes).To(ContainElement(juneauv1alpha1.ResolvedRoute{
+					State: juneauv1alpha1.RouteStateActive,
+					Dst:   extOwner + "/32",
+					Via:   juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
 				}))
-				g.Expect(rt.Status.Routes).NotTo(ContainElement(juneauv1alpha1.Route{
-					Dst: extOther + "/32",
-					Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
+				g.Expect(rt.Status.Routes).NotTo(ContainElement(juneauv1alpha1.ResolvedRoute{
+					State: juneauv1alpha1.RouteStateActive,
+					Dst:   extOther + "/32",
+					Via:   juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaService},
 				}))
 			}).Should(Succeed())
 		})

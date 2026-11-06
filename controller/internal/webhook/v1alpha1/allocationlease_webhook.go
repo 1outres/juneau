@@ -86,6 +86,7 @@ func (v *AllocationLeaseCustomValidator) ValidateUpdate(_ context.Context, oldOb
 	if lease.Spec.Value != old.Spec.Value {
 		errs = append(errs, field.Invalid(specPath.Child("value"), lease.Spec.Value, "spec.value is immutable"))
 	}
+	errs = append(errs, validateNetworkInterfaceIdentityUpdate(old.Spec.NetworkInterface, lease.Spec.NetworkInterface, specPath.Child("networkInterface"))...)
 	errs = append(errs, validateAllocationLeaseSpec(lease)...)
 
 	if len(errs) > 0 {
@@ -126,5 +127,6 @@ func validateAllocationLeaseSpec(lease *juneauloutresmev1alpha1.AllocationLease)
 	// spec.retainWhile is not immutable: a later claim generation may point
 	// the same lease at a different object, so only its shape is checked.
 	errs = append(errs, validateRetainReference(lease.Spec.RetainWhile, specPath.Child("retainWhile"))...)
+	errs = append(errs, validateNetworkInterfaceIdentity(lease.Spec.NetworkInterface, specPath.Child("networkInterface"))...)
 	return errs
 }

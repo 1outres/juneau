@@ -227,75 +227,12 @@ func (v *RouteTableCustomValidator) validateRouteTableSpec(ctx context.Context, 
 	for i, route := range spec.Routes {
 		routePath := specPath.Child("routes").Index(i)
 		switch route.Via.Type {
-		case juneauv1alpha1.ViaEndpoint:
-			if route.Via.Endpoint == "" {
-				errs = append(errs, field.Required(routePath.Child("via", "endpointName"), "spec.routes[].via.endpointName is required when via.type is endpoint"))
-			}
-			if route.Via.NATGateway != "" {
-				errs = append(errs, field.Invalid(routePath.Child("via", "natGateway"), route.Via.NATGateway, "spec.routes[].via.natGateway must be empty when via.type is endpoint"))
-			}
-			if route.Via.VpcPeering != "" {
-				errs = append(errs, field.Invalid(routePath.Child("via", "vpcPeering"), route.Via.VpcPeering, "spec.routes[].via.vpcPeering must be empty when via.type is endpoint"))
-			}
-			if route.Via.TransitGateway != "" {
-				errs = append(errs, field.Invalid(routePath.Child("via", "transitGateway"), route.Via.TransitGateway, "spec.routes[].via.transitGateway must be empty when via.type is endpoint"))
-			}
-		case juneauv1alpha1.ViaConnected, juneauv1alpha1.ViaInternetGateway:
-			if route.Via.Endpoint != "" {
-				errs = append(errs, field.Invalid(routePath.Child("via", "endpointName"), route.Via.Endpoint, fmt.Sprintf("spec.routes[].via.endpointName must be empty when via.type is %q", route.Via.Type)))
-			}
-			if route.Via.NATGateway != "" {
-				errs = append(errs, field.Invalid(routePath.Child("via", "natGateway"), route.Via.NATGateway, fmt.Sprintf("spec.routes[].via.natGateway must be empty when via.type is %q", route.Via.Type)))
-			}
-			if route.Via.VpcPeering != "" {
-				errs = append(errs, field.Invalid(routePath.Child("via", "vpcPeering"), route.Via.VpcPeering, fmt.Sprintf("spec.routes[].via.vpcPeering must be empty when via.type is %q", route.Via.Type)))
-			}
-			if route.Via.TransitGateway != "" {
-				errs = append(errs, field.Invalid(routePath.Child("via", "transitGateway"), route.Via.TransitGateway, fmt.Sprintf("spec.routes[].via.transitGateway must be empty when via.type is %q", route.Via.Type)))
-			}
 		case juneauv1alpha1.ViaService:
 			errs = append(errs, field.Forbidden(routePath.Child("via", "type"), "spec.routes[].via.type=service is managed by the controller and cannot be specified manually; configure spec.service on the Vpc instead"))
 		case juneauv1alpha1.ViaVpcEndpoint:
 			errs = append(errs, field.Forbidden(routePath.Child("via", "type"), "spec.routes[].via.type=vpcEndpoint is managed by the controller and cannot be specified manually; configure spec.endpointPool on the Vpc instead"))
-		case juneauv1alpha1.ViaNATGateway:
-			if route.Via.NATGateway == "" {
-				errs = append(errs, field.Required(routePath.Child("via", "natGateway"), "spec.routes[].via.natGateway is required when via.type is natGateway"))
-			}
-			if route.Via.Endpoint != "" {
-				errs = append(errs, field.Invalid(routePath.Child("via", "endpointName"), route.Via.Endpoint, "spec.routes[].via.endpointName must be empty when via.type is natGateway"))
-			}
-			if route.Via.VpcPeering != "" {
-				errs = append(errs, field.Invalid(routePath.Child("via", "vpcPeering"), route.Via.VpcPeering, "spec.routes[].via.vpcPeering must be empty when via.type is natGateway"))
-			}
-			if route.Via.TransitGateway != "" {
-				errs = append(errs, field.Invalid(routePath.Child("via", "transitGateway"), route.Via.TransitGateway, "spec.routes[].via.transitGateway must be empty when via.type is natGateway"))
-			}
-		case juneauv1alpha1.ViaVpcPeering:
-			if route.Via.VpcPeering == "" {
-				errs = append(errs, field.Required(routePath.Child("via", "vpcPeering"), "spec.routes[].via.vpcPeering is required when via.type is vpcPeering"))
-			}
-			if route.Via.Endpoint != "" {
-				errs = append(errs, field.Invalid(routePath.Child("via", "endpointName"), route.Via.Endpoint, "spec.routes[].via.endpointName must be empty when via.type is vpcPeering"))
-			}
-			if route.Via.NATGateway != "" {
-				errs = append(errs, field.Invalid(routePath.Child("via", "natGateway"), route.Via.NATGateway, "spec.routes[].via.natGateway must be empty when via.type is vpcPeering"))
-			}
-			if route.Via.TransitGateway != "" {
-				errs = append(errs, field.Invalid(routePath.Child("via", "transitGateway"), route.Via.TransitGateway, "spec.routes[].via.transitGateway must be empty when via.type is vpcPeering"))
-			}
-		case juneauv1alpha1.ViaTransitGateway:
-			if route.Via.TransitGateway == "" {
-				errs = append(errs, field.Required(routePath.Child("via", "transitGateway"), "spec.routes[].via.transitGateway is required when via.type is transitGateway"))
-			}
-			if route.Via.Endpoint != "" {
-				errs = append(errs, field.Invalid(routePath.Child("via", "endpointName"), route.Via.Endpoint, "spec.routes[].via.endpointName must be empty when via.type is transitGateway"))
-			}
-			if route.Via.NATGateway != "" {
-				errs = append(errs, field.Invalid(routePath.Child("via", "natGateway"), route.Via.NATGateway, "spec.routes[].via.natGateway must be empty when via.type is transitGateway"))
-			}
-			if route.Via.VpcPeering != "" {
-				errs = append(errs, field.Invalid(routePath.Child("via", "vpcPeering"), route.Via.VpcPeering, "spec.routes[].via.vpcPeering must be empty when via.type is transitGateway"))
-			}
+		default:
+			errs = append(errs, validateRouteTargets(route.Via, routePath.Child("via"))...)
 		}
 
 		if _, ok := seenDst[route.Dst]; ok {
@@ -331,4 +268,47 @@ func (v *RouteTableCustomValidator) listConnectedRoutes(ctx context.Context, vpc
 	}
 
 	return connectedRoutes, nil
+}
+
+// routeTarget is one field of RouteVia that says where a route leads.
+type routeTarget struct {
+	name string
+	set  func(via juneauv1alpha1.RouteVia) bool
+}
+
+var routeTargets = []routeTarget{
+	{name: "endpoint", set: func(via juneauv1alpha1.RouteVia) bool { return via.Endpoint != nil }},
+	{name: "natGateway", set: func(via juneauv1alpha1.RouteVia) bool { return via.NATGateway != "" }},
+	{name: "vpcPeering", set: func(via juneauv1alpha1.RouteVia) bool { return via.VpcPeering != "" }},
+	{name: "transitGateway", set: func(via juneauv1alpha1.RouteVia) bool { return via.TransitGateway != "" }},
+}
+
+// requiredRouteTarget names the one target field each route type needs.
+// A type that is not listed needs none.
+var requiredRouteTarget = map[juneauv1alpha1.RouteViaType]string{
+	juneauv1alpha1.ViaEndpoint:       "endpoint",
+	juneauv1alpha1.ViaNATGateway:     "natGateway",
+	juneauv1alpha1.ViaVpcPeering:     "vpcPeering",
+	juneauv1alpha1.ViaTransitGateway: "transitGateway",
+}
+
+// validateRouteTargets requires the target field the route type needs and
+// forbids every other one, so a route never carries a target that the
+// data plane would silently ignore.
+func validateRouteTargets(via juneauv1alpha1.RouteVia, viaPath *field.Path) field.ErrorList {
+	var errs field.ErrorList
+	required := requiredRouteTarget[via.Type]
+	for _, target := range routeTargets {
+		path := viaPath.Child(target.name)
+		switch {
+		case target.name == required && !target.set(via):
+			errs = append(errs, field.Required(path, fmt.Sprintf("spec.routes[].via.%s is required when via.type is %s", target.name, via.Type)))
+		case target.name != required && target.set(via):
+			errs = append(errs, field.Forbidden(path, fmt.Sprintf("spec.routes[].via.%s must be empty when via.type is %s", target.name, via.Type)))
+		}
+	}
+	if via.Type == juneauv1alpha1.ViaEndpoint && via.Endpoint != nil {
+		errs = append(errs, juneauv1alpha1.ValidateRouteEndpointReference(*via.Endpoint, viaPath.Child("endpoint"))...)
+	}
+	return errs
 }

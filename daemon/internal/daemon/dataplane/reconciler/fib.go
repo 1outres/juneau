@@ -141,7 +141,7 @@ func (r *Fib) delete(key string) error {
 	return nil
 }
 
-func (r *Fib) populateRoute(ctx context.Context, fib *ebpf.Map, route *juneauv1alpha1.Route) error {
+func (r *Fib) populateRoute(ctx context.Context, fib *ebpf.Map, route *juneauv1alpha1.ResolvedRoute) error {
 	netaddr, ipnet, err := net.ParseCIDR(route.Dst)
 	if err != nil {
 		zap.S().Warnf("fib: parse CIDR %s: %v", route.Dst, err)
@@ -154,12 +154,8 @@ func (r *Fib) populateRoute(ctx context.Context, fib *ebpf.Map, route *juneauv1a
 		Prefixlen: uint32(prefixlen),
 	}
 
-	val, skip, err := r.buildFibVal(ctx, route)
-	if err != nil {
-		zap.S().Warnf("fib: build FIB route for %s via %s: %v", route.Dst, route.Via.Type, err)
-		return nil
-	}
-	if skip {
+	val, install := r.fibValFor(ctx, route)
+	if !install {
 		return nil
 	}
 
@@ -169,7 +165,33 @@ func (r *Fib) populateRoute(ctx context.Context, fib *ebpf.Map, route *juneauv1a
 	return nil
 }
 
-func (r *Fib) buildFibVal(ctx context.Context, route *juneauv1alpha1.Route) (bpf.PodEgressFibVal, bool, error) {
+// fibValFor decides what the FIB holds for a route. install is false
+// when the route is left out of the table.
+//
+// An endpoint route the daemon cannot build is installed as a blackhole
+// instead of being left out. Such a route usually sends traffic through a
+// firewall, and without it the traffic would match a shorter prefix, such
+// as 0.0.0.0/0, and go around the firewall.
+func (r *Fib) fibValFor(ctx context.Context, route *juneauv1alpha1.ResolvedRoute) (bpf.PodEgressFibVal, bool) {
+	val, skip, err := r.buildFibVal(ctx, route)
+	switch {
+	case err != nil && route.Via.Type == juneauv1alpha1.ViaEndpoint:
+		zap.S().Warnf("fib: build FIB route for %s via %s, dropping its traffic: %v", route.Dst, route.Via.Type, err)
+		return buildBlackholeFibVal(), true
+	case err != nil:
+		zap.S().Warnf("fib: build FIB route for %s via %s: %v", route.Dst, route.Via.Type, err)
+		return bpf.PodEgressFibVal{}, false
+	case skip:
+		return bpf.PodEgressFibVal{}, false
+	}
+	return val, true
+}
+
+func (r *Fib) buildFibVal(ctx context.Context, route *juneauv1alpha1.ResolvedRoute) (bpf.PodEgressFibVal, bool, error) {
+	if route.State == juneauv1alpha1.RouteStateBlackhole {
+		return buildBlackholeFibVal(), false, nil
+	}
+
 	switch route.Via.Type {
 	case juneauv1alpha1.ViaConnected:
 		// A connected route leads either to a Subnet or, when the
@@ -203,16 +225,23 @@ func (r *Fib) buildFibVal(ctx context.Context, route *juneauv1alpha1.Route) (bpf
 		return val, false, err
 
 	case juneauv1alpha1.ViaEndpoint:
+		if route.NetworkEndpoint == nil {
+			return bpf.PodEgressFibVal{}, false, fmt.Errorf("the route names no resolved NetworkEndpoint")
+		}
 		var subnet juneauv1alpha1.Subnet
 		if err := r.client.Get(ctx, client.ObjectKey{Name: route.Subnet}, &subnet); err != nil {
 			return bpf.PodEgressFibVal{}, false, err
 		}
 		var nwep juneauv1alpha1.NetworkEndpoint
-		if err := r.client.Get(ctx, client.ObjectKey{Name: route.Via.Endpoint}, &nwep); err != nil {
+		key := client.ObjectKey{Namespace: route.NetworkEndpoint.Namespace, Name: route.NetworkEndpoint.Name}
+		if err := r.client.Get(ctx, key, &nwep); err != nil {
 			return bpf.PodEgressFibVal{}, false, err
 		}
 		val, err := buildEndpointFibVal(&subnet, &nwep)
 		return val, false, err
+
+	case juneauv1alpha1.ViaBlackhole:
+		return buildBlackholeFibVal(), false, nil
 
 	case juneauv1alpha1.ViaInternetGateway:
 		val, err := buildInternetGatewayFibVal()
@@ -312,6 +341,12 @@ func buildEndpointFibVal(subnet *juneauv1alpha1.Subnet, nwep *juneauv1alpha1.Net
 		Smac:     smac,
 		SubnetId: subnet.Status.VNI,
 	}, nil
+}
+
+// buildBlackholeFibVal builds a FIB value that drops the packet. Only the
+// type is meaningful.
+func buildBlackholeFibVal() bpf.PodEgressFibVal {
+	return bpf.PodEgressFibVal{Type: fibRouteTypeBlackhole}
 }
 
 // buildInternetGatewayFibVal builds a FIB value for the internet-gateway

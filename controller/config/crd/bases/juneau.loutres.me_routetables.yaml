@@ -45,34 +45,41 @@ spec:
             properties:
               routes:
                 items:
+                  description: Route is one entry of spec.routes.
                   properties:
                     dst:
                       minLength: 1
                       type: string
-                    l2Network:
-                      description: |-
-                        L2Network names the segment a connected route leads to when the
-                        destination is an L2Network rather than a Subnet. The controller
-                        resolves it, so it is only ever set in status. The data plane
-                        hands the packet to the gateway port of that segment, and the
-                        segment forwards it from there on its own tables.
-                      type: string
-                    subnet:
-                      type: string
-                    transitGatewayRouteTable:
-                      description: |-
-                        TransitGatewayRouteTable names the TransitGatewayRouteTable the
-                        data plane consults for this route. The controller resolves it
-                        from the attachment's association, so it is only ever set in
-                        status.
-                      type: string
                     via:
                       properties:
-                        endpointName:
+                        endpoint:
                           description: |-
-                            Endpoint is required when type=endpoint. Refers to a
-                            NetworkEndpoint by name.
-                          type: string
+                            Endpoint is required when type=endpoint. It names one NIC of a
+                            workload, not one Pod, so the route follows the workload when a
+                            new Pod replaces the old one.
+                          properties:
+                            allocationIdentity:
+                              description: |-
+                                AllocationIdentity is the NetworkInterface.spec.allocationIdentity
+                                of the workload. A Pod sets it with the
+                                juneau.loutres.me/allocation-identity annotation.
+                              minLength: 1
+                              type: string
+                            interface:
+                              description: Interface is the name of the NIC inside
+                                the Pod, such as eth0.
+                              minLength: 1
+                              type: string
+                            namespace:
+                              description: Namespace is the namespace of the workload's
+                                Pods.
+                              minLength: 1
+                              type: string
+                          required:
+                          - allocationIdentity
+                          - interface
+                          - namespace
+                          type: object
                         natGateway:
                           description: |-
                             NATGateway is required when type=natGateway. Refers to a
@@ -93,6 +100,7 @@ spec:
                           - vpcPeering
                           - transitGateway
                           - vpcEndpoint
+                          - blackhole
                           type: string
                         vpcPeering:
                           description: |-
@@ -176,35 +184,93 @@ spec:
                 format: int64
                 type: integer
               routes:
+                description: |-
+                  Routes is the table the data plane programs: the routes the
+                  controller adds on its own for the Vpc, followed by spec.routes
+                  with their references resolved.
                 items:
+                  description: ResolvedRoute is one entry of the table the data plane
+                    programs.
                   properties:
                     dst:
-                      minLength: 1
                       type: string
                     l2Network:
                       description: |-
                         L2Network names the segment a connected route leads to when the
-                        destination is an L2Network rather than a Subnet. The controller
-                        resolves it, so it is only ever set in status. The data plane
+                        destination is an L2Network rather than a Subnet. The data plane
                         hands the packet to the gateway port of that segment, and the
                         segment forwards it from there on its own tables.
                       type: string
+                    message:
+                      description: |-
+                        Message says why the controller drops traffic that spec.routes
+                        asked it to forward. It is empty on every other route.
+                      type: string
+                    networkEndpoint:
+                      description: |-
+                        NetworkEndpoint is the NetworkEndpoint via.endpoint resolved to.
+                        It is set only on an Active endpoint route.
+                      properties:
+                        name:
+                          minLength: 1
+                          type: string
+                        namespace:
+                          minLength: 1
+                          type: string
+                      required:
+                      - name
+                      - namespace
+                      type: object
+                    state:
+                      description: |-
+                        State tells whether the data plane forwards traffic for Dst
+                        (Active) or drops it (Blackhole).
+                      enum:
+                      - Active
+                      - Blackhole
+                      type: string
                     subnet:
+                      description: |-
+                        Subnet is the Subnet the data plane forwards the packet into: the
+                        Subnet of a connected route, the peer Subnet of a vpcPeering
+                        route, or the Subnet of the endpoint of an endpoint route.
                       type: string
                     transitGatewayRouteTable:
                       description: |-
                         TransitGatewayRouteTable names the TransitGatewayRouteTable the
                         data plane consults for this route. The controller resolves it
-                        from the attachment's association, so it is only ever set in
-                        status.
+                        from the attachment's association.
                       type: string
                     via:
                       properties:
-                        endpointName:
+                        endpoint:
                           description: |-
-                            Endpoint is required when type=endpoint. Refers to a
-                            NetworkEndpoint by name.
-                          type: string
+                            Endpoint is required when type=endpoint. It names one NIC of a
+                            workload, not one Pod, so the route follows the workload when a
+                            new Pod replaces the old one.
+                          properties:
+                            allocationIdentity:
+                              description: |-
+                                AllocationIdentity is the NetworkInterface.spec.allocationIdentity
+                                of the workload. A Pod sets it with the
+                                juneau.loutres.me/allocation-identity annotation.
+                              minLength: 1
+                              type: string
+                            interface:
+                              description: Interface is the name of the NIC inside
+                                the Pod, such as eth0.
+                              minLength: 1
+                              type: string
+                            namespace:
+                              description: Namespace is the namespace of the workload's
+                                Pods.
+                              minLength: 1
+                              type: string
+                          required:
+                          - allocationIdentity
+                          - interface
+                          - namespace
+                          type: object
                         natGateway:
                           description: |-
                             NATGateway is required when type=natGateway. Refers to a
@@ -225,6 +291,7 @@ spec:
                           - vpcPeering
                           - transitGateway
                           - vpcEndpoint
+                          - blackhole
                           type: string
                         vpcPeering:
                           description: |-
@@ -236,6 +303,7 @@ spec:
                       type: object
                   required:
                   - dst
+                  - state
                   - via
                   type: object
                 type: array

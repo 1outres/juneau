@@ -52,28 +52,46 @@ func summariseRouteTable(rt *juneauv1alpha1.RouteTable, isMain bool) *RouteTable
 	if rt == nil {
 		return nil
 	}
-	src := rt.Status.Routes
-	if len(src) == 0 {
-		src = rt.Spec.Routes
-	}
 	out := &RouteTableSummary{
 		Name:   rt.Name,
 		IsMain: isMain,
-		Routes: make([]RouteSummary, 0, len(src)),
 	}
-	for _, r := range src {
-		out.Routes = append(out.Routes, RouteSummary{
-			Dst:                      r.Dst,
-			Type:                     string(r.Via.Type),
-			Subnet:                   r.Subnet,
-			Endpoint:                 r.Via.Endpoint,
-			NATGateway:               r.Via.NATGateway,
-			VpcPeering:               r.Via.VpcPeering,
-			TransitGateway:           r.Via.TransitGateway,
-			TransitGatewayRouteTable: r.TransitGatewayRouteTable,
-		})
+	if len(rt.Status.Routes) > 0 {
+		out.Routes = make([]RouteSummary, 0, len(rt.Status.Routes))
+		for _, r := range rt.Status.Routes {
+			summary := summariseRouteVia(r.Dst, r.Via)
+			summary.Subnet = r.Subnet
+			summary.TransitGatewayRouteTable = r.TransitGatewayRouteTable
+			if r.NetworkEndpoint != nil {
+				summary.NetworkEndpoint = r.NetworkEndpoint.Namespace + "/" + r.NetworkEndpoint.Name
+			}
+			summary.State = string(r.State)
+			summary.Message = r.Message
+			out.Routes = append(out.Routes, summary)
+		}
+		return out
+	}
+	out.Routes = make([]RouteSummary, 0, len(rt.Spec.Routes))
+	for _, r := range rt.Spec.Routes {
+		out.Routes = append(out.Routes, summariseRouteVia(r.Dst, r.Via))
 	}
 	return out
+}
+
+// summariseRouteVia fills the fields a route entry carries in spec and
+// status alike.
+func summariseRouteVia(dst string, via juneauv1alpha1.RouteVia) RouteSummary {
+	summary := RouteSummary{
+		Dst:            dst,
+		Type:           string(via.Type),
+		NATGateway:     via.NATGateway,
+		VpcPeering:     via.VpcPeering,
+		TransitGateway: via.TransitGateway,
+	}
+	if via.Endpoint != nil {
+		summary.Endpoint = via.Endpoint.Namespace + "/" + via.Endpoint.AllocationIdentity + "/" + via.Endpoint.Interface
+	}
+	return summary
 }
 
 // summariseNetworkACL distils an ACL into its presenter view. Returns

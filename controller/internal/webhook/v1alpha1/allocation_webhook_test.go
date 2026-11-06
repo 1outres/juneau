@@ -434,6 +434,64 @@ var _ = Describe("Allocation webhooks", func() {
 			Expect(err.Error()).To(ContainSubstring("spec.retainWhile is immutable"))
 		})
 
+		Describe("spec.networkInterface", func() {
+			newClaim := func() *juneauv1alpha1.AllocationClaim {
+				return &juneauv1alpha1.AllocationClaim{
+					ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("allocationclaim")},
+					Spec: juneauv1alpha1.AllocationClaimSpec{
+						PoolRefs:    []juneauv1alpha1.AllocationPoolReference{{Name: "subnet-vni"}},
+						ResourceRef: juneauv1alpha1.AllocationResourceReference{APIVersion: juneauv1alpha1.GroupVersion.String(), Kind: "Vpc", Name: "owner"},
+						Attribute:   "status.vni",
+					},
+				}
+			}
+			identity := func() *juneauv1alpha1.NetworkInterfaceIdentity {
+				return &juneauv1alpha1.NetworkInterfaceIdentity{Namespace: "default", AllocationIdentity: "vmi.web-0", Interface: "eth0"}
+			}
+
+			It("accepts a well formed identity", func() {
+				claim := newClaim()
+				claim.Spec.NetworkInterface = identity()
+				_, err := (&AllocationClaimCustomValidator{}).ValidateCreate(ctx, claim)
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("rejects an identity with missing or malformed fields", func() {
+				claim := newClaim()
+				claim.Spec.NetworkInterface = &juneauv1alpha1.NetworkInterfaceIdentity{Namespace: "Not A Namespace", AllocationIdentity: "Bad Identity"}
+				_, err := (&AllocationClaimCustomValidator{}).ValidateCreate(ctx, claim)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("spec.networkInterface.namespace"))
+				Expect(err.Error()).To(ContainSubstring("spec.networkInterface.allocationIdentity"))
+				Expect(err.Error()).To(ContainSubstring("spec.networkInterface.interface"))
+			})
+
+			It("can be set on a claim that has none", func() {
+				old := newClaim()
+				updated := old.DeepCopy()
+				updated.Spec.NetworkInterface = identity()
+				_, err := (&AllocationClaimCustomValidator{}).ValidateUpdate(ctx, old, updated)
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("cannot change or disappear once set", func() {
+				old := newClaim()
+				old.Spec.NetworkInterface = identity()
+
+				changed := old.DeepCopy()
+				changed.Spec.NetworkInterface.Interface = "eth1"
+				_, err := (&AllocationClaimCustomValidator{}).ValidateUpdate(ctx, old, changed)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("spec.networkInterface is immutable"))
+
+				removed := old.DeepCopy()
+				removed.Spec.NetworkInterface = nil
+				_, err = (&AllocationClaimCustomValidator{}).ValidateUpdate(ctx, old, removed)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("spec.networkInterface is immutable"))
+			})
+		})
+
 		It("rejects an immutable spec.reuseKey update", func() {
 			claim := &juneauv1alpha1.AllocationClaim{
 				ObjectMeta: metav1.ObjectMeta{Name: webhookUniqueTestName("allocationclaim")},
@@ -520,6 +578,54 @@ var _ = Describe("Allocation webhooks", func() {
 			updated.Spec.RetainWhile.Name = "web-1"
 			_, err := (&AllocationLeaseCustomValidator{}).ValidateUpdate(ctx, old, updated)
 			Expect(err).NotTo(HaveOccurred())
+		})
+
+		Describe("spec.networkInterface", func() {
+			identity := func() *juneauv1alpha1.NetworkInterfaceIdentity {
+				return &juneauv1alpha1.NetworkInterfaceIdentity{Namespace: "default", AllocationIdentity: "vmi.web-0", Interface: "eth0"}
+			}
+
+			It("accepts a well formed identity", func() {
+				lease := newLease()
+				lease.Spec.NetworkInterface = identity()
+				_, err := (&AllocationLeaseCustomValidator{}).ValidateCreate(ctx, lease)
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("rejects an identity with missing or malformed fields", func() {
+				lease := newLease()
+				lease.Spec.NetworkInterface = &juneauv1alpha1.NetworkInterfaceIdentity{Namespace: "Not A Namespace", AllocationIdentity: "Bad Identity"}
+				_, err := (&AllocationLeaseCustomValidator{}).ValidateCreate(ctx, lease)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("spec.networkInterface.namespace"))
+				Expect(err.Error()).To(ContainSubstring("spec.networkInterface.allocationIdentity"))
+				Expect(err.Error()).To(ContainSubstring("spec.networkInterface.interface"))
+			})
+
+			It("can be set on a lease written before the field existed", func() {
+				old := newLease()
+				updated := old.DeepCopy()
+				updated.Spec.NetworkInterface = identity()
+				_, err := (&AllocationLeaseCustomValidator{}).ValidateUpdate(ctx, old, updated)
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("cannot change or disappear once set", func() {
+				old := newLease()
+				old.Spec.NetworkInterface = identity()
+
+				changed := old.DeepCopy()
+				changed.Spec.NetworkInterface.AllocationIdentity = "vmi.web-1"
+				_, err := (&AllocationLeaseCustomValidator{}).ValidateUpdate(ctx, old, changed)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("spec.networkInterface is immutable"))
+
+				removed := old.DeepCopy()
+				removed.Spec.NetworkInterface = nil
+				_, err = (&AllocationLeaseCustomValidator{}).ValidateUpdate(ctx, old, removed)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("spec.networkInterface is immutable"))
+			})
 		})
 	})
 })

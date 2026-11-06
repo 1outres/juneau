@@ -304,10 +304,11 @@ func (r *NetworkInterfaceReconciler) ensureClaim(ctx context.Context, resource *
 			Namespace:  resource.Namespace,
 			Name:       resource.Name,
 		},
-		Attribute:    "status.address",
-		ReleaseAfter: &metav1.Duration{Duration: networkInterfaceReleaseAfter},
-		ReuseKey:     leaseNameForNetworkInterface(resource),
-		RetainWhile:  resource.Spec.RetainWhile.DeepCopy(),
+		Attribute:        "status.address",
+		ReleaseAfter:     &metav1.Duration{Duration: networkInterfaceReleaseAfter},
+		ReuseKey:         leaseNameForNetworkInterface(resource),
+		RetainWhile:      resource.Spec.RetainWhile.DeepCopy(),
+		NetworkInterface: leaseIdentityForNetworkInterface(resource),
 	}
 	if resource.Spec.Address != "" {
 		ip := resource.Spec.Address
@@ -328,6 +329,15 @@ func (r *NetworkInterfaceReconciler) ensureClaim(ctx context.Context, resource *
 		return "", conditionReasonAllocating, "AllocationClaim is being created", nil
 	case getErr != nil:
 		return "", conditionReasonAllocationFailed, getErr.Error(), getErr
+	}
+
+	// Claims made before spec.networkInterface existed gain it here, and the
+	// claim controller then copies it onto their lease.
+	if existing.Spec.NetworkInterface == nil && desiredSpec.NetworkInterface != nil {
+		existing.Spec.NetworkInterface = desiredSpec.NetworkInterface
+		if err := r.Update(ctx, &existing); err != nil {
+			return "", conditionReasonAllocationFailed, fmt.Sprintf("update AllocationClaim: %v", err), err
+		}
 	}
 
 	if existing.Status.Phase == juneauv1alpha1.AllocationClaimPhaseAllocated && existing.Status.Value.IP != "" {
@@ -364,6 +374,20 @@ func leaseNameForNetworkInterface(resource *juneauv1alpha1.NetworkInterface) str
 		return claimNameForNetworkInterface(resource)
 	}
 	return allocationNameForNetworkInterface(resource, resource.Spec.AllocationIdentity+"."+resource.Spec.PodRef.Interface)
+}
+
+// leaseIdentityForNetworkInterface returns the identity recorded on the
+// lease of this interface, or nil for an interface without an allocation
+// identity, whose lease is named after the interface itself.
+func leaseIdentityForNetworkInterface(resource *juneauv1alpha1.NetworkInterface) *juneauv1alpha1.NetworkInterfaceIdentity {
+	if resource.Spec.AllocationIdentity == "" {
+		return nil
+	}
+	return &juneauv1alpha1.NetworkInterfaceIdentity{
+		Namespace:          resource.Namespace,
+		AllocationIdentity: resource.Spec.AllocationIdentity,
+		Interface:          resource.Spec.PodRef.Interface,
+	}
 }
 
 func allocationNameForNetworkInterface(resource *juneauv1alpha1.NetworkInterface, identity string) string {
