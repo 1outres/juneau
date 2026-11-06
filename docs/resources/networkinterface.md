@@ -33,6 +33,16 @@ gw.eth1    worker-2                            gw-eip      10.225.51.6/32   Read
 
 `spec.allocationIdentity`は、名前が毎回変わるPod(KubeVirtのvirt-launcher Podなど)でも同じワークロードだと分かるようにする値です。SubnetのNICでは、同じ値を持つNIC同士がアドレスの予約を共有します。`spec.elasticIP`のNICは何も予約しないので、ここでの意味は1つだけです。同じ値を持つ古いNICがElasticIPを持っている間でも、新しいNICがそのElasticIPを参照して作られることを許します。新しいNICは古いNICが消えるまで`Pending`で待ちます。
 
+PodControllerは`spec.allocationIdentity`を次の順に決めます。
+
+1. Podに`juneau.loutres.me/allocation-identity`アノテーションがあれば、その値を使います。値はDNS-1123 subdomainでなければなりません。空の値を含め、守っていないPodはwebhookが作成時に拒否します。
+2. アノテーションがないKubeVirtのvirt-launcher Podでは、VirtualMachineの名前から`vmi.<VM名>`を作ります。
+3. どちらでもないPodでは空のままです。
+
+PodのすべてのNICに同じ値が入ります。`spec.retainWhile`はアノテーションの有無にかかわらず、virt-launcher PodのときだけVirtualMachineを指します。同じnamespaceの別のワークロードに同じ値を付けると、アドレスを取り合うので避けてください。NetworkInterfaceの`spec.allocationIdentity`は変更できないため、Podを作った後にアノテーションを書き換えても反映されません。Podを作り直してください。
+
+このidentityは、RouteTableの`via.endpoint`で経由先のワークロードを指すときにも使います（[RouteTable](routetable.md)を見てください）。
+
 ## status
 
 `status.address`は、実際に割り当てられたIPv4アドレスとプレフィックス長です。
