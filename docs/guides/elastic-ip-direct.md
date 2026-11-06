@@ -306,7 +306,7 @@ WaitingForNetworkInterfaces
 次の場合は受け付けて、新しいPodのNICは古いNICが消えるまで`Pending`で待ちます。その間、新しいPodは`ContainerCreating`のままです。
 
 - 持っているPodが終了中
-- 持っているNICと新しいNICの`spec.allocationIdentity`が同じ。KubeVirtのvirt-launcher Podは`vmi.<VirtualMachine名>`が入るので、VMを再起動しても同じElasticIPを持ち続けます
+- 持っているNICと新しいNICの`spec.allocationIdentity`が同じ。KubeVirtのvirt-launcher Podは`vmi.<VirtualMachine名>`が入るので、VMを再起動しても同じElasticIPを持ち続けます。アノテーションのないほかのPodには`pod.<Pod名>`が入るので、同じ名前のPodを作り直したときも同じ扱いになります
 
 webhookはPodを作るときにNetworkInterfaceを見て判断するので、同じElasticIPを参照するPodを2つ同時に作ると、両方とも受け付けられることがあります。この場合も両方のNICが作られ、ElasticIPを持てなかった方は`Pending`で待ちます。reasonは`WaitingForElasticIP`で、messageにアドレスを持っているNICの名前が出ます。持っているPodを消すと、待っていたNICがすぐにアドレスを引き継ぎます。
 

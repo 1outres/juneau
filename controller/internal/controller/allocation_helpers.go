@@ -108,3 +108,13 @@ func claimReferencesPool(claim *juneauv1alpha1.AllocationClaim, poolName string)
 	}
 	return false
 }
+
+// adoptNetworkInterfaceIdentity copies the NetworkInterface identity of the
+// claim onto a lease that has none yet. A lease that already has one keeps
+// it, because the identity is immutable and the reuse key that names the
+// lease already fixes it.
+func adoptNetworkInterfaceIdentity(lease *juneauv1alpha1.AllocationLease, claim *juneauv1alpha1.AllocationClaim) {
+	if lease.Spec.NetworkInterface == nil {
+		lease.Spec.NetworkInterface = claim.Spec.NetworkInterface.DeepCopy()
+	}
+}

@@ -33,6 +33,56 @@ gw.eth1    worker-2                            gw-eip      10.225.51.6/32   Read
 
 `spec.allocationIdentity`は、名前が毎回変わるPod(KubeVirtのvirt-launcher Podなど)でも同じワークロードだと分かるようにする値です。SubnetのNICでは、同じ値を持つNIC同士がアドレスの予約を共有します。`spec.elasticIP`のNICは何も予約しないので、ここでの意味は1つだけです。同じ値を持つ古いNICがElasticIPを持っている間でも、新しいNICがそのElasticIPを参照して作られることを許します。新しいNICは古いNICが消えるまで`Pending`で待ちます。
 
+PodControllerは`spec.allocationIdentity`を次の順に決めます。
+
+1. Podに`juneau.loutres.me/allocation-identity`アノテーションがあれば、その値を使います。値はDNS-1123 subdomainでなければなりません。空の値を含め、守っていないPodはwebhookが作成時に拒否します。
+2. アノテーションがないKubeVirtのvirt-launcher Podでは、VirtualMachineの名前から`vmi.<VM名>`を作ります。
+3. どちらでもないPodでは、Podの名前から`pod.<Pod名>`を作ります。Podの名前が長く、`pod.`を付けるとDNS-1123 subdomainの上限（253文字）を超えるときは、webhookが作成時に拒否します。
+
+この値は、NetworkInterfaceを作るときに1度だけ決めます。すでにあるNetworkInterfaceの`spec.allocationIdentity`には、PodControllerは触りません。そのため、`pod.<Pod名>`が入るようになる前に作られたNICは、空のままです。そのNICを持つPodを作り直すと、新しいNICに`pod.<Pod名>`が入ります。
+
+Podが作り直されたときのアドレスの扱いは、`pod.<Pod名>`でも変わりません。同じ名前のPodが戻ってきたときは、同じIPが割り当てられます。NICが消えたあとも、アドレスの予約は24時間残ります。KubeVirt以外のPodには`spec.retainWhile`がないので、この24時間が予約の期間のすべてです。ReplicaSetのように名前が毎回変わるPodは、Podごとに別のidentityと予約を持ちます。名前が同じPodは同時に2つ存在できないので、同じ予約を同時に取り合うことはありません。
+
+予約の名前は、identityの`.`を`-`に置き換えて作ります。そのため、identityが空のNICを持つPod`pod-foo`と、identityが`pod.foo`のNICを持つPod`foo`は、同じ名前の予約を指します。この2つが同時にあるときは、先に予約を持ったNICが予約を保ち、もう一方は別のアドレスを受け取ります。同じアドレスを2つのNICに渡すことはありません。ただし、もう一方のNICは、消えたあとにアドレスが残りません。
+
+PodのすべてのNICに同じ値が入ります。`spec.retainWhile`はアノテーションの有無にかかわらず、virt-launcher PodのときだけVirtualMachineを指します。同じnamespaceの別のワークロードに同じ値を付けると、アドレスを取り合うので避けてください。NetworkInterfaceの`spec.allocationIdentity`は変更できないため、Podを作った後にアノテーションを書き換えても反映されません。Podを作り直してください。
+
+このidentityは、RouteTableの`via.endpoint`で経由先のワークロードを指すときにも使います（[RouteTable](routetable.md)を見てください）。
+
+## アドレスの予約(AllocationLease)
+
+アドレスの予約は、クラスタスコープのAllocationLeaseに残ります。予約の名前は、プール、namespace、identity、インターフェース名から作られます。Podが消えたあとも、VirtualMachineが止まっているあいだも、予約は残ります。
+
+`spec.allocationIdentity`を持つNICの予約には、どのNICのものかを示す`spec.networkInterface`が入ります。名前を分解しなくても、予約が誰のアドレスなのかが分かります。
+
+```yaml
+apiVersion: juneau.loutres.me/v1alpha1
+kind: AllocationLease
+spec:
+  value:
+    ip: 10.90.0.5
+  networkInterface:
+    namespace: tenant-a
+    allocationIdentity: vmi.web-0
+    interface: eth0
+```
+
+| フィールド | 意味 |
+|---|---|
+| `namespace` | NetworkInterfaceのnamespace |
+| `allocationIdentity` | NetworkInterfaceの`spec.allocationIdentity` |
+| `interface` | NetworkInterfaceの`spec.podRef.interface`。`eth0`など |
+
+`spec.networkInterface`は、NetworkInterfaceが予約を作るか引き継ぐときに書かれます。次の点に注意してください。
+
+- 予約が`Retained`や`Released`でも消えません。このときはAllocationClaimもNetworkInterfaceも残っていないので、停止中のVirtualMachineのアドレスは、このフィールドで調べられます。
+- `spec.allocationIdentity`が空のNICの予約には入りません。VPCのVNIなど、NIC以外の利用者の予約にも入りません。
+- 一度入ると、変更も削除もできません。同じ名前の予約は、いつも同じ(namespace, identity, interface)を指すからです。
+
+予約を作ったあとにこのフィールドが加わったクラスタでは、既存の予約にはフィールドがありません。NetworkInterfaceが生きている予約は、NetworkInterfaceが次に調整されたときに埋まります。すでにNetworkInterfaceが消えて`Retained`になっている予約は、同じidentityのPodが起動してNICが予約を引き継ぐまで空のままです。
+
+namespaceとidentityとインターフェース名での検索用に、labelやfield indexは付けていません。identityはDNS-1123 subdomainで253文字まで許すので、63文字までのlabelの値に入らないことがあります。field indexはcontrollerのプロセスの中だけで効くので、ほかのプロセスの利用者には使えません。AllocationLeaseはクラスタ全体でもNICの数ほどしかないので、一覧を取って`spec.networkInterface`で絞り込んでください。利用者が自分のcacheにindexを張る使い方もできます。
+
 ## status
 
 `status.address`は、実際に割り当てられたIPv4アドレスとプレフィックス長です。

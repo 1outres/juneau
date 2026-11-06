@@ -18,10 +18,10 @@ package controller
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"net"
 	"reflect"
-	"slices"
 	"sort"
 	"time"
 
@@ -73,6 +73,7 @@ type RouteTableReconciler struct {
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=allocationclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=juneau.loutres.me,resources=allocationclaims/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch
+// +kubebuilder:rbac:groups=juneau.loutres.me,resources=networkinterfaces;networkendpoints;allocationleases,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -102,7 +103,7 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, nil
 	}
 
-	var statusRoutes []juneauloutresmev1alpha1.Route
+	var statusRoutes []juneauloutresmev1alpha1.ResolvedRoute
 	var subnetNames []string
 
 	var vpc juneauloutresmev1alpha1.Vpc
@@ -121,7 +122,8 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 	for _, subnet := range subnets.Items {
-		statusRoutes = append(statusRoutes, juneauloutresmev1alpha1.Route{
+		statusRoutes = append(statusRoutes, juneauloutresmev1alpha1.ResolvedRoute{
+			State:  juneauloutresmev1alpha1.RouteStateActive,
 			Dst:    subnet.Spec.CIDR,
 			Subnet: subnet.Name,
 			Via: juneauloutresmev1alpha1.RouteVia{
@@ -146,7 +148,8 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if l2.Spec.Gateway == nil || l2.Spec.CIDR == "" {
 			continue
 		}
-		statusRoutes = append(statusRoutes, juneauloutresmev1alpha1.Route{
+		statusRoutes = append(statusRoutes, juneauloutresmev1alpha1.ResolvedRoute{
+			State:     juneauloutresmev1alpha1.RouteStateActive,
 			Dst:       l2.Spec.CIDR,
 			L2Network: l2.Name,
 			Via: juneauloutresmev1alpha1.RouteVia{
@@ -156,8 +159,9 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	if vpc.Spec.ServiceEnabled() && r.ServiceCIDR != nil {
-		statusRoutes = append(statusRoutes, juneauloutresmev1alpha1.Route{
-			Dst: r.ServiceCIDR.String(),
+		statusRoutes = append(statusRoutes, juneauloutresmev1alpha1.ResolvedRoute{
+			State: juneauloutresmev1alpha1.RouteStateActive,
+			Dst:   r.ServiceCIDR.String(),
 			Via: juneauloutresmev1alpha1.RouteVia{
 				Type: juneauloutresmev1alpha1.ViaService,
 			},
@@ -193,8 +197,9 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		var defaultNATGW juneauloutresmev1alpha1.NATGateway
 		err := r.Get(ctx, client.ObjectKey{Name: defaultVpcName}, &defaultNATGW)
 		if err == nil && defaultNATGW.Status.GatewayID != 0 {
-			statusRoutes = append(statusRoutes, juneauloutresmev1alpha1.Route{
-				Dst: "0.0.0.0/0",
+			statusRoutes = append(statusRoutes, juneauloutresmev1alpha1.ResolvedRoute{
+				State: juneauloutresmev1alpha1.RouteStateActive,
+				Dst:   "0.0.0.0/0",
 				Via: juneauloutresmev1alpha1.RouteVia{
 					Type:       juneauloutresmev1alpha1.ViaNATGateway,
 					NATGateway: defaultNATGW.Name,
@@ -209,158 +214,25 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	for _, route := range resource.Spec.Routes {
-		if rt := getRoute(statusRoutes, route.Dst); rt == nil {
-			var subnet string
-			var transitGatewayRouteTable string
-			if route.Via.Type == juneauloutresmev1alpha1.ViaConnected ||
-				route.Via.Type == juneauloutresmev1alpha1.ViaService ||
-				route.Via.Type == juneauloutresmev1alpha1.ViaVpcEndpoint {
-				continue
-			} else if route.Via.Type == juneauloutresmev1alpha1.ViaEndpoint {
-				nwep, err := r.getNetworkEndpoint(ctx, route.Via.Endpoint)
-				if err != nil {
-					if errors.IsNotFound(err) {
-						if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("network endpoint %q not found", route.Via.Endpoint)); err != nil {
-							return ctrl.Result{}, err
-						}
-						return ctrl.Result{}, nil
-					}
-					if updateErr := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, fmt.Sprintf("failed to get network endpoint %q", route.Via.Endpoint)); updateErr != nil {
-						return ctrl.Result{}, updateErr
-					}
-					return ctrl.Result{}, err
-				}
-				if !slices.Contains(subnetNames, nwep.Spec.Subnet) {
-					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("network endpoint %q is in subnet %q outside VPC %q", route.Via.Endpoint, nwep.Spec.Subnet, resource.Spec.Vpc)); err != nil {
-						return ctrl.Result{}, err
-					}
-					return ctrl.Result{}, nil
-				}
-				subnet = nwep.Spec.Subnet
-			} else if route.Via.Type == juneauloutresmev1alpha1.ViaNATGateway {
-				var natGateway juneauloutresmev1alpha1.NATGateway
-				if err := r.Get(ctx, client.ObjectKey{Name: route.Via.NATGateway}, &natGateway); err != nil {
-					if errors.IsNotFound(err) {
-						if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("NATGateway %q not found", route.Via.NATGateway)); err != nil {
-							return ctrl.Result{}, err
-						}
-						return ctrl.Result{}, nil
-					}
-					if updateErr := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, fmt.Sprintf("failed to get NATGateway %q", route.Via.NATGateway)); updateErr != nil {
-						return ctrl.Result{}, updateErr
-					}
-					return ctrl.Result{}, err
-				}
-				if natGateway.Spec.Vpc != resource.Spec.Vpc {
-					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("NATGateway %q belongs to Vpc %q, not %q", natGateway.Name, natGateway.Spec.Vpc, resource.Spec.Vpc)); err != nil {
-						return ctrl.Result{}, err
-					}
-					return ctrl.Result{}, nil
-				}
-				if natGateway.Status.GatewayID == 0 {
-					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("NATGateway %q has not yet been assigned a gatewayID", natGateway.Name)); err != nil {
-						return ctrl.Result{}, err
-					}
-					return ctrl.Result{}, nil
-				}
-			} else if route.Via.Type == juneauloutresmev1alpha1.ViaVpcPeering {
-				var peering juneauloutresmev1alpha1.VpcPeering
-				if err := r.Get(ctx, client.ObjectKey{Name: route.Via.VpcPeering}, &peering); err != nil {
-					if errors.IsNotFound(err) {
-						if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("VpcPeering %q not found", route.Via.VpcPeering)); err != nil {
-							return ctrl.Result{}, err
-						}
-						return ctrl.Result{}, nil
-					}
-					if updateErr := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, fmt.Sprintf("failed to get VpcPeering %q", route.Via.VpcPeering)); updateErr != nil {
-						return ctrl.Result{}, updateErr
-					}
-					return ctrl.Result{}, err
-				}
-				if !meta.IsStatusConditionTrue(peering.Status.Conditions, juneauloutresmev1alpha1.VpcPeeringStatusReady) {
-					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("VpcPeering %q is not ready", peering.Name)); err != nil {
-						return ctrl.Result{}, err
-					}
-					return ctrl.Result{}, nil
-				}
-				peerVpc, ok := peering.Spec.PeerOf(resource.Spec.Vpc)
-				if !ok {
-					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("RouteTable belongs to Vpc %q which is not part of VpcPeering %q", resource.Spec.Vpc, peering.Name)); err != nil {
-						return ctrl.Result{}, err
-					}
-					return ctrl.Result{}, nil
-				}
-				peerSubnet, err := r.findSubnetByCIDR(ctx, peerVpc, route.Dst)
-				if err != nil {
-					if updateErr := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, fmt.Sprintf("failed to list subnets for VPC %q", peerVpc)); updateErr != nil {
-						return ctrl.Result{}, updateErr
-					}
-					return ctrl.Result{}, err
-				}
-				if peerSubnet == "" {
-					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("no Subnet in Vpc %q has CIDR %q", peerVpc, route.Dst)); err != nil {
-						return ctrl.Result{}, err
-					}
-					return ctrl.Result{}, nil
-				}
-				subnet = peerSubnet
-			} else if route.Via.Type == juneauloutresmev1alpha1.ViaTransitGateway {
-				var transitGateway juneauloutresmev1alpha1.TransitGateway
-				if err := r.Get(ctx, client.ObjectKey{Name: route.Via.TransitGateway}, &transitGateway); err != nil {
-					if errors.IsNotFound(err) {
-						if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("TransitGateway %q not found", route.Via.TransitGateway)); err != nil {
-							return ctrl.Result{}, err
-						}
-						return ctrl.Result{}, nil
-					}
-					if updateErr := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, fmt.Sprintf("failed to get TransitGateway %q", route.Via.TransitGateway)); updateErr != nil {
-						return ctrl.Result{}, updateErr
-					}
-					return ctrl.Result{}, err
-				}
-				if !meta.IsStatusConditionTrue(transitGateway.Status.Conditions, juneauloutresmev1alpha1.TransitGatewayStatusReady) {
-					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("TransitGateway %q is not ready", transitGateway.Name)); err != nil {
-						return ctrl.Result{}, err
-					}
-					return ctrl.Result{}, nil
-				}
-				attachment, err := r.findTransitGatewayAttachment(ctx, transitGateway.Name, resource.Spec.Vpc)
-				if err != nil {
-					if updateErr := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, "failed to list transit gateway attachments"); updateErr != nil {
-						return ctrl.Result{}, updateErr
-					}
-					return ctrl.Result{}, err
-				}
-				if attachment == nil {
-					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("Vpc %q has no attachment to TransitGateway %q", resource.Spec.Vpc, transitGateway.Name)); err != nil {
-						return ctrl.Result{}, err
-					}
-					return ctrl.Result{}, nil
-				}
-				var association juneauloutresmev1alpha1.TransitGatewayRouteTable
-				if err := r.Get(ctx, client.ObjectKey{Name: attachment.Spec.Association}, &association); err != nil {
-					if errors.IsNotFound(err) {
-						if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("TransitGatewayRouteTable %q not found", attachment.Spec.Association)); err != nil {
-							return ctrl.Result{}, err
-						}
-						return ctrl.Result{}, nil
-					}
-					if updateErr := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, fmt.Sprintf("failed to get TransitGatewayRouteTable %q", attachment.Spec.Association)); updateErr != nil {
-						return ctrl.Result{}, updateErr
-					}
-					return ctrl.Result{}, err
-				}
-				if association.Status.TableID == 0 {
-					if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, fmt.Sprintf("TransitGatewayRouteTable %q has not yet been assigned a tableID", association.Name)); err != nil {
-						return ctrl.Result{}, err
-					}
-					return ctrl.Result{}, nil
-				}
-				transitGatewayRouteTable = association.Name
+		if getRoute(statusRoutes, route.Dst) != nil {
+			continue
+		}
+		resolved, err := r.resolveSpecRoute(ctx, &resource, route, subnetNames)
+		var notReady *routeNotReadyError
+		switch {
+		case stderrors.As(err, &notReady):
+			if err := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonNotReady, notReady.message); err != nil {
+				return ctrl.Result{}, err
 			}
-			route.Subnet = subnet
-			route.TransitGatewayRouteTable = transitGatewayRouteTable
-			statusRoutes = append(statusRoutes, route)
+			return ctrl.Result{}, nil
+		case err != nil:
+			if updateErr := r.updateStatus(ctx, &resource, statusRoutes, resource.Status.TableID, metav1.ConditionFalse, routeTableReasonReconcileFailed, err.Error()); updateErr != nil {
+				return ctrl.Result{}, updateErr
+			}
+			return ctrl.Result{}, err
+		}
+		if resolved != nil {
+			statusRoutes = append(statusRoutes, *resolved)
 		}
 	}
 	tableID := resource.Status.TableID
@@ -395,7 +267,7 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	return ctrl.Result{}, nil
 }
 
-func (r *RouteTableReconciler) updateStatus(ctx context.Context, resource *juneauloutresmev1alpha1.RouteTable, routes []juneauloutresmev1alpha1.Route, tableID uint32, ready metav1.ConditionStatus, reason, message string) error {
+func (r *RouteTableReconciler) updateStatus(ctx context.Context, resource *juneauloutresmev1alpha1.RouteTable, routes []juneauloutresmev1alpha1.ResolvedRoute, tableID uint32, ready metav1.ConditionStatus, reason, message string) error {
 	updated := resource.DeepCopy()
 	updated.Status.ObservedGeneration = updated.Generation
 	updated.Status.Routes = routes
@@ -419,13 +291,146 @@ func (r *RouteTableReconciler) updateStatus(ctx context.Context, resource *junea
 	return r.Status().Update(ctx, resource)
 }
 
-func getRoute(routes []juneauloutresmev1alpha1.Route, dst string) *juneauloutresmev1alpha1.Route {
+func getRoute(routes []juneauloutresmev1alpha1.ResolvedRoute, dst string) *juneauloutresmev1alpha1.ResolvedRoute {
 	for i := range routes {
 		if routes[i].Dst == dst {
 			return &routes[i]
 		}
 	}
 	return nil
+}
+
+// routeNotReadyError stops the whole RouteTable: a referenced object is
+// missing or not ready yet, and the table waits for it.
+type routeNotReadyError struct {
+	message string
+}
+
+func (e *routeNotReadyError) Error() string { return e.message }
+
+func routeNotReady(format string, args ...any) error {
+	return &routeNotReadyError{message: fmt.Sprintf(format, args...)}
+}
+
+// resolveSpecRoute turns one entry of spec.routes into the route the data
+// plane programs. It returns nil for a route type the controller already
+// writes on its own. A *routeNotReadyError makes the whole table wait;
+// any other error is a failure to read the cluster.
+//
+// An endpoint route never makes the table wait. Its endpoint comes and
+// goes with the Pods of a workload, so while it cannot be used the route
+// drops traffic and the other routes keep working.
+func (r *RouteTableReconciler) resolveSpecRoute(ctx context.Context, rt *juneauloutresmev1alpha1.RouteTable, route juneauloutresmev1alpha1.Route, vpcSubnets []string) (*juneauloutresmev1alpha1.ResolvedRoute, error) {
+	switch route.Via.Type {
+	case juneauloutresmev1alpha1.ViaConnected,
+		juneauloutresmev1alpha1.ViaService,
+		juneauloutresmev1alpha1.ViaVpcEndpoint:
+		return nil, nil
+	case juneauloutresmev1alpha1.ViaInternetGateway:
+		return activeRoute(route), nil
+	case juneauloutresmev1alpha1.ViaBlackhole:
+		resolved := blackholeRoute(route, "")
+		return &resolved, nil
+	case juneauloutresmev1alpha1.ViaEndpoint:
+		resolved, err := r.resolveEndpointRoute(ctx, rt, route, vpcSubnets)
+		if err != nil {
+			return nil, err
+		}
+		return &resolved, nil
+	case juneauloutresmev1alpha1.ViaNATGateway:
+		return r.resolveNATGatewayRoute(ctx, rt, route)
+	case juneauloutresmev1alpha1.ViaVpcPeering:
+		return r.resolveVpcPeeringRoute(ctx, rt, route)
+	case juneauloutresmev1alpha1.ViaTransitGateway:
+		return r.resolveTransitGatewayRoute(ctx, rt, route)
+	default:
+		return nil, routeNotReady("route to %q has unsupported type %q", route.Dst, route.Via.Type)
+	}
+}
+
+func activeRoute(route juneauloutresmev1alpha1.Route) *juneauloutresmev1alpha1.ResolvedRoute {
+	return &juneauloutresmev1alpha1.ResolvedRoute{
+		Dst:   route.Dst,
+		Via:   route.Via,
+		State: juneauloutresmev1alpha1.RouteStateActive,
+	}
+}
+
+func (r *RouteTableReconciler) resolveNATGatewayRoute(ctx context.Context, rt *juneauloutresmev1alpha1.RouteTable, route juneauloutresmev1alpha1.Route) (*juneauloutresmev1alpha1.ResolvedRoute, error) {
+	var natGateway juneauloutresmev1alpha1.NATGateway
+	if err := r.Get(ctx, client.ObjectKey{Name: route.Via.NATGateway}, &natGateway); err != nil {
+		if errors.IsNotFound(err) {
+			return nil, routeNotReady("NATGateway %q not found", route.Via.NATGateway)
+		}
+		return nil, fmt.Errorf("failed to get NATGateway %q: %w", route.Via.NATGateway, err)
+	}
+	if natGateway.Spec.Vpc != rt.Spec.Vpc {
+		return nil, routeNotReady("NATGateway %q belongs to Vpc %q, not %q", natGateway.Name, natGateway.Spec.Vpc, rt.Spec.Vpc)
+	}
+	if natGateway.Status.GatewayID == 0 {
+		return nil, routeNotReady("NATGateway %q has not yet been assigned a gatewayID", natGateway.Name)
+	}
+	return activeRoute(route), nil
+}
+
+func (r *RouteTableReconciler) resolveVpcPeeringRoute(ctx context.Context, rt *juneauloutresmev1alpha1.RouteTable, route juneauloutresmev1alpha1.Route) (*juneauloutresmev1alpha1.ResolvedRoute, error) {
+	var peering juneauloutresmev1alpha1.VpcPeering
+	if err := r.Get(ctx, client.ObjectKey{Name: route.Via.VpcPeering}, &peering); err != nil {
+		if errors.IsNotFound(err) {
+			return nil, routeNotReady("VpcPeering %q not found", route.Via.VpcPeering)
+		}
+		return nil, fmt.Errorf("failed to get VpcPeering %q: %w", route.Via.VpcPeering, err)
+	}
+	if !meta.IsStatusConditionTrue(peering.Status.Conditions, juneauloutresmev1alpha1.VpcPeeringStatusReady) {
+		return nil, routeNotReady("VpcPeering %q is not ready", peering.Name)
+	}
+	peerVpc, ok := peering.Spec.PeerOf(rt.Spec.Vpc)
+	if !ok {
+		return nil, routeNotReady("RouteTable belongs to Vpc %q which is not part of VpcPeering %q", rt.Spec.Vpc, peering.Name)
+	}
+	peerSubnet, err := r.findSubnetByCIDR(ctx, peerVpc, route.Dst)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list subnets for VPC %q: %w", peerVpc, err)
+	}
+	if peerSubnet == "" {
+		return nil, routeNotReady("no Subnet in Vpc %q has CIDR %q", peerVpc, route.Dst)
+	}
+	resolved := activeRoute(route)
+	resolved.Subnet = peerSubnet
+	return resolved, nil
+}
+
+func (r *RouteTableReconciler) resolveTransitGatewayRoute(ctx context.Context, rt *juneauloutresmev1alpha1.RouteTable, route juneauloutresmev1alpha1.Route) (*juneauloutresmev1alpha1.ResolvedRoute, error) {
+	var transitGateway juneauloutresmev1alpha1.TransitGateway
+	if err := r.Get(ctx, client.ObjectKey{Name: route.Via.TransitGateway}, &transitGateway); err != nil {
+		if errors.IsNotFound(err) {
+			return nil, routeNotReady("TransitGateway %q not found", route.Via.TransitGateway)
+		}
+		return nil, fmt.Errorf("failed to get TransitGateway %q: %w", route.Via.TransitGateway, err)
+	}
+	if !meta.IsStatusConditionTrue(transitGateway.Status.Conditions, juneauloutresmev1alpha1.TransitGatewayStatusReady) {
+		return nil, routeNotReady("TransitGateway %q is not ready", transitGateway.Name)
+	}
+	attachment, err := r.findTransitGatewayAttachment(ctx, transitGateway.Name, rt.Spec.Vpc)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list transit gateway attachments: %w", err)
+	}
+	if attachment == nil {
+		return nil, routeNotReady("Vpc %q has no attachment to TransitGateway %q", rt.Spec.Vpc, transitGateway.Name)
+	}
+	var association juneauloutresmev1alpha1.TransitGatewayRouteTable
+	if err := r.Get(ctx, client.ObjectKey{Name: attachment.Spec.Association}, &association); err != nil {
+		if errors.IsNotFound(err) {
+			return nil, routeNotReady("TransitGatewayRouteTable %q not found", attachment.Spec.Association)
+		}
+		return nil, fmt.Errorf("failed to get TransitGatewayRouteTable %q: %w", attachment.Spec.Association, err)
+	}
+	if association.Status.TableID == 0 {
+		return nil, routeNotReady("TransitGatewayRouteTable %q has not yet been assigned a tableID", association.Name)
+	}
+	resolved := activeRoute(route)
+	resolved.TransitGatewayRouteTable = association.Name
+	return resolved, nil
 }
 
 // findSubnetByCIDR returns the Subnet of vpcName whose CIDR is exactly
@@ -466,39 +471,24 @@ func (r *RouteTableReconciler) findTransitGatewayAttachment(ctx context.Context,
 	return nil, nil
 }
 
-func (r *RouteTableReconciler) getNetworkEndpoint(ctx context.Context, name string) (*juneauloutresmev1alpha1.NetworkEndpoint, error) {
-	var networkEndpointList juneauloutresmev1alpha1.NetworkEndpointList
-	if err := r.List(ctx, &networkEndpointList); err != nil {
-		return nil, err
-	}
-
-	var match *juneauloutresmev1alpha1.NetworkEndpoint
-	for i := range networkEndpointList.Items {
-		if networkEndpointList.Items[i].Name != name {
-			continue
-		}
-		if match != nil {
-			return nil, fmt.Errorf("multiple network endpoints named %q found", name)
-		}
-		match = &networkEndpointList.Items[i]
-	}
-
-	if match == nil {
-		return nil, errors.NewNotFound(schema.GroupResource{Group: juneauloutresmev1alpha1.GroupVersion.Group, Resource: "networkendpoints"}, name)
-	}
-
-	return match, nil
-}
-
 // SetupWithManager sets up the controller with the Manager.
 func (r *RouteTableReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	ctx := context.Background()
+	if err := indexNetworkInterfaceByAllocationIdentity(ctx, mgr.GetFieldIndexer()); err != nil {
+		return err
+	}
+	if err := indexRouteTableByEndpointNamespace(ctx, mgr.GetFieldIndexer()); err != nil {
+		return err
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&juneauloutresmev1alpha1.RouteTable{}).
 		Watches(&juneauloutresmev1alpha1.Subnet{}, handler.EnqueueRequestsFromMapFunc(r.mapSubnetToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.L2Network{}, handler.EnqueueRequestsFromMapFunc(r.mapL2NetworkToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.NetworkEndpoint{}, handler.EnqueueRequestsFromMapFunc(r.mapNetworkEndpointToRouteTables)).
+		Watches(&juneauloutresmev1alpha1.NetworkInterface{}, handler.EnqueueRequestsFromMapFunc(r.mapNetworkInterfaceToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.Vpc{}, handler.EnqueueRequestsFromMapFunc(r.mapVpcToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.AllocationClaim{}, handler.EnqueueRequestsFromMapFunc(r.mapClaimToRouteTables)).
+		Watches(&juneauloutresmev1alpha1.AllocationLease{}, handler.EnqueueRequestsFromMapFunc(r.mapLeaseToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.NATGateway{}, handler.EnqueueRequestsFromMapFunc(r.mapNATGatewayToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.VpcPeering{}, handler.EnqueueRequestsFromMapFunc(r.mapVpcPeeringToRouteTables)).
 		Watches(&juneauloutresmev1alpha1.TransitGateway{}, handler.EnqueueRequestsFromMapFunc(r.mapTransitGatewayToRouteTables)).
@@ -516,12 +506,13 @@ func (r *RouteTableReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // which has not enabled Service routing can still reach one chosen Service.
 // The result is sorted by Dst for stable Status.Routes ordering across
 // reconciles.
-func vpcEndpointPoolRoutes(vpc *juneauloutresmev1alpha1.Vpc) []juneauloutresmev1alpha1.Route {
+func vpcEndpointPoolRoutes(vpc *juneauloutresmev1alpha1.Vpc) []juneauloutresmev1alpha1.ResolvedRoute {
 	cidrs := vpc.Spec.EndpointPool.Cidrs()
-	routes := make([]juneauloutresmev1alpha1.Route, 0, len(cidrs))
+	routes := make([]juneauloutresmev1alpha1.ResolvedRoute, 0, len(cidrs))
 	for _, cidr := range cidrs {
-		routes = append(routes, juneauloutresmev1alpha1.Route{
-			Dst: cidr,
+		routes = append(routes, juneauloutresmev1alpha1.ResolvedRoute{
+			State: juneauloutresmev1alpha1.RouteStateActive,
+			Dst:   cidr,
 			Via: juneauloutresmev1alpha1.RouteVia{
 				Type: juneauloutresmev1alpha1.ViaVpcEndpoint,
 			},
@@ -695,15 +686,6 @@ func (r *RouteTableReconciler) mapVpcToRouteTables(ctx context.Context, obj clie
 	return requests
 }
 
-func (r *RouteTableReconciler) mapClaimToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
-	_ = ctx
-	claim, ok := obj.(*juneauloutresmev1alpha1.AllocationClaim)
-	if !ok || claim.Spec.ResourceRef.Kind != "RouteTable" || claim.Spec.ResourceRef.Name == "" {
-		return nil
-	}
-	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: claim.Spec.ResourceRef.Name}}}
-}
-
 func (r *RouteTableReconciler) mapNATGatewayToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
 	natGateway, ok := obj.(*juneauloutresmev1alpha1.NATGateway)
 	if !ok {
@@ -744,37 +726,6 @@ func (r *RouteTableReconciler) mapNATGatewayToRouteTables(ctx context.Context, o
 	return requests
 }
 
-func (r *RouteTableReconciler) mapNetworkEndpointToRouteTables(ctx context.Context, obj client.Object) []reconcile.Request {
-	nwep, ok := obj.(*juneauloutresmev1alpha1.NetworkEndpoint)
-	if !ok || nwep.Spec.Subnet == "" {
-		return nil
-	}
-
-	var subnet juneauloutresmev1alpha1.Subnet
-	if err := r.Get(ctx, client.ObjectKey{Name: nwep.Spec.Subnet}, &subnet); err != nil {
-		return nil
-	}
-
-	if subnet.Spec.Vpc == "" {
-		return nil
-	}
-
-	var vpc juneauloutresmev1alpha1.Vpc
-	if err := r.Get(ctx, client.ObjectKey{Name: subnet.Spec.Vpc}, &vpc); err != nil {
-		if errors.IsNotFound(err) {
-			return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: subnet.Spec.Vpc}}}
-		}
-		return nil
-	}
-
-	routeTableName := vpc.Status.MainRouteTable
-	if routeTableName == "" {
-		routeTableName = vpc.Name
-	}
-
-	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: routeTableName}}}
-}
-
 // owningVpcOfService returns the Vpc that the Service is anchored to.
 // Mirrors svcpolicy.OwningVpc / webhook.serviceVpc; duplicated here so
 // the controller package does not pull either side into its imports.
@@ -792,14 +743,14 @@ func owningVpcOfService(svc *corev1.Service) string {
 // a per-Service warning for those, so a duplicate log here would just
 // be noise. The result is sorted by Dst for stable Status.Routes
 // ordering across reconciles.
-func (r *RouteTableReconciler) collectExternalIPRoutes(ctx context.Context, vpc *juneauloutresmev1alpha1.Vpc) ([]juneauloutresmev1alpha1.Route, error) {
+func (r *RouteTableReconciler) collectExternalIPRoutes(ctx context.Context, vpc *juneauloutresmev1alpha1.Vpc) ([]juneauloutresmev1alpha1.ResolvedRoute, error) {
 	var svcs corev1.ServiceList
 	if err := r.List(ctx, &svcs); err != nil {
 		return nil, fmt.Errorf("list services: %w", err)
 	}
 
 	seen := make(map[string]struct{})
-	var routes []juneauloutresmev1alpha1.Route
+	var routes []juneauloutresmev1alpha1.ResolvedRoute
 	for i := range svcs.Items {
 		svc := &svcs.Items[i]
 		if owningVpcOfService(svc) != vpc.Name {
@@ -818,8 +769,9 @@ func (r *RouteTableReconciler) collectExternalIPRoutes(ctx context.Context, vpc 
 				continue
 			}
 			seen[cidr] = struct{}{}
-			routes = append(routes, juneauloutresmev1alpha1.Route{
-				Dst: cidr,
+			routes = append(routes, juneauloutresmev1alpha1.ResolvedRoute{
+				State: juneauloutresmev1alpha1.RouteStateActive,
+				Dst:   cidr,
 				Via: juneauloutresmev1alpha1.RouteVia{
 					Type: juneauloutresmev1alpha1.ViaService,
 				},

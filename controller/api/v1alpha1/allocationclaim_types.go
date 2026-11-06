@@ -71,6 +71,15 @@ type AllocationClaimSpec struct {
 	// claim. The value is copied onto the lease.
 	// +optional
 	RetainWhile *RetainReference `json:"retainWhile,omitempty"`
+
+	// NetworkInterface names the NetworkInterface this claim allocates an
+	// address for. It is copied onto the AllocationLease so the lease
+	// still says whose address it holds after the claim and the
+	// NetworkInterface are gone. Set only for a NetworkInterface that has
+	// an allocation identity. It can be set on a claim that lacks it, but
+	// never changed or removed afterwards.
+	// +optional
+	NetworkInterface *NetworkInterfaceIdentity `json:"networkInterface,omitempty"`
 }
 
 type AllocationFilter struct {

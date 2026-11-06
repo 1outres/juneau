@@ -24,7 +24,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -105,7 +104,7 @@ func (v *NetworkInterfaceCustomValidator) ValidateCreate(ctx context.Context, ob
 	}
 	errs = append(errs, sgErrs...)
 
-	errs = append(errs, validateNetworkInterfaceAllocationIdentity(networkinterface.Spec.AllocationIdentity, specPath.Child("allocationIdentity"))...)
+	errs = append(errs, juneauv1alpha1.ValidateAllocationIdentity(networkinterface.Spec.AllocationIdentity, specPath.Child("allocationIdentity"))...)
 	errs = append(errs, validateRetainReference(networkinterface.Spec.RetainWhile, specPath.Child("retainWhile"))...)
 
 	// Who may use spec.elasticIP is checked when the Pod is admitted, not
@@ -278,19 +277,6 @@ func validateNetworkInterfaceAddress(address string, network *podnetwork.Network
 	}
 
 	return nil
-}
-
-func validateNetworkInterfaceAllocationIdentity(identity string, path *field.Path) field.ErrorList {
-	if identity == "" {
-		return nil
-	}
-
-	var errs field.ErrorList
-	// The identity becomes part of the backing AllocationLease object name.
-	for _, msg := range validation.IsDNS1123Subdomain(identity) {
-		errs = append(errs, field.Invalid(path, identity, msg))
-	}
-	return errs
 }
 
 // validateSecurityGroupsNeedAGateway rejects a SecurityGroup on a NIC

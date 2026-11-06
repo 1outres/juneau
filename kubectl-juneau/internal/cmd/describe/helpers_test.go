@@ -28,9 +28,19 @@ func TestFormatRouteVia(t *testing.T) {
 			want:  "connected",
 		},
 		{
-			name:  "endpoint",
-			route: topology.RouteSummary{Type: "endpoint", Endpoint: "nwep"},
-			want:  "endpoint (nwep)",
+			name:  "endpoint resolved to a NetworkEndpoint",
+			route: topology.RouteSummary{Type: "endpoint", Endpoint: "net/router/eth0", NetworkEndpoint: "net/router-a.eth0", State: "Active"},
+			want:  "endpoint (net/router/eth0 -> net/router-a.eth0)",
+		},
+		{
+			name:  "endpoint that is blackholed",
+			route: topology.RouteSummary{Type: "endpoint", Endpoint: "net/router/eth0", State: "Blackhole", Message: "no Pod"},
+			want:  "endpoint (net/router/eth0) blackhole: no Pod",
+		},
+		{
+			name:  "blackhole",
+			route: topology.RouteSummary{Type: "blackhole", State: "Blackhole"},
+			want:  "blackhole",
 		},
 		{
 			name:  "internetGateway",

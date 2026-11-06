@@ -72,6 +72,35 @@ spec:
                   status.vni or status.tableID.
                 minLength: 1
                 type: string
+              networkInterface:
+                description: |-
+                  NetworkInterface names the NetworkInterface this claim allocates an
+                  address for. It is copied onto the AllocationLease so the lease
+                  still says whose address it holds after the claim and the
+                  NetworkInterface are gone. Set only for a NetworkInterface that has
+                  an allocation identity. It can be set on a claim that lacks it, but
+                  never changed or removed afterwards.
+                properties:
+                  allocationIdentity:
+                    description: AllocationIdentity is spec.allocationIdentity of
+                      the NetworkInterface.
+                    minLength: 1
+                    type: string
+                  interface:
+                    description: |-
+                      Interface is spec.podRef.interface of the NetworkInterface, such as
+                      eth0.
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: Namespace of the NetworkInterface.
+                    minLength: 1
+                    type: string
+                required:
+                - allocationIdentity
+                - interface
+                - namespace
+                type: object
               poolRefs:
                 description: |-
                   PoolRefs lists candidate pools, evaluated in order. The first pool
