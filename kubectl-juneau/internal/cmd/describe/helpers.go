@@ -27,7 +27,16 @@ func formatRouteVia(r topology.RouteSummary) string {
 		}
 		return "connected"
 	case "endpoint":
-		return fmt.Sprintf("endpoint (%s)", displayOrDash(r.Endpoint))
+		via := fmt.Sprintf("endpoint (%s)", displayOrDash(r.Endpoint))
+		if r.NetworkEndpoint != "" {
+			via = fmt.Sprintf("endpoint (%s -> %s)", displayOrDash(r.Endpoint), r.NetworkEndpoint)
+		}
+		if r.State == "Blackhole" {
+			via += " blackhole: " + displayOrDash(r.Message)
+		}
+		return via
+	case "blackhole":
+		return "blackhole"
 	case "internetGateway":
 		return "internetGateway"
 	case "natGateway":

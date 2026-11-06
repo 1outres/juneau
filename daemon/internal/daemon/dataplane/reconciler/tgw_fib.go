@@ -164,7 +164,7 @@ func (r *TgwFib) populateRoute(ctx context.Context, fib *ebpf.Map, route *juneau
 // what the data plane does.
 func (r *TgwFib) buildFibVal(ctx context.Context, route *juneauv1alpha1.ResolvedTransitGatewayRoute) (bpf.PodEgressFibVal, error) {
 	if route.Blackhole {
-		return bpf.PodEgressFibVal{Type: fibRouteTypeBlackhole}, nil
+		return buildBlackholeFibVal(), nil
 	}
 
 	var subnet juneauv1alpha1.Subnet

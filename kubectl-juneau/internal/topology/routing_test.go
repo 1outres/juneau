@@ -187,7 +187,7 @@ func TestSummariseRouteTablePrefersStatus(t *testing.T) {
 			}},
 		},
 		Status: juneauv1alpha1.RouteTableStatus{
-			Routes: []juneauv1alpha1.Route{{
+			Routes: []juneauv1alpha1.ResolvedRoute{{
 				Dst: "10.0.0.0/24", Subnet: "a",
 				Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaConnected},
 			}, {
@@ -216,7 +216,7 @@ func TestSummariseRouteTablePrefersStatus(t *testing.T) {
 func TestSummariseRouteTableCarriesGatewayRefs(t *testing.T) {
 	rt := &juneauv1alpha1.RouteTable{
 		Status: juneauv1alpha1.RouteTableStatus{
-			Routes: []juneauv1alpha1.Route{{
+			Routes: []juneauv1alpha1.ResolvedRoute{{
 				Dst:    "10.1.0.0/24",
 				Subnet: "peer-subnet",
 				Via:    juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaVpcPeering, VpcPeering: "link"},
@@ -255,5 +255,72 @@ func TestResolveRouteTableForSubnetPropagatesError(t *testing.T) {
 	subnet := &juneauv1alpha1.Subnet{Spec: juneauv1alpha1.SubnetSpec{Vpc: "v", RouteTable: "x"}}
 	if _, _, err := resolveRouteTableForSubnet(context.Background(), v, subnet, &juneauv1alpha1.Vpc{}); !errors.Is(err, errBoom) {
 		t.Fatalf("expected errBoom, got %v", err)
+	}
+}
+
+func TestSummariseRouteTableCarriesEndpointResolution(t *testing.T) {
+	via := juneauv1alpha1.RouteVia{
+		Type: juneauv1alpha1.ViaEndpoint,
+		Endpoint: &juneauv1alpha1.RouteEndpointReference{
+			Namespace:          "net",
+			AllocationIdentity: "router",
+			Interface:          "eth0",
+		},
+	}
+	rt := &juneauv1alpha1.RouteTable{
+		Status: juneauv1alpha1.RouteTableStatus{
+			Routes: []juneauv1alpha1.ResolvedRoute{{
+				Dst:             "10.50.0.0/16",
+				Via:             via,
+				Subnet:          "router-subnet",
+				NetworkEndpoint: &juneauv1alpha1.ResolvedNetworkEndpointReference{Namespace: "net", Name: "router-a.eth0"},
+				State:           juneauv1alpha1.RouteStateActive,
+			}, {
+				Dst:     "10.51.0.0/16",
+				Via:     via,
+				State:   juneauv1alpha1.RouteStateBlackhole,
+				Message: "no Pod",
+			}},
+		},
+	}
+
+	got := summariseRouteTable(rt, false)
+	want := []RouteSummary{{
+		Dst:             "10.50.0.0/16",
+		Type:            "endpoint",
+		Subnet:          "router-subnet",
+		Endpoint:        "net/router/eth0",
+		NetworkEndpoint: "net/router-a.eth0",
+		State:           "Active",
+	}, {
+		Dst:      "10.51.0.0/16",
+		Type:     "endpoint",
+		Endpoint: "net/router/eth0",
+		State:    "Blackhole",
+		Message:  "no Pod",
+	}}
+	if len(got.Routes) != len(want) {
+		t.Fatalf("got %d routes, want %d", len(got.Routes), len(want))
+	}
+	for i := range want {
+		if got.Routes[i] != want[i] {
+			t.Errorf("route %d: got %+v, want %+v", i, got.Routes[i], want[i])
+		}
+	}
+}
+
+func TestSummariseRouteTableFallsBackToSpecRoutes(t *testing.T) {
+	rt := &juneauv1alpha1.RouteTable{
+		Spec: juneauv1alpha1.RouteTableSpec{
+			Routes: []juneauv1alpha1.Route{{
+				Dst: "0.0.0.0/0",
+				Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaNATGateway, NATGateway: "g"},
+			}},
+		},
+	}
+
+	got := summariseRouteTable(rt, true)
+	if len(got.Routes) != 1 || got.Routes[0] != (RouteSummary{Dst: "0.0.0.0/0", Type: "natGateway", NATGateway: "g"}) {
+		t.Fatalf("got %+v, want the spec route", got.Routes)
 	}
 }

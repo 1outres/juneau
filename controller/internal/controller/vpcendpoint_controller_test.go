@@ -85,8 +85,8 @@ var _ = Describe("VpcEndpoint controller", func() {
 			Eventually(func(g Gomega) {
 				routeTable := getControllerRouteTable(vpcName)
 				g.Expect(routeTable.Status.Routes).To(ContainElements(
-					juneauv1alpha1.Route{Dst: poolA, Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaVpcEndpoint}},
-					juneauv1alpha1.Route{Dst: poolB, Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaVpcEndpoint}},
+					juneauv1alpha1.ResolvedRoute{State: juneauv1alpha1.RouteStateActive, Dst: poolA, Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaVpcEndpoint}},
+					juneauv1alpha1.ResolvedRoute{State: juneauv1alpha1.RouteStateActive, Dst: poolB, Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaVpcEndpoint}},
 				))
 				g.Expect(countVpcEndpointRoutes(routeTable)).To(Equal(2))
 			}).Should(Succeed())
@@ -97,7 +97,7 @@ var _ = Describe("VpcEndpoint controller", func() {
 			vpcName := createControllerVpcWithEndpointPool(poolCIDR)
 			namespace, serviceName := createVpcEndpointBackend("")
 			endpointName := createVpcEndpoint(vpcName, namespace, serviceName)
-			poolRoute := juneauv1alpha1.Route{Dst: poolCIDR, Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaVpcEndpoint}}
+			poolRoute := juneauv1alpha1.ResolvedRoute{State: juneauv1alpha1.RouteStateActive, Dst: poolCIDR, Via: juneauv1alpha1.RouteVia{Type: juneauv1alpha1.ViaVpcEndpoint}}
 
 			var address string
 			Eventually(func(g Gomega) {

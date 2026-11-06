@@ -119,21 +119,30 @@ type RouteTableSummary struct {
 	Routes []RouteSummary `json:"routes,omitempty"`
 }
 
-// RouteSummary is a flat copy of one Route entry. Type uses the same
+// RouteSummary is a flat copy of one route entry. Type uses the same
 // string values as juneauv1alpha1.RouteViaType.
 type RouteSummary struct {
-	Dst        string `json:"dst"`
-	Type       string `json:"type"`
-	Subnet     string `json:"subnet,omitempty"`
-	Endpoint   string `json:"endpoint,omitempty"`
-	NATGateway string `json:"natGateway,omitempty"`
-	VpcPeering string `json:"vpcPeering,omitempty"`
+	Dst    string `json:"dst"`
+	Type   string `json:"type"`
+	Subnet string `json:"subnet,omitempty"`
+	// Endpoint is the workload an endpoint route names, written as
+	// namespace/allocationIdentity/interface. NetworkEndpoint is the
+	// namespace/name of the endpoint the controller resolved it to.
+	Endpoint        string `json:"endpoint,omitempty"`
+	NetworkEndpoint string `json:"networkEndpoint,omitempty"`
+	NATGateway      string `json:"natGateway,omitempty"`
+	VpcPeering      string `json:"vpcPeering,omitempty"`
 	// TransitGateway is the gateway the route hands the packet to, and
 	// TransitGatewayRouteTable is the table the data plane looks the
 	// destination up in. The controller resolves the second one, so a
 	// route can name a gateway while the table is still empty.
 	TransitGateway           string `json:"transitGateway,omitempty"`
 	TransitGatewayRouteTable string `json:"transitGatewayRouteTable,omitempty"`
+	// State is Active or Blackhole, and Message says why the controller
+	// drops a route that spec.routes asked it to forward. Both are empty
+	// for a route read from spec.routes.
+	State   string `json:"state,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 // NetworkACLSummary mirrors the per-ACL fields a tree presenter needs.
