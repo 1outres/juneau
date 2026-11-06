@@ -14,8 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package workload derives stable allocation identities from the workload
-// that owns a pod. Only KubeVirt is supported today.
 package workload
 
 import (
@@ -47,12 +45,11 @@ var KubeVirtVirtualMachineGVK = schema.GroupVersionKind{
 	Kind:    "VirtualMachine",
 }
 
-// AllocationIdentity returns the stable identity of the virtual machine
-// behind a virt-launcher pod. KubeVirt gives the pod a new name on every
-// restart, so the address has to follow the virtual machine instead. It
-// returns an empty string for pods KubeVirt does not manage, and the caller
-// keeps using the pod name.
-func AllocationIdentity(pod *corev1.Pod) string {
+// kubeVirtAllocationIdentity returns the stable identity of the virtual
+// machine behind a virt-launcher pod. KubeVirt gives the pod a new name on
+// every restart, so the address has to follow the virtual machine instead.
+// It returns an empty string for pods KubeVirt does not manage.
+func kubeVirtAllocationIdentity(pod *corev1.Pod) string {
 	name := virtualMachineName(pod)
 	if name == "" {
 		return ""

@@ -84,7 +84,11 @@ func TestAllocationIdentity(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "virt-launcher-web-0-abcde", Labels: tt.labels}}
-			if got := AllocationIdentity(pod); got != tt.want {
+			got, err := AllocationIdentity(pod)
+			if err != nil {
+				t.Fatalf("AllocationIdentity() error = %v", err)
+			}
+			if got != tt.want {
 				t.Errorf("AllocationIdentity() = %q, want %q", got, tt.want)
 			}
 		})
@@ -92,8 +96,8 @@ func TestAllocationIdentity(t *testing.T) {
 }
 
 func TestAllocationIdentityNilPod(t *testing.T) {
-	if got := AllocationIdentity(nil); got != "" {
-		t.Errorf("AllocationIdentity(nil) = %q, want %q", got, "")
+	if got, err := AllocationIdentity(nil); err != nil || got != "" {
+		t.Errorf("AllocationIdentity(nil) = %q, %v, want an empty identity", got, err)
 	}
 }
 

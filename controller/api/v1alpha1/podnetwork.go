@@ -56,6 +56,18 @@ const (
 	// that manage resolv.conf themselves). Value is expected to be the
 	// literal string "true".
 	PodAnnotationDNSInjectSkip = "juneau.loutres.me/dns-inject-skip"
+
+	// PodAnnotationAllocationIdentity names the workload a Pod belongs to.
+	// The Pod controller copies it onto
+	// NetworkInterface.spec.allocationIdentity of every NIC of the Pod, so
+	// the addresses stay with the workload when a new Pod replaces this
+	// one, and a RouteTable can point at the workload instead of at one
+	// Pod. Pods of one workload set the same value; Pods of different
+	// workloads in one namespace must not. Must be a DNS-1123 subdomain.
+	//
+	// Without it, a KubeVirt virt-launcher Pod gets an identity derived
+	// from its VirtualMachine, and any other Pod gets none.
+	PodAnnotationAllocationIdentity = "juneau.loutres.me/allocation-identity"
 )
 
 const (
@@ -501,6 +513,41 @@ func ParsePodSecurityGroups(annotation string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// PodAllocationIdentity reads PodAnnotationAllocationIdentity. set
+// reports whether the Pod carries the annotation at all. A value that
+// cannot serve as an allocation identity, including an empty one, comes
+// back as errors and an empty identity.
+func PodAllocationIdentity(annotations map[string]string) (identity string, set bool, errs field.ErrorList) {
+	value, set := annotations[PodAnnotationAllocationIdentity]
+	if !set {
+		return "", false, nil
+	}
+	path := podAnnotationPath(PodAnnotationAllocationIdentity)
+	if value == "" {
+		return "", true, field.ErrorList{field.Invalid(path, value,
+			"must not be empty; remove the annotation to let Juneau pick the identity")}
+	}
+	if errs := ValidateAllocationIdentity(value, path); len(errs) > 0 {
+		return "", true, errs
+	}
+	return value, true, nil
+}
+
+// ValidateAllocationIdentity checks a value used as
+// NetworkInterface.spec.allocationIdentity. An empty value means no
+// identity and passes.
+func ValidateAllocationIdentity(identity string, path *field.Path) field.ErrorList {
+	if identity == "" {
+		return nil
+	}
+	var errs field.ErrorList
+	// The identity becomes part of the backing AllocationLease object name.
+	for _, msg := range validation.IsDNS1123Subdomain(identity) {
+		errs = append(errs, field.Invalid(path, identity, msg))
+	}
+	return errs
 }
 
 func podAnnotationPath(key string) *field.Path {

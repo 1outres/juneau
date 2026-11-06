@@ -104,6 +104,50 @@ var _ = Describe("Pod controller", func() {
 		Expect(interfaceOf(pod).Spec.AllocationIdentity).To(BeEmpty())
 	})
 
+	It("stamps the allocation-identity annotation onto every NetworkInterface of the pod", func() {
+		extra := createPodTestSubnet(uniqueTestName("annotated-extra"), "10.231.0.0/24")
+		pod := newPod("annotated-identity", map[string]string{"app": "router"})
+		pod.Annotations = map[string]string{
+			juneauv1alpha1.PodAnnotationAllocationIdentity: "router-a",
+			juneauv1alpha1.PodAnnotationNetworks:           fmt.Sprintf(`[{"interface":"eth1","subnet":%q}]`, extra),
+		}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		DeferCleanup(func() { cleanupPodTestArtifacts(ctx, pod) })
+
+		reconcilePod(pod, "eth0", "eth1")
+		Expect(interfaceNamed(pod, "eth0").Spec.AllocationIdentity).To(Equal("router-a"))
+		Expect(interfaceNamed(pod, "eth1").Spec.AllocationIdentity).To(Equal("router-a"))
+		Expect(interfaceOf(pod).Spec.RetainWhile).To(BeNil())
+	})
+
+	It("takes the annotation over the virtual machine identity and still retains for the virtual machine", func() {
+		pod := newPod("vl-annotated-identity", virtLauncherLabels("annotated-vm"))
+		pod.Annotations = map[string]string{juneauv1alpha1.PodAnnotationAllocationIdentity: "vmi.vm-annotated-vm"}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		DeferCleanup(func() { cleanupPodTestArtifacts(ctx, pod) })
+
+		reconcilePod(pod)
+		nwiface := interfaceOf(pod)
+		Expect(nwiface.Spec.AllocationIdentity).To(Equal("vmi.vm-annotated-vm"))
+		Expect(nwiface.Spec.RetainWhile).NotTo(BeNil())
+		Expect(nwiface.Spec.RetainWhile.Name).To(Equal("annotated-vm"))
+	})
+
+	It("refuses to build a pod whose allocation-identity annotation is invalid", func() {
+		pod := newPod("invalid-identity", nil)
+		pod.Annotations = map[string]string{juneauv1alpha1.PodAnnotationAllocationIdentity: "Not_Valid"}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		DeferCleanup(func() { cleanupPodTestArtifacts(ctx, pod) })
+
+		Eventually(func(g Gomega) {
+			_, err := newPodReconciler().Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(pod)})
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(juneauv1alpha1.PodAnnotationAllocationIdentity))
+		}).Should(Succeed())
+		err := k8sClient.Get(ctx, podInterfaceKey(pod, "eth0"), &juneauv1alpha1.NetworkInterface{})
+		Expect(apierrors.IsNotFound(err)).To(BeTrue())
+	})
+
 	It("points the NetworkInterface at the virtual machine that must keep the address", func() {
 		pod := newPod("vl-pod-retain", virtLauncherLabels("pod-retain-vm"))
 		Expect(k8sClient.Create(ctx, pod)).To(Succeed())

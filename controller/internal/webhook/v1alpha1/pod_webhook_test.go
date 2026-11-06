@@ -1271,3 +1271,36 @@ var _ = Describe("Pod primary NIC on an L2Network", func() {
 		Expect(createPodOn(webhookUniqueTestName("missing-l2net"))).To(Succeed())
 	})
 })
+
+var _ = Describe("Pod allocation identity annotation", func() {
+	createPod := func(identity string) error {
+		subnet := customSubnetFixture()
+		pod := makePodWithImage(uniquePodName(), "default", map[string]string{
+			juneauv1alpha1.PodAnnotationSubnet:             subnet.Name,
+			juneauv1alpha1.PodAnnotationAllocationIdentity: identity,
+		})
+		err := webhookK8sClient.Create(context.Background(), pod)
+		if err == nil {
+			DeferCleanup(func() {
+				_ = webhookK8sClient.Delete(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: "default"}})
+			})
+		}
+		return err
+	}
+
+	It("accepts a DNS-1123 subdomain", func() {
+		Expect(createPod("vmi.vm-router")).To(Succeed())
+	})
+
+	It("rejects an empty value", func() {
+		err := createPod("")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(juneauv1alpha1.PodAnnotationAllocationIdentity))
+	})
+
+	It("rejects a value that is not a DNS-1123 subdomain", func() {
+		err := createPod("Router_A")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(juneauv1alpha1.PodAnnotationAllocationIdentity))
+	})
+})
