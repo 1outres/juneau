@@ -106,6 +106,9 @@ var _ = Describe("Juneau virtual machine address reuse", func() {
 		Expect(run(repoRoot, "kubectl", "delete", "-n", namespace, "pod", firstPod, "--wait=true")).To(Succeed())
 		waitLeasePhase(leaseName, "Retained")
 
+		By("checking the retained lease still names the interface it belongs to")
+		assertLeaseNetworkInterface(leaseName, namespace, "vmi."+vmName, "eth0")
+
 		By("checking the TTL has not started while the virtual machine is there")
 		released, err := kubectlJSONPath(repoRoot, `{.status.retainReleasedAt}`, "get", "allocationlease", leaseName)
 		Expect(err).NotTo(HaveOccurred())
@@ -275,6 +278,16 @@ func assertLeaseRetainReference(leaseName, apiVersion, kind, namespace, name str
 			"get", "allocationlease", leaseName)
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(strings.TrimSpace(observed)).To(Equal(strings.Join([]string{apiVersion, kind, namespace, name}, "/")))
+	}).Should(Succeed())
+}
+
+func assertLeaseNetworkInterface(leaseName, namespace, allocationIdentity, interfaceName string) {
+	Eventually(func(g Gomega) {
+		observed, err := kubectlJSONPath(repoRoot,
+			`{.spec.networkInterface.namespace}/{.spec.networkInterface.allocationIdentity}/{.spec.networkInterface.interface}`,
+			"get", "allocationlease", leaseName)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(strings.TrimSpace(observed)).To(Equal(strings.Join([]string{namespace, allocationIdentity, interfaceName}, "/")))
 	}).Should(Succeed())
 }
 

@@ -140,6 +140,7 @@ func (v *AllocationClaimCustomValidator) ValidateUpdate(ctx context.Context, old
 	if !retainReferenceEqual(allocationclaim.Spec.RetainWhile, oldClaim.Spec.RetainWhile) {
 		errs = append(errs, field.Invalid(specPath.Child("retainWhile"), allocationclaim.Spec.RetainWhile, "spec.retainWhile is immutable"))
 	}
+	errs = append(errs, validateNetworkInterfaceIdentityUpdate(oldClaim.Spec.NetworkInterface, allocationclaim.Spec.NetworkInterface, specPath.Child("networkInterface"))...)
 	errs = append(errs, validateAllocationClaimSpec(allocationclaim)...)
 	if len(errs) > 0 {
 		err := apierrors.NewInvalid(schema.GroupKind{Group: juneauloutresmev1alpha1.GroupVersion.Group, Kind: "AllocationClaim"}, allocationclaim.Name, errs)
@@ -163,6 +164,7 @@ func validateAllocationClaimSpec(claim *juneauloutresmev1alpha1.AllocationClaim)
 	}
 
 	errs = append(errs, validateRetainReference(claim.Spec.RetainWhile, specPath.Child("retainWhile"))...)
+	errs = append(errs, validateNetworkInterfaceIdentity(claim.Spec.NetworkInterface, specPath.Child("networkInterface"))...)
 	return errs
 }
 
