@@ -159,7 +159,12 @@ func (r *PodReconciler) applyNetworkInterface(ctx context.Context, pod *corev1.P
 		nwiface.Spec.ElasticIP = attachment.ElasticIP
 		nwiface.Spec.Address = attachment.Address
 		nwiface.Spec.SecurityGroups = attachment.SecurityGroups
-		nwiface.Spec.AllocationIdentity = identity
+		// spec.allocationIdentity is immutable, so only a new interface
+		// takes it from the pod. One made before pods had a default
+		// identity keeps the empty identity it was created with.
+		if nwiface.CreationTimestamp.IsZero() {
+			nwiface.Spec.AllocationIdentity = identity
+		}
 		nwiface.Spec.RetainWhile = workload.RetainReference(pod)
 
 		return ctrl.SetControllerReference(pod, nwiface, r.Scheme)

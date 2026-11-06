@@ -66,7 +66,8 @@ const (
 	// workloads in one namespace must not. Must be a DNS-1123 subdomain.
 	//
 	// Without it, a KubeVirt virt-launcher Pod gets an identity derived
-	// from its VirtualMachine, and any other Pod gets none.
+	// from its VirtualMachine, and any other Pod gets "pod." followed by
+	// its name.
 	PodAnnotationAllocationIdentity = "juneau.loutres.me/allocation-identity"
 )
 

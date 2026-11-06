@@ -44,7 +44,7 @@ func TestAllocationIdentity(t *testing.T) {
 			labels: map[string]string{
 				"kubevirt.io": "virt-launcher",
 			},
-			want: "",
+			want: "pod.virt-launcher-web-0-abcde",
 		},
 		{
 			name: "virt-launcher pod with an empty virtual machine name",
@@ -52,7 +52,7 @@ func TestAllocationIdentity(t *testing.T) {
 				"kubevirt.io":         "virt-launcher",
 				"vm.kubevirt.io/name": "",
 			},
-			want: "",
+			want: "pod.virt-launcher-web-0-abcde",
 		},
 		{
 			name: "other kubevirt component",
@@ -60,24 +60,24 @@ func TestAllocationIdentity(t *testing.T) {
 				"kubevirt.io":         "virt-handler",
 				"vm.kubevirt.io/name": "web-0",
 			},
-			want: "",
+			want: "pod.virt-launcher-web-0-abcde",
 		},
 		{
 			name: "pod that carries only the virtual machine name label",
 			labels: map[string]string{
 				"vm.kubevirt.io/name": "web-0",
 			},
-			want: "",
+			want: "pod.virt-launcher-web-0-abcde",
 		},
 		{
 			name:   "pod unrelated to kubevirt",
 			labels: map[string]string{"app": "web"},
-			want:   "",
+			want:   "pod.virt-launcher-web-0-abcde",
 		},
 		{
 			name:   "pod without labels",
 			labels: nil,
-			want:   "",
+			want:   "pod.virt-launcher-web-0-abcde",
 		},
 	}
 

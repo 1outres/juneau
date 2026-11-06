@@ -17,6 +17,7 @@ limitations under the License.
 package workload
 
 import (
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -113,5 +114,82 @@ func TestRetainReferenceIgnoresTheAnnotation(t *testing.T) {
 	}}
 	if got := RetainReference(plain); got != nil {
 		t.Errorf("RetainReference() = %+v, want nil for a pod KubeVirt does not manage", got)
+	}
+}
+
+// A pod with neither the annotation nor the KubeVirt label is named by the
+// pod itself, so every NIC of every workload has an identity.
+func TestAllocationIdentityDefaultsToThePodName(t *testing.T) {
+	tests := []struct {
+		name    string
+		podName string
+		want    string
+	}{
+		{name: "bare pod", podName: "ctr-web", want: "pod.ctr-web"},
+		{name: "replica set member", podName: "pool-7d9f8b6c4-x2k9z", want: "pod.pool-7d9f8b6c4-x2k9z"},
+		{name: "pod name with dots", podName: "web.example", want: "pod.web.example"},
+		{name: "longest name that fits", podName: strings.Repeat("a", 249), want: "pod." + strings.Repeat("a", 249)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: tt.podName}}
+			got, err := AllocationIdentity(pod)
+			if err != nil {
+				t.Fatalf("AllocationIdentity() error = %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("AllocationIdentity() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// The identity becomes part of an AllocationLease name, so a pod name that
+// pushes "pod.<name>" past the DNS-1123 subdomain limit has no identity.
+// Falling back to an empty identity would change the lease key silently.
+func TestAllocationIdentityRejectsAPodNameThatCannotFit(t *testing.T) {
+	tests := []struct {
+		name    string
+		podName string
+	}{
+		{name: "one character too long", podName: strings.Repeat("a", 250)},
+		{name: "longest valid pod name", podName: strings.Repeat("a", 253)},
+		{name: "pod without a name", podName: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: tt.podName}}
+			if got, err := AllocationIdentity(pod); err == nil {
+				t.Errorf("AllocationIdentity() = %q, want an error", got)
+			}
+		})
+	}
+}
+
+// The annotation and the KubeVirt label win over the pod name, and a pod
+// name that cannot fit does not matter when either of them names the
+// workload.
+func TestAllocationIdentityPodNameIsTheLastResort(t *testing.T) {
+	longName := strings.Repeat("a", 253)
+
+	annotated := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Namespace:   "default",
+		Name:        longName,
+		Annotations: map[string]string{juneauv1alpha1.PodAnnotationAllocationIdentity: "router"},
+	}}
+	if got, err := AllocationIdentity(annotated); err != nil || got != "router" {
+		t.Errorf("AllocationIdentity(annotated) = %q, %v, want router", got, err)
+	}
+
+	virtLauncher := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "default",
+		Name:      longName,
+		Labels: map[string]string{
+			"kubevirt.io":         "virt-launcher",
+			"vm.kubevirt.io/name": "web-0",
+		},
+	}}
+	if got, err := AllocationIdentity(virtLauncher); err != nil || got != "vmi.web-0" {
+		t.Errorf("AllocationIdentity(virt-launcher) = %q, %v, want vmi.web-0", got, err)
 	}
 }

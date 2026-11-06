@@ -37,7 +37,13 @@ PodControllerは`spec.allocationIdentity`を次の順に決めます。
 
 1. Podに`juneau.loutres.me/allocation-identity`アノテーションがあれば、その値を使います。値はDNS-1123 subdomainでなければなりません。空の値を含め、守っていないPodはwebhookが作成時に拒否します。
 2. アノテーションがないKubeVirtのvirt-launcher Podでは、VirtualMachineの名前から`vmi.<VM名>`を作ります。
-3. どちらでもないPodでは空のままです。
+3. どちらでもないPodでは、Podの名前から`pod.<Pod名>`を作ります。Podの名前が長く、`pod.`を付けるとDNS-1123 subdomainの上限（253文字）を超えるときは、webhookが作成時に拒否します。
+
+この値は、NetworkInterfaceを作るときに1度だけ決めます。すでにあるNetworkInterfaceの`spec.allocationIdentity`には、PodControllerは触りません。そのため、`pod.<Pod名>`が入るようになる前に作られたNICは、空のままです。そのNICを持つPodを作り直すと、新しいNICに`pod.<Pod名>`が入ります。
+
+Podが作り直されたときのアドレスの扱いは、`pod.<Pod名>`でも変わりません。同じ名前のPodが戻ってきたときは、同じIPが割り当てられます。NICが消えたあとも、アドレスの予約は24時間残ります。KubeVirt以外のPodには`spec.retainWhile`がないので、この24時間が予約の期間のすべてです。ReplicaSetのように名前が毎回変わるPodは、Podごとに別のidentityと予約を持ちます。名前が同じPodは同時に2つ存在できないので、同じ予約を同時に取り合うことはありません。
+
+予約の名前は、identityの`.`を`-`に置き換えて作ります。そのため、identityが空のNICを持つPod`pod-foo`と、identityが`pod.foo`のNICを持つPod`foo`は、同じ名前の予約を指します。この2つが同時にあるときは、先に予約を持ったNICが予約を保ち、もう一方は別のアドレスを受け取ります。同じアドレスを2つのNICに渡すことはありません。ただし、もう一方のNICは、消えたあとにアドレスが残りません。
 
 PodのすべてのNICに同じ値が入ります。`spec.retainWhile`はアノテーションの有無にかかわらず、virt-launcher PodのときだけVirtualMachineを指します。同じnamespaceの別のワークロードに同じ値を付けると、アドレスを取り合うので避けてください。NetworkInterfaceの`spec.allocationIdentity`は変更できないため、Podを作った後にアノテーションを書き換えても反映されません。Podを作り直してください。
 

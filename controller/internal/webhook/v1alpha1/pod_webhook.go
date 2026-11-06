@@ -301,7 +301,9 @@ func (v *PodSecurityGroupValidator) validate(ctx context.Context, pod *corev1.Po
 	}
 	identity, err := workload.AllocationIdentity(pod)
 	if err != nil {
-		return nil, err
+		return nil, apierrors.NewInvalid(schema.GroupKind{Group: "", Kind: "Pod"}, pod.Name, field.ErrorList{
+			field.Invalid(field.NewPath("metadata", "name"), pod.Name, err.Error()),
+		})
 	}
 
 	nics, errs := podNICsToValidate(pod)

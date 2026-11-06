@@ -178,6 +178,45 @@ var _ = Describe("NetworkInterface controller", func() {
 		Expect(second.Status.AllocationClaim).NotTo(Equal(firstClaimName))
 	})
 
+	// A pod without an identity keys its lease by the claim name, and that
+	// name flattens "." to "-". A pod named "pod-clash" without an identity
+	// therefore shares the lease name of the identity "pod.clash". The live
+	// holder keeps the lease and the newcomer gets its own address.
+	It("never gives one address to two live interfaces whose lease names flatten to the same text", func() {
+		legacy := &juneauv1alpha1.NetworkInterface{
+			ObjectMeta: metav1.ObjectMeta{Name: "pod-clash.eth0", Namespace: "default"},
+			Spec: juneauv1alpha1.NetworkInterfaceSpec{
+				PodRef:   juneauv1alpha1.NetworkInterfacePodReference{UID: "uid-clash-a", Name: "pod-clash", Interface: "eth0"},
+				NodeName: "node-a",
+				Subnet:   "default",
+			},
+		}
+		named := &juneauv1alpha1.NetworkInterface{
+			ObjectMeta: metav1.ObjectMeta{Name: "clash.eth0", Namespace: "default"},
+			Spec: juneauv1alpha1.NetworkInterfaceSpec{
+				PodRef:             juneauv1alpha1.NetworkInterfacePodReference{UID: "uid-clash-b", Name: "clash", Interface: "eth0"},
+				NodeName:           "node-a",
+				Subnet:             "default",
+				AllocationIdentity: "pod.clash",
+			},
+		}
+		Expect(leaseNameForNetworkInterface(legacy)).To(Equal(leaseNameForNetworkInterface(named)))
+
+		for _, ni := range []*juneauv1alpha1.NetworkInterface{legacy, named} {
+			Expect(k8sClient.Create(ctx, ni)).To(Succeed())
+			DeferCleanup(func() {
+				cleanupNetworkInterface(ctx, ni)
+				_ = k8sClient.Delete(ctx, &juneauv1alpha1.AllocationLease{ObjectMeta: metav1.ObjectMeta{Name: leaseNameForNetworkInterface(ni)}})
+			})
+			allocateNetworkInterface(ni)
+		}
+
+		Expect(named.Status.Address).NotTo(Equal(legacy.Status.Address))
+		var lease juneauv1alpha1.AllocationLease
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: leaseNameForNetworkInterface(legacy)}, &lease)).To(Succeed())
+		Expect(lease.Spec.ClaimRef.Name).To(Equal(legacy.Status.AllocationClaim))
+	})
+
 	It("copies spec.retainWhile onto the backing AllocationClaim", func() {
 		retain := juneauv1alpha1.RetainReference{
 			APIVersion: "v1",

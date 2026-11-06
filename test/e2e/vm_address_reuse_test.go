@@ -286,14 +286,21 @@ func leaseTime(leaseName, jsonPath string) time.Time {
 	return parsed
 }
 
-// podInterfaceLeaseName is the AllocationLease that backs a pod's default
-// interface when the address follows the pod name.
+// podInterfaceLeaseName is the AllocationLease that backs the default
+// interface of a pod whose address follows the pod name. Such a pod has
+// the allocation identity "pod.<name>".
 func podInterfaceLeaseName(namespace, podName string) string {
-	return fmt.Sprintf("subnet-ip-default--networkinterface--%s--%s-eth0--status-address", namespace, podName)
+	return interfaceLeaseName(namespace, "pod-"+podName)
+}
+
+// interfaceLeaseName renders the lease name of the default interface for an
+// allocation identity whose dots are already written as dashes.
+func interfaceLeaseName(namespace, flattenedIdentity string) string {
+	return fmt.Sprintf("subnet-ip-default--networkinterface--%s--%s-eth0--status-address", namespace, flattenedIdentity)
 }
 
 // identityLeaseName is the AllocationLease that backs a virtual machine's
 // address, which virt-launcher pods share across restarts.
 func identityLeaseName(namespace, vmName string) string {
-	return podInterfaceLeaseName(namespace, "vmi-"+vmName)
+	return interfaceLeaseName(namespace, "vmi-"+vmName)
 }
